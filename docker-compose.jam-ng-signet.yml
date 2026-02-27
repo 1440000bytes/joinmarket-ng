@@ -2,14 +2,28 @@ services:
   jam:
     image: jam-ng
     environment:
+      # jmwalletd
       - JMWALLETD_HOST=0.0.0.0
+      - JMWALLETD_NO_TLS=true
+      - JOINMARKET_DATA_DIR=/root/.joinmarket-ng
+      # Bitcoin Core
       - BITCOIN__RPC_URL=http://bitcoind-signet:38332
       - BITCOIN__RPC_USER=${CORE_RPC_USERNAME}
       - BITCOIN__RPC_PASSWORD=${CORE_RPC_PASSWORD}
       - NETWORK_CONFIG__NETWORK=signet
+      # Tor (local, managed by s6-overlay)
+      - TOR__SOCKS_HOST=127.0.0.1
+      - TOR__SOCKS_PORT=9050
+      - TOR__CONTROL_HOST=127.0.0.1
+      - TOR__CONTROL_PORT=9051
+      # Directory servers (signet)
+      - NETWORK_CONFIG__DIRECTORY_SERVERS=signetvaxgd3ivj4tml4g6ed3samaa2rscre2gyeyohncmwk4fbesiqd.onion:5222
+      # Orderbook watcher (local, managed by s6-overlay)
+      - DIRECTORY_NODES=signetvaxgd3ivj4tml4g6ed3samaa2rscre2gyeyohncmwk4fbesiqd.onion:5222
+      - OBWATCH_URL=http://127.0.0.1:8000
+      # Taker fee limits
       - TAKER__MAX_CJ_FEE_ABS=${JM_MAX_CJ_FEE_ABS:-3000}
       - TAKER__MAX_CJ_FEE_REL=${JM_MAX_CJ_FEE_REL:-0.0004}
-      - JOINMARKET_DATA_DIR=/root/.joinmarket-ng
     volumes:
       - /data/joinmarket-ng-signet/data:/root/.joinmarket-ng
     networks:
@@ -28,7 +42,7 @@ services:
       - "traefik.http.middlewares.jam-ng-signet-ipallowlist.ipallowlist.sourcerange=192.168.1.0/24,172.16.0.0/16"
       - "traefik.http.services.jam-ng-signet.loadbalancer.server.port=28183"
     healthcheck:
-      test: ["CMD", "sh", "-c", "timeout 5 bash -c '</dev/tcp/127.0.0.1/28183'"]
+      test: ["CMD", "python", "-c", "import socket; s=socket.create_connection(('127.0.0.1',28183),5); s.close()"]
       interval: 30s
       timeout: 10s
       retries: 3

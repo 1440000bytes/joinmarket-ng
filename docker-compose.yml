@@ -250,6 +250,11 @@ services:
       - JMWALLETD_HOST=0.0.0.0
       - JMWALLETD_NO_TLS=true
       - LOGGING__LEVEL=DEBUG
+      - OBWATCH_URL=http://jm-orderbook-watcher:8000
+      - TOR__SOCKS_HOST=jm-tor
+      - TOR__SOCKS_PORT=9050
+      - TOR__CONTROL_HOST=jm-tor
+      - TOR__CONTROL_PORT=9051
     ports:
       - "28183:28183"
     volumes:
@@ -258,6 +263,8 @@ services:
       - jm-network
     depends_on:
       bitcoin:
+        condition: service_healthy
+      tor:
         condition: service_healthy
     profiles:
       - e2e

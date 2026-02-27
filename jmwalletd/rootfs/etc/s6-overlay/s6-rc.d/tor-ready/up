@@ -1,0 +1,23 @@
+#!/bin/sh
+echo "Waiting for Tor SOCKS proxy on 127.0.0.1:9050..."
+i=0
+while [ "$i" -lt 60 ]; do
+    if /opt/venv/bin/python -c "
+import socket, sys
+s = socket.socket()
+s.settimeout(1)
+try:
+    s.connect(('127.0.0.1', 9050))
+    s.close()
+    sys.exit(0)
+except (ConnectionRefusedError, OSError):
+    sys.exit(1)
+"; then
+        echo "Tor is ready."
+        exit 0
+    fi
+    sleep 1
+    i=$((i + 1))
+done
+echo "ERROR: Tor did not become ready within 60 seconds" >&2
+exit 1

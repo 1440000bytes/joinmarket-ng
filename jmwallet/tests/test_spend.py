@@ -1,0 +1,458 @@
+"""Unit tests for jmwallet.wallet.spend — direct-send transaction building."""
+
+from __future__ import annotations
+
+import math
+import time
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from jmwallet.wallet.models import UTXOInfo
+from jmwallet.wallet.spend import (
+    DUST_THRESHOLD,
+    DirectSendResult,
+    _build_unsigned_tx,
+    _decode_bech32_scriptpubkey,
+    direct_send,
+    estimate_fee,
+    select_spendable_utxos,
+)
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_utxo(
+    *,
+    txid: str = "aa" * 32,
+    vout: int = 0,
+    value: int = 100_000,
+    address: str = "bcrt1qq6hag67dl53wl99vzg42z8eyzfz2xlkvwk6f7m",
+    confirmations: int = 10,
+    scriptpubkey: str = "0014" + "bb" * 20,
+    path: str = "m/84'/0'/0'/0/0",
+    mixdepth: int = 0,
+    frozen: bool = False,
+    locktime: int | None = None,
+) -> UTXOInfo:
+    return UTXOInfo(
+        txid=txid,
+        vout=vout,
+        value=value,
+        address=address,
+        confirmations=confirmations,
+        scriptpubkey=scriptpubkey,
+        path=path,
+        mixdepth=mixdepth,
+        frozen=frozen,
+        locktime=locktime,
+    )
+
+
+REGTEST_P2WPKH_ADDR = "bcrt1qq6hag67dl53wl99vzg42z8eyzfz2xlkvwk6f7m"
+
+# ---------------------------------------------------------------------------
+# _decode_bech32_scriptpubkey
+# ---------------------------------------------------------------------------
+
+
+class TestDecodeBech32Scriptpubkey:
+    """Test bech32 address → scriptPubKey decoding."""
+
+    def test_p2wpkh_regtest(self) -> None:
+        """Decode a standard P2WPKH regtest address."""
+        script = _decode_bech32_scriptpubkey(REGTEST_P2WPKH_ADDR)
+        # P2WPKH: OP_0 PUSH20 <20-byte-hash>
+        assert script[0:2] == bytes([0x00, 0x14])
+        assert len(script) == 22
+
+    def test_mainnet_p2wpkh(self) -> None:
+        """Decode a mainnet P2WPKH address."""
+        addr = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
+        script = _decode_bech32_scriptpubkey(addr)
+        assert script[0:2] == bytes([0x00, 0x14])
+        assert len(script) == 22
+
+    def test_signet_p2wpkh(self) -> None:
+        """Decode a signet (tb1) P2WPKH address."""
+        addr = "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"
+        script = _decode_bech32_scriptpubkey(addr)
+        assert script[0:2] == bytes([0x00, 0x14])
+        assert len(script) == 22
+
+
+# ---------------------------------------------------------------------------
+# select_spendable_utxos
+# ---------------------------------------------------------------------------
+
+
+class TestSelectSpendableUtxos:
+    """Test UTXO filtering logic."""
+
+    def test_excludes_frozen(self) -> None:
+        utxos = [_make_utxo(frozen=False), _make_utxo(frozen=True, vout=1)]
+        result = select_spendable_utxos(utxos)
+        assert len(result) == 1
+        assert result[0].vout == 0
+
+    def test_includes_frozen_when_requested(self) -> None:
+        utxos = [_make_utxo(frozen=True)]
+        result = select_spendable_utxos(utxos, include_frozen=True)
+        assert len(result) == 1
+
+    def test_excludes_fidelity_bonds(self) -> None:
+        utxos = [
+            _make_utxo(),
+            _make_utxo(locktime=int(time.time()) - 1000, vout=1),
+        ]
+        result = select_spendable_utxos(utxos)
+        assert len(result) == 1
+        assert result[0].vout == 0
+
+    def test_includes_fidelity_bonds_when_requested(self) -> None:
+        utxos = [_make_utxo(locktime=int(time.time()) - 1000)]
+        result = select_spendable_utxos(utxos, include_fidelity_bonds=True)
+        assert len(result) == 1
+
+    def test_empty_input(self) -> None:
+        assert select_spendable_utxos([]) == []
+
+    def test_all_frozen_returns_empty(self) -> None:
+        utxos = [_make_utxo(frozen=True), _make_utxo(frozen=True, vout=1)]
+        assert select_spendable_utxos(utxos) == []
+
+
+# ---------------------------------------------------------------------------
+# estimate_fee
+# ---------------------------------------------------------------------------
+
+
+class TestEstimateFee:
+    """Test fee estimation."""
+
+    def test_basic_no_change(self) -> None:
+        utxos = [_make_utxo()]
+        fee, vsize = estimate_fee(utxos, REGTEST_P2WPKH_ADDR, 1.0, has_change=False)
+        assert fee > 0
+        assert vsize > 0
+        assert fee == math.ceil(vsize * 1.0)
+
+    def test_with_change(self) -> None:
+        utxos = [_make_utxo()]
+        fee_no_change, _ = estimate_fee(utxos, REGTEST_P2WPKH_ADDR, 1.0, has_change=False)
+        fee_change, _ = estimate_fee(utxos, REGTEST_P2WPKH_ADDR, 1.0, has_change=True)
+        # Change output adds vbytes
+        assert fee_change > fee_no_change
+
+    def test_higher_fee_rate(self) -> None:
+        utxos = [_make_utxo()]
+        fee_low, _ = estimate_fee(utxos, REGTEST_P2WPKH_ADDR, 1.0, has_change=False)
+        fee_high, _ = estimate_fee(utxos, REGTEST_P2WPKH_ADDR, 10.0, has_change=False)
+        assert fee_high > fee_low
+
+    def test_more_inputs_higher_fee(self) -> None:
+        utxos_1 = [_make_utxo()]
+        utxos_3 = [_make_utxo(vout=i) for i in range(3)]
+        fee_1, _ = estimate_fee(utxos_1, REGTEST_P2WPKH_ADDR, 1.0, has_change=False)
+        fee_3, _ = estimate_fee(utxos_3, REGTEST_P2WPKH_ADDR, 1.0, has_change=False)
+        assert fee_3 > fee_1
+
+
+# ---------------------------------------------------------------------------
+# _build_unsigned_tx
+# ---------------------------------------------------------------------------
+
+
+class TestBuildUnsignedTx:
+    """Test raw unsigned transaction construction."""
+
+    def test_single_input_no_change(self) -> None:
+        utxos = [_make_utxo(value=50_000)]
+        dest_script = bytes([0x00, 0x14]) + b"\xaa" * 20
+        tx, version, inputs_data, outputs_data, num_outputs = _build_unsigned_tx(
+            utxos,
+            dest_script,
+            49_000,
+            None,
+            0,
+        )
+        assert version == (2).to_bytes(4, "little")
+        assert num_outputs == 1
+        # TX starts with version
+        assert tx[:4] == version
+        # Should contain the dest amount
+        assert (49_000).to_bytes(8, "little") in outputs_data
+
+    def test_single_input_with_change(self) -> None:
+        utxos = [_make_utxo(value=100_000)]
+        dest_script = bytes([0x00, 0x14]) + b"\xaa" * 20
+        change_script = bytes([0x00, 0x14]) + b"\xbb" * 20
+        tx, version, inputs_data, outputs_data, num_outputs = _build_unsigned_tx(
+            utxos,
+            dest_script,
+            50_000,
+            change_script,
+            49_000,
+        )
+        assert num_outputs == 2
+        assert (50_000).to_bytes(8, "little") in outputs_data
+        assert (49_000).to_bytes(8, "little") in outputs_data
+
+    def test_locktime_from_timelocked_utxo(self) -> None:
+        past_time = int(time.time()) - 10_000
+        utxos = [_make_utxo(value=100_000, locktime=past_time)]
+        dest_script = bytes([0x00, 0x14]) + b"\xaa" * 20
+        tx, _, _, _, _ = _build_unsigned_tx(utxos, dest_script, 99_000, None, 0)
+        # Last 4 bytes are locktime
+        locktime_bytes = tx[-4:]
+        assert int.from_bytes(locktime_bytes, "little") == past_time
+
+    def test_future_locktime_raises(self) -> None:
+        future_time = int(time.time()) + 100_000
+        utxos = [_make_utxo(value=100_000, locktime=future_time)]
+        dest_script = bytes([0x00, 0x14]) + b"\xaa" * 20
+        with pytest.raises(ValueError, match="in the future"):
+            _build_unsigned_tx(utxos, dest_script, 99_000, None, 0)
+
+    def test_sequence_fffffffe_when_timelocked(self) -> None:
+        past_time = int(time.time()) - 10_000
+        utxos = [_make_utxo(value=100_000, locktime=past_time)]
+        dest_script = bytes([0x00, 0x14]) + b"\xaa" * 20
+        _, _, inputs_data, _, _ = _build_unsigned_tx(utxos, dest_script, 99_000, None, 0)
+        # Input: 32-byte txid + 4-byte vout + 1-byte empty scriptsig + 4-byte sequence
+        seq_bytes = inputs_data[37:41]
+        assert int.from_bytes(seq_bytes, "little") == 0xFFFFFFFE
+
+    def test_sequence_ffffffff_when_not_timelocked(self) -> None:
+        utxos = [_make_utxo(value=100_000)]
+        dest_script = bytes([0x00, 0x14]) + b"\xaa" * 20
+        _, _, inputs_data, _, _ = _build_unsigned_tx(utxos, dest_script, 99_000, None, 0)
+        seq_bytes = inputs_data[37:41]
+        assert int.from_bytes(seq_bytes, "little") == 0xFFFFFFFF
+
+
+# ---------------------------------------------------------------------------
+# direct_send (integration with mocked wallet + backend)
+# ---------------------------------------------------------------------------
+
+
+def _make_mock_key(pubkey_hex: str = "02" + "ab" * 32) -> MagicMock:
+    """Create a mock HDKey with a deterministic public key."""
+    key = MagicMock()
+    key.get_public_key_bytes.return_value = bytes.fromhex(pubkey_hex)
+    # Private key needs to be a real coincurve key for signing
+    # Use a deterministic 32-byte secret
+    from coincurve import PrivateKey
+
+    key.private_key = PrivateKey(b"\x01" * 32)
+    return key
+
+
+def _make_mock_wallet(utxos: list[UTXOInfo], change_addr: str = REGTEST_P2WPKH_ADDR) -> MagicMock:
+    """Create a mock WalletService for direct_send tests."""
+    wallet = MagicMock()
+    wallet.get_utxos = AsyncMock(return_value=utxos)
+    wallet.get_key_for_address = MagicMock(return_value=_make_mock_key())
+    wallet.get_next_address_index = MagicMock(return_value=0)
+    wallet.get_change_address = MagicMock(return_value=change_addr)
+    return wallet
+
+
+def _make_mock_backend(fee_rate: float = 1.0, txid: str = "cc" * 32) -> MagicMock:
+    """Create a mock BlockchainBackend."""
+    backend = MagicMock()
+    backend.estimate_fee = AsyncMock(return_value=fee_rate)
+    backend.broadcast_transaction = AsyncMock(return_value=txid)
+    return backend
+
+
+class TestDirectSend:
+    """Integration tests for the full direct_send flow."""
+
+    @pytest.mark.anyio
+    async def test_basic_send(self) -> None:
+        utxos = [_make_utxo(value=200_000)]
+        wallet = _make_mock_wallet(utxos)
+        backend = _make_mock_backend()
+
+        result = await direct_send(
+            wallet=wallet,
+            backend=backend,
+            mixdepth=0,
+            amount_sats=50_000,
+            destination=REGTEST_P2WPKH_ADDR,
+            fee_rate=1.0,
+        )
+        assert isinstance(result, DirectSendResult)
+        assert result.send_amount == 50_000
+        assert result.fee > 0
+        assert result.num_inputs == 1
+        assert result.tx_hex
+        backend.broadcast_transaction.assert_called_once()
+
+    @pytest.mark.anyio
+    async def test_sweep(self) -> None:
+        """amount_sats=0 should sweep the entire mixdepth."""
+        utxos = [_make_utxo(value=100_000)]
+        wallet = _make_mock_wallet(utxos)
+        backend = _make_mock_backend()
+
+        result = await direct_send(
+            wallet=wallet,
+            backend=backend,
+            mixdepth=0,
+            amount_sats=0,
+            destination=REGTEST_P2WPKH_ADDR,
+            fee_rate=1.0,
+        )
+        assert result.change_amount == 0
+        assert result.send_amount == 100_000 - result.fee
+        assert result.num_outputs == 1
+
+    @pytest.mark.anyio
+    async def test_change_below_dust_added_to_fee(self) -> None:
+        """When change would be below dust threshold, it's folded into the fee."""
+        # Choose values so that change = total - send - fee < DUST_THRESHOLD
+        # With 1 input P2WPKH -> 1 output P2WPKH, fee ~ 110 at 1 sat/vB
+        utxos = [_make_utxo(value=50_000 + 110 + DUST_THRESHOLD - 1)]
+        wallet = _make_mock_wallet(utxos)
+        backend = _make_mock_backend()
+
+        result = await direct_send(
+            wallet=wallet,
+            backend=backend,
+            mixdepth=0,
+            amount_sats=50_000,
+            destination=REGTEST_P2WPKH_ADDR,
+            fee_rate=1.0,
+        )
+        assert result.change_amount == 0
+        # Fee absorbs the dust
+        assert result.fee > 0
+
+    @pytest.mark.anyio
+    async def test_insufficient_funds_raises(self) -> None:
+        utxos = [_make_utxo(value=1_000)]
+        wallet = _make_mock_wallet(utxos)
+        backend = _make_mock_backend()
+
+        with pytest.raises(ValueError, match="Insufficient funds"):
+            await direct_send(
+                wallet=wallet,
+                backend=backend,
+                mixdepth=0,
+                amount_sats=500_000,
+                destination=REGTEST_P2WPKH_ADDR,
+                fee_rate=1.0,
+            )
+
+    @pytest.mark.anyio
+    async def test_no_utxos_raises(self) -> None:
+        wallet = _make_mock_wallet([])
+        backend = _make_mock_backend()
+
+        with pytest.raises(ValueError, match="No spendable UTXOs"):
+            await direct_send(
+                wallet=wallet,
+                backend=backend,
+                mixdepth=0,
+                amount_sats=50_000,
+                destination=REGTEST_P2WPKH_ADDR,
+                fee_rate=1.0,
+            )
+
+    @pytest.mark.anyio
+    async def test_non_bech32_address_raises(self) -> None:
+        wallet = _make_mock_wallet([_make_utxo()])
+        backend = _make_mock_backend()
+
+        with pytest.raises(ValueError, match="bech32"):
+            await direct_send(
+                wallet=wallet,
+                backend=backend,
+                mixdepth=0,
+                amount_sats=50_000,
+                destination="1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
+                fee_rate=1.0,
+            )
+
+    @pytest.mark.anyio
+    async def test_uses_backend_fee_estimate_when_no_rate(self) -> None:
+        """When fee_rate is None, should query the backend."""
+        utxos = [_make_utxo(value=200_000)]
+        wallet = _make_mock_wallet(utxos)
+        backend = _make_mock_backend(fee_rate=5.0)
+
+        result = await direct_send(
+            wallet=wallet,
+            backend=backend,
+            mixdepth=0,
+            amount_sats=50_000,
+            destination=REGTEST_P2WPKH_ADDR,
+            fee_rate=None,
+            fee_target_blocks=3,
+        )
+        backend.estimate_fee.assert_called_once_with(target_blocks=3)
+        # Fee should be based on 5.0 sat/vB (higher than default 1.0)
+        assert result.fee_rate == 5.0
+
+    @pytest.mark.anyio
+    async def test_result_has_correct_structure(self) -> None:
+        utxos = [_make_utxo(value=200_000)]
+        wallet = _make_mock_wallet(utxos)
+        backend = _make_mock_backend(txid="dd" * 32)
+
+        result = await direct_send(
+            wallet=wallet,
+            backend=backend,
+            mixdepth=0,
+            amount_sats=50_000,
+            destination=REGTEST_P2WPKH_ADDR,
+            fee_rate=1.0,
+        )
+        assert result.txid == "dd" * 32
+        assert result.num_inputs == 1
+        assert result.num_outputs == 2  # send + change
+        assert len(result.inputs) == 1
+        assert len(result.outputs) >= 1
+        assert result.inputs[0]["outpoint"] == f"{'aa' * 32}:0"
+
+    @pytest.mark.anyio
+    async def test_sweep_insufficient_after_fee_raises(self) -> None:
+        """Sweeping a tiny UTXO that can't cover fees should raise."""
+        utxos = [_make_utxo(value=50)]  # way too small
+        wallet = _make_mock_wallet(utxos)
+        backend = _make_mock_backend()
+
+        with pytest.raises(ValueError, match="Insufficient funds after fee"):
+            await direct_send(
+                wallet=wallet,
+                backend=backend,
+                mixdepth=0,
+                amount_sats=0,  # sweep
+                destination=REGTEST_P2WPKH_ADDR,
+                fee_rate=1.0,
+            )
+
+    @pytest.mark.anyio
+    async def test_multiple_inputs(self) -> None:
+        """All UTXOs in the mixdepth are consumed."""
+        utxos = [
+            _make_utxo(value=50_000, vout=0, txid="aa" * 32),
+            _make_utxo(value=60_000, vout=1, txid="bb" * 32),
+        ]
+        wallet = _make_mock_wallet(utxos)
+        backend = _make_mock_backend()
+
+        result = await direct_send(
+            wallet=wallet,
+            backend=backend,
+            mixdepth=0,
+            amount_sats=80_000,
+            destination=REGTEST_P2WPKH_ADDR,
+            fee_rate=1.0,
+        )
+        assert result.num_inputs == 2
+        assert result.send_amount == 80_000

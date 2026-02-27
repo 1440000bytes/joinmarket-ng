@@ -78,8 +78,51 @@ WORKDIR /app
 RUN npm ci && npm run build
 
 # =============================================================================
-# Stage 4: jam-ng — jmwalletd bundled with JAM frontend
+# Stage 4: jam-ng — self-contained: jmwalletd + JAM frontend + Tor + obwatcher
+# Managed by s6-overlay for multi-process supervision
 # =============================================================================
 FROM jmwalletd AS jam-ng
 
+# s6-overlay version (pinned for reproducibility)
+ARG S6_OVERLAY_VERSION=3.2.0.2
+
+# Install xz-utils (for extracting s6-overlay) and Tor daemon
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    xz-utils \
+    tor \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install s6-overlay (noarch + arch-specific, checksums pinned)
+ADD --checksum=sha256:6dbcde158a3e78b9bb141d7bcb5ccb421e563523babbe2c64470e76f4fd02dae \
+    https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-noarch.tar.xz /tmp
+ADD --checksum=sha256:59289456ab1761e277bd456a95e737c06b03ede99158beb24f12b165a904f478 \
+    https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-x86_64.tar.xz /tmp
+RUN tar -C / -Jxpf /tmp/s6-overlay-noarch.tar.xz \
+    && tar -C / -Jxpf /tmp/s6-overlay-x86_64.tar.xz \
+    && rm -f /tmp/s6-overlay-*.tar.xz
+
+# Copy s6 service definitions and torrc
+COPY jmwalletd/rootfs/ /
+
+# Ensure run scripts are executable
+RUN chmod +x /etc/s6-overlay/s6-rc.d/tor/run \
+    && chmod +x /etc/s6-overlay/s6-rc.d/tor-ready/up \
+    && chmod +x /etc/s6-overlay/s6-rc.d/obwatcher/run \
+    && chmod +x /etc/s6-overlay/s6-rc.d/jmwalletd-svc/run
+
+# Tor data directory (writable at runtime)
+RUN mkdir -p /var/lib/tor && chown root:root /var/lib/tor && chmod 700 /var/lib/tor
+
+# Copy JAM frontend
 COPY --from=jam-builder /app/dist /usr/share/jmwalletd/jam
+
+# Default env: point services at the local Tor and obwatcher
+ENV TOR__SOCKS_HOST=127.0.0.1
+ENV TOR__SOCKS_PORT=9050
+ENV TOR__CONTROL_HOST=127.0.0.1
+ENV TOR__CONTROL_PORT=9051
+ENV OBWATCH_URL=http://127.0.0.1:8000
+
+# s6-overlay init replaces tini as PID 1
+ENTRYPOINT ["/init"]
+# No CMD — s6-overlay starts all services via s6-rc

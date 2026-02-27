@@ -60,6 +60,6 @@ logs/
 .DS_Store
 Thumbs.db
 
-# Tor data directories
-tor/
-**/tor/
+# Tor data directories (but NOT s6 service definitions under rootfs/)
+orderbook_watcher/tor/
+!jmwalletd/rootfs/

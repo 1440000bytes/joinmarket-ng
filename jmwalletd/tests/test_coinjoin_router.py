@@ -33,6 +33,7 @@ class TestDirectSend:
         # Mock the result object
         mock_result = Mock()
         mock_result.txid = "txid123"
+        mock_result.tx_hex = "rawhex"
         mock_result.hex = "rawhex"
         mock_result.model_dump.return_value = {}
         # Make attributes accessible

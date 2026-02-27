@@ -353,7 +353,6 @@ async def stop_maker(
 
 def _build_txinfo(tx_result: Any) -> TxInfo:
     """Convert a transaction result from jmwallet into a TxInfo response model."""
-    # tx_result is expected to have: hex, txid, inputs, outputs, locktime, version
     inputs = [
         TxInput(
             outpoint=inp.get("outpoint", ""),
@@ -373,8 +372,11 @@ def _build_txinfo(tx_result: Any) -> TxInfo:
         for out in getattr(tx_result, "outputs", [])
     ]
 
+    # DirectSendResult uses ``tx_hex``; fall back to ``hex`` for compat.
+    tx_hex = getattr(tx_result, "tx_hex", None) or getattr(tx_result, "hex", "")
+
     return TxInfo(
-        hex=getattr(tx_result, "hex", ""),
+        hex=tx_hex,
         inputs=inputs,
         outputs=outputs,
         txid=getattr(tx_result, "txid", ""),
