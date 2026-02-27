@@ -36,6 +36,7 @@ Environment Variable Naming:
 
 from __future__ import annotations
 
+import json
 import os
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -45,6 +46,7 @@ from loguru import logger
 from pydantic import BaseModel, Field, SecretStr, field_validator
 from pydantic_settings import (
     BaseSettings,
+    EnvSettingsSource,
     PydanticBaseSettingsSource,
     SettingsConfigDict,
 )
@@ -179,6 +181,32 @@ class NetworkSettings(BaseModel):
         default_factory=list,
         description="Directory server addresses (host:port). Uses defaults if empty.",
     )
+
+    @field_validator("directory_servers", mode="before")
+    @classmethod
+    def parse_directory_servers(cls, v: Any) -> Any:
+        """Accept JSON arrays, comma-separated strings, or plain single values.
+
+        pydantic-settings passes list[str] env vars through json.loads(), which
+        requires JSON format. This validator also accepts plain comma-separated
+        strings so that e.g. NETWORK_CONFIG__DIRECTORY_SERVERS=host:port works.
+        """
+        import json
+
+        if isinstance(v, str):
+            v = v.strip()
+            # Try JSON first (handles '["a","b"]' or '"a"' forms)
+            try:
+                parsed = json.loads(v)
+                if isinstance(parsed, list):
+                    return [s.strip() for s in parsed if s.strip()]
+                if isinstance(parsed, str):
+                    return [parsed.strip()] if parsed.strip() else []
+            except (json.JSONDecodeError, ValueError):
+                pass
+            # Fall back to comma-separated plain string
+            return [s.strip() for s in v.split(",") if s.strip()]
+        return v
 
 
 class WalletSettings(BaseModel):
@@ -645,6 +673,47 @@ class LoggingSettings(BaseModel):
     )
 
 
+class _CommaListEnvSettingsSource(EnvSettingsSource):
+    """Custom env source that decodes list[str] fields from comma-separated strings.
+
+    pydantic-settings' default EnvSettingsSource calls json.loads() on complex
+    fields (including list[str]), which requires JSON-formatted values like
+    '["a","b"]'. This subclass also accepts plain comma-separated values like
+    "a,b" or a bare single value "a" for list[str] fields, making container
+    environment variable configuration more ergonomic.
+    """
+
+    def decode_complex_value(self, field_name: str, field_info: Any, value: Any) -> Any:
+        if isinstance(value, str) and self._is_list_of_str(field_info):
+            value = value.strip()
+            try:
+                return json.loads(value)
+            except (json.JSONDecodeError, ValueError):
+                return [s.strip() for s in value.split(",") if s.strip()]
+        return super().decode_complex_value(field_name, field_info, value)
+
+    @staticmethod
+    def _is_list_of_str(field_info: Any) -> bool:
+        """Return True if the field is annotated as list[str] or list[str] | None."""
+        import typing
+
+        ann = getattr(field_info, "annotation", None)
+        if ann is None:
+            return False
+        origin = getattr(ann, "__origin__", None)
+        if origin is list:
+            args: tuple[Any, ...] = getattr(ann, "__args__", ())
+            return len(args) > 0 and args[0] is str
+        # Handle Optional[list[str]] / list[str] | None
+        if origin is typing.Union or str(origin) == "typing.Union":
+            for arg in getattr(ann, "__args__", ()):
+                if getattr(arg, "__origin__", None) is list:
+                    inner = getattr(arg, "__args__", ())
+                    if inner and inner[0] is str:
+                        return True
+        return False
+
+
 class JoinMarketSettings(BaseSettings):
     """
     Main JoinMarket settings class.
@@ -705,9 +774,10 @@ class JoinMarketSettings(BaseSettings):
         4. defaults (in field definitions)
         """
         toml_source = TomlConfigSettingsSource(settings_cls)
+        comma_env = _CommaListEnvSettingsSource(settings_cls)
         return (
             init_settings,
-            env_settings,
+            comma_env,
             toml_source,
         )
 
