@@ -104,6 +104,14 @@ jobs:
           - name: taker
             dockerfile: ./taker/Dockerfile
             image: taker
+          - name: jam-ng
+            dockerfile: ./jmwalletd/Dockerfile
+            image: jam-ng
+            target: "jam-ng"
+          - name: jmwalletd
+            dockerfile: ./jmwalletd/Dockerfile
+            image: jmwalletd
+            target: "jmwalletd"
 
     steps:
       - name: Checkout

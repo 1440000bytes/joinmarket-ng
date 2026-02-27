@@ -11,6 +11,7 @@ on:
       - 'orderbook_watcher/**'
       - 'maker/**'
       - 'taker/**'
+      - 'jmwalletd/**'
       - 'tests/**'
       - 'pytest.ini'
       - 'docker-compose.yml'
@@ -23,6 +24,7 @@ on:
       - 'orderbook_watcher/**'
       - 'maker/**'
       - 'taker/**'
+      - 'jmwalletd/**'
       - 'tests/**'
       - 'pytest.ini'
       - 'docker-compose.yml'
@@ -78,6 +80,16 @@ jobs:
             image: taker
             target: ""
             tag_suffix: ""
+          - name: jam-ng
+            dockerfile: ./jmwalletd/Dockerfile
+            image: jam-ng
+            target: "jam-ng"
+            tag_suffix: ""
+          - name: jmwalletd
+            dockerfile: ./jmwalletd/Dockerfile
+            image: jmwalletd
+            target: "jmwalletd"
+            tag_suffix: ""
 
     steps:
       - uses: actions/checkout@v6
@@ -132,14 +144,14 @@ jobs:
       - uses: ./.github/actions/setup-python-deps
         with:
           python-version: ${{ matrix.python-version }}
-          components: jmcore,jmwallet,directory_server,orderbook_watcher,maker,taker
+          components: jmcore,jmwallet,directory_server,orderbook_watcher,maker,taker,jmwalletd
           install-dev: 'true'
 
       - name: Run unit tests
         run: |
-          pytest -c pytest.ini jmcore jmwallet directory_server orderbook_watcher maker taker \
+          pytest -c pytest.ini jmcore jmwallet directory_server orderbook_watcher maker taker jmwalletd \
             --junitxml=junit/unit-tests.xml \
-            --cov=jmcore --cov=jmwallet --cov=directory_server --cov=orderbook_watcher --cov=maker --cov=taker \
+            --cov=jmcore --cov=jmwallet --cov=directory_server --cov=orderbook_watcher --cov=maker --cov=taker --cov=jmwalletd \
             --cov-report=term-missing --cov-report=xml --cov-report=html \
             -v --fail-on-skip
 
@@ -174,11 +186,12 @@ jobs:
       ORDERBOOK_WATCHER_IMAGE: ghcr.io/${{ github.repository }}/orderbook-watcher:ci-${{ github.sha }}
       MAKER_IMAGE: ghcr.io/${{ github.repository }}/maker:ci-${{ github.sha }}
       TAKER_IMAGE: ghcr.io/${{ github.repository }}/taker:ci-${{ github.sha }}
+      JMWALLETD_IMAGE: ghcr.io/${{ github.repository }}/jmwalletd:ci-${{ github.sha }}
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/setup-python-deps
         with:
-          components: jmcore,jmwallet,directory_server,orderbook_watcher,maker,taker
+          components: jmcore,jmwallet,directory_server,orderbook_watcher,maker,taker,jmwalletd
           install-dev: 'true'
 
       - name: Set up Docker Buildx
@@ -197,6 +210,7 @@ jobs:
           docker pull $ORDERBOOK_WATCHER_IMAGE
           docker pull $MAKER_IMAGE
           docker pull $TAKER_IMAGE
+          docker pull $JMWALLETD_IMAGE
 
       - name: "Start e2e services"
         env:
@@ -213,6 +227,10 @@ jobs:
           .github/scripts/wait-for-service.sh "Directory Server" \
             "nc -z localhost 5222" \
             30 1
+
+          .github/scripts/wait-for-service.sh "jmwalletd" \
+            "curl -sf http://127.0.0.1:28183/api/v1/getinfo" \
+            60 2
 
           echo "Waiting for makers to connect..."
           sleep 20
@@ -247,6 +265,9 @@ jobs:
           echo ""
           echo "=== Maker2 logs ==="
           docker compose logs maker2 --tail=50
+          echo ""
+          echo "=== jmwalletd logs ==="
+          docker compose logs jmwalletd --tail=50
 
       - name: Cleanup
         if: always()
@@ -1130,6 +1151,16 @@ jobs:
             image: taker
             target: ""
             tag_suffix: ""
+          - name: jam-ng
+            dockerfile: ./jmwalletd/Dockerfile
+            image: jam-ng
+            target: "jam-ng"
+            tag_suffix: ""
+          - name: jmwalletd
+            dockerfile: ./jmwalletd/Dockerfile
+            image: jmwalletd
+            target: "jmwalletd"
+            tag_suffix: ""
 
     steps:
       - uses: actions/checkout@v6
@@ -1206,6 +1237,16 @@ jobs:
             dockerfile: ./taker/Dockerfile
             image: taker
             target: ""
+            tag_suffix: ""
+          - name: jam-ng
+            dockerfile: ./jmwalletd/Dockerfile
+            image: jam-ng
+            target: "jam-ng"
+            tag_suffix: ""
+          - name: jmwalletd
+            dockerfile: ./jmwalletd/Dockerfile
+            image: jmwalletd
+            target: "jmwalletd"
             tag_suffix: ""
 
     steps:
@@ -1295,6 +1336,12 @@ jobs:
             tag_suffix: ""
           - name: taker
             image: taker
+            tag_suffix: ""
+          - name: jam-ng
+            image: jam-ng
+            tag_suffix: ""
+          - name: jmwalletd
+            image: jmwalletd
             tag_suffix: ""
 
     steps:

@@ -1,0 +1,237 @@
+"""Tests for jmwalletd.wallet_ops — wallet file operations."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from jmwalletd.wallet_ops import (
+    _load_wallet_file,
+    _save_wallet_file,
+    create_wallet,
+    open_wallet,
+    recover_wallet,
+)
+
+
+class TestWalletFileIO:
+    def test_save_and_load_roundtrip(self, tmp_path: Path) -> None:
+        wallet_path = tmp_path / "test.jmdat"
+        password = "test_password_123"
+        mnemonic = "abandon " * 11 + "about"
+
+        _save_wallet_file(
+            wallet_path=wallet_path,
+            mnemonic=mnemonic,
+            password=password,
+            wallet_type="sw-fb",
+        )
+        assert wallet_path.exists()
+
+        loaded_mnemonic = _load_wallet_file(wallet_path=wallet_path, password=password)
+        assert loaded_mnemonic == mnemonic
+
+    def test_load_wrong_password(self, tmp_path: Path) -> None:
+        wallet_path = tmp_path / "test.jmdat"
+        _save_wallet_file(
+            wallet_path=wallet_path,
+            mnemonic="test mnemonic",
+            password="correct",
+            wallet_type="sw",
+        )
+
+        with pytest.raises(ValueError, match="[Ww]rong|[Ii]nvalid|[Dd]ecrypt"):
+            _load_wallet_file(wallet_path=wallet_path, password="wrong")
+
+    def test_save_creates_file(self, tmp_path: Path) -> None:
+        wallet_path = tmp_path / "new_wallet.jmdat"
+        assert not wallet_path.exists()
+        _save_wallet_file(
+            wallet_path=wallet_path,
+            mnemonic="test",
+            password="pass",
+            wallet_type="sw",
+        )
+        assert wallet_path.exists()
+        content = wallet_path.read_bytes()
+        assert len(content) > 16  # At least the salt
+
+
+class TestCreateWallet:
+    @patch("jmwalletd.wallet_ops._get_network", return_value="mainnet")
+    @patch("jmwalletd._backend.get_backend", new_callable=AsyncMock)
+    @patch("jmwallet.wallet.service.WalletService")
+    async def test_creates_wallet(
+        self,
+        mock_ws_cls: MagicMock,
+        mock_get_backend: AsyncMock,
+        mock_get_network: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        wallet_path = tmp_path / "wallets" / "new.jmdat"
+        wallet_path.parent.mkdir(parents=True, exist_ok=True)
+
+        mock_ws = MagicMock()
+        mock_ws.sync = AsyncMock()
+        mock_ws_cls.return_value = mock_ws
+        mock_get_backend.return_value = MagicMock()
+
+        ws, seedphrase = await create_wallet(
+            wallet_path=wallet_path,
+            password="password",
+            wallet_type="sw-fb",
+            data_dir=tmp_path,
+        )
+        assert ws is mock_ws
+        assert isinstance(seedphrase, str)
+        assert len(seedphrase.split()) >= 12
+        assert wallet_path.exists()
+
+        # Verify network was passed through.
+        mock_ws_cls.assert_called_once()
+        assert mock_ws_cls.call_args.kwargs["network"] == "mainnet"
+
+    @patch("jmwalletd.wallet_ops._get_network", return_value="signet")
+    @patch("jmwalletd._backend.get_backend", new_callable=AsyncMock)
+    @patch("jmwallet.wallet.service.WalletService")
+    async def test_creates_wallet_signet(
+        self,
+        mock_ws_cls: MagicMock,
+        mock_get_backend: AsyncMock,
+        mock_get_network: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        wallet_path = tmp_path / "wallets" / "signet.jmdat"
+        wallet_path.parent.mkdir(parents=True, exist_ok=True)
+
+        mock_ws = MagicMock()
+        mock_ws.sync = AsyncMock()
+        mock_ws_cls.return_value = mock_ws
+        mock_get_backend.return_value = MagicMock()
+
+        ws, _ = await create_wallet(
+            wallet_path=wallet_path,
+            password="password",
+            wallet_type="sw",
+            data_dir=tmp_path,
+        )
+        assert ws is mock_ws
+        mock_ws_cls.assert_called_once()
+        assert mock_ws_cls.call_args.kwargs["network"] == "signet"
+
+    async def test_invalid_wallet_type(self, tmp_path: Path) -> None:
+        wallet_path = tmp_path / "bad.jmdat"
+        with pytest.raises(ValueError, match="[Uu]nsupported|[Ii]nvalid"):
+            await create_wallet(
+                wallet_path=wallet_path,
+                password="pass",
+                wallet_type="invalid-type",
+                data_dir=tmp_path,
+            )
+
+
+class TestRecoverWallet:
+    @patch("jmwalletd.wallet_ops._get_network", return_value="mainnet")
+    @patch("jmwalletd._backend.get_backend", new_callable=AsyncMock)
+    @patch("jmwallet.wallet.service.WalletService")
+    async def test_recovers_wallet(
+        self,
+        mock_ws_cls: MagicMock,
+        mock_get_backend: AsyncMock,
+        mock_get_network: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        wallet_path = tmp_path / "wallets" / "recovered.jmdat"
+        wallet_path.parent.mkdir(parents=True, exist_ok=True)
+        seedphrase = "abandon " * 11 + "about"
+
+        mock_ws = MagicMock()
+        mock_ws.sync = AsyncMock()
+        mock_ws_cls.return_value = mock_ws
+        mock_get_backend.return_value = MagicMock()
+
+        ws = await recover_wallet(
+            wallet_path=wallet_path,
+            password="password",
+            wallet_type="sw",
+            seedphrase=seedphrase,
+            data_dir=tmp_path,
+        )
+        assert ws is mock_ws
+        assert wallet_path.exists()
+        mock_ws_cls.assert_called_once()
+        assert mock_ws_cls.call_args.kwargs["network"] == "mainnet"
+
+
+class TestOpenWallet:
+    @patch("jmwalletd.wallet_ops._get_network", return_value="mainnet")
+    @patch("jmwalletd._backend.get_backend", new_callable=AsyncMock)
+    @patch("jmwallet.wallet.service.WalletService")
+    async def test_opens_wallet(
+        self,
+        mock_ws_cls: MagicMock,
+        mock_get_backend: AsyncMock,
+        mock_get_network: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        wallet_path = tmp_path / "wallets" / "existing.jmdat"
+        wallet_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Create the encrypted wallet file first
+        _save_wallet_file(
+            wallet_path=wallet_path,
+            mnemonic="abandon " * 11 + "about",
+            password="password",
+            wallet_type="sw-fb",
+        )
+
+        mock_ws = MagicMock()
+        mock_ws.sync = AsyncMock()
+        mock_ws_cls.return_value = mock_ws
+        mock_get_backend.return_value = MagicMock()
+
+        ws = await open_wallet(
+            wallet_path=wallet_path,
+            password="password",
+            data_dir=tmp_path,
+        )
+        assert ws is mock_ws
+        mock_ws_cls.assert_called_once()
+        assert mock_ws_cls.call_args.kwargs["network"] == "mainnet"
+
+    async def test_open_nonexistent(self, tmp_path: Path) -> None:
+        wallet_path = tmp_path / "nonexistent.jmdat"
+        with pytest.raises((FileNotFoundError, ValueError)):
+            await open_wallet(
+                wallet_path=wallet_path,
+                password="pass",
+                data_dir=tmp_path,
+            )
+
+    @patch("jmwalletd.wallet_ops._get_network", return_value="mainnet")
+    @patch("jmwalletd._backend.get_backend", new_callable=AsyncMock)
+    @patch("jmwallet.wallet.service.WalletService")
+    async def test_open_wrong_password(
+        self,
+        mock_ws_cls: MagicMock,
+        mock_get_backend: AsyncMock,
+        mock_get_network: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        wallet_path = tmp_path / "wallets" / "test.jmdat"
+        wallet_path.parent.mkdir(parents=True, exist_ok=True)
+        _save_wallet_file(
+            wallet_path=wallet_path,
+            mnemonic="abandon " * 11 + "about",
+            password="correct_password",
+            wallet_type="sw",
+        )
+
+        with pytest.raises(ValueError, match="[Ww]rong|[Ii]nvalid|[Dd]ecrypt"):
+            await open_wallet(
+                wallet_path=wallet_path,
+                password="wrong_password",
+                data_dir=tmp_path,
+            )

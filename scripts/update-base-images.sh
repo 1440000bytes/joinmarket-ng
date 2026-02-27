@@ -46,6 +46,7 @@ DOCKERFILES=(
     "$PROJECT_ROOT/maker/Dockerfile"
     "$PROJECT_ROOT/taker/Dockerfile"
     "$PROJECT_ROOT/orderbook_watcher/Dockerfile"
+    "$PROJECT_ROOT/jmwalletd/Dockerfile"
 )
 
 UPDATES_NEEDED=0

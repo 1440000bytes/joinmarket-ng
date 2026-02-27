@@ -1,0 +1,264 @@
+"""Wallet operations bridge.
+
+Thin adapter layer between the HTTP API and our ``jmwallet.WalletService``.
+These functions handle wallet creation, opening, and recovery, returning
+the initialised WalletService instances that the daemon state holds.
+
+The actual wallet implementation lives in the ``jmwallet`` package; this
+module only wires things together in the way the HTTP daemon needs.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from loguru import logger
+
+
+def _get_network() -> str:
+    """Return the configured Bitcoin network name (e.g. ``"signet"``).
+
+    Reads the ``network_config.network`` value from :class:`JoinMarketSettings`
+    so that ``WalletService`` derives addresses with the correct HRP.
+    """
+    from jmcore.settings import get_settings
+
+    return get_settings().network_config.network.value
+
+
+async def create_wallet(
+    *,
+    wallet_path: Path,
+    password: str,
+    wallet_type: str,
+    data_dir: Path,
+) -> tuple[Any, str]:
+    """Create a new wallet and return ``(wallet_service, seedphrase)``.
+
+    Args:
+        wallet_path: Full path for the new .jmdat wallet file.
+        password: Encryption password.
+        wallet_type: One of ``"sw"``, ``"sw-legacy"``, ``"sw-fb"``.
+        data_dir: Application data directory.
+
+    Returns:
+        Tuple of (WalletService, seed_phrase_string).
+
+    Raises:
+        FileExistsError: If the wallet file already exists.
+        ValueError: If the wallet type is invalid.
+    """
+    from jmwallet.wallet.service import WalletService
+    from jmwalletd._backend import get_backend
+
+    if wallet_path.exists():
+        raise FileExistsError(f"Wallet file already exists: {wallet_path}")
+
+    valid_types = {"sw", "sw-legacy", "sw-fb"}
+    if wallet_type not in valid_types:
+        msg = f"Invalid wallet type: {wallet_type}. Must be one of {valid_types}"
+        raise ValueError(msg)
+
+    from mnemonic import Mnemonic
+
+    mnemo = Mnemonic("english")
+    seedphrase = mnemo.generate(strength=128)
+
+    backend = await get_backend(data_dir=data_dir)
+
+    ws = WalletService(
+        mnemonic=seedphrase,
+        backend=backend,
+        data_dir=data_dir,
+        network=_get_network(),
+    )
+
+    # Persist the wallet file (encrypted with the password).
+    _save_wallet_file(
+        wallet_path=wallet_path,
+        mnemonic=seedphrase,
+        password=password,
+        wallet_type=wallet_type,
+    )
+
+    # Initial sync to populate caches.
+    await ws.sync()
+
+    logger.info("Created wallet: {}", wallet_path.name)
+    return ws, seedphrase
+
+
+async def recover_wallet(
+    *,
+    wallet_path: Path,
+    password: str,
+    wallet_type: str,
+    seedphrase: str,
+    data_dir: Path,
+) -> Any:
+    """Recover a wallet from a BIP39 seed phrase.
+
+    Returns:
+        WalletService instance.
+
+    Raises:
+        FileExistsError: If the wallet file already exists.
+        ValueError: If the seed phrase or wallet type is invalid.
+    """
+    from mnemonic import Mnemonic
+
+    from jmwallet.wallet.service import WalletService
+    from jmwalletd._backend import get_backend
+
+    if wallet_path.exists():
+        raise FileExistsError(f"Wallet file already exists: {wallet_path}")
+
+    mnemo = Mnemonic("english")
+    if not mnemo.check(seedphrase):
+        msg = "Invalid BIP39 mnemonic seed phrase."
+        raise ValueError(msg)
+
+    valid_types = {"sw", "sw-legacy", "sw-fb"}
+    if wallet_type not in valid_types:
+        msg = f"Invalid wallet type: {wallet_type}. Must be one of {valid_types}"
+        raise ValueError(msg)
+
+    backend = await get_backend(data_dir=data_dir)
+
+    ws = WalletService(
+        mnemonic=seedphrase,
+        backend=backend,
+        data_dir=data_dir,
+        network=_get_network(),
+    )
+
+    _save_wallet_file(
+        wallet_path=wallet_path,
+        mnemonic=seedphrase,
+        password=password,
+        wallet_type=wallet_type,
+    )
+
+    await ws.sync()
+
+    logger.info("Recovered wallet: {}", wallet_path.name)
+    return ws
+
+
+async def open_wallet(
+    *,
+    wallet_path: Path,
+    password: str,
+    data_dir: Path,
+) -> Any:
+    """Open (unlock) an existing wallet file.
+
+    Returns:
+        WalletService instance.
+
+    Raises:
+        FileNotFoundError: If the wallet file doesn't exist.
+        ValueError: If the password is wrong.
+    """
+    from jmwallet.wallet.service import WalletService
+    from jmwalletd._backend import get_backend
+
+    if not wallet_path.exists():
+        raise FileNotFoundError(f"Wallet file not found: {wallet_path}")
+
+    seedphrase = _load_wallet_file(wallet_path=wallet_path, password=password)
+
+    backend = await get_backend(data_dir=data_dir)
+
+    ws = WalletService(
+        mnemonic=seedphrase,
+        backend=backend,
+        data_dir=data_dir,
+        network=_get_network(),
+    )
+
+    await ws.sync()
+
+    logger.info("Opened wallet: {}", wallet_path.name)
+    return ws
+
+
+def _save_wallet_file(
+    *,
+    wallet_path: Path,
+    mnemonic: str,
+    password: str,
+    wallet_type: str,
+) -> None:
+    """Persist an encrypted wallet file.
+
+    Uses Fernet symmetric encryption (from the ``cryptography`` library)
+    with a key derived from the password via PBKDF2.
+    """
+    import base64
+    import json
+    import os
+
+    from cryptography.fernet import Fernet
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+
+    salt = os.urandom(16)
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=600_000,
+    )
+    key = base64.urlsafe_b64encode(kdf.derive(password.encode()))
+    fernet = Fernet(key)
+
+    wallet_data = json.dumps(
+        {
+            "mnemonic": mnemonic,
+            "wallet_type": wallet_type,
+        }
+    ).encode()
+
+    encrypted = fernet.encrypt(wallet_data)
+
+    wallet_path.parent.mkdir(parents=True, exist_ok=True)
+    wallet_path.write_bytes(salt + encrypted)
+
+    logger.debug("Saved wallet file: {}", wallet_path)
+
+
+def _load_wallet_file(*, wallet_path: Path, password: str) -> str:
+    """Load and decrypt a wallet file, returning the mnemonic.
+
+    Raises:
+        ValueError: If the password is incorrect.
+    """
+    import base64
+    import json
+
+    from cryptography.fernet import Fernet, InvalidToken
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+
+    raw = wallet_path.read_bytes()
+    salt = raw[:16]
+    encrypted = raw[16:]
+
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=600_000,
+    )
+    key = base64.urlsafe_b64encode(kdf.derive(password.encode()))
+    fernet = Fernet(key)
+
+    try:
+        decrypted = fernet.decrypt(encrypted)
+    except InvalidToken as exc:
+        raise ValueError("Wrong password or corrupted wallet file.") from exc
+
+    data = json.loads(decrypted)
+    return data["mnemonic"]

@@ -1,0 +1,39 @@
+services:
+  jam:
+    image: jam-ng
+    environment:
+      - JMWALLETD_HOST=0.0.0.0
+      - BITCOIN__RPC_URL=http://bitcoind-signet:38332
+      - BITCOIN__RPC_USER=${CORE_RPC_USERNAME}
+      - BITCOIN__RPC_PASSWORD=${CORE_RPC_PASSWORD}
+      - NETWORK_CONFIG__NETWORK=signet
+      - TAKER__MAX_CJ_FEE_ABS=${JM_MAX_CJ_FEE_ABS:-3000}
+      - TAKER__MAX_CJ_FEE_REL=${JM_MAX_CJ_FEE_REL:-0.0004}
+      - JOINMARKET_DATA_DIR=/root/.joinmarket-ng
+    volumes:
+      - /data/joinmarket-ng-signet/data:/root/.joinmarket-ng
+    networks:
+      - bitcoind-signet
+    deploy:
+      resources:
+        limits:
+          cpus: 3
+          memory: 2G
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.jam-ng-signet.rule=Host(`jam-ng-signet.sgn.space`)"
+      - "traefik.http.routers.jam-ng-signet.entrypoints=websecure"
+      - "traefik.http.routers.jam-ng-signet.middlewares=jam-ng-signet-ipallowlist"
+      - "traefik.http.middlewares.jam-ng-signet-ipallowlist.ipallowlist.sourcerange=192.168.1.0/24,172.16.0.0/16"
+      - "traefik.http.services.jam-ng-signet.loadbalancer.server.port=28183"
+    healthcheck:
+      test: ["CMD", "sh", "-c", "timeout 5 bash -c '</dev/tcp/127.0.0.1/28183'"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  bitcoind-signet:
+    name: bitcoind-signet
+    external: true

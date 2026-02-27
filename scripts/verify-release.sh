@@ -359,9 +359,9 @@ if [[ "$REPRODUCE" == true ]]; then
 
     # Build images for current architecture only
     # Images and their corresponding targets (must match CI workflow matrix)
-    IMAGES=("directory-server" "maker" "taker" "orderbook-watcher")
-    DOCKERFILES=("./directory_server/Dockerfile" "./maker/Dockerfile" "./taker/Dockerfile" "./orderbook_watcher/Dockerfile")
-    TARGETS=("production" "" "" "")  # Empty string means no --target (uses default)
+    IMAGES=("directory-server" "maker" "taker" "orderbook-watcher" "jmwalletd" "jam-ng")
+    DOCKERFILES=("./directory_server/Dockerfile" "./maker/Dockerfile" "./taker/Dockerfile" "./orderbook_watcher/Dockerfile" "./jmwalletd/Dockerfile" "./jmwalletd/Dockerfile")
+    TARGETS=("production" "" "" "" "jmwalletd" "jam-ng")  # Empty string means no --target (uses default)
 
     # Create OCI output directory
     OCI_DIR="$WORK_DIR/oci"

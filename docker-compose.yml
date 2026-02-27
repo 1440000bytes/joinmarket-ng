@@ -30,6 +30,7 @@
 #   - ORDERBOOK_WATCHER_IMAGE=ghcr.io/org/repo/orderbook-watcher:tag
 #   - MAKER_IMAGE=ghcr.io/org/repo/maker:tag
 #   - TAKER_IMAGE=ghcr.io/org/repo/taker:tag
+#   - JMWALLETD_IMAGE=ghcr.io/org/repo/jmwalletd:tag
 
 services:
   # ============================================================================
@@ -217,6 +218,50 @@ services:
     depends_on:
       directory:
         condition: service_healthy
+
+  # ============================================================================
+  # jmwalletd API Daemon (profile: e2e, all)
+  # ============================================================================
+
+  jmwalletd:
+    image: ${JMWALLETD_IMAGE:-}
+    build:
+      context: .
+      dockerfile: jmwalletd/Dockerfile
+      target: jmwalletd
+    container_name: jm-walletd
+    restart: "no"
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512M
+    environment:
+      - BITCOIN__BACKEND_TYPE=descriptor_wallet
+      - BITCOIN__RPC_URL=http://jm-bitcoin:18443
+      - BITCOIN__RPC_USER=test
+      - BITCOIN__RPC_PASSWORD=test
+      - NETWORK_CONFIG__NETWORK=testnet
+      - JMWALLETD_HOST=0.0.0.0
+      - JMWALLETD_NO_TLS=true
+      - LOGGING__LEVEL=DEBUG
+    ports:
+      - "28183:28183"
+    volumes:
+      - jmwalletd-data:/root/.joinmarket-ng
+    networks:
+      - jm-network
+    depends_on:
+      bitcoin:
+        condition: service_healthy
+    profiles:
+      - e2e
+      - all
 
 # ============================================================================
   # Maker Bot (profile: maker)
@@ -1086,6 +1131,7 @@ volumes:
   taker-reference-data:
   maker-data:
   taker-neutrino-data:
+  jmwalletd-data:
   tor-data:
 
 networks:
