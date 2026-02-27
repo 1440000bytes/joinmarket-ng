@@ -53,6 +53,7 @@ class TestWalletDisplay:
         data = resp.json()
         assert data["walletname"] == "test_wallet.jmdat"
         assert "walletinfo" in data
+        ws.sync.assert_awaited_once()
 
 
 class TestWalletUtxos:
@@ -63,6 +64,8 @@ class TestWalletUtxos:
 
     def test_empty_utxos(self, authed_client: tuple[TestClient, str]) -> None:
         client, token = authed_client
+        state = get_daemon_state()
+        ws = state.wallet_service
         resp = client.get(
             "/api/v1/wallet/test_wallet.jmdat/utxos",
             headers=_auth_headers(token),
@@ -70,6 +73,7 @@ class TestWalletUtxos:
         assert resp.status_code == 200
         data = resp.json()
         assert data["utxos"] == []
+        ws.sync.assert_awaited_once()
 
 
 class TestNewAddress:

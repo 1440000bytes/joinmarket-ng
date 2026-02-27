@@ -50,6 +50,7 @@ async def wallet_display(
 ) -> WalletDisplayResponse:
     """Return full wallet display with accounts, branches, and entries."""
     ws = state.wallet_service
+    await ws.sync()
 
     accounts: list[WalletDisplayAccount] = []
     total_balance = 0
@@ -123,6 +124,7 @@ async def list_utxos(
 ) -> ListUtxosResponse:
     """List all UTXOs in the wallet."""
     ws = state.wallet_service
+    await ws.sync()
     utxo_entries: list[UTXOEntry] = []
 
     for mixdepth in range(ws.mixdepth_count):
