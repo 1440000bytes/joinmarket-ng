@@ -82,6 +82,10 @@ async def create_wallet(
         wallet_type=wallet_type,
     )
 
+    # Ensure the watch-only descriptor wallet is loaded in Bitcoin Core
+    # and import HD descriptors.  No rescan needed for a brand-new wallet.
+    await ws.setup_descriptor_wallet(rescan=False)
+
     # Initial sync to populate caches.
     await ws.sync()
 
@@ -140,6 +144,10 @@ async def recover_wallet(
         wallet_type=wallet_type,
     )
 
+    # Ensure the watch-only descriptor wallet is loaded in Bitcoin Core
+    # and import HD descriptors so sync can find existing UTXOs.
+    await ws.setup_descriptor_wallet()
+
     await ws.sync()
 
     logger.info("Recovered wallet: {}", wallet_path.name)
@@ -177,6 +185,10 @@ async def open_wallet(
         data_dir=data_dir,
         network=_get_network(),
     )
+
+    # Ensure the watch-only descriptor wallet is loaded in Bitcoin Core
+    # and import HD descriptors.  Idempotent — skips if already set up.
+    await ws.setup_descriptor_wallet()
 
     await ws.sync()
 

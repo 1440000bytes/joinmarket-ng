@@ -75,6 +75,7 @@ class TestCreateWallet:
 
         mock_ws = MagicMock()
         mock_ws.sync = AsyncMock()
+        mock_ws.setup_descriptor_wallet = AsyncMock()
         mock_ws_cls.return_value = mock_ws
         mock_get_backend.return_value = MagicMock()
 
@@ -93,6 +94,9 @@ class TestCreateWallet:
         mock_ws_cls.assert_called_once()
         assert mock_ws_cls.call_args.kwargs["network"] == "mainnet"
 
+        # New wallet: descriptor wallet set up with no rescan.
+        mock_ws.setup_descriptor_wallet.assert_awaited_once_with(rescan=False)
+
     @patch("jmwalletd.wallet_ops._get_network", return_value="signet")
     @patch("jmwalletd._backend.get_backend", new_callable=AsyncMock)
     @patch("jmwallet.wallet.service.WalletService")
@@ -108,6 +112,7 @@ class TestCreateWallet:
 
         mock_ws = MagicMock()
         mock_ws.sync = AsyncMock()
+        mock_ws.setup_descriptor_wallet = AsyncMock()
         mock_ws_cls.return_value = mock_ws
         mock_get_backend.return_value = MagicMock()
 
@@ -120,6 +125,7 @@ class TestCreateWallet:
         assert ws is mock_ws
         mock_ws_cls.assert_called_once()
         assert mock_ws_cls.call_args.kwargs["network"] == "signet"
+        mock_ws.setup_descriptor_wallet.assert_awaited_once_with(rescan=False)
 
     async def test_invalid_wallet_type(self, tmp_path: Path) -> None:
         wallet_path = tmp_path / "bad.jmdat"
@@ -149,6 +155,7 @@ class TestRecoverWallet:
 
         mock_ws = MagicMock()
         mock_ws.sync = AsyncMock()
+        mock_ws.setup_descriptor_wallet = AsyncMock()
         mock_ws_cls.return_value = mock_ws
         mock_get_backend.return_value = MagicMock()
 
@@ -163,6 +170,9 @@ class TestRecoverWallet:
         assert wallet_path.exists()
         mock_ws_cls.assert_called_once()
         assert mock_ws_cls.call_args.kwargs["network"] == "mainnet"
+
+        # Recovery needs full rescan (default rescan=True).
+        mock_ws.setup_descriptor_wallet.assert_awaited_once_with()
 
 
 class TestOpenWallet:
@@ -189,6 +199,7 @@ class TestOpenWallet:
 
         mock_ws = MagicMock()
         mock_ws.sync = AsyncMock()
+        mock_ws.setup_descriptor_wallet = AsyncMock()
         mock_ws_cls.return_value = mock_ws
         mock_get_backend.return_value = MagicMock()
 
@@ -200,6 +211,9 @@ class TestOpenWallet:
         assert ws is mock_ws
         mock_ws_cls.assert_called_once()
         assert mock_ws_cls.call_args.kwargs["network"] == "mainnet"
+
+        # Open existing wallet: descriptor wallet set up with default rescan.
+        mock_ws.setup_descriptor_wallet.assert_awaited_once_with()
 
     async def test_open_nonexistent(self, tmp_path: Path) -> None:
         wallet_path = tmp_path / "nonexistent.jmdat"
