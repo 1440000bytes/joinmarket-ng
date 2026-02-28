@@ -40,13 +40,47 @@ def list_bonds(
     locktimes: Annotated[
         list[int] | None, typer.Option("--locktime", "-L", help="Locktime(s) to scan for")
     ] = None,
+    data_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--data-dir",
+            help="Data directory (default: ~/.joinmarket-ng or $JOINMARKET_DATA_DIR)",
+        ),
+    ] = None,
+    funded_only: Annotated[
+        bool,
+        typer.Option("--funded-only", help="Show only funded bonds (offline mode)"),
+    ] = False,
+    active_only: Annotated[
+        bool,
+        typer.Option("--active-only", help="Show only active bonds (offline mode)"),
+    ] = False,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", "-j", help="Output as JSON (offline mode)"),
+    ] = False,
     log_level: Annotated[
         str | None,
         typer.Option("--log-level", "-l", help="Log level"),
     ] = None,
 ) -> None:
-    """List all fidelity bonds in the wallet."""
+    """
+    List all fidelity bonds in the wallet.
+
+    Without --mnemonic-file: shows bonds from the local registry (offline, fast).
+    With --mnemonic-file: scans the blockchain for bonds and updates the registry.
+    """
     settings = setup_cli(log_level)
+
+    # If no mnemonic provided, show bonds from registry (offline mode)
+    if mnemonic_file is None and not any(v is not None for v in [rpc_url, backend_type]):
+        _list_bonds_offline(
+            data_dir=data_dir or settings.get_data_dir(),
+            funded_only=funded_only,
+            active_only=active_only,
+            json_output=json_output,
+        )
+        return
 
     try:
         resolved = resolve_mnemonic(
@@ -68,6 +102,7 @@ def list_bonds(
         network=network,
         backend_type=backend_type,
         rpc_url=rpc_url,
+        data_dir=data_dir,
     )
 
     asyncio.run(
@@ -78,6 +113,74 @@ def list_bonds(
             resolved_bip39_passphrase,
         )
     )
+
+
+def _list_bonds_offline(
+    data_dir: Path,
+    funded_only: bool = False,
+    active_only: bool = False,
+    json_output: bool = False,
+) -> None:
+    """List bonds from the local registry without blockchain access."""
+    from jmwallet.wallet.bond_registry import load_registry
+
+    registry = load_registry(data_dir)
+
+    if active_only:
+        bonds = registry.get_active_bonds()
+    elif funded_only:
+        bonds = registry.get_funded_bonds()
+    else:
+        bonds = registry.bonds
+
+    if json_output:
+        import json
+
+        output = [bond.model_dump() for bond in bonds]
+        print(json.dumps(output, indent=2))
+        return
+
+    if not bonds:
+        print("\nNo fidelity bonds found in registry.")
+        print(f"Registry: {data_dir / 'fidelity_bonds.json'}")
+        print(
+            "\nTIP: Use --mnemonic-file to scan the blockchain for bonds,\n"
+            "     or 'jm-wallet generate-bond-address' to create one."
+        )
+        return
+
+    print(f"\nFidelity Bonds ({len(bonds)} total)")
+    print("=" * 120)
+    header = f"{'Address':<64} {'Locktime':<20} {'Status':<15} {'Value':>15} {'Index':>6}"
+    print(header)
+    print("-" * 120)
+
+    for bond in bonds:
+        # Status
+        if bond.is_funded and not bond.is_expired:
+            status = "ACTIVE"
+        elif bond.is_funded and bond.is_expired:
+            status = "EXPIRED (funded)"
+        elif bond.is_expired:
+            status = "EXPIRED"
+        else:
+            status = "UNFUNDED"
+
+        value_str = f"{bond.value:,} sats" if bond.value else "-"
+        print(
+            f"{bond.address:<64} {bond.locktime_human:<20} {status:<15} "
+            f"{value_str:>15} {bond.index:>6}"
+        )
+
+    print("=" * 120)
+
+    # Show best bond if any active
+    best = registry.get_best_bond()
+    if best:
+        print(f"\nBest bond for advertising: {best.address[:20]}...{best.address[-8:]}")
+        print(f"  Value: {best.value:,} sats, Unlock in: {best.time_until_unlock:,}s")
+
+    print("\nNote: Values are from last sync. Use --mnemonic-file to refresh from blockchain.")
 
 
 async def _list_fidelity_bonds(
@@ -167,59 +270,79 @@ async def _list_fidelity_bonds(
                 )
             return
 
-        print(f"\nFound {len(bonds)} fidelity bond(s):\n")
-        print("=" * 120)
+        # Group bonds by address to detect multiple UTXOs at the same address.
+        # Per the reference implementation, only the single highest-value UTXO
+        # at each address is used as a fidelity bond.
+        from collections import defaultdict
+
+        bonds_by_address: dict[str, list] = defaultdict(list)
+        utxo_map_by_outpoint: dict[tuple[str, int], Any] = {}
+        for utxos_list in wallet.utxo_cache.values():
+            for utxo in utxos_list:
+                utxo_map_by_outpoint[(utxo.txid, utxo.vout)] = utxo
+
+        for bond in bonds:
+            utxo = utxo_map_by_outpoint.get((bond.txid, bond.vout))
+            addr = utxo.address if utxo else f"unknown-{bond.txid}:{bond.vout}"
+            bonds_by_address[addr].append(bond)
+
+        # For each address, select the best UTXO (highest bond_value)
+        best_bonds: list = []
+        for addr, addr_bonds in bonds_by_address.items():
+            best = max(addr_bonds, key=lambda b: b.bond_value)
+            best_bonds.append((addr, best, addr_bonds))
 
         # Sort by bond value (highest first)
-        bonds.sort(key=lambda b: b.bond_value, reverse=True)
+        best_bonds.sort(key=lambda x: x[1].bond_value, reverse=True)
 
-        # Build a map of txid:vout -> UTXOInfo from wallet cache for address lookup
-        utxo_map: dict[tuple[str, int], Any] = {}
-        for utxos in wallet.utxo_cache.values():
-            for utxo in utxos:
-                utxo_map[(utxo.txid, utxo.vout)] = utxo
+        print(f"\nFound {len(best_bonds)} fidelity bond(s):\n")
+        print("=" * 120)
+
+        from jmcore.bitcoin import format_amount
 
         # Track registry updates
         registry_updated = False
         coin_type = 0 if network == "mainnet" else 1
 
-        for i, bond in enumerate(bonds, 1):
+        for i, (addr, bond, all_addr_bonds) in enumerate(best_bonds, 1):
             locktime_dt = datetime.fromtimestamp(bond.locktime)
             expired = datetime.now().timestamp() > bond.locktime
             status = "EXPIRED" if expired else "ACTIVE"
             print(f"Bond #{i}: [{status}]")
             print(f"  UTXO:        {bond.txid}:{bond.vout}")
-            from jmcore.bitcoin import format_amount
-
             print(f"  Value:       {format_amount(bond.value)}")
             print(f"  Locktime:    {bond.locktime} ({locktime_dt.strftime('%Y-%m-%d %H:%M:%S')})")
             print(f"  Confirms:    {bond.confirmation_time}")
             print(f"  Bond Value:  {bond.bond_value:,}")
+            if len(all_addr_bonds) > 1:
+                total_sats = sum(b.value for b in all_addr_bonds)
+                print(
+                    f"  WARNING:     {len(all_addr_bonds)} UTXOs at this address "
+                    f"(total {format_amount(total_sats)}). "
+                    f"Only the largest UTXO is used as a fidelity bond."
+                )
             print("-" * 120)
 
-            # Update registry with discovered bond UTXO info
-            utxo_info = utxo_map.get((bond.txid, bond.vout))
+            # Update registry with the best UTXO for this address
+            utxo_info = utxo_map_by_outpoint.get((bond.txid, bond.vout))
             if utxo_info:
-                existing_bond = bond_registry.get_bond_by_address(utxo_info.address)
+                existing_bond = bond_registry.get_bond_by_address(addr)
                 if existing_bond:
-                    # Update existing bond with UTXO info
                     if bond_registry.update_utxo_info(
-                        address=utxo_info.address,
+                        address=addr,
                         txid=bond.txid,
                         vout=bond.vout,
                         value=bond.value,
                         confirmations=utxo_info.confirmations,
                     ):
                         registry_updated = True
-                        logger.debug(f"Updated registry entry for {utxo_info.address[:20]}...")
+                        logger.debug(f"Updated registry entry for {addr[:20]}...")
                 elif locktimes:
                     # New bond discovered via --locktime scan, add to registry
-                    # Extract index from path (format: m/84'/coin'/0'/2/index:locktime)
                     path_parts = utxo_info.path.split("/")
                     index_locktime = path_parts[-1]
                     idx = int(index_locktime.split(":")[0]) if ":" in index_locktime else 0
 
-                    # Get pubkey and witness script
                     from jmcore.btc_script import mk_freeze_script
 
                     key = wallet.get_fidelity_bond_key(idx, bond.locktime)
@@ -230,7 +353,7 @@ async def _list_fidelity_bonds(
                     from jmcore.timenumber import format_locktime_date
 
                     new_bond = RegistryBondInfo(
-                        address=utxo_info.address,
+                        address=addr,
                         locktime=bond.locktime,
                         locktime_human=format_locktime_date(bond.locktime),
                         index=idx,
@@ -246,7 +369,7 @@ async def _list_fidelity_bonds(
                     )
                     bond_registry.add_bond(new_bond)
                     registry_updated = True
-                    logger.info(f"Added new bond to registry: {utxo_info.address[:20]}...")
+                    logger.info(f"Added new bond to registry: {addr[:20]}...")
 
         # Save registry if any updates were made
         if registry_updated:
@@ -421,6 +544,11 @@ def generate_bond_address(
     print("\n" + "=" * 80)
     print("IMPORTANT: Funds sent to this address are LOCKED until the locktime!")
     print("           Make sure you have backed up your mnemonic.")
+    print()
+    print("WARNING: You should send coins to this address only once.")
+    print("         Only the single biggest value UTXO will be announced")
+    print("         as a fidelity bond. Sending coins multiple times will")
+    print("         NOT increase fidelity bond value.")
     print("=" * 80 + "\n")
 
 
@@ -595,7 +723,19 @@ async def _recover_bonds_async(
             print("If you expected to find bonds, try increasing --max-index")
             return
 
-        print(f"\nDiscovered {len(discovered_utxos)} fidelity bond(s):")
+        # Group discovered UTXOs by address to handle multiple UTXOs at the
+        # same bond address.  Per the reference implementation, only the single
+        # biggest-value UTXO is used as a fidelity bond.
+        from collections import defaultdict
+
+        utxos_by_address: dict[str, list] = defaultdict(list)
+        for utxo in discovered_utxos:
+            utxos_by_address[utxo.address].append(utxo)
+
+        print(
+            f"\nDiscovered {len(utxos_by_address)} fidelity bond address(es) "
+            f"({len(discovered_utxos)} UTXO(s) total):"
+        )
         print()
 
         # Load registry and add discovered bonds
@@ -607,10 +747,13 @@ async def _recover_bonds_async(
 
         coin_type = 0 if backend_settings.network == "mainnet" else 1
 
-        for utxo in discovered_utxos:
+        for address, addr_utxos in utxos_by_address.items():
+            # Pick the largest UTXO by value
+            best_utxo = max(addr_utxos, key=lambda u: u.value)
+
             # Extract index and locktime from path
             # Path format: m/84'/coin'/0'/2/index:locktime
-            path_parts = utxo.path.split("/")
+            path_parts = best_utxo.path.split("/")
             index_locktime = path_parts[-1]
             if ":" in index_locktime:
                 idx_str, locktime_str = index_locktime.split(":")
@@ -618,30 +761,36 @@ async def _recover_bonds_async(
                 locktime = int(locktime_str)
             else:
                 idx = int(index_locktime)
-                locktime = utxo.locktime or 0
+                locktime = best_utxo.locktime or 0
 
             # Show discovered bond
-            locktime_date = format_locktime_date(locktime) if locktime else "unknown"
-            print(f"  Address:   {utxo.address}")
-            print(f"  Value:     {format_amount(utxo.value)}")
-            print(f"  Locktime:  {locktime_date}")
-            print(f"  TXID:      {utxo.txid}:{utxo.vout}")
+            locktime_date_str = format_locktime_date(locktime) if locktime else "unknown"
+            print(f"  Address:   {address}")
+            print(f"  Value:     {format_amount(best_utxo.value)}")
+            print(f"  Locktime:  {locktime_date_str}")
+            print(f"  TXID:      {best_utxo.txid}:{best_utxo.vout}")
+            if len(addr_utxos) > 1:
+                total_sats = sum(u.value for u in addr_utxos)
+                print(
+                    f"  WARNING:   {len(addr_utxos)} UTXOs at this address "
+                    f"(total {format_amount(total_sats)}). "
+                    f"Only the largest UTXO is used as a fidelity bond."
+                )
             print()
 
             # Check if already in registry
-            existing = registry.get_bond_by_address(utxo.address)
+            existing = registry.get_bond_by_address(address)
             if existing:
-                # Update UTXO info
+                # Update UTXO info with the largest UTXO
                 registry.update_utxo_info(
-                    address=utxo.address,
-                    txid=utxo.txid,
-                    vout=utxo.vout,
-                    value=utxo.value,
-                    confirmations=utxo.confirmations,
+                    address=address,
+                    txid=best_utxo.txid,
+                    vout=best_utxo.vout,
+                    value=best_utxo.value,
+                    confirmations=best_utxo.confirmations,
                 )
             else:
                 # Add new bond to registry
-                # Get the key and script for the bond
                 key = wallet.get_fidelity_bond_key(idx, locktime)
                 pubkey_hex = key.get_public_key_bytes(compressed=True).hex()
 
@@ -651,7 +800,7 @@ async def _recover_bonds_async(
                 path = f"m/84'/{coin_type}'/0'/{FIDELITY_BOND_BRANCH}/{idx}"
 
                 bond_info = create_bond_info(
-                    address=utxo.address,
+                    address=address,
                     locktime=locktime,
                     index=idx,
                     path=path,
@@ -660,10 +809,10 @@ async def _recover_bonds_async(
                     network=backend_settings.network,
                 )
                 # Set UTXO info
-                bond_info.txid = utxo.txid
-                bond_info.vout = utxo.vout
-                bond_info.value = utxo.value
-                bond_info.confirmations = utxo.confirmations
+                bond_info.txid = best_utxo.txid
+                bond_info.vout = best_utxo.vout
+                bond_info.value = best_utxo.value
+                bond_info.confirmations = best_utxo.confirmations
 
                 registry.add_bond(bond_info)
                 new_bonds += 1
@@ -673,7 +822,7 @@ async def _recover_bonds_async(
 
         print("-" * 60)
         print(f"Added {new_bonds} new bond(s) to registry")
-        print(f"Updated {len(discovered_utxos) - new_bonds} existing bond(s)")
+        print(f"Updated {len(utxos_by_address) - new_bonds} existing bond(s)")
         print(f"Registry saved to: {backend_settings.data_dir / 'fidelity_bonds.json'}")
 
     finally:

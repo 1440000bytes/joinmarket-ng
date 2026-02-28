@@ -406,6 +406,95 @@ class TestCreateBondInfo:
         assert bond.txid is None  # Not funded yet
 
 
+class TestMultiUtxoHandling:
+    """Tests for multiple UTXOs at the same bond address.
+
+    Per the reference implementation, only the single biggest-value UTXO
+    at a bond address is used as a fidelity bond.  Sending coins to the
+    same address multiple times does NOT increase fidelity bond value.
+    """
+
+    def _create_bond(
+        self,
+        address: str = "bc1qtest",
+        locktime: int | None = None,
+        index: int = 0,
+        value: int | None = None,
+        txid: str | None = None,
+    ) -> FidelityBondInfo:
+        if locktime is None:
+            locktime = int(time.time()) + 86400 * 365
+        return FidelityBondInfo(
+            address=address,
+            locktime=locktime,
+            locktime_human="2027-01-01 00:00:00",
+            index=index,
+            path=f"m/84'/0'/0'/2/{index}",
+            pubkey="02" + "00" * 32,
+            witness_script_hex="00" * 50,
+            network="mainnet",
+            created_at="2025-01-01T00:00:00",
+            txid=txid,
+            vout=0 if txid else None,
+            value=value,
+            confirmations=10 if txid else None,
+        )
+
+    def test_update_utxo_info_overwrites_smaller(self) -> None:
+        """Updating a bond with a larger UTXO should overwrite."""
+        registry = BondRegistry()
+        bond = self._create_bond(address="bc1qmulti", txid="tx_small", value=100_000)
+        registry.add_bond(bond)
+
+        # Update with larger UTXO
+        result = registry.update_utxo_info(
+            address="bc1qmulti",
+            txid="tx_large",
+            vout=0,
+            value=500_000,
+            confirmations=20,
+        )
+        assert result is True
+
+        updated = registry.get_bond_by_address("bc1qmulti")
+        assert updated is not None
+        assert updated.txid == "tx_large"
+        assert updated.value == 500_000
+        assert updated.confirmations == 20
+
+    def test_get_best_bond_picks_highest_value(self) -> None:
+        """get_best_bond should pick the bond with highest value."""
+        registry = BondRegistry()
+        now = int(time.time())
+        locktime = now + 86400 * 365
+
+        # Two funded bonds at different addresses, same locktime
+        small = self._create_bond(address="bc1qsmall", locktime=locktime, txid="tx1", value=100_000)
+        large = self._create_bond(address="bc1qlarge", locktime=locktime, txid="tx2", value=500_000)
+        registry.add_bond(small)
+        registry.add_bond(large)
+
+        best = registry.get_best_bond()
+        assert best is not None
+        assert best.address == "bc1qlarge"
+        assert best.value == 500_000
+
+    def test_registry_stores_one_utxo_per_address(self) -> None:
+        """Registry should only store one UTXO per bond address (the address acts as key)."""
+        registry = BondRegistry()
+
+        bond = self._create_bond(address="bc1qbond", txid="tx_first", value=100_000)
+        registry.add_bond(bond)
+
+        # Adding same address replaces the entry
+        bond2 = self._create_bond(address="bc1qbond", txid="tx_second", value=300_000)
+        registry.add_bond(bond2)
+
+        assert len(registry.bonds) == 1
+        assert registry.bonds[0].txid == "tx_second"
+        assert registry.bonds[0].value == 300_000
+
+
 class TestLocktimeFunctions:
     """Tests for locktime discovery functions."""
 
