@@ -7,7 +7,7 @@ from __future__ import annotations
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 
-from jmcore.config import TorControlConfig, WalletConfig
+from jmcore.config import TorControlConfig, WalletConfig, create_tor_control_config_from_env
 from jmcore.constants import DUST_THRESHOLD
 from jmcore.models import OfferType
 from jmcore.tor_control import HiddenServiceDoSConfig
@@ -160,7 +160,7 @@ class MakerConfig(WalletConfig):
 
     # Tor control port configuration for dynamic hidden service creation
     tor_control: TorControlConfig = Field(
-        default_factory=TorControlConfig,
+        default_factory=create_tor_control_config_from_env,
         description="Tor control port configuration",
     )
 

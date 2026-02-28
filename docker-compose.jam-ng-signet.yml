@@ -16,6 +16,7 @@ services:
       - TOR__SOCKS_PORT=9050
       - TOR__CONTROL_HOST=127.0.0.1
       - TOR__CONTROL_PORT=9051
+      - TOR__COOKIE_PATH=/var/lib/tor/control_auth_cookie
       # Directory servers (signet)
       - NETWORK_CONFIG__DIRECTORY_SERVERS=signetvaxgd3ivj4tml4g6ed3samaa2rscre2gyeyohncmwk4fbesiqd.onion:5222
       # Orderbook watcher (local, managed by s6-overlay)

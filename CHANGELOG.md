@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`TOR__COOKIE_PATH` env var not applied to maker**: `MakerConfig.tor_control` was using `default_factory=TorControlConfig` which constructs a blank config ignoring all env vars, so `cookie_path` was always `None` even when `TOR__COOKIE_PATH` was set. Changed `default_factory` to `create_tor_control_config_from_env` so the Tor control config is always populated from the environment on startup.
+
 - **Maker Tor hidden service setup reliability**: The maker now reliably obtains an ephemeral `.onion` address when Tor is configured.
   - **`jm-tor` Docker healthcheck**: The previous healthcheck (`test -f .../hostname`) was logically equivalent to only checking the `hostname` file due to shell operator precedence — it never actually verified Tor had bootstrapped or that the control auth cookie was valid. The new healthcheck verifies both the `hostname` file exists **and** the `control_auth_cookie` is exactly 32 bytes (the length written by Tor only after full initialization).
   - **Cookie validation in `TorControlClient`**: `_authenticate_cookie()` now explicitly validates the cookie file is exactly 32 bytes before sending the `AUTHENTICATE` command. A 0-byte or partial file (written by Tor during startup) raises `TorAuthenticationError` with a clear message instead of sending an empty hex string that Tor rejects with the cryptic "Got authentication cookie with wrong length (0)" message.
