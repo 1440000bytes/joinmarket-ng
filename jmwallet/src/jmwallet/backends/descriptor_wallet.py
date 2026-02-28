@@ -1062,16 +1062,26 @@ class DescriptorWalletBackend(BlockchainBackend):
         Useful after importing new descriptors or recovering wallet.
 
         Args:
-            start_height: Block height to start rescan from
+            start_height: Block height to start rescan from.  Values beyond the
+                current chain tip are clamped to the tip so that callers using
+                mainnet-derived constants (e.g. SegWit activation height 481824)
+                work correctly on signet/testnet where the tip is much lower.
 
         Returns:
             Rescan result
         """
         try:
-            logger.info(f"Starting blockchain rescan from height {start_height}...")
+            chain_tip = await self.get_block_height()
+            effective_height = min(max(0, start_height), chain_tip)
+            if effective_height != start_height:
+                logger.warning(
+                    f"Requested rescan height {start_height} is out of range "
+                    f"[0, {chain_tip}]; clamping to {effective_height}"
+                )
+            logger.info(f"Starting blockchain rescan from height {effective_height}...")
             result = await self._rpc_call(
                 "rescanblockchain",
-                [start_height],
+                [effective_height],
                 client=self._import_client,  # Use longer timeout
             )
             logger.info(f"Rescan complete: {result}")

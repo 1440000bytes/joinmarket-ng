@@ -414,13 +414,57 @@ class TestDescriptorWalletBackendUnit:
     async def test_rescan_blockchain(self, mock_backend: DescriptorWalletBackend):
         """Test blockchain rescan."""
         backend = mock_backend
+        chain_tip = 800000
 
-        backend._rpc_call = AsyncMock(return_value={"start_height": 0, "stop_height": 800000})
+        async def mock_rpc(method, params=None, client=None, use_wallet=True):
+            if method == "getblockchaininfo":
+                return {"blocks": chain_tip}
+            return {"start_height": 0, "stop_height": chain_tip}
+
+        backend._rpc_call = AsyncMock(side_effect=mock_rpc)
 
         result = await backend.rescan_blockchain(start_height=700000)
 
         assert result["start_height"] == 0
         backend._rpc_call.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_rescan_blockchain_clamps_above_tip(self, mock_backend: DescriptorWalletBackend):
+        """Rescan height above the chain tip is clamped to the current tip."""
+        backend = mock_backend
+        chain_tip = 50000  # signet — much lower than mainnet heights
+
+        async def mock_rpc(method, params=None, client=None, use_wallet=True):
+            if method == "getblockchaininfo":
+                return {"blocks": chain_tip}
+            # Verify the height passed to rescanblockchain was clamped
+            assert params == [chain_tip], f"Expected [{chain_tip}], got {params}"
+            return {"start_height": chain_tip, "stop_height": chain_tip}
+
+        backend._rpc_call = AsyncMock(side_effect=mock_rpc)
+
+        # 481824 is the mainnet SegWit activation height; JAM sends this by default
+        result = await backend.rescan_blockchain(start_height=481824)
+
+        assert result["start_height"] == chain_tip
+
+    @pytest.mark.asyncio
+    async def test_rescan_blockchain_clamps_negative(self, mock_backend: DescriptorWalletBackend):
+        """Negative rescan height is clamped to 0."""
+        backend = mock_backend
+        chain_tip = 100000
+
+        async def mock_rpc(method, params=None, client=None, use_wallet=True):
+            if method == "getblockchaininfo":
+                return {"blocks": chain_tip}
+            assert params == [0], f"Expected [0], got {params}"
+            return {"start_height": 0, "stop_height": chain_tip}
+
+        backend._rpc_call = AsyncMock(side_effect=mock_rpc)
+
+        result = await backend.rescan_blockchain(start_height=-1)
+
+        assert result["start_height"] == 0
 
     def test_can_provide_neutrino_metadata(self):
         """Test that backend can provide Neutrino metadata."""
