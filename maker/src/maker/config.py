@@ -320,6 +320,14 @@ class MakerConfig(WalletConfig):
         ge=0,
         description="Maximum reconnection attempts per directory (0 = unlimited)",
     )
+    directory_startup_timeout: int = Field(
+        default=120,
+        ge=10,
+        description=(
+            "Seconds to keep retrying directory connections at startup before giving up "
+            "and letting the background reconnect task take over (default: 120s)"
+        ),
+    )
 
     model_config = {"frozen": False}
 

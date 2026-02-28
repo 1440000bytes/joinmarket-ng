@@ -25,7 +25,6 @@ from jmcore.protocol import (
     JM_VERSION,
 )
 from jmcore.rate_limiter import RateLimiter
-from jmcore.tasks import parse_directory_address
 from jmcore.tor_control import (
     EphemeralHiddenService,
     TorAuthenticationError,
@@ -559,63 +558,7 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
             onion_host = self.config.onion_host
 
             logger.info("Connecting to directory servers...")
-            for dir_server in self.config.directory_servers:
-                try:
-                    host, port = parse_directory_address(dir_server)
-
-                    # Determine location for handshake:
-                    # If we have an onion_host configured (static or ephemeral),
-                    # advertise it with port
-                    # Otherwise, use NOT-SERVING-ONION
-                    if onion_host:
-                        location = f"{onion_host}:{self.config.onion_serving_port}"
-                    else:
-                        location = "NOT-SERVING-ONION"
-
-                    # Advertise neutrino_compat if our backend can provide extended UTXO metadata.
-                    # This tells Neutrino takers that we can provide scriptpubkey and blockheight.
-                    # Full nodes (Bitcoin Core) can provide this; light clients (Neutrino) cannot.
-                    neutrino_compat = self.backend.can_provide_neutrino_metadata()
-
-                    # Create DirectoryClient with SOCKS config for Tor connections
-                    dir_username: str | None = None
-                    dir_password: str | None = None
-                    if self.config.stream_isolation:
-                        from jmcore.tor_isolation import (
-                            IsolationCategory,
-                            get_isolation_credentials,
-                        )
-
-                        dir_creds = get_isolation_credentials(IsolationCategory.DIRECTORY)
-                        dir_username = dir_creds.username
-                        dir_password = dir_creds.password
-
-                    client = DirectoryClient(
-                        host=host,
-                        port=port,
-                        network=self.config.network.value,
-                        nick_identity=self.nick_identity,
-                        location=location,
-                        socks_host=self.config.socks_host,
-                        socks_port=self.config.socks_port,
-                        timeout=self.config.connection_timeout,
-                        neutrino_compat=neutrino_compat,
-                        socks_username=dir_username,
-                        socks_password=dir_password,
-                    )
-
-                    await client.connect()
-                    node_id = f"{host}:{port}"
-                    self.directory_clients[node_id] = client
-
-                    logger.info(f"Connected to directory: {dir_server}")
-
-                except Exception as e:
-                    logger.error(f"Failed to connect to {dir_server}: {e}")
-
-            if not self.directory_clients:
-                logger.error("Failed to connect to any directory server")
-                return
+            await self._connect_to_directories_with_retry()
 
             # Start hidden service listener if we have an onion address (static or ephemeral)
             if onion_host:

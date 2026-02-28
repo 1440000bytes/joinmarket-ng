@@ -82,6 +82,17 @@
 #   "signetvaxgd3ivj4tml4g6ed3samaa2rscre2gyeyohncmwk4fbesiqd.onion:5222",
 # ]
 
+# How long to keep retrying directory connections at startup (Tor may still be
+# bootstrapping when the maker starts).  After this timeout, the background
+# reconnect task takes over.  Defaults to 120 seconds.
+# directory_startup_timeout = 120
+
+# Background reconnect interval in seconds (default: 300)
+# directory_reconnect_interval = 300
+
+# Max reconnection attempts per directory (0 = unlimited, default: 0)
+# directory_reconnect_max_retries = 0
+
 # ============================================================================
 # Wallet Settings
 # ============================================================================

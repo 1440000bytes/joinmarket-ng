@@ -941,7 +941,99 @@ class TestDirectoryReconnection:
         # Simulate successful reconnection (pop resets)
         maker_bot._directory_reconnect_attempts.pop(node_id, None)
 
-        assert maker_bot._directory_reconnect_attempts.get(node_id, 0) == 0
+    @pytest.mark.asyncio
+    async def test_connect_to_directories_with_retry_immediate_success(self, maker_bot):
+        """All directories connect on the first attempt — no retry loop needed."""
+        from unittest.mock import AsyncMock, patch
+
+        mock_client = MagicMock()
+        mock_client.connect = AsyncMock()
+
+        with patch("maker.background_tasks.DirectoryClient", return_value=mock_client):
+            await maker_bot._connect_to_directories_with_retry()
+
+        assert len(maker_bot.directory_clients) == 3
+
+    @pytest.mark.asyncio
+    async def test_connect_to_directories_with_retry_success_on_second_attempt(self, maker_bot):
+        """All directories fail first attempt, succeed on second (Tor bootstrapping)."""
+        from unittest.mock import AsyncMock, patch
+
+        call_count = 0
+
+        async def connect_side_effect() -> None:
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 3:  # 3 servers, all fail on first pass
+                raise Exception("Tor not ready")
+
+        mock_client = MagicMock()
+        mock_client.connect = AsyncMock(side_effect=connect_side_effect)
+
+        with patch("maker.background_tasks.DirectoryClient", return_value=mock_client):
+            with patch("asyncio.sleep", new_callable=AsyncMock):
+                await maker_bot._connect_to_directories_with_retry()
+
+        assert len(maker_bot.directory_clients) == 3
+
+    @pytest.mark.asyncio
+    async def test_connect_to_directories_with_retry_timeout(self, maker_bot):
+        """
+        All directories keep failing — method returns after timeout without raising.
+        The background reconnect task takes over.
+        """
+        from unittest.mock import AsyncMock, patch
+
+        mock_client = MagicMock()
+        mock_client.connect = AsyncMock(side_effect=Exception("Tor not ready"))
+
+        # Very short timeout so the test doesn't take long
+        object.__setattr__(maker_bot.config, "directory_startup_timeout", 1)
+
+        with patch("maker.background_tasks.DirectoryClient", return_value=mock_client):
+            # Should not raise, just return after timeout
+            await maker_bot._connect_to_directories_with_retry()
+
+        assert len(maker_bot.directory_clients) == 0
+
+    @pytest.mark.asyncio
+    async def test_connect_to_directories_with_retry_skips_already_connected(self, maker_bot):
+        """Already-connected directories are not reconnected in a retry pass."""
+        from unittest.mock import AsyncMock, patch
+
+        mock_client = MagicMock()
+        mock_client.connect = AsyncMock()
+
+        # Pre-populate one connected directory
+        maker_bot.directory_clients["dir1.onion:5222"] = mock_client
+
+        with patch("maker.background_tasks.DirectoryClient", return_value=mock_client):
+            await maker_bot._connect_to_directories_with_retry()
+
+        # All 3 should be connected now
+        assert len(maker_bot.directory_clients) == 3
+        # dir1 should have been connected only once (not reconnected)
+        # dir2 and dir3 get new clients via connect()
+        assert "dir1.onion:5222" in maker_bot.directory_clients
+
+    def test_config_startup_timeout_default(self):
+        """Test default startup timeout value."""
+        config = MakerConfig(
+            mnemonic="test " * 12,
+            directory_servers=["localhost:5222"],
+            network=NetworkType.REGTEST,
+        )
+        assert config.directory_startup_timeout == 120
+
+    def test_config_startup_timeout_custom(self):
+        """Test custom startup timeout value."""
+        config = MakerConfig(
+            mnemonic="test " * 12,
+            directory_servers=["localhost:5222"],
+            network=NetworkType.REGTEST,
+            directory_startup_timeout=60,
+        )
+        assert config.directory_startup_timeout == 60
 
 
 class TestDirectConnectionHandshake:

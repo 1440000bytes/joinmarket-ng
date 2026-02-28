@@ -64,6 +64,8 @@ tor/
 # Allow test tor configuration (but not runtime files)
 !tests/e2e/reference/tor/
 tests/e2e/reference/tor/run/
+# Allow s6 service definitions for tor inside rootfs (these are static config, not runtime data)
+!jmwalletd/rootfs/etc/s6-overlay/s6-rc.d/tor/
 
 # Reference implementation (cloned for testing)
 joinmarket-clientserver/
