@@ -666,6 +666,7 @@ class DescriptorWalletBackend(BlockchainBackend):
         poll_interval: float = 5.0,
         timeout: float | None = None,
         progress_callback: Callable[[float], None] | None = None,
+        startup_grace_period: float = 30.0,
     ) -> bool:
         """
         Wait for any ongoing wallet rescan to complete.
@@ -673,10 +674,19 @@ class DescriptorWalletBackend(BlockchainBackend):
         This is useful after importing descriptors with rescan=True to ensure
         the wallet is fully synced before querying UTXOs.
 
+        There is a race condition between ``start_background_rescan()`` firing
+        the ``rescanblockchain`` RPC and Bitcoin Core updating
+        ``getwalletinfo.scanning``.  To avoid returning prematurely (before
+        the rescan actually starts), we require at least one positive
+        ``in_progress`` observation before we accept ``in_progress == False``
+        as meaning the rescan finished.
+
         Args:
             poll_interval: How often to check rescan status (seconds)
             timeout: Maximum time to wait (seconds). None = wait indefinitely.
             progress_callback: Optional callback(progress) called with progress 0.0-1.0
+            startup_grace_period: How long to wait for the rescan to start before
+                assuming it completed very quickly or was never needed (seconds).
 
         Returns:
             True if rescan completed, False if timed out
@@ -684,19 +694,38 @@ class DescriptorWalletBackend(BlockchainBackend):
         import time
 
         start_time = time.time()
+        saw_in_progress = False
+
+        # Small initial delay to let Bitcoin Core start the rescan
+        await asyncio.sleep(min(poll_interval, 2.0))
 
         while True:
             status = await self.get_rescan_status()
 
-            if status is None or not status.get("in_progress", False):
-                # No rescan in progress, we're done
+            in_progress = status is not None and status.get("in_progress", False)
+
+            if in_progress:
+                saw_in_progress = True
+                progress = status.get("progress", 0)  # type: ignore[union-attr]
+                if progress_callback:
+                    progress_callback(progress)
+                logger.debug(f"Rescan in progress: {progress:.1%}")
+            elif saw_in_progress:
+                # Rescan was running and has now finished
                 return True
-
-            progress = status.get("progress", 0)
-            if progress_callback:
-                progress_callback(progress)
-
-            logger.debug(f"Rescan in progress: {progress:.1%}")
+            else:
+                # Haven't seen the rescan start yet.  Keep polling for a
+                # reasonable grace period so we don't miss a slow start.
+                elapsed = time.time() - start_time
+                if elapsed > startup_grace_period:
+                    # After the grace period without ever seeing a rescan we
+                    # assume it either completed very quickly or was never
+                    # started.
+                    logger.debug(
+                        "Rescan never observed as in-progress after "
+                        f"{elapsed:.0f}s, assuming complete"
+                    )
+                    return True
 
             if timeout is not None and (time.time() - start_time) > timeout:
                 logger.warning(f"Rescan wait timed out after {timeout}s")

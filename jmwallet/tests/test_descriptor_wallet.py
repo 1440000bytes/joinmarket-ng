@@ -986,6 +986,112 @@ class TestBackgroundRescan:
         # Background rescan should be pending
         assert backend.is_background_rescan_pending() is True
 
+    @pytest.mark.asyncio
+    async def test_wait_for_rescan_complete_race_condition(self) -> None:
+        """Test that wait_for_rescan_complete handles the race condition where
+        getwalletinfo.scanning reports False before the rescan has actually started.
+
+        Without the fix, the method would return True immediately on the first
+        poll, before the rescan had even begun.  With the fix, it waits until
+        it observes at least one in_progress=True poll, or a grace period.
+        """
+        backend = DescriptorWalletBackend(wallet_name="test_race")
+        backend._wallet_loaded = True
+
+        # Simulate: first 2 polls return not-scanning (rescan hasn't started),
+        # then 2 polls return in-progress, then back to not-scanning (done).
+        call_count = 0
+
+        async def mock_rpc(
+            method: str,
+            params: list[Any] | None = None,
+            client: Any = None,
+            use_wallet: bool = True,
+        ) -> Any:
+            nonlocal call_count
+            if method == "getwalletinfo":
+                call_count += 1
+                if call_count <= 2:
+                    # Not yet started
+                    return {"scanning": False, "walletname": "test_race"}
+                elif call_count <= 4:
+                    # Scanning in progress
+                    progress = 0.5 if call_count == 3 else 0.9
+                    return {
+                        "scanning": {"duration": 10, "progress": progress},
+                        "walletname": "test_race",
+                    }
+                else:
+                    # Done
+                    return {"scanning": False, "walletname": "test_race"}
+            return {}
+
+        backend._rpc_call = mock_rpc  # type: ignore[method-assign]
+
+        result = await backend.wait_for_rescan_complete(
+            poll_interval=0.01,  # Very fast polling for test
+            timeout=5.0,
+        )
+
+        assert result is True
+        # Should have polled multiple times -- at least 5 (2 not started +
+        # 2 in progress + 1 done).
+        assert call_count >= 5
+
+    @pytest.mark.asyncio
+    async def test_wait_for_rescan_complete_never_starts(self) -> None:
+        """If the rescan never starts within the grace period, wait should
+        return True (assuming it completed very quickly or was never needed)."""
+        backend = DescriptorWalletBackend(wallet_name="test_never_starts")
+        backend._wallet_loaded = True
+
+        async def mock_rpc(
+            method: str,
+            params: list[Any] | None = None,
+            client: Any = None,
+            use_wallet: bool = True,
+        ) -> Any:
+            if method == "getwalletinfo":
+                return {"scanning": False, "walletname": "test_never"}
+            return {}
+
+        backend._rpc_call = mock_rpc  # type: ignore[method-assign]
+
+        result = await backend.wait_for_rescan_complete(
+            poll_interval=0.01,
+            timeout=60.0,
+            startup_grace_period=0.1,  # Short grace period for testing
+        )
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_wait_for_rescan_complete_timeout(self) -> None:
+        """Test that wait_for_rescan_complete respects timeout."""
+        backend = DescriptorWalletBackend(wallet_name="test_timeout")
+        backend._wallet_loaded = True
+
+        async def mock_rpc(
+            method: str,
+            params: list[Any] | None = None,
+            client: Any = None,
+            use_wallet: bool = True,
+        ) -> Any:
+            if method == "getwalletinfo":
+                # Always scanning (never finishes)
+                return {
+                    "scanning": {"duration": 999, "progress": 0.01},
+                    "walletname": "test_timeout",
+                }
+            return {}
+
+        backend._rpc_call = mock_rpc  # type: ignore[method-assign]
+
+        result = await backend.wait_for_rescan_complete(
+            poll_interval=0.01,
+            timeout=0.15,
+        )
+        assert result is False
+
 
 # =============================================================================
 # Fidelity Bond Sync Tests
