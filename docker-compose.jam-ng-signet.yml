@@ -24,6 +24,7 @@ services:
       - DIRECTORY_NODES=signetvaxgd3ivj4tml4g6ed3samaa2rscre2gyeyohncmwk4fbesiqd.onion:5222
       - OBWATCH_URL=http://127.0.0.1:8000
       # Taker fee limits
+      - TAKER__COUNTERPARTY_COUNT=2
       - TAKER__MAX_CJ_FEE_ABS=${JM_MAX_CJ_FEE_ABS:-3000}
       - TAKER__MAX_CJ_FEE_REL=${JM_MAX_CJ_FEE_REL:-0.0004}
     volumes:
