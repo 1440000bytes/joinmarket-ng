@@ -254,6 +254,32 @@ class TestTorControlClient:
             await client.close()
 
     @pytest.mark.asyncio
+    async def test_authenticate_cookie_wrong_length(self, tmp_path: Path) -> None:
+        """Test that a cookie file with wrong length raises TorAuthenticationError."""
+        cookie_path = tmp_path / "control_auth_cookie"
+        cookie_path.write_bytes(b"tooshort")  # 8 bytes, not 32
+
+        with patch("asyncio.open_connection") as mock_open:
+            mock_reader = AsyncMock()
+            mock_writer = MagicMock()
+            mock_writer.close = MagicMock()
+            mock_writer.wait_closed = AsyncMock()
+            mock_open.return_value = (mock_reader, mock_writer)
+
+            client = TorControlClient(
+                control_host="127.0.0.1",
+                control_port=9051,
+                cookie_path=cookie_path,
+            )
+
+            await client.connect()
+
+            with pytest.raises(TorAuthenticationError, match="wrong length"):
+                await client.authenticate()
+
+            await client.close()
+
+    @pytest.mark.asyncio
     async def test_authenticate_cookie_not_found(self) -> None:
         """Test cookie authentication with missing file."""
         with patch("asyncio.open_connection") as mock_open:
@@ -312,7 +338,7 @@ class TestTorControlClient:
     async def test_authenticate_failure(self, tmp_path: Path) -> None:
         """Test authentication failure handling."""
         cookie_path = tmp_path / "control_auth_cookie"
-        cookie_path.write_bytes(b"badcookie" * 4)
+        cookie_path.write_bytes(b"x" * 32)  # 32 bytes (invalid but correct length)
 
         with patch("asyncio.open_connection") as mock_open:
             mock_reader = AsyncMock()
@@ -343,7 +369,7 @@ class TestTorControlClient:
     async def test_create_hidden_service_success(self, tmp_path: Path) -> None:
         """Test successful ephemeral hidden service creation."""
         cookie_path = tmp_path / "control_auth_cookie"
-        cookie_path.write_bytes(b"validcookie" * 4)
+        cookie_path.write_bytes(b"validcookiedatav" * 2)  # exactly 32 bytes
 
         with patch("asyncio.open_connection") as mock_open:
             mock_reader = AsyncMock()
@@ -384,7 +410,7 @@ class TestTorControlClient:
     async def test_create_hidden_service_with_dos_config(self, tmp_path: Path) -> None:
         """Test ephemeral hidden service creation with DoS defense config (Tor 0.4.9.2+)."""
         cookie_path = tmp_path / "control_auth_cookie"
-        cookie_path.write_bytes(b"validcookie" * 4)
+        cookie_path.write_bytes(b"validcookiedatav" * 2)  # exactly 32 bytes
 
         with patch("asyncio.open_connection") as mock_open:
             mock_reader = AsyncMock()
@@ -458,7 +484,7 @@ class TestTorControlClient:
     async def test_create_hidden_service_with_dos_config_old_tor(self, tmp_path: Path) -> None:
         """Test DoS config warning when Tor doesn't support ADD_ONION PoW (0.4.8.x)."""
         cookie_path = tmp_path / "control_auth_cookie"
-        cookie_path.write_bytes(b"validcookie" * 4)
+        cookie_path.write_bytes(b"validcookiedatav" * 2)  # exactly 32 bytes
 
         with patch("asyncio.open_connection") as mock_open:
             mock_reader = AsyncMock()
@@ -525,7 +551,7 @@ class TestTorControlClient:
     async def test_create_hidden_service_failure(self, tmp_path: Path) -> None:
         """Test hidden service creation failure."""
         cookie_path = tmp_path / "control_auth_cookie"
-        cookie_path.write_bytes(b"validcookie" * 4)
+        cookie_path.write_bytes(b"validcookiedatav" * 2)  # exactly 32 bytes
 
         with patch("asyncio.open_connection") as mock_open:
             mock_reader = AsyncMock()
@@ -560,7 +586,7 @@ class TestTorControlClient:
     async def test_get_info(self, tmp_path: Path) -> None:
         """Test GETINFO command."""
         cookie_path = tmp_path / "control_auth_cookie"
-        cookie_path.write_bytes(b"validcookie" * 4)
+        cookie_path.write_bytes(b"validcookiedatav" * 2)  # exactly 32 bytes
 
         with patch("asyncio.open_connection") as mock_open:
             mock_reader = AsyncMock()
@@ -596,7 +622,7 @@ class TestTorControlClient:
     async def test_context_manager(self, tmp_path: Path) -> None:
         """Test async context manager."""
         cookie_path = tmp_path / "control_auth_cookie"
-        cookie_path.write_bytes(b"validcookie" * 4)
+        cookie_path.write_bytes(b"validcookiedatav" * 2)  # exactly 32 bytes
 
         with patch("asyncio.open_connection") as mock_open:
             mock_reader = AsyncMock()
@@ -624,7 +650,7 @@ class TestTorControlClient:
     async def test_delete_hidden_service(self, tmp_path: Path) -> None:
         """Test DEL_ONION command."""
         cookie_path = tmp_path / "control_auth_cookie"
-        cookie_path.write_bytes(b"validcookie" * 4)
+        cookie_path.write_bytes(b"validcookiedatav" * 2)  # exactly 32 bytes
 
         with patch("asyncio.open_connection") as mock_open:
             mock_reader = AsyncMock()
@@ -688,7 +714,7 @@ class TestTorControlClient:
     async def test_set_config(self, tmp_path: Path) -> None:
         """Test SETCONF command."""
         cookie_path = tmp_path / "control_auth_cookie"
-        cookie_path.write_bytes(b"validcookie" * 4)
+        cookie_path.write_bytes(b"validcookiedatav" * 2)  # exactly 32 bytes
 
         with patch("asyncio.open_connection") as mock_open:
             mock_reader = AsyncMock()
@@ -733,7 +759,7 @@ class TestTorControlClient:
     async def test_get_capabilities(self, tmp_path: Path) -> None:
         """Test capability detection."""
         cookie_path = tmp_path / "control_auth_cookie"
-        cookie_path.write_bytes(b"validcookie" * 4)
+        cookie_path.write_bytes(b"validcookiedatav" * 2)  # exactly 32 bytes
 
         with patch("asyncio.open_connection") as mock_open:
             mock_reader = AsyncMock()
@@ -774,7 +800,7 @@ class TestTorControlClient:
     async def test_configure_dos_defense(self, tmp_path: Path) -> None:
         """Test configuring DoS defenses for hidden service."""
         cookie_path = tmp_path / "control_auth_cookie"
-        cookie_path.write_bytes(b"validcookie" * 4)
+        cookie_path.write_bytes(b"validcookiedatav" * 2)  # exactly 32 bytes
 
         with patch("asyncio.open_connection") as mock_open:
             mock_reader = AsyncMock()

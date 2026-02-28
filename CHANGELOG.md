@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Maker Tor hidden service setup reliability**: The maker now reliably obtains an ephemeral `.onion` address when Tor is configured.
+  - **`jm-tor` Docker healthcheck**: The previous healthcheck (`test -f .../hostname`) was logically equivalent to only checking the `hostname` file due to shell operator precedence — it never actually verified Tor had bootstrapped or that the control auth cookie was valid. The new healthcheck verifies both the `hostname` file exists **and** the `control_auth_cookie` is exactly 32 bytes (the length written by Tor only after full initialization).
+  - **Cookie validation in `TorControlClient`**: `_authenticate_cookie()` now explicitly validates the cookie file is exactly 32 bytes before sending the `AUTHENTICATE` command. A 0-byte or partial file (written by Tor during startup) raises `TorAuthenticationError` with a clear message instead of sending an empty hex string that Tor rejects with the cryptic "Got authentication cookie with wrong length (0)" message.
+  - **Retry logic in `MakerBot`**: `_setup_tor_hidden_service()` now retries up to 5 times (3s delay) on `TorAuthenticationError`, covering any residual race between the Docker healthcheck passing and the maker process reading the cookie. All errors (auth and non-auth) fall back gracefully to `NOT-SERVING-ONION` with an informative warning rather than crashing.
+
 ### Added
 
 - **Trustless fidelity bond verification across all blockchain backends**: Replaced mempool.space-dependent bond verification with a unified `BlockchainBackend.verify_bonds()` interface implemented for all backends.

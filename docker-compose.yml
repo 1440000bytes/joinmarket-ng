@@ -493,10 +493,12 @@ services:
       - TOR__SOCKS_PORT=9050
       - TOR__CONTROL_HOST=jm-tor
       - TOR__CONTROL_PORT=9051
+      - TOR__COOKIE_PATH=/var/lib/tor/control_auth_cookie
       - MAKER__ONION_SERVING_HOST=0.0.0.0
       - MAKER__ONION_SERVING_PORT=5000
     volumes:
       - maker1-data:/home/jm/.joinmarket-ng
+      - tor-data:/var/lib/tor:ro
     networks:
       - jm-network
     depends_on:
@@ -553,10 +555,12 @@ services:
       - TOR__SOCKS_PORT=9050
       - TOR__CONTROL_HOST=jm-tor
       - TOR__CONTROL_PORT=9051
+      - TOR__COOKIE_PATH=/var/lib/tor/control_auth_cookie
       - MAKER__ONION_SERVING_HOST=0.0.0.0
       - MAKER__ONION_SERVING_PORT=5000
     volumes:
       - maker2-data:/home/jm/.joinmarket-ng
+      - tor-data:/var/lib/tor:ro
     networks:
       - jm-network
     depends_on:
@@ -773,9 +777,9 @@ services:
         max-size: "10m"
         max-file: "3"
     healthcheck:
-      # Check both that the hostname file exists AND that Tor has bootstrapped
-      # by verifying the control socket can report circuit establishment
-      test: ["CMD-SHELL", "test -f /var/lib/tor/directory/hostname && grep -q 'Bootstrapped 100%' /var/log/tor/notices.log 2>/dev/null || test -f /var/lib/tor/directory/hostname"]
+      # Verify Tor has bootstrapped AND the cookie file is fully written (32 bytes).
+      # The cookie file is required by makers/takers to authenticate to the control port.
+      test: ["CMD-SHELL", "test -f /var/lib/tor/directory/hostname && test $(wc -c < /var/lib/tor/control_auth_cookie 2>/dev/null || echo 0) -eq 32"]
       interval: 10s
       timeout: 10s
       retries: 60

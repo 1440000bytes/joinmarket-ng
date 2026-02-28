@@ -425,7 +425,6 @@ class TorControlClient:
 
         try:
             cookie_data = self.cookie_path.read_bytes()
-            cookie_hex = cookie_data.hex()
         except FileNotFoundError as e:
             raise TorAuthenticationError(f"Cookie file not found: {self.cookie_path}") from e
         except PermissionError as e:
@@ -433,6 +432,17 @@ class TorControlClient:
                 f"Permission denied reading cookie file: {self.cookie_path}"
             ) from e
 
+        # Tor auth cookies are always exactly 32 bytes. A shorter cookie (e.g. 0 bytes)
+        # means the file was partially written — Tor will reject it with "wrong length".
+        expected_cookie_bytes = 32
+        if len(cookie_data) != expected_cookie_bytes:
+            raise TorAuthenticationError(
+                f"Cookie file has wrong length ({len(cookie_data)}), "
+                f"expected {expected_cookie_bytes}. "
+                f"Tor may still be starting up: {self.cookie_path}"
+            )
+
+        cookie_hex = cookie_data.hex()
         try:
             responses = await self._command(f"AUTHENTICATE {cookie_hex}")
             self._check_success(responses)

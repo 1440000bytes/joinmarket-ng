@@ -28,6 +28,7 @@ from jmcore.rate_limiter import RateLimiter
 from jmcore.tasks import parse_directory_address
 from jmcore.tor_control import (
     EphemeralHiddenService,
+    TorAuthenticationError,
     TorControlClient,
     TorControlError,
 )
@@ -159,6 +160,48 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
             logger.debug("Tor control port integration disabled")
             return None
 
+        # Retry on transient auth failures (e.g. cookie file not yet fully written by Tor)
+        max_auth_retries = 5
+        auth_retry_delay = 3.0
+        last_auth_error: TorAuthenticationError | None = None
+        for attempt in range(1, max_auth_retries + 1):
+            try:
+                return await self._try_setup_tor_hidden_service()
+            except TorAuthenticationError as e:
+                last_auth_error = e
+                logger.warning(
+                    f"Tor authentication failed (attempt {attempt}/{max_auth_retries}): {e} "
+                    f"— retrying in {auth_retry_delay}s..."
+                )
+                await asyncio.sleep(auth_retry_delay)
+            except TorControlError as e:
+                # Non-auth errors are not retried — log and fall back gracefully
+                logger.warning(
+                    f"Could not create ephemeral hidden service via Tor control port: {e}\n"
+                    f"  Tor control configured: "
+                    f"{self.config.tor_control.host}:{self.config.tor_control.port}\n"
+                    f"  Cookie path: {self.config.tor_control.cookie_path}\n"
+                    f"  → Maker will advertise 'NOT-SERVING-ONION' and rely on directory routing."
+                )
+                return None
+
+        # All retries exhausted — log warning and fall back to NOT-SERVING-ONION
+        logger.warning(
+            f"Could not authenticate to Tor control port after {max_auth_retries} attempts: "
+            f"{last_auth_error}\n"
+            f"  Tor control configured: "
+            f"{self.config.tor_control.host}:{self.config.tor_control.port}\n"
+            f"  Cookie path: {self.config.tor_control.cookie_path}\n"
+            f"  → Maker will advertise 'NOT-SERVING-ONION' and rely on directory routing.\n"
+            f"  → Ensure the Tor cookie file is readable and Tor has fully started."
+        )
+        return None
+
+    async def _try_setup_tor_hidden_service(self) -> str | None:
+        """
+        Single attempt to create an ephemeral hidden service via Tor control port.
+        Raises TorControlError (including TorAuthenticationError) on failure.
+        """
         try:
             logger.info(
                 f"Connecting to Tor control port at "
@@ -236,29 +279,26 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
 
             return self._ephemeral_hidden_service.onion_address
 
-        except TorControlError as e:
-            logger.warning(
-                f"Could not create ephemeral hidden service via Tor control port: {e}\n"
-                f"  Tor control configured: "
-                f"{self.config.tor_control.host}:{self.config.tor_control.port}\n"
-                f"  Cookie path: {self.config.tor_control.cookie_path}\n"
-                f"  → Maker will advertise 'NOT-SERVING-ONION' and rely on directory routing.\n"
-                f"  → For better privacy, ensure Tor is running with control port enabled:\n"
-                f"     ControlPort {self.config.tor_control.port}\n"
-                f"     CookieAuthentication 1"
-            )
-            # Clean up partial connection
+        except TorControlError:
+            # Clean up partial connection before re-raising
             if self._tor_control:
                 await self._tor_control.close()
                 self._tor_control = None
-            return None
+            raise
 
     async def _cleanup_tor_hidden_service(self) -> None:
-        """Clean up Tor control connection (hidden service is auto-removed)."""
+        """Remove the ephemeral hidden service and close the Tor control connection."""
+        if self._ephemeral_hidden_service and self._tor_control:
+            try:
+                await self._tor_control.delete_ephemeral_hidden_service(
+                    self._ephemeral_hidden_service.service_id
+                )
+                logger.info("Removed ephemeral Tor hidden service")
+            except TorControlError as e:
+                logger.warning(f"Failed to remove ephemeral hidden service: {e}")
         if self._tor_control:
             try:
                 await self._tor_control.close()
-                logger.debug("Closed Tor control connection")
             except Exception as e:
                 logger.warning(f"Error closing Tor control connection: {e}")
             self._tor_control = None
