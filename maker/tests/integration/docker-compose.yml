@@ -56,8 +56,10 @@ services:
     container_name: jm-directory-test
     restart: unless-stopped
     environment:
-      - NETWORK=regtest
-      - LOG_LEVEL=DEBUG
+      - NETWORK_CONFIG__NETWORK=regtest
+      - DIRECTORY_SERVER__HOST=0.0.0.0
+      - DIRECTORY_SERVER__PORT=5222
+      - LOGGING__LEVEL=DEBUG
     ports:
       - "5222:5222"
     networks:

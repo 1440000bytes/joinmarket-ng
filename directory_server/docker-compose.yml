@@ -6,13 +6,13 @@ services:
     #   dockerfile: directory_server/Dockerfile
     container_name: joinmarket_directory_server
     environment:
-      - NETWORK=mainnet
-      - HOST=0.0.0.0
-      - PORT=5222
-      - MAX_PEERS=10000
-      - LOG_LEVEL=INFO
-      - HEALTH_CHECK_HOST=0.0.0.0
-      - HEALTH_CHECK_PORT=8080
+      - NETWORK_CONFIG__NETWORK=mainnet
+      - DIRECTORY_SERVER__HOST=0.0.0.0
+      - DIRECTORY_SERVER__PORT=5222
+      - DIRECTORY_SERVER__MAX_PEERS=10000
+      - DIRECTORY_SERVER__HEALTH_CHECK_HOST=0.0.0.0
+      - DIRECTORY_SERVER__HEALTH_CHECK_PORT=8080
+      - LOGGING__LEVEL=INFO
     networks:
       - joinmarket_directory_internal
     restart: always

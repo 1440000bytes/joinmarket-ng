@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Directory server ignoring `LOGGING__LEVEL` env var**: The standalone `directory_server/docker-compose.yml` and `maker/tests/integration/docker-compose.yml` used flat env var names (e.g., `LOG_LEVEL`, `NETWORK`) that are silently ignored by pydantic-settings. Replaced with the correct nested delimiter form (e.g., `LOGGING__LEVEL`, `NETWORK_CONFIG__NETWORK`) matching `config.toml.template`.
+
+- **Removed `.env.example` files from `directory_server/` and `orderbook_watcher/`**: These files documented incorrect flat env var names. Configuration is now documented directly in `docker-compose.yml` using the config file syntax with `__` delimiter, consistent with pydantic-settings.
+
 - **`TOR__COOKIE_PATH` env var not applied to maker**: `MakerConfig.tor_control` was using `default_factory=TorControlConfig` which constructs a blank config ignoring all env vars, so `cookie_path` was always `None` even when `TOR__COOKIE_PATH` was set. Changed `default_factory` to `create_tor_control_config_from_env` so the Tor control config is always populated from the environment on startup.
 
 - **Maker Tor hidden service setup reliability**: The maker now reliably obtains an ephemeral `.onion` address when Tor is configured.
