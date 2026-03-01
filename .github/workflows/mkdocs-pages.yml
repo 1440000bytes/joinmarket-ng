@@ -3,7 +3,7 @@ name: Build and deploy MkDocs documentation
 on:
   push:
     branches:
-      - docu-centralization
+      - main
   workflow_dispatch:
 
 permissions:
