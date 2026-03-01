@@ -428,7 +428,7 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
             # If a specific bond is selected in config, use it; otherwise use the best one
             if self.config.no_fidelity_bond:
                 self.fidelity_bond = None
-                logger.info("Fidelity bond disabled (offers will have no bond proof)")
+                logger.warning("Fidelity bond disabled (offers will have no bond proof)")
             elif self.config.selected_fidelity_bond:
                 # User specified a specific bond
                 sel_txid, sel_vout = self.config.selected_fidelity_bond
@@ -458,7 +458,7 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
                     f"bond_value={self.fidelity_bond.bond_value:,}"
                 )
             else:
-                logger.info("No fidelity bond found (offers will have no bond proof)")
+                logger.warning("No fidelity bond found (offers will have no bond proof)")
 
             logger.info("Creating offers...")
             self.current_offers = await self.offer_manager.create_offers()
