@@ -275,3 +275,66 @@ class TestResponseHeaders:
         )
         # CORS should allow all origins
         assert resp.headers.get("access-control-allow-origin") == "*"
+
+
+class TestSessionOfferList:
+    """Verify that the session endpoint reads offer_list from the maker reference."""
+
+    def test_offer_list_from_maker_ref(self, authed_client: tuple[TestClient, str]) -> None:
+        """When a maker is running, the session should return its offers."""
+        client, token = authed_client
+        state = get_daemon_state()
+
+        # Simulate a running maker with current_offers.
+        maker = MagicMock()
+        offer = MagicMock()
+        offer.oid = 0
+        offer.ordertype = "sw0absoffer"
+        offer.minsize = 100_000
+        offer.maxsize = 50_000_000
+        offer.txfee = 0
+        offer.cjfee = "250"
+        maker.current_offers = [offer]
+
+        state._maker_ref = maker
+        state.maker_running = True
+
+        resp = client.get("/api/v1/session", headers={"Authorization": f"Bearer {token}"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["maker_running"] is True
+        assert data["offer_list"] is not None
+        assert len(data["offer_list"]) == 1
+        assert data["offer_list"][0]["ordertype"] == "sw0absoffer"
+        assert data["offer_list"][0]["cjfee"] == "250"
+        assert data["offer_list"][0]["minsize"] == 100_000
+
+    def test_offer_list_none_without_maker(self, authed_client: tuple[TestClient, str]) -> None:
+        """Without a maker reference, offer_list should be None."""
+        client, token = authed_client
+        state = get_daemon_state()
+        state._maker_ref = None
+        state.offer_list = None
+
+        resp = client.get("/api/v1/session", headers={"Authorization": f"Bearer {token}"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["offer_list"] is None
+
+    def test_offer_list_fallback_to_state(self, authed_client: tuple[TestClient, str]) -> None:
+        """If maker ref has no offers, fall back to state.offer_list."""
+        client, token = authed_client
+        state = get_daemon_state()
+
+        maker = MagicMock()
+        maker.current_offers = []
+        state._maker_ref = maker
+        state.maker_running = True
+        state.offer_list = [{"oid": 0, "ordertype": "sw0absoffer", "cjfee": "100"}]
+
+        resp = client.get("/api/v1/session", headers={"Authorization": f"Bearer {token}"})
+        assert resp.status_code == 200
+        data = resp.json()
+        # Falls back to state.offer_list when maker has no offers.
+        assert data["offer_list"] is not None
+        assert data["offer_list"][0]["cjfee"] == "100"

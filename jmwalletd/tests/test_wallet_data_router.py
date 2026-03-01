@@ -56,7 +56,79 @@ class TestWalletDisplay:
         ws.sync.assert_awaited_once()
 
 
-class TestWalletUtxos:
+class TestWalletDisplayWithHistory:
+    """Verify that the display endpoint passes history data for address classification."""
+
+    @patch("jmwalletd.routers.wallet_data.get_address_history_types")
+    @patch("jmwalletd.routers.wallet_data.get_used_addresses")
+    def test_passes_history_data_to_address_info(
+        self,
+        mock_get_used: MagicMock,
+        mock_get_history: MagicMock,
+        authed_client: tuple[TestClient, str],
+    ) -> None:
+        """The display endpoint should pass used_addresses and history_addresses."""
+        client, token = authed_client
+        state = get_daemon_state()
+        ws = state.wallet_service
+
+        ws.mixdepth_count = 5
+        ws.get_balance = AsyncMock(return_value=100_000_000)
+        ws.get_available_balance = AsyncMock(return_value=90_000_000)
+        ws.get_address_info_for_mixdepth = Mock(return_value=[])
+
+        used = {"addr1", "addr2"}
+        history = {"addr1": "cj_out", "addr2": "change"}
+        mock_get_used.return_value = used
+        mock_get_history.return_value = history
+
+        resp = client.get(
+            "/api/v1/wallet/test_wallet.jmdat/display",
+            headers=_auth_headers(token),
+        )
+        assert resp.status_code == 200
+
+        # Verify that history helpers were called with the data dir.
+        mock_get_used.assert_called_once_with(state.data_dir)
+        mock_get_history.assert_called_once_with(state.data_dir)
+
+        # Verify get_address_info_for_mixdepth was called with history data.
+        # It's called once for each (mixdepth, change) pair: 5 * 2 = 10 calls.
+        assert ws.get_address_info_for_mixdepth.call_count == 10
+        for call in ws.get_address_info_for_mixdepth.call_args_list:
+            _, kwargs = call
+            assert kwargs.get("used_addresses") == used
+            assert kwargs.get("history_addresses") == history
+
+    @patch("jmwalletd.routers.wallet_data.get_address_history_types")
+    @patch("jmwalletd.routers.wallet_data.get_used_addresses")
+    def test_empty_history_still_works(
+        self,
+        mock_get_used: MagicMock,
+        mock_get_history: MagicMock,
+        authed_client: tuple[TestClient, str],
+    ) -> None:
+        """With no history, the display endpoint should still work."""
+        client, token = authed_client
+        state = get_daemon_state()
+        ws = state.wallet_service
+
+        ws.mixdepth_count = 5
+        ws.get_balance = AsyncMock(return_value=0)
+        ws.get_available_balance = AsyncMock(return_value=0)
+        ws.get_address_info_for_mixdepth = Mock(return_value=[])
+
+        mock_get_used.return_value = set()
+        mock_get_history.return_value = {}
+
+        resp = client.get(
+            "/api/v1/wallet/test_wallet.jmdat/display",
+            headers=_auth_headers(token),
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["walletname"] == "test_wallet.jmdat"
+
     def test_requires_auth(self, authed_client: tuple[TestClient, str]) -> None:
         client, _ = authed_client
         resp = client.get("/api/v1/wallet/test_wallet.jmdat/utxos")

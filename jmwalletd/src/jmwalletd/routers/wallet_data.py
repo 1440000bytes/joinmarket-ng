@@ -9,6 +9,7 @@ from typing import Any
 from fastapi import APIRouter, Depends
 from loguru import logger
 
+from jmwallet.history import get_address_history_types, get_used_addresses
 from jmwallet.wallet.bond_registry import create_bond_info, load_registry, save_registry
 from jmwallet.wallet.constants import FIDELITY_BOND_BRANCH
 from jmwalletd.deps import get_daemon_state, require_auth
@@ -56,6 +57,12 @@ async def wallet_display(
     ws = state.wallet_service
     await ws.sync()
 
+    # Load history data so address statuses (cj-out, change, etc.) are
+    # classified correctly.  Without this, all funded internal addresses
+    # fall through to the "non-cj-change" default.
+    used_addresses = get_used_addresses(state.data_dir)
+    history_addresses = get_address_history_types(state.data_dir)
+
     accounts: list[WalletDisplayAccount] = []
     total_balance = 0
     total_available = 0
@@ -68,7 +75,12 @@ async def wallet_display(
         branches: list[WalletDisplayBranch] = []
         branch_defs = [(0, "external addresses\tm/84'"), (1, "internal addresses\tm/84'")]
         for change, branch_label in branch_defs:
-            address_infos = ws.get_address_info_for_mixdepth(mixdepth, change)
+            address_infos = ws.get_address_info_for_mixdepth(
+                mixdepth,
+                change,
+                used_addresses=used_addresses,
+                history_addresses=history_addresses,
+            )
             branch_balance = sum(ai.balance for ai in address_infos)
 
             entries: list[WalletDisplayEntry] = []

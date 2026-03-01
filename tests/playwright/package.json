@@ -1,0 +1,16 @@
+{
+  "name": "joinmarket-ng-playwright-tests",
+  "private": true,
+  "description": "Playwright E2E tests for JoinMarket NG (jam-ng frontend + jmwalletd backend)",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "test:ui": "playwright test --ui",
+    "test:debug": "playwright test --debug",
+    "install-browsers": "playwright install chromium"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.2",
+    "@types/node": "^22.0.0"
+  }
+}

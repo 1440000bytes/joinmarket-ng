@@ -15,15 +15,20 @@ from loguru import logger
 _backend_instance: Any = None
 
 
-async def get_backend(data_dir: Path) -> Any:
+async def get_backend(data_dir: Path, force_new: bool = False) -> Any:
     """Return a shared blockchain backend instance.
 
     Creates the backend on first call based on the JoinMarket settings,
     then caches it for subsequent calls.
+
+    Args:
+        data_dir: Path to data directory (unused by current backends but kept for compat)
+        force_new: If True, create and return a new instance (do not cache it).
+                   Useful for tasks like Maker/Taker that close the backend on exit.
     """
     global _backend_instance
 
-    if _backend_instance is not None:
+    if _backend_instance is not None and not force_new:
         return _backend_instance
 
     from jmcore.settings import get_settings
@@ -31,7 +36,10 @@ async def get_backend(data_dir: Path) -> Any:
     settings = get_settings()
     backend_type = settings.bitcoin.backend_type
 
-    logger.info("Initializing blockchain backend: {}", backend_type)
+    logger.info(
+        f"Initializing blockchain backend: {backend_type}"
+        + (" (new instance)" if force_new else "")
+    )
 
     rpc_url = settings.bitcoin.rpc_url
     rpc_user = settings.bitcoin.rpc_user
@@ -43,18 +51,21 @@ async def get_backend(data_dir: Path) -> Any:
         else str(raw_password)
     )
 
+    instance = None
+
     if backend_type == "descriptor_wallet":
         from jmwallet.backends.descriptor_wallet import DescriptorWalletBackend
 
-        _backend_instance = DescriptorWalletBackend(
+        instance = DescriptorWalletBackend(
             rpc_url=rpc_url,
             rpc_user=rpc_user,
             rpc_password=rpc_password,
+            wallet_name=settings.bitcoin.descriptor_wallet_name,
         )
     elif backend_type == "scantxoutset":
         from jmwallet.backends.bitcoin_core import BitcoinCoreBackend
 
-        _backend_instance = BitcoinCoreBackend(
+        instance = BitcoinCoreBackend(
             rpc_url=rpc_url,
             rpc_user=rpc_user,
             rpc_password=rpc_password,
@@ -65,7 +76,7 @@ async def get_backend(data_dir: Path) -> Any:
         neutrino_url = getattr(settings.bitcoin, "neutrino_url", rpc_url)
         network = settings.network_config.network.value
 
-        _backend_instance = NeutrinoBackend(
+        instance = NeutrinoBackend(
             neutrino_url=neutrino_url,
             network=network,
         )
@@ -73,6 +84,10 @@ async def get_backend(data_dir: Path) -> Any:
         msg = f"Unknown backend type: {backend_type}"
         raise ValueError(msg)
 
+    if force_new:
+        return instance
+
+    _backend_instance = instance
     return _backend_instance
 
 

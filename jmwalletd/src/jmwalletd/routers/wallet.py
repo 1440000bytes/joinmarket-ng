@@ -47,6 +47,41 @@ from jmwalletd.wallet_ops import (
     recover_wallet,
 )
 
+
+def _get_offer_list_from_maker(
+    state: DaemonState,
+) -> list[dict[str, str | int | float]] | None:
+    """Read the current offer list directly from the running maker bot.
+
+    ``state.offer_list`` is populated in ``_run_maker`` **after**
+    ``maker.start()`` returns, but that call blocks for the lifetime of
+    the maker (it awaits ``asyncio.gather(*listen_tasks)``).  As a result,
+    the assignment was unreachable and the frontend never received offers.
+
+    This helper reads ``current_offers`` from the live maker reference,
+    which is available as soon as offers are created during ``start()``.
+    """
+    maker = state._maker_ref
+    if maker is None:
+        return None
+
+    offers = getattr(maker, "current_offers", None)
+    if not offers:
+        return None
+
+    return [
+        {
+            "oid": getattr(o, "oid", 0),
+            "ordertype": str(getattr(o, "ordertype", "")),
+            "minsize": getattr(o, "minsize", 0),
+            "maxsize": getattr(o, "maxsize", 0),
+            "txfee": getattr(o, "txfee", 0),
+            "cjfee": str(getattr(o, "cjfee", "")),
+        }
+        for o in offers
+    ]
+
+
 router = APIRouter()
 
 
@@ -95,8 +130,14 @@ async def get_session(
     # Populate extra fields only when authenticated.
     if state.wallet_loaded and token_valid:
         resp.schedule = state.current_schedule
-        resp.offer_list = state.offer_list
         resp.nickname = state.nickname
+
+        # Read offer_list directly from the running maker bot so that the
+        # frontend receives it as soon as offers are created (the old path
+        # through state.offer_list was unreachable because maker.start()
+        # blocks until shutdown).
+        offer_list = _get_offer_list_from_maker(state)
+        resp.offer_list = offer_list if offer_list else state.offer_list
 
         try:
             backend = state.wallet_service.backend

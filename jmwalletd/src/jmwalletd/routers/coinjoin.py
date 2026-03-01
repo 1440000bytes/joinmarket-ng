@@ -98,7 +98,7 @@ async def do_coinjoin(
 
         async def _run_coinjoin() -> None:
             try:
-                backend = await get_backend(state.data_dir)
+                backend = await get_backend(state.data_dir, force_new=True)
                 config = TakerConfig(
                     mnemonic=ws.mnemonic,  # type: ignore[arg-type]
                     mixdepth=body.mixdepth,
@@ -159,7 +159,7 @@ async def run_schedule(
         async def _run_tumbler() -> None:
             try:
                 ws = state.wallet_service
-                backend = await get_backend(state.data_dir)
+                backend = await get_backend(state.data_dir, force_new=True)
                 config = TakerConfig(
                     mnemonic=ws.mnemonic,  # type: ignore[arg-type]
                 )
@@ -276,7 +276,7 @@ async def start_maker(
         async def _run_maker() -> None:
             try:
                 ws = state.wallet_service
-                backend = await get_backend(state.data_dir)
+                backend = await get_backend(state.data_dir, force_new=True)
                 jm_settings = get_settings()
                 config = MakerConfig(
                     mnemonic=ws.mnemonic,  # type: ignore[arg-type]
@@ -300,20 +300,10 @@ async def start_maker(
                 state.nickname = maker.nick
 
                 await maker.start()
-
-                # After start, collect the current offers for the session endpoint.
-                if hasattr(maker, "current_offers"):
-                    state.offer_list = [
-                        {
-                            "oid": getattr(o, "oid", 0),
-                            "ordertype": str(getattr(o, "ordertype", "")),
-                            "minsize": getattr(o, "minsize", 0),
-                            "maxsize": getattr(o, "maxsize", 0),
-                            "txfee": getattr(o, "txfee", 0),
-                            "cjfee": str(getattr(o, "cjfee", "")),
-                        }
-                        for o in maker.current_offers
-                    ]
+                # NOTE: maker.start() blocks until shutdown (it awaits
+                # asyncio.gather on listen tasks).  The session endpoint
+                # now reads current_offers directly from the maker ref,
+                # so there is nothing to do here.
             except Exception:
                 logger.exception("Maker failed")
             finally:

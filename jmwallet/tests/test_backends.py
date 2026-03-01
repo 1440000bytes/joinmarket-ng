@@ -71,6 +71,72 @@ async def test_bitcoin_core_backend_integration():
         await backend.close()
 
 
+class TestBackendCloseReuse:
+    """Unit tests verifying that backends are reusable after close()."""
+
+    @pytest.mark.asyncio
+    async def test_descriptor_wallet_backend_reusable_after_close(self):
+        """Closing a DescriptorWalletBackend should produce fresh httpx clients."""
+        from jmwallet.backends.descriptor_wallet import DescriptorWalletBackend
+
+        backend = DescriptorWalletBackend()
+        original_client = backend.client
+        original_import_client = backend._import_client
+
+        await backend.close()
+
+        # Clients must have been replaced
+        assert backend.client is not original_client
+        assert backend._import_client is not original_import_client
+        # New clients must be open (not closed)
+        assert not backend.client.is_closed
+        assert not backend._import_client.is_closed
+        # Wallet state flags must be reset
+        assert backend._wallet_loaded is False
+        assert backend._descriptors_imported is False
+
+        # Clean up the new clients
+        await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_bitcoin_core_backend_reusable_after_close(self):
+        """Closing a BitcoinCoreBackend should produce fresh httpx clients."""
+        backend = BitcoinCoreBackend(
+            rpc_url="http://localhost:18443", rpc_user="test", rpc_password="test"
+        )
+        original_client = backend.client
+        original_scan_client = backend._scan_client
+
+        await backend.close()
+
+        assert backend.client is not original_client
+        assert backend._scan_client is not original_scan_client
+        assert not backend.client.is_closed
+        assert not backend._scan_client.is_closed
+
+        await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_neutrino_backend_reusable_after_close(self):
+        """Closing a NeutrinoBackend should produce a fresh httpx client and reset state."""
+        backend = NeutrinoBackend(neutrino_url="http://localhost:8080")
+        # Simulate some accumulated state
+        backend._watched_addresses = {"bcrt1qtest"}
+        backend._initial_rescan_done = True
+        backend._synced = True
+        original_client = backend.client
+
+        await backend.close()
+
+        assert backend.client is not original_client
+        assert not backend.client.is_closed
+        assert backend._watched_addresses == set()
+        assert backend._initial_rescan_done is False
+        assert backend._synced is False
+
+        await backend.close()
+
+
 class TestBitcoinCoreBackendUnit:
     """Unit tests for BitcoinCoreBackend (no Docker required)."""
 

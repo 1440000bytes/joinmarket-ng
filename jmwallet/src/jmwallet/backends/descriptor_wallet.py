@@ -917,6 +917,126 @@ class DescriptorWalletBackend(BlockchainBackend):
         """
         return await self.get_utxos([])
 
+    async def scan_descriptors(self, _descriptors: list[Any]) -> dict[str, Any] | None:
+        """
+        Return all wallet UTXOs in the format expected by ``_sync_all_with_descriptors``.
+
+        Rather than performing a slow ``scantxoutset`` (as the
+        ``ScantxoutsetBackend`` does), we use Bitcoin Core's descriptor wallet
+        ``listunspent`` RPC which:
+
+        * Returns every UTXO tracked by *this* wallet instantly.
+        * Already includes a ``desc`` field with the derivation path in the
+          form ``wpkh([fingerprint/change/index]pubkey)#checksum``, which is
+          exactly what ``_parse_descriptor_path`` in ``sync.py`` expects.
+        * Has no per-mixdepth address-window limit — all historical addresses
+          (regardless of index) are automatically tracked.
+
+        The ``_descriptors`` argument (the xpub-based descriptor list built by
+        ``sync.py``) is intentionally ignored; the wallet already knows which
+        addresses to watch.
+        """
+        if not self._wallet_loaded:
+            logger.warning("scan_descriptors: wallet not loaded")
+            return None
+
+        try:
+            tip_height = await self.get_block_height()
+
+            # listunspent without an address filter returns ALL wallet UTXOs.
+            # By default, listunspent excludes locked UTXOs. We must query both
+            # unlocked and locked UTXOs to get the complete state.
+
+            # 1. Get unlocked UTXOs (default behavior)
+            raw_utxos: list[dict[str, Any]] = await self._rpc_call(
+                "listunspent",
+                [0, 9_999_999],
+            )
+
+            # 2. Get locked UTXOs via listlockunspent
+            # (since listunspent locked=True is not supported in all versions)
+            try:
+                locked_outpoints = await self._rpc_call("listlockunspent")
+                if locked_outpoints:
+                    logger.debug(f"Found {len(locked_outpoints)} locked UTXOs, fetching details...")
+                    # Fetch details for each locked UTXO
+                    for outpoint in locked_outpoints:
+                        txid = outpoint["txid"]
+                        vout = outpoint["vout"]
+
+                        # Try to get transaction details from wallet or blockchain
+                        # We use gettransaction to get the 'details' part including address/category
+                        # or gettxout for raw info
+
+                        # Try gettxout first as it's lighter
+                        txout = await self._rpc_call(
+                            "gettxout", [txid, vout, True], use_wallet=False
+                        )
+                        if txout:
+                            # Reconstruct UTXO dict to match listunspent format
+                            raw_utxos.append(
+                                {
+                                    "txid": txid,
+                                    "vout": vout,
+                                    "amount": txout["value"],
+                                    "scriptPubKey": txout["scriptPubKey"]["hex"],
+                                    "confirmations": txout["confirmations"],
+                                    # We might miss 'desc' here if gettxout doesn't
+                                    # provide it (it doesn't).
+                                    # However, listunspent provides 'desc'.
+                                    # If we need 'desc', we might need to use
+                                    # getaddressinfo or gettransaction?
+                                    # DescriptorWalletBackend relies on 'desc'
+                                    # for _parse_descriptor_path?
+                                    # Yes, sync.py needs 'desc'.
+                                    # If gettxout doesn't give desc, we have a problem.
+                                    # But wait, if it's in the wallet, gettransaction might help?
+                                    "desc": "",  # Placeholder, might break sync if empty
+                                }
+                            )
+
+                            # Correction: gettxout does NOT return descriptor.
+                            # We need the descriptor for sync.py to identify the mixdepth/index.
+                            # Only listunspent returns 'desc' reliably for descriptor wallets.
+                            # If we can't get 'desc' for locked UTXOs, we can't
+                            # track them correctly.
+
+                            # Fallback: Can we unlock them temporarily? No, race condition.
+                            # Can we deduce 'desc'? No.
+
+                            # Actually, if we use getaddressinfo on the address?
+                            # txout["scriptPubKey"]["address"] gives address.
+                            # getaddressinfo(address) -> "desc"
+                            if "address" in txout["scriptPubKey"]:
+                                addr = txout["scriptPubKey"]["address"]
+                                addr_info = await self._rpc_call("getaddressinfo", [addr])
+                                if "desc" in addr_info:
+                                    raw_utxos[-1]["desc"] = addr_info["desc"]
+            except Exception as e:
+                logger.warning(f"Failed to fetch locked UTXOs: {e}")
+
+            unspents: list[dict[str, Any]] = []
+            for u in raw_utxos:
+                confirmations = u.get("confirmations", 0)
+                height = (tip_height - confirmations + 1) if confirmations > 0 else 0
+                unspents.append(
+                    {
+                        "txid": u["txid"],
+                        "vout": u["vout"],
+                        "amount": u["amount"],
+                        "scriptPubKey": u.get("scriptPubKey", ""),
+                        "height": height,
+                        "desc": u.get("desc", ""),
+                    }
+                )
+
+            logger.debug(f"scan_descriptors: returning {len(unspents)} UTXOs via listunspent")
+            return {"success": True, "unspents": unspents}
+
+        except Exception as e:
+            logger.error(f"scan_descriptors failed: {e}")
+            return None
+
     async def get_address_balance(self, address: str) -> int:
         """Get balance for an address in satoshis."""
         utxos = await self.get_utxos([address])
@@ -1326,9 +1446,19 @@ class DescriptorWalletBackend(BlockchainBackend):
         return True
 
     async def close(self) -> None:
-        """Close backend connections."""
+        """Close backend connections and reset clients so the backend can be reused."""
         await self.client.aclose()
         await self._import_client.aclose()
+        # Re-create fresh clients so this instance is usable again if the
+        # wallet service is restarted (e.g. maker stop → start in jmwalletd).
+        self.client = httpx.AsyncClient(
+            timeout=DEFAULT_RPC_TIMEOUT, auth=(self.rpc_user, self.rpc_password)
+        )
+        self._import_client = httpx.AsyncClient(
+            timeout=self.import_timeout, auth=(self.rpc_user, self.rpc_password)
+        )
+        self._wallet_loaded = False
+        self._descriptors_imported = False
 
 
 def generate_wallet_name(mnemonic_fingerprint: str, network: str = "mainnet") -> str:

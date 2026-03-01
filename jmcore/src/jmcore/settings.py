@@ -160,6 +160,10 @@ class BitcoinSettings(BaseModel):
         default=SecretStr(""),
         description="Bitcoin Core RPC password",
     )
+    descriptor_wallet_name: str = Field(
+        default="jm_descriptor_wallet",
+        description="Name of the descriptor wallet to use in Bitcoin Core",
+    )
     neutrino_url: str = Field(
         default="http://127.0.0.1:8334",
         description="Neutrino REST API URL (for neutrino backend)",

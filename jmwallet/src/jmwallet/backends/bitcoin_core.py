@@ -722,5 +722,14 @@ class BitcoinCoreBackend(BlockchainBackend):
         return True
 
     async def close(self) -> None:
+        """Close backend connections and reset clients so the backend can be reused."""
         await self.client.aclose()
         await self._scan_client.aclose()
+        # Re-create fresh clients so this instance is usable again if the
+        # wallet service is restarted (e.g. maker stop → start in jmwalletd).
+        self.client = httpx.AsyncClient(
+            timeout=DEFAULT_RPC_TIMEOUT, auth=(self.rpc_user, self.rpc_password)
+        )
+        self._scan_client = httpx.AsyncClient(
+            timeout=self.scan_timeout, auth=(self.rpc_user, self.rpc_password)
+        )

@@ -77,6 +77,11 @@ site/
 # Auto-generated API reference pages (created by mkdocs-gen-files at build time)
 docs/api/
 
+# Playwright
+tests/playwright/node_modules/
+tests/playwright/playwright-report/
+tests/playwright/test-results/
+
 # Misc documentation backups
 mkdocs.yml.backup*
 PROJECT_DOCS_OVERVIEW.md

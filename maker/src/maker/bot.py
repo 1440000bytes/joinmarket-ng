@@ -667,7 +667,9 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
             except Exception:
                 pass
 
-        await self.wallet.close()
+        # Do not close the wallet here as it might be shared (e.g. in jmwalletd)
+        # The caller is responsible for managing the wallet lifecycle.
+        # await self.wallet.close()
         logger.info("Maker bot stopped")
 
     def _get_session_lock(self, taker_nick: str) -> asyncio.Lock:

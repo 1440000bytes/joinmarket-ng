@@ -1112,8 +1112,19 @@ class NeutrinoBackend(BlockchainBackend):
             raise
 
     async def close(self) -> None:
-        """Close the HTTP client connection."""
+        """Close the HTTP client connection and reset so the backend can be reused."""
         await self.client.aclose()
+        # Re-create a fresh client so this instance is usable again if the
+        # wallet service is restarted (e.g. maker stop → start in jmwalletd).
+        self.client = httpx.AsyncClient(timeout=60.0)
+        self._watched_addresses = set()
+        self._watched_outpoints = set()
+        self._filter_header_tip = 0
+        self._synced = False
+        self._initial_rescan_done = False
+        self._last_rescan_height = 0
+        self._rescan_in_progress = False
+        self._just_rescanned = False
 
 
 class NeutrinoConfig:

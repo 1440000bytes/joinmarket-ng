@@ -300,11 +300,21 @@ async def direct_send(
     # --- UTXO selection ---
     utxos: list[UTXOInfo]
     if amount_sats == 0:
+        # Sweep: use all spendable UTXOs.
         raw_utxos = await wallet.get_utxos(mixdepth)
         utxos = select_spendable_utxos(raw_utxos)
     else:
-        raw_utxos = await wallet.get_utxos(mixdepth)
-        utxos = select_spendable_utxos(raw_utxos)
+        # Non-sweep: use greedy coin selection to pick the minimum UTXOs needed.
+        # This avoids building oversized transactions when the wallet has many UTXOs.
+        # Add a generous fee buffer (5× estimated fee) to ensure enough inputs.
+        fee_buffer = max(10_000, int(amount_sats * 0.05))
+        try:
+            utxos = wallet.select_utxos(mixdepth, amount_sats + fee_buffer)
+        except ValueError:
+            # Fallback: use all spendable UTXOs if coin selection fails
+            # (e.g. many dust UTXOs where the sum exceeds target but individually small).
+            raw_utxos = await wallet.get_utxos(mixdepth)
+            utxos = select_spendable_utxos(raw_utxos)
 
     if not utxos:
         msg = f"No spendable UTXOs in mixdepth {mixdepth}"

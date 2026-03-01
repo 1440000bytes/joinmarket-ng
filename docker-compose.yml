@@ -270,6 +270,57 @@ services:
       - e2e
       - all
 
+  # ============================================================================
+  # JAM Frontend for Playwright E2E tests (profile: e2e, all)
+  # Uses the jam-ng image (jmwalletd + JAM UI) on a separate port so
+  # Playwright tests can interact with a real browser UI without
+  # interfering with the Python e2e tests that use the jmwalletd above.
+  # ============================================================================
+
+  jam-playwright:
+    image: ${JAM_NG_IMAGE:-}
+    build:
+      context: .
+      dockerfile: jmwalletd/Dockerfile
+      target: jam-ng
+    container_name: jm-jam-playwright
+    restart: "no"
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    environment:
+      - BITCOIN__BACKEND_TYPE=descriptor_wallet
+      - BITCOIN__RPC_URL=http://jm-bitcoin:18443
+      - BITCOIN__RPC_USER=test
+      - BITCOIN__RPC_PASSWORD=test
+      - BITCOIN__DESCRIPTOR_WALLET_NAME=jm_playwright_regtest
+      - NETWORK_CONFIG__NETWORK=regtest
+      - JMWALLETD_HOST=0.0.0.0
+      - JMWALLETD_NO_TLS=true
+      - LOGGING__LEVEL=DEBUG
+      - OBWATCH_URL=http://jm-orderbook-watcher:8000
+      - TOR__SOCKS_HOST=jm-tor
+      - TOR__SOCKS_PORT=9050
+      - TOR__CONTROL_HOST=jm-tor
+      - TOR__CONTROL_PORT=9051
+      - DIRECTORY_NODES=jm-directory:5222
+    ports:
+      - "29183:28183"
+    volumes:
+      - jam-playwright-data:/root/.joinmarket-ng
+    networks:
+      - jm-network
+    depends_on:
+      bitcoin:
+        condition: service_healthy
+      tor:
+        condition: service_healthy
+    profiles:
+      - e2e
+      - all
+
 # ============================================================================
   # Maker Bot (profile: maker)
   # ============================================================================
@@ -1143,6 +1194,7 @@ volumes:
   maker-data:
   taker-neutrino-data:
   jmwalletd-data:
+  jam-playwright-data:
   tor-data:
 
 networks:
