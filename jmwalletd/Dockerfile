@@ -64,8 +64,10 @@ CMD ["jmwalletd", "--no-tls"]
 
 # =============================================================================
 # Stage 3: Build JAM frontend (cloned from GitHub, no submodule required)
+# Always built for amd64: the output is static JS that runs in the browser,
+# so the build platform doesn't matter. node:24-slim has no linux/arm/v7 image.
 # =============================================================================
-FROM node:24-slim AS jam-builder
+FROM --platform=linux/amd64 node:24-slim AS jam-builder
 ARG JAM_VERSION
 
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git \
@@ -86,20 +88,33 @@ FROM jmwalletd AS jam-ng
 # s6-overlay version (pinned for reproducibility)
 ARG S6_OVERLAY_VERSION=3.2.0.2
 
-# Install xz-utils (for extracting s6-overlay) and Tor daemon
+# Install xz-utils (for extracting s6-overlay), wget (for downloading s6-overlay), and Tor daemon
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    wget \
     xz-utils \
     tor \
     && rm -rf /var/lib/apt/lists/*
 
 # Install s6-overlay (noarch + arch-specific, checksums pinned)
+# noarch tarball is the same for all platforms
 ADD --checksum=sha256:6dbcde158a3e78b9bb141d7bcb5ccb421e563523babbe2c64470e76f4fd02dae \
     https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-noarch.tar.xz /tmp
-ADD --checksum=sha256:59289456ab1761e277bd456a95e737c06b03ede99158beb24f12b165a904f478 \
-    https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-x86_64.tar.xz /tmp
-RUN tar -C / -Jxpf /tmp/s6-overlay-noarch.tar.xz \
-    && tar -C / -Jxpf /tmp/s6-overlay-x86_64.tar.xz \
-    && rm -f /tmp/s6-overlay-*.tar.xz
+# Arch-specific tarball: select based on TARGETARCH/TARGETVARIANT at build time
+ARG TARGETARCH
+ARG TARGETVARIANT
+RUN set -eux; \
+    case "${TARGETARCH}/${TARGETVARIANT:-}" in \
+        amd64/)   S6_ARCH=x86_64;  S6_SHA256=59289456ab1761e277bd456a95e737c06b03ede99158beb24f12b165a904f478 ;; \
+        arm64/)   S6_ARCH=aarch64; S6_SHA256=8b22a2eaca4bf0b27a43d36e65c89d2701738f628d1abd0cea5569619f66f785 ;; \
+        arm/v7)   S6_ARCH=armhf;   S6_SHA256=c8b8532fe4ec432898960e9ec9c903926454ce73588d4c94ad0e023f0b34fe39 ;; \
+        *) echo "Unsupported platform: ${TARGETARCH}/${TARGETVARIANT:-}" >&2; exit 1 ;; \
+    esac; \
+    wget -qO /tmp/s6-overlay-arch.tar.xz \
+        "https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-${S6_ARCH}.tar.xz"; \
+    echo "${S6_SHA256}  /tmp/s6-overlay-arch.tar.xz" | sha256sum -c -; \
+    tar -C / -Jxpf /tmp/s6-overlay-noarch.tar.xz; \
+    tar -C / -Jxpf /tmp/s6-overlay-arch.tar.xz; \
+    rm -f /tmp/s6-overlay-*.tar.xz
 
 # Copy s6 service definitions and torrc
 COPY jmwalletd/rootfs/ /

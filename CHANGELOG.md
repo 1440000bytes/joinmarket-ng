@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`jam-ng` armv7 Docker build**: Fixed two issues that prevented `linux/arm/v7` builds from succeeding.
+  - `node:24-slim` does not publish a `linux/arm/v7` image. The `jam-builder` stage is now pinned to `--platform=linux/amd64` — the output is static browser JS so the build platform is irrelevant.
+  - s6-overlay was hardcoded to the `x86_64` tarball with a pinned checksum. The install step now selects the correct arch-specific tarball (`x86_64`, `aarch64`, or `armhf`) and verifies its checksum at build time using `TARGETARCH`/`TARGETVARIANT`.
+
 ## [0.19.0] - 2026-03-04
 
 ### Fixed
