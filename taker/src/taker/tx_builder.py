@@ -378,7 +378,9 @@ def build_coinjoin_tx(
                     f"change={maker_change} sats. Maker's UTXOs may have been spent."
                 )
             elif maker_change > dust_threshold:
-                maker_change_outputs[nick] = TxOutput.from_address(data["change_addr"], maker_change)
+                maker_change_outputs[nick] = TxOutput.from_address(
+                    data["change_addr"], maker_change
+                )
             else:
                 logger.warning(
                     f"Maker {nick} change {maker_change} sats is below dust threshold "
