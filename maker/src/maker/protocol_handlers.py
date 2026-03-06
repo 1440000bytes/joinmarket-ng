@@ -421,7 +421,9 @@ class ProtocolHandlersMixin:
             for part in parts[5:]:
                 if part.startswith("address_type="):
                     requested_address_type = part.split("=", 1)[1]
-                    logger.info(f"Taker {taker_nick} requested address_type={requested_address_type}")
+                    logger.info(
+                        f"Taker {taker_nick} requested address_type={requested_address_type}"
+                    )
                     break
 
             # Strip commitment prefix if present (e.g., "P" for standard PoDLE)

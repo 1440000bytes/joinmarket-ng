@@ -560,7 +560,7 @@ def _show_extended_wallet_info(
             pending_addresses.add(entry.destination_address)
         if entry.change_address:
             pending_addresses.add(entry.change_address)
-            
+
     bip_purpose = "86" if wallet.address_type == "p2tr" else "84"
 
     for md in range(wallet.mixdepth_count):

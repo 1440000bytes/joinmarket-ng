@@ -396,7 +396,6 @@ def pubkey_to_p2wpkh_script(pubkey: bytes | str) -> bytes:
 
 
 @validate_call
-
 def taproot_tweak_pubkey(internal_pubkey: bytes, h: bytes | None = None) -> tuple[int, bytes]:
     """
     Tweak an internal x-only public key with a BIP341 hash to produce the Taproot output key.
@@ -473,26 +472,31 @@ def taproot_tweak_privkey(privkey_bytes: bytes, h: bytes | None = None) -> bytes
     tweaked_priv = priv_key_even.add(tweak)
     return tweaked_priv.secret
 
-BECH32M_CONST = 0x2bc830a3
+
+BECH32M_CONST = 0x2BC830A3
+
 
 def bech32m_create_checksum(hrp: str, data: list[int]) -> list[int]:
     values = bech32_lib.bech32_hrp_expand(hrp) + data
     polymod = bech32_lib.bech32_polymod(values + [0, 0, 0, 0, 0, 0]) ^ BECH32M_CONST
     return [(polymod >> 5 * (5 - i)) & 31 for i in range(6)]
 
+
 def bech32m_encode(hrp: str, witver: int, witprog: bytes) -> str:
     data = [witver] + bech32_lib.convertbits(witprog, 8, 5)
     checksum = bech32m_create_checksum(hrp, data)
-    return hrp + '1' + ''.join([bech32_lib.CHARSET[d] for d in data + checksum])
+    return hrp + "1" + "".join([bech32_lib.CHARSET[d] for d in data + checksum])
+
 
 def bech32m_verify_checksum(hrp: str, data: list[int]) -> bool:
     return bech32_lib.bech32_polymod(bech32_lib.bech32_hrp_expand(hrp) + data) == BECH32M_CONST
 
+
 def bech32m_decode(hrp: str, addr: str) -> tuple[int | None, list[int] | None]:
-    pos = addr.rfind('1')
+    pos = addr.rfind("1")
     if pos < 1 or pos + 7 > len(addr) or len(addr) > 90:
         return None, None
-    if not addr.startswith(hrp + '1'):
+    if not addr.startswith(hrp + "1"):
         return None, None
     data = [bech32_lib.CHARSET.find(x) for x in addr[pos + 1 :]]
     if any(x == -1 for x in data):
@@ -506,6 +510,7 @@ def bech32m_decode(hrp: str, addr: str) -> tuple[int | None, list[int] | None]:
         return None, None
 
     return data[0], data[1:-6]
+
 
 @validate_call
 def pubkey_to_p2tr_address(pubkey: bytes | str, network: str | NetworkType = "mainnet") -> str:
@@ -531,6 +536,7 @@ def pubkey_to_p2tr_address(pubkey: bytes | str, network: str | NetworkType = "ma
     if result is None:
         raise ValueError("Failed to encode bech32m address")
     return result
+
 
 def create_p2tr_scriptpubkey(pubkey: bytes | str) -> bytes:
     """
@@ -1278,7 +1284,7 @@ def estimate_vsize(input_types: list[str], output_types: list[str]) -> int:
     input_weights = {
         "p2wpkh": 41 * 4 + 108,
         "p2wsh": 41 * 4 + 118,  # Using 72 byte sig + 43 byte script (fidelity bond)
-        "p2tr": 41 * 4 + 66,   # Key-path spend: 64-byte Schnorr sig + len -> 66 wu
+        "p2tr": 41 * 4 + 66,  # Key-path spend: 64-byte Schnorr sig + len -> 66 wu
     }
 
     # Output sizes (weight units)

@@ -238,9 +238,7 @@ def create_backend(config: TakerConfig) -> Any:
         fingerprint = get_mnemonic_fingerprint(
             config.mnemonic.get_secret_value(), config.passphrase.get_secret_value() or ""
         )
-        wallet_name = generate_wallet_name(
-            fingerprint, bitcoin_network.value, config.address_type
-        )
+        wallet_name = generate_wallet_name(fingerprint, bitcoin_network.value, config.address_type)
         return DescriptorWalletBackend(
             rpc_url=config.backend_config["rpc_url"],
             rpc_user=config.backend_config["rpc_user"],

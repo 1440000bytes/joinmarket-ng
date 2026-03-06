@@ -58,7 +58,7 @@ class WalletService(WalletSyncMixin, CoinSelectionMixin, WalletDisplayMixin):
         self.data_dir = data_dir
         self.passphrase = passphrase
         self.address_type = address_type
-        
+
         if address_type not in ("p2wpkh", "p2tr"):
             raise ValueError(f"Unsupported address type: {address_type}")
 
@@ -103,7 +103,7 @@ class WalletService(WalletSyncMixin, CoinSelectionMixin, WalletDisplayMixin):
 
         path = f"{self.root_path}/{mixdepth}'/{change}/{index}"
         key = self.master_key.derive(path)
-        
+
         if self.address_type == "p2tr":
             address = key.get_p2tr_address(self.network)
         else:

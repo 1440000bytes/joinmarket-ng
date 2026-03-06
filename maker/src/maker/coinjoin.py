@@ -16,13 +16,13 @@ import time
 from enum import StrEnum
 from typing import Any
 
+from jmcore.bitcoin import encode_varint
 from jmcore.encryption import CryptoSession
 from jmcore.models import NetworkType, Offer
 from jmcore.protocol import (
     UTXOMetadata,
     format_utxo_list,
 )
-from jmcore.bitcoin import taproot_tweak_pubkey, encode_varint
 from jmwallet.backends.base import BlockchainBackend
 from jmwallet.wallet.models import UTXOInfo
 from jmwallet.wallet.service import WalletService
@@ -30,8 +30,8 @@ from jmwallet.wallet.signing import (
     TransactionSigningError,
     create_p2wpkh_script_code,
     deserialize_transaction,
-    sign_p2wpkh_input,
     sign_p2tr_input,
+    sign_p2wpkh_input,
 )
 from loguru import logger
 
@@ -627,26 +627,28 @@ class CoinJoinSession:
                 # Convert little-endian txid bytes to big-endian hex string (RPC format)
                 txid_hex = tx_input.txid_le[::-1].hex()
                 input_index_map[(txid_hex, tx_input.vout)] = idx
-
             # For Taproot (BIP341), we need ALL prevouts to compute the sighash
             # unless SIGHASH_ANYONECANPAY is used.
             all_prevouts_values = []
             all_prevouts_scripts = []
-            has_p2tr = any(utxo.address.startswith("bc1p") or utxo.address.startswith("tb1p") or utxo.address.startswith("bcrt1p") for utxo in self.our_utxos.values())
-            
+            has_p2tr = any(
+                utxo.address.startswith(("bc1p", "tb1p", "bcrt1p"))
+                for utxo in self.our_utxos.values()
+            )
+
             if has_p2tr:
                 logger.debug("Taproot inputs detected, fetching all prevouts for sighash")
                 for inp in tx.inputs:
                     txid = inp.txid_le[::-1].hex()
                     utxo = await self.backend.get_utxo(txid, inp.vout)
                     if not utxo:
-                        raise TransactionSigningError(f"Could not fetch prevout for {txid}:{inp.vout}")
+                        raise TransactionSigningError(
+                            f"Could not fetch prevout for {txid}:{inp.vout}"
+                        )
                     all_prevouts_values.append(utxo.value)
                     # UTXOInfo.scriptpubkey is a hex string; sighash needs bytes
                     spk = utxo.scriptpubkey
-                    all_prevouts_scripts.append(
-                        bytes.fromhex(spk) if isinstance(spk, str) else spk
-                    )
+                    all_prevouts_scripts.append(bytes.fromhex(spk) if isinstance(spk, str) else spk)
 
             for (txid, vout), utxo_info in self.our_utxos.items():
                 # Find the input index in the transaction
@@ -669,15 +671,15 @@ class CoinJoinSession:
                     raise TransactionSigningError(f"Missing key for address {utxo_info.address}")
 
                 priv_key = key.private_key
-                
+
                 # Check if it's P2TR
                 if utxo_info.address.startswith(("bc1p", "tb1p", "bcrt1p")):
                     logger.debug(f"Signing P2TR input {input_index}")
 
                     # Use centralized taproot_tweak_privkey which correctly
                     # handles the BIP341 even-Y negation rule.
-                    from jmcore.bitcoin import taproot_tweak_privkey
                     import coincurve
+                    from jmcore.bitcoin import taproot_tweak_privkey
 
                     tweaked_priv_bytes = taproot_tweak_privkey(key.get_private_key_bytes())
                     tweaked_priv = coincurve.PrivateKey(tweaked_priv_bytes)
@@ -690,7 +692,7 @@ class CoinJoinSession:
                         private_key=tweaked_priv,
                         sighash_type=0x00,  # SIGHASH_DEFAULT
                     )
-                    
+
                     # For Taproot, the "signature" in JM format is just the sig (64 bytes)
                     # or 65 bytes if sighash != default.
                     # JM format: varint(sig_len) + sig

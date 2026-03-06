@@ -171,9 +171,9 @@ async def _send_transaction(
         create_p2wsh_witness_stack,
         deserialize_transaction,
         encode_varint,
+        sign_p2tr_input,
         sign_p2wpkh_input,
         sign_p2wsh_input,
-        sign_p2tr_input,
     )
 
     # Load fidelity bond addresses from registry
@@ -417,9 +417,9 @@ async def _send_transaction(
         # Build unsigned transaction
         from bitcointx import ChainParams
         from bitcointx.wallet import CCoinAddress, CCoinAddressError
+        from jmcore.bitcoin import create_p2tr_scriptpubkey
 
         from jmwallet.wallet.address import pubkey_to_p2wpkh_script
-        from jmcore.bitcoin import create_p2tr_scriptpubkey
 
         # Convert destination to scriptPubKey — CCoinAddress validates the
         # bech32 checksum, rejects wrong-network addresses, and handles all
@@ -539,11 +539,11 @@ async def _send_transaction(
             elif utxo.is_p2tr:
                 # Taproot signing
                 # Need all prevouts scripts and values
+                import coincurve
                 from jmcore.bitcoin import (
                     address_to_scriptpubkey,
                     taproot_tweak_privkey,
                 )
-                import coincurve
 
                 prevouts_values = [u.value for u in utxos]
                 prevouts_scripts = [address_to_scriptpubkey(u.address) for u in utxos]

@@ -67,6 +67,7 @@ class WalletSyncMixin:
     utxo_cache: dict[int, list[UTXOInfo]]
     addresses_with_history: set[str]
     fidelity_bond_locktime_cache: dict[str, int]
+    address_type: str
 
     # Methods provided by the host class
     def get_address(self, mixdepth: int, change: int, index: int) -> str:
