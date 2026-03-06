@@ -495,7 +495,7 @@ async def _send_transaction(
             if change_key:
                 if address_type == "p2tr":
                     change_script = create_p2tr_scriptpubkey(
-                        change_key.get_x_only_public_key().hex()
+                        change_key.get_public_key_bytes(compressed=True)[1:].hex()
                     )
                 else:
                     change_script = pubkey_to_p2wpkh_script(
