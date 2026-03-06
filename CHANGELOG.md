@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Taproot Support (BIP341)**: Added full support for Taproot (P2TR) across the protocol and wallet components.
+  - **Taker and Maker Negotiaton**: Takers can now negotiate output address types (P2TR or P2WPKH) with makers via an extension to the `!fill` message. Takers filter out makers whose address types differ to preserve privacy.
+  - **Taproot Wallet & Signing**: Unified `jmwallet` descriptor support to create and handle Taproot key paths. Signing logic correctly performs BIP341 keypath spending via `sign_p2tr_input`.
+  - **CLI Options**: Added `--address-type p2tr` flags to CLI commands such as `jm-maker start`, `jm-taker coinjoin`, and `jm-wallet send`. Changes default to `p2wpkh`.
+
 ### Changed
 
 - **Release verification: skip `jam-ng` layer reproducibility check**: Updated `scripts/verify-release.sh --reproduce` to exclude `jam-ng` from layer digest comparison while still building it, matching the existing behavior in `scripts/sign-release.sh`. The `jam-ng` frontend bundle (react-scripts/webpack) remains non-deterministic across environments, so this avoids false reproducibility failures without skipping the image build.
