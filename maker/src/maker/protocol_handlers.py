@@ -639,6 +639,8 @@ class ProtocolHandlersMixin:
                     await self._broadcast_commitment(commitment)
                 else:
                     logger.error(f"Auth failed: {response.get('error')}")
+                    # Send error response so taker doesn't hang waiting for timeout
+                    await self._send_response(taker_nick, "ioauth", response)
                     # Fire-and-forget notification for rejection
                     asyncio.create_task(
                         get_notifier().notify_rejection(
