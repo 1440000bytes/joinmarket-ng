@@ -257,6 +257,47 @@ def sign_p2tr_input(
     return signature
 
 
+def verify_p2tr_signature(
+    tx: ParsedTransaction,
+    input_index: int,
+    prevouts_values: list[int],
+    prevouts_scripts: list[bytes],
+    signature: bytes,
+    x_only_pubkey: bytes,
+) -> bool:
+    """Verify a BIP341 Taproot (Schnorr) signature for a key-path spend.
+
+    Args:
+        tx: The parsed transaction.
+        input_index: Index of the input being verified.
+        prevouts_values: Values of ALL prevouts (not just the one being signed).
+        prevouts_scripts: ScriptPubKeys of ALL prevouts.
+        signature: 64-byte Schnorr signature (or 65 with sighash byte).
+        x_only_pubkey: 32-byte x-only public key from the P2TR scriptPubKey.
+
+    Returns:
+        True if the signature is valid, False otherwise.
+    """
+    try:
+        from coincurve import PublicKeyXOnly
+
+        if len(signature) == 65:
+            sighash_type = signature[-1]
+            raw_sig = signature[:64]
+        else:
+            sighash_type = SIGHASH_DEFAULT
+            raw_sig = signature
+
+        sighash = compute_sighash_taproot(
+            tx, input_index, prevouts_values, prevouts_scripts, sighash_type
+        )
+
+        xonly_pub = PublicKeyXOnly(x_only_pubkey)
+        return bool(xonly_pub.verify(raw_sig, sighash))
+    except Exception:
+        return False
+
+
 def compute_sighash_taproot(
     tx: ParsedTransaction,
     input_index: int,
@@ -379,4 +420,5 @@ __all__ = [
     "SIGHASH_DEFAULT",
     "compute_sighash_taproot",
     "sign_p2tr_input",
+    "verify_p2tr_signature",
 ]
