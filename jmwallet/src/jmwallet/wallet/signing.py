@@ -18,9 +18,9 @@ from jmcore.bitcoin import (
     decode_varint,
     encode_varint,
     hash256,
+    parse_transaction_bytes,
     sha256,
     tagged_hash,
-    parse_transaction_bytes,
 )
 
 SIGHASH_DEFAULT = 0x00
@@ -243,7 +243,9 @@ def sign_p2tr_input(
     Returns:
         64-byte Schnorr signature (or 65 bytes if sighash_type != DEFAULT)
     """
-    sighash = compute_sighash_taproot(tx, input_index, prevouts_values, prevouts_scripts, sighash_type)
+    sighash = compute_sighash_taproot(
+        tx, input_index, prevouts_values, prevouts_scripts, sighash_type
+    )
 
     # BIP340 Schnorr signing
     # coincurve's sign_schnorr()
@@ -282,7 +284,9 @@ def compute_sighash_taproot(
 
     # BIP341 Common parts
     if not (sighash_type & SIGHASH_ANYONECANPAY):
-        hash_prevouts = sha256(b"".join(inp.txid_le + inp.vout.to_bytes(4, "little") for inp in tx.inputs))
+        hash_prevouts = sha256(
+            b"".join(inp.txid_le + inp.vout.to_bytes(4, "little") for inp in tx.inputs)
+        )
         hash_amounts = sha256(b"".join(val.to_bytes(8, "little") for val in prevouts_values))
         hash_script_pubkeys = sha256(b"".join(encode_varint(len(s)) + s for s in prevouts_scripts))
         hash_sequences = sha256(b"".join(inp.sequence_bytes for inp in tx.inputs))
@@ -329,7 +333,9 @@ def compute_sighash_taproot(
         target_input = tx.inputs[input_index]
         preimage += target_input.txid_le + target_input.vout.to_bytes(4, "little")
         preimage += prevouts_values[input_index].to_bytes(8, "little")
-        preimage += encode_varint(len(prevouts_scripts[input_index])) + prevouts_scripts[input_index]
+        preimage += (
+            encode_varint(len(prevouts_scripts[input_index])) + prevouts_scripts[input_index]
+        )
         preimage += target_input.sequence_bytes
     else:
         preimage += struct.pack("<I", input_index)
@@ -339,7 +345,9 @@ def compute_sighash_taproot(
     if (sighash_type & 0x03) == SIGHASH_SINGLE:
         if input_index < len(tx.outputs):
             out = tx.outputs[input_index]
-            preimage += sha256(out.value.to_bytes(8, "little") + encode_varint(len(out.script)) + out.script)
+            preimage += sha256(
+                out.value.to_bytes(8, "little") + encode_varint(len(out.script)) + out.script
+            )
         else:
             preimage += b"\x00" * 32
 

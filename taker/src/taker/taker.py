@@ -16,14 +16,12 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from jmcore.bitcoin import (
     calculate_tx_vsize,
     get_txid,
     parse_transaction,
-    taproot_tweak_pubkey,
-    encode_varint,
 )
 from jmcore.bond_calc import calculate_timelocked_fidelity_bond_value
 from jmcore.btc_script import derive_bond_address
@@ -45,8 +43,8 @@ from jmwallet.wallet.signing import (
     create_p2wpkh_script_code,
     create_witness_stack,
     deserialize_transaction,
-    sign_p2wpkh_input,
     sign_p2tr_input,
+    sign_p2wpkh_input,
     verify_p2wpkh_signature,
 )
 from loguru import logger
@@ -59,6 +57,9 @@ from taker.orderbook import OrderbookManager, calculate_cj_fee
 from taker.podle import ExtendedPoDLECommitment
 from taker.podle_manager import PoDLEManager
 from taker.tx_builder import CoinJoinTxBuilder, build_coinjoin_tx
+
+if TYPE_CHECKING:
+    from jmwallet.wallet.service import WalletService
 
 # Backward-compatible re-exports: many tests and modules import these from taker.taker
 __all__ = [
@@ -721,14 +722,15 @@ class Taker(TakerMonitoringMixin):
                 key = self.wallet.get_key_for_address(addr)
                 if key is None:
                     return None
-                
+
                 priv_bytes = key.get_private_key_bytes()
                 # If it's a Taproot address, we must use the tweaked private key
                 # so the revealed public key P matches the UTXO's scriptPubKey.
                 if addr.startswith(("bc1p", "tb1p", "bcrt1p")):
                     from jmcore.bitcoin import taproot_tweak_privkey
+
                     priv_bytes = taproot_tweak_privkey(priv_bytes)
-                
+
                 return priv_bytes
 
             # Generate PoDLE from pre-selected UTXOs only
@@ -1428,6 +1430,7 @@ class Taker(TakerMonitoringMixin):
         return PhaseResult(
             success=True, failed_makers=failed_makers, blacklist_error=blacklist_error
         )
+
     def _validate_maker_address_types(self, nick: str, cj_addr: str, change_addr: str) -> bool:
         """
         Validate that a maker's CoinJoin and change addresses match the taker's
@@ -1457,7 +1460,6 @@ class Taker(TakerMonitoringMixin):
             )
             return False
         return True
-
 
     async def _phase_auth(self) -> PhaseResult:
         """Send !auth with PoDLE proof and wait for !ioauth responses.
@@ -1727,7 +1729,6 @@ class Taker(TakerMonitoringMixin):
                     session.change_address = change_addr
                     session.auth_pubkey = auth_pub  # Store for later verification
                     session.responded_auth = True
-
 
                     if not self._validate_maker_address_types(nick, cj_addr, change_addr):
                         failed_makers.append(nick)
@@ -2450,12 +2451,17 @@ class Taker(TakerMonitoringMixin):
             # For Taproot (BIP341), we need ALL prevouts to compute the sighash
             all_prevouts_values = []
             all_prevouts_scripts = []
-            has_p2tr = any(utxo.address.startswith(("bc1p", "tb1p", "bcrt1p")) for utxo in self.selected_utxos)
-            
+            has_p2tr = any(
+                utxo.address.startswith(("bc1p", "tb1p", "bcrt1p")) for utxo in self.selected_utxos
+            )
+
             # Check if any maker inputs are taproot
             if not has_p2tr:
                 for session in self.maker_sessions.values():
-                    if any(u.get("address", "").startswith(("bc1p", "tb1p", "bcrt1p")) for u in session.utxos):
+                    if any(
+                        u.get("address", "").startswith(("bc1p", "tb1p", "bcrt1p"))
+                        for u in session.utxos
+                    ):
                         has_p2tr = True
                         break
 
@@ -2465,7 +2471,9 @@ class Taker(TakerMonitoringMixin):
                     txid = inp.txid_le[::-1].hex()
                     utxo = await self.backend.get_utxo(txid, inp.vout)
                     if not utxo:
-                        raise TransactionSigningError(f"Could not fetch prevout for {txid}:{inp.vout}")
+                        raise TransactionSigningError(
+                            f"Could not fetch prevout for {txid}:{inp.vout}"
+                        )
                     all_prevouts_values.append(utxo.value)
                     all_prevouts_scripts.append(bytes.fromhex(utxo.scriptpubkey))
 
@@ -2492,13 +2500,13 @@ class Taker(TakerMonitoringMixin):
                     raise TransactionSigningError(f"Missing key for address {utxo.address}")
 
                 priv_key = key.private_key
-                
+
                 # Check if it's P2TR
                 if utxo.address.startswith(("bc1p", "tb1p", "bcrt1p")):
                     logger.debug(f"Signing taker P2TR input {input_index}")
 
-                    from jmcore.bitcoin import taproot_tweak_privkey, taproot_tweak_pubkey
                     import coincurve
+                    from jmcore.bitcoin import taproot_tweak_privkey, taproot_tweak_pubkey
 
                     # Tweak private key for key-path spend
                     tweaked_priv_bytes = taproot_tweak_privkey(priv_key.secret)
