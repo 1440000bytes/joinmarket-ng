@@ -858,15 +858,22 @@ async def test_taker_p2tr_signing_integration(funded_taker_wallet_p2tr, taker_co
     3. Private key is tweaked per BIP341 before Schnorr signing
     4. Witness has 1 element (64-byte sig), not 2 (sig + pubkey as in P2WPKH)
     """
-    from jmcore.bitcoin import TxInput, create_p2tr_scriptpubkey
+    from jmcore.bitcoin import (
+        TxInput,
+        TxOutput,
+        address_to_scriptpubkey,
+        create_p2tr_scriptpubkey,
+    )
     from taker.tx_builder import CoinJoinTxBuilder, CoinJoinTxData
     from unittest.mock import patch
 
     wallet = funded_taker_wallet_p2tr
 
     # Get P2TR UTXOs from the funded wallet
-    utxos = await wallet.get_all_utxos()
-    our_utxos = [u for md_utxos in utxos.values() for u in md_utxos]
+    utxos_by_depth = {
+        md: wallet.get_all_utxos(md) for md in range(wallet.mixdepth_count)
+    }
+    our_utxos = [u for md_utxos in utxos_by_depth.values() for u in md_utxos]
     assert len(our_utxos) > 0, "Taker P2TR wallet must have UTXOs"
 
     taker_utxo = our_utxos[0]
@@ -875,7 +882,7 @@ async def test_taker_p2tr_signing_integration(funded_taker_wallet_p2tr, taker_co
     )
 
     # Create a mock maker UTXO (also P2TR for a full-taproot CoinJoin)
-    _maker_address = wallet.get_address(1, True)  # mixdepth 1, external
+    _maker_address = wallet.get_address(1, 0, 0)  # mixdepth 1, external, index 0
     _maker_spk = create_p2tr_scriptpubkey(
         bytes.fromhex(taker_utxo.scriptpubkey)[2:]  # reuse key for simplicity
     )
@@ -884,37 +891,69 @@ async def test_taker_p2tr_signing_integration(funded_taker_wallet_p2tr, taker_co
     maker_fee = 1000
     tx_fee = 500
 
-    _maker_input = TxInput(
-        txid_le=bytes.fromhex(
-            "0000000000000000000000000000000000000000000000000000000000000001"
-        )[::-1],
-        vout=0,
-        sequence=0xFFFFFFFF,
+    # Build proper TxInput/TxOutput objects for CoinJoinTxData
+    taker_input = TxInput.from_hex(taker_utxo.txid, taker_utxo.vout)
+
+    dest_address = wallet.get_address(1, 0, 0)  # P2TR receive destination
+    change_address = wallet.get_address(0, 1, 0)  # P2TR change
+
+    taker_cj_out = TxOutput(
+        value=coinjoin_amount,
+        script=address_to_scriptpubkey(dest_address),
+    )
+    taker_change_val = taker_utxo.value - coinjoin_amount - maker_fee - tx_fee
+    taker_change_out = TxOutput(
+        value=taker_change_val,
+        script=address_to_scriptpubkey(change_address),
     )
 
-    # Build CoinJoin transaction data
-    our_inputs = [(taker_utxo.txid, taker_utxo.vout)]
-    maker_inputs = [("0" * 64, 0)]
-
-    dest_address = wallet.get_address(1, True)  # P2TR destination
-    change_address = wallet.get_address(0, False)  # P2TR change
+    # Mock maker inputs and outputs (also P2TR to form an all-taproot CoinJoin)
+    maker_input = TxInput.from_hex("0" * 64, 0)
+    maker_cj_out = TxOutput(
+        value=coinjoin_amount,
+        script=address_to_scriptpubkey(dest_address),  # reuse address for simplicity
+    )
+    maker_change_out = TxOutput(
+        value=maker_fee,
+        script=address_to_scriptpubkey(dest_address),
+    )
 
     cj_data = CoinJoinTxData(
-        our_inputs=our_inputs,
-        our_input_values=[taker_utxo.value],
-        maker_inputs={"maker1": maker_inputs},
-        maker_input_values={"maker1": [coinjoin_amount + maker_fee]},
-        coinjoin_amount=coinjoin_amount,
-        maker_fees={"maker1": maker_fee},
-        dest_address=dest_address,
-        change_address=change_address,
-        total_fee=tx_fee,
+        taker_inputs=[taker_input],
+        taker_cj_output=taker_cj_out,
+        taker_change_output=taker_change_out,
+        maker_inputs={"maker1": [maker_input]},
+        maker_cj_outputs={"maker1": maker_cj_out},
+        maker_change_outputs={"maker1": maker_change_out},
+        cj_amount=coinjoin_amount,
+        total_maker_fee=maker_fee,
+        tx_fee=tx_fee,
     )
 
     builder = CoinJoinTxBuilder(network="regtest")
     tx_bytes, metadata = builder.build_unsigned_tx(cj_data)
 
     # Create a mock Taker and sign
+    # Mock backend.get_utxo so the P2TR sighash code can fetch prevouts for
+    # ALL transaction inputs (including the fake maker input which isn't on-chain).
+    from jmwallet.wallet.models import UTXOInfo as UtxoModel
+
+    async def _mock_get_utxo(txid: str, vout: int) -> UtxoModel | None:
+        # Return the real taker UTXO or a minimal fake one for maker inputs
+        if txid == taker_utxo.txid and vout == taker_utxo.vout:
+            return taker_utxo
+        # Fake maker prevout: must have a valid scriptpubkey and value
+        return UtxoModel(
+            txid=txid,
+            vout=vout,
+            value=coinjoin_amount + maker_fee,
+            address=dest_address,
+            confirmations=6,
+            scriptpubkey=address_to_scriptpubkey(dest_address).hex(),
+            path="m/86'/1'/0'/0/0",
+            mixdepth=0,
+        )
+
     with patch.object(Taker, "__init__", lambda self, *a, **kw: None):
         taker = Taker.__new__(Taker)
         taker.wallet = wallet
@@ -924,17 +963,21 @@ async def test_taker_p2tr_signing_integration(funded_taker_wallet_p2tr, taker_co
         taker.tx_metadata = metadata
         taker.selected_utxos = [taker_utxo]
         taker.maker_sessions = {}
+        taker.backend.get_utxo = _mock_get_utxo
 
         signatures = await taker._sign_our_inputs()
 
     assert len(signatures) == 1, f"Expected 1 signature, got {len(signatures)}"
 
     sig_entry = signatures[0]
+    # Each entry: {txid, vout, signature (hex), pubkey (hex), witness (list[hex])}
     assert "signature" in sig_entry
-    assert "input_index" in sig_entry
+    assert "witness" in sig_entry
+    assert "txid" in sig_entry
+    assert "vout" in sig_entry
 
-    # P2TR witness: single element (Schnorr sig), NOT sig + pubkey
-    witness = sig_entry["signature"]
+    # P2TR witness: single element (Schnorr sig only), NOT [sig, pubkey]
+    witness = sig_entry["witness"]
     assert len(witness) == 1, (
         f"P2TR witness should have 1 element (sig only), got {len(witness)}"
     )

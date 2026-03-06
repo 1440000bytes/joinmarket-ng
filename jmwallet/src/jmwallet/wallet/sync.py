@@ -1366,8 +1366,10 @@ class WalletSyncMixin:
                     derived_key = self.master_key.derive(
                         f"{self.root_path}/{mixdepth}'/{change}/{index}"
                     )
-                    derived_pubkey = derived_key.get_public_key_bytes(compressed=True).hex()
-                    if derived_pubkey == pubkey:
+                    compressed = derived_key.get_public_key_bytes(compressed=True)
+                    # P2WPKH descriptors use 33-byte compressed pubkey.
+                    # P2TR descriptors use the 32-byte x-only pubkey (no prefix byte).
+                    if compressed.hex() == pubkey or compressed[1:].hex() == pubkey:
                         return (mixdepth, change, index)
                 except Exception:
                     continue
