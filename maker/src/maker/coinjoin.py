@@ -16,7 +16,7 @@ import time
 from enum import StrEnum
 from typing import Any
 
-from jmcore.bitcoin import encode_varint
+from jmcore.bitcoin import encode_varint, is_p2tr_address
 from jmcore.encryption import CryptoSession
 from jmcore.models import NetworkType, Offer
 from jmcore.protocol import (
@@ -667,10 +667,7 @@ class CoinJoinSession:
             # unless SIGHASH_ANYONECANPAY is used.
             all_prevouts_values = []
             all_prevouts_scripts = []
-            has_p2tr = any(
-                utxo.address.startswith(("bc1p", "tb1p", "bcrt1p"))
-                for utxo in self.our_utxos.values()
-            )
+            has_p2tr = any(is_p2tr_address(utxo.address) for utxo in self.our_utxos.values())
 
             if has_p2tr:
                 logger.debug("Taproot inputs detected, fetching all prevouts for sighash")
@@ -709,7 +706,7 @@ class CoinJoinSession:
                 priv_key = key.private_key
 
                 # Check if it's P2TR
-                if utxo_info.address.startswith(("bc1p", "tb1p", "bcrt1p")):
+                if is_p2tr_address(utxo_info.address):
                     logger.debug(f"Signing P2TR input {input_index}")
 
                     # Use centralized taproot_tweak_privkey which correctly
