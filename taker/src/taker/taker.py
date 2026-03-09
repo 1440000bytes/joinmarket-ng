@@ -23,6 +23,7 @@ from jmcore.bitcoin import (
     calculate_tx_vsize,
     decode_varint,
     get_txid,
+    is_p2tr_address,
     parse_transaction,
 )
 from jmcore.bond_calc import calculate_timelocked_fidelity_bond_value
@@ -729,7 +730,7 @@ class Taker(TakerMonitoringMixin):
                 priv_bytes = key.get_private_key_bytes()
                 # If it's a Taproot address, we must use the tweaked private key
                 # so the revealed public key P matches the UTXO's scriptPubKey.
-                if addr.startswith(("bc1p", "tb1p", "bcrt1p")):
+                if is_p2tr_address(addr):
                     from jmcore.bitcoin import taproot_tweak_privkey
 
                     priv_bytes = taproot_tweak_privkey(priv_bytes)
@@ -2317,8 +2318,7 @@ class Taker(TakerMonitoringMixin):
                     # Pre-check if any maker UTXOs are P2TR, so we can fetch
                     # prevout data needed for Taproot sighash verification.
                     has_p2tr_maker = any(
-                        u.get("address", "").startswith(("bc1p", "tb1p", "bcrt1p"))
-                        for u in session.utxos
+                        is_p2tr_address(u.get("address", "")) for u in session.utxos
                     )
                     all_prevouts_values: list[int] = []
                     all_prevouts_scripts: list[bytes] = []
@@ -2363,7 +2363,7 @@ class Taker(TakerMonitoringMixin):
                             value = utxo["value"]
                             address = utxo.get("address", "")
 
-                            is_p2tr = address.startswith(("bc1p", "tb1p", "bcrt1p"))
+                            is_p2tr = is_p2tr_address(address)
 
                             if is_p2tr:
                                 # P2TR: sig_bytes = varint(sig_len) + sig (no pubkey)
@@ -2523,17 +2523,12 @@ class Taker(TakerMonitoringMixin):
             # For Taproot (BIP341), we need ALL prevouts to compute the sighash
             all_prevouts_values = []
             all_prevouts_scripts = []
-            has_p2tr = any(
-                utxo.address.startswith(("bc1p", "tb1p", "bcrt1p")) for utxo in self.selected_utxos
-            )
+            has_p2tr = any(is_p2tr_address(utxo.address) for utxo in self.selected_utxos)
 
             # Check if any maker inputs are taproot
             if not has_p2tr:
                 for session in self.maker_sessions.values():
-                    if any(
-                        u.get("address", "").startswith(("bc1p", "tb1p", "bcrt1p"))
-                        for u in session.utxos
-                    ):
+                    if any(is_p2tr_address(u.get("address", "")) for u in session.utxos):
                         has_p2tr = True
                         break
 
@@ -2574,7 +2569,7 @@ class Taker(TakerMonitoringMixin):
                 priv_key = key.private_key
 
                 # Check if it's P2TR
-                if utxo.address.startswith(("bc1p", "tb1p", "bcrt1p")):
+                if is_p2tr_address(utxo.address):
                     logger.debug(f"Signing taker P2TR input {input_index}")
 
                     import coincurve
