@@ -1200,6 +1200,32 @@ def create_p2wpkh_script_code(pubkey: bytes | str) -> bytes:
 # =============================================================================
 
 
+def is_p2tr_address(address: str) -> bool:
+    """Check if an address is a Taproot (P2TR) address.
+
+    Works for mainnet (bc1p), testnet (tb1p), and regtest (bcrt1p)
+    by fully decoding and validating the bech32m payload.
+
+    Args:
+        address: Bitcoin address string
+
+    Returns:
+        True if the address is a valid P2TR address
+    """
+    if not address:
+        return False
+
+    address_lower = address.lower()
+    for hrp in ("bc", "tb", "bcrt"):
+        if address_lower.startswith(hrp + "1"):
+            witver, witprog_data = bech32m_decode(hrp, address)
+            if witver == 1 and witprog_data is not None:
+                witprog_converted = bech32_lib.convertbits(witprog_data, 5, 8, False)
+                if witprog_converted is not None and len(witprog_converted) == 32:
+                    return True
+    return False
+
+
 def get_address_type(address: str) -> str:
     """
     Determine address type from string.
