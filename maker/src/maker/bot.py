@@ -827,6 +827,17 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
                 offer.counterparty = self.nick
 
             self.current_offers = new_offers
+
+            delay_max = self.config.offer_reannounce_delay_max
+            if delay_max > 0:
+                import random
+
+                delay = random.uniform(0, delay_max)
+                logger.info(
+                    f"Delaying offer re-announcement by {delay:.0f}s (max {delay_max}s) for privacy"
+                )
+                await asyncio.sleep(delay)
+
             await self._announce_offers()
             offer_summary = ", ".join(f"oid={o.oid}:{o.maxsize:,}" for o in new_offers)
             logger.info(f"Updated and re-announced {len(new_offers)} offer(s): {offer_summary}")
