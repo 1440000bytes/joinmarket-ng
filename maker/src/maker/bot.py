@@ -518,6 +518,12 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
                     f"value={self.fidelity_bond.value:,} sats, "
                     f"bond_value={self.fidelity_bond.bond_value:,}"
                 )
+                md0_utxos = self.wallet.get_all_utxos(0, include_fidelity_bonds=False)
+                if md0_utxos:
+                    logger.warning(
+                        "You have a fidelity bond and deposit or change in mixdepth 0.\n"
+                        "This might link your identity to your fidelity bond.\n"
+                    )
             else:
                 logger.warning("No fidelity bond found (offers will have no bond proof)")
 
