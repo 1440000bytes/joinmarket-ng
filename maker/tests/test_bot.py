@@ -553,6 +553,7 @@ class TestWalletRescanAndOfferUpdate:
             network=NetworkType.REGTEST,
             post_coinjoin_rescan_delay=5,  # Minimum value for testing
             rescan_interval_sec=60,
+            offer_reannounce_delay_max=0,  # Disable delay for test speed
         )
 
     @pytest.fixture
@@ -589,12 +590,14 @@ class TestWalletRescanAndOfferUpdate:
         mock_wallet.get_balance_for_offers = AsyncMock(side_effect=balance_calls)
 
         # Mock offer creation
+        # maxsize is rounded to nearest power of 2 by OfferManager,
+        # so use a power-of-2 value here (2^19 = 524_288)
         new_offer = Offer(
             counterparty=maker_bot.nick,
             oid=0,
             ordertype=OfferType.SW0_RELATIVE,
             minsize=100_000,
-            maxsize=550_000,  # New maxsize after balance increase
+            maxsize=524_288,  # New maxsize after balance increase (rounded)
             txfee=1000,
             cjfee="0.001",
         )
@@ -609,7 +612,7 @@ class TestWalletRescanAndOfferUpdate:
         # Offers should have been updated (balance changed)
         maker_bot.offer_manager.create_offers.assert_called_once()
         maker_bot._announce_offers.assert_called_once()
-        assert maker_bot.current_offers[0].maxsize == 550_000
+        assert maker_bot.current_offers[0].maxsize == 524_288
 
     @pytest.mark.asyncio
     async def test_resync_wallet_no_update_when_balance_unchanged(self, maker_bot, mock_wallet):
@@ -685,6 +688,224 @@ class TestWalletRescanAndOfferUpdate:
         )
         assert default_config.post_coinjoin_rescan_delay == 60
         assert default_config.rescan_interval_sec == 600
+
+    def test_config_has_offer_reannounce_delay_max(self):
+        """Test that maker config includes offer reannouncement delay setting."""
+        default_config = MakerConfig(
+            mnemonic="test " * 12,
+            directory_servers=["localhost:5222"],
+            network=NetworkType.REGTEST,
+        )
+        assert hasattr(default_config, "offer_reannounce_delay_max")
+        assert default_config.offer_reannounce_delay_max == 600
+
+
+class TestOfferPrivacy:
+    """Tests for offer privacy improvements (issue #123).
+
+    Verifies that maxsize is rounded to power-of-2 buckets and that
+    reannouncement delays are applied to prevent maker tracking.
+    """
+
+    def test_round_maxsize_to_power_of_2_exact_powers(self):
+        """Test rounding for exact powers of 2."""
+        from maker.offers import _round_maxsize_to_power_of_2
+
+        assert _round_maxsize_to_power_of_2(1) == 1
+        assert _round_maxsize_to_power_of_2(2) == 2
+        assert _round_maxsize_to_power_of_2(1024) == 1024
+        assert _round_maxsize_to_power_of_2(1_048_576) == 1_048_576  # 2^20
+        assert _round_maxsize_to_power_of_2(100_000_000) == 67_108_864  # 2^26
+
+    def test_round_maxsize_to_power_of_2_between_powers(self):
+        """Test rounding for values between powers of 2."""
+        from maker.offers import _round_maxsize_to_power_of_2
+
+        # 150M sats (1.5 BTC) → 2^27 = 134_217_728
+        assert _round_maxsize_to_power_of_2(150_000_000) == 134_217_728
+        # 70M sats (0.7 BTC) → 2^26 = 67_108_864
+        assert _round_maxsize_to_power_of_2(70_000_000) == 67_108_864
+        # 10M sats (0.1 BTC) → 2^23 = 8_388_608
+        assert _round_maxsize_to_power_of_2(10_000_000) == 8_388_608
+        # 500_000 sats → 2^18 = 262_144
+        assert _round_maxsize_to_power_of_2(500_000) == 262_144
+
+    def test_round_maxsize_to_power_of_2_edge_cases(self):
+        """Test rounding edge cases: zero and negative values."""
+        from maker.offers import _round_maxsize_to_power_of_2
+
+        assert _round_maxsize_to_power_of_2(0) == 0
+        assert _round_maxsize_to_power_of_2(-1) == 0
+        assert _round_maxsize_to_power_of_2(-100) == 0
+
+    @pytest.fixture
+    def mock_wallet(self):
+        from unittest.mock import AsyncMock
+
+        wallet = MagicMock()
+        wallet.mixdepth_count = 5
+        wallet.utxo_cache = {}
+        wallet.sync_all = AsyncMock()
+        wallet.get_total_balance = AsyncMock(return_value=1_000_000)
+        wallet.get_balance = AsyncMock(return_value=500_000)
+        wallet.get_balance_for_offers = AsyncMock(return_value=500_000)
+        return wallet
+
+    @pytest.fixture
+    def mock_backend(self):
+        from unittest.mock import AsyncMock
+
+        backend = MagicMock()
+        backend.can_provide_neutrino_metadata = MagicMock(return_value=True)
+        backend.get_block_height = AsyncMock(return_value=930000)
+        return backend
+
+    @pytest.fixture
+    def config_with_delay(self):
+        return MakerConfig(
+            mnemonic="test " * 12,
+            directory_servers=["localhost:5222"],
+            network=NetworkType.REGTEST,
+            offer_reannounce_delay_max=300,
+        )
+
+    @pytest.fixture
+    def config_no_delay(self):
+        return MakerConfig(
+            mnemonic="test " * 12,
+            directory_servers=["localhost:5222"],
+            network=NetworkType.REGTEST,
+            offer_reannounce_delay_max=0,
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_reannounce_when_balance_stays_in_same_bucket(
+        self, mock_wallet, mock_backend, config_no_delay
+    ):
+        """When balance changes but stays in the same power-of-2 bucket, no re-announcement."""
+        from unittest.mock import AsyncMock
+
+        bot = MakerBot(
+            wallet=mock_wallet,
+            backend=mock_backend,
+            config=config_no_delay,
+        )
+        # Initial offer with maxsize at 2^18 = 262_144
+        bot.current_offers = [
+            Offer(
+                counterparty=bot.nick,
+                oid=0,
+                ordertype=OfferType.SW0_RELATIVE,
+                minsize=100_000,
+                maxsize=262_144,
+                txfee=1000,
+                cjfee="0.001",
+            )
+        ]
+
+        # New offer still rounds to 2^18 (balance shifted but stayed in bucket)
+        same_bucket_offer = Offer(
+            counterparty=bot.nick,
+            oid=0,
+            ordertype=OfferType.SW0_RELATIVE,
+            minsize=100_000,
+            maxsize=262_144,
+            txfee=1000,
+            cjfee="0.001",
+        )
+        bot.offer_manager.create_offers = AsyncMock(return_value=[same_bucket_offer])
+        bot._announce_offers = AsyncMock()
+
+        await bot._update_offers()
+
+        # No re-announcement since rounded maxsize is the same
+        bot._announce_offers.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_reannounce_delay_applied(self, mock_wallet, mock_backend, config_with_delay):
+        """When offers change and delay is configured, asyncio.sleep is called."""
+        from unittest.mock import AsyncMock, patch
+
+        bot = MakerBot(
+            wallet=mock_wallet,
+            backend=mock_backend,
+            config=config_with_delay,
+        )
+        bot.current_offers = [
+            Offer(
+                counterparty=bot.nick,
+                oid=0,
+                ordertype=OfferType.SW0_RELATIVE,
+                minsize=100_000,
+                maxsize=262_144,
+                txfee=1000,
+                cjfee="0.001",
+            )
+        ]
+
+        # New offer with different bucket
+        new_offer = Offer(
+            counterparty=bot.nick,
+            oid=0,
+            ordertype=OfferType.SW0_RELATIVE,
+            minsize=100_000,
+            maxsize=524_288,
+            txfee=1000,
+            cjfee="0.001",
+        )
+        bot.offer_manager.create_offers = AsyncMock(return_value=[new_offer])
+        bot._announce_offers = AsyncMock()
+
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            await bot._update_offers()
+
+            mock_sleep.assert_called_once()
+            delay = mock_sleep.call_args[0][0]
+            assert 0 <= delay <= 300
+
+        # Offers should have been announced after delay
+        bot._announce_offers.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_reannounce_no_delay_when_zero(self, mock_wallet, mock_backend, config_no_delay):
+        """When offer_reannounce_delay_max is 0, no sleep is applied."""
+        from unittest.mock import AsyncMock, patch
+
+        bot = MakerBot(
+            wallet=mock_wallet,
+            backend=mock_backend,
+            config=config_no_delay,
+        )
+        bot.current_offers = [
+            Offer(
+                counterparty=bot.nick,
+                oid=0,
+                ordertype=OfferType.SW0_RELATIVE,
+                minsize=100_000,
+                maxsize=262_144,  # 2^18
+                txfee=1000,
+                cjfee="0.001",
+            )
+        ]
+
+        new_offer = Offer(
+            counterparty=bot.nick,
+            oid=0,
+            ordertype=OfferType.SW0_RELATIVE,
+            minsize=100_000,
+            maxsize=524_288,
+            txfee=1000,
+            cjfee="0.001",
+        )
+        bot.offer_manager.create_offers = AsyncMock(return_value=[new_offer])
+        bot._announce_offers = AsyncMock()
+
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            await bot._update_offers()
+
+            mock_sleep.assert_not_called()
+
+        bot._announce_offers.assert_called_once()
 
 
 class TestPeerCountDetection:
