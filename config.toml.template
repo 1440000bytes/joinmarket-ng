@@ -236,6 +236,11 @@
 # rescan_interval_sec = 600
 # pending_tx_timeout_min = 60  # Minutes before marking unbroadcast CoinJoins as failed
 
+# Privacy: random delay (seconds) before re-announcing offers after a balance change.
+# Prevents observers from correlating block confirmations with offer updates.
+# Set to 0 to disable the delay. Default: 600 (10 minutes).
+# offer_reannounce_delay_max = 600
+
 # Onion service settings
 # onion_serving_host = "127.0.0.1"
 # onion_serving_port = 5222
