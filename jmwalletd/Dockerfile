@@ -45,11 +45,11 @@ ARG SETUPTOOLS_VERSION
 ARG WHEEL_VERSION
 RUN echo "setuptools==${SETUPTOOLS_VERSION}" > /build/constraints.txt && \
     echo "wheel==${WHEEL_VERSION}" >> /build/constraints.txt
-# Set PIP_CONSTRAINT as env var so it applies to pip's build isolation environments too.
-# Without this, pip downloads the latest setuptools for PEP 517 builds, and the setuptools
-# version is stamped into WHEEL metadata (Generator: setuptools (x.y.z)), breaking
-# reproducibility when a new setuptools release appears on PyPI.
-ENV PIP_CONSTRAINT=/build/constraints.txt
+# Note: --build-constraint is applied only to our own package install steps below to pin
+# setuptools in PEP 517 build isolation. It is NOT applied to third-party requirements installs
+# because some packages pin their own exact setuptools version (e.g. httptools==0.7.1 requires
+# setuptools==80.9.0 exactly and has no pre-built wheel on armv7). Applying --build-constraint
+# globally would cause a conflict between our pin (82.0.0) and httptools' pin (80.9.0).
 
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
@@ -74,6 +74,11 @@ COPY orderbook_watcher/requirements.txt /build/requirements-obwatcher.txt
 RUN if [ -n "$SOURCE_DATE_EPOCH" ]; then export SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; fi && \
     pip install --no-cache-dir -r /build/requirements-obwatcher.txt
 
+# Note: --build-constraint is NOT used for the requirements installs above.
+# It is only needed for our own packages below (which declare setuptools>=68.0).
+# Using --build-constraint globally would conflict with third-party packages that
+# pin their own exact setuptools version (e.g. httptools==0.7.1 pins setuptools==80.9.0
+# and has no pre-built wheel on armv7, triggering PEP 517 build isolation).
 COPY jmwalletd/requirements.txt /build/requirements-jmwalletd.txt
 RUN if [ -n "$SOURCE_DATE_EPOCH" ]; then export SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; fi && \
     pip install --no-cache-dir -r /build/requirements-jmwalletd.txt
@@ -100,7 +105,7 @@ RUN if [ -n "$SOURCE_DATE_EPOCH" ]; then \
     fi
 
 RUN if [ -n "$SOURCE_DATE_EPOCH" ]; then export SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; fi && \
-    pip install --no-cache-dir --no-deps \
+    pip install --no-cache-dir --no-deps --build-constraint /build/constraints.txt \
         /build/jmcore \
         /build/jmwallet \
         /build/maker \
