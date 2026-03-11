@@ -635,7 +635,13 @@ class Taker(TakerMonitoringMixin):
                             f"(total: {sum(u.value for u in self.preselected_utxos):,} sats)"
                         )
                     except ValueError as e:
-                        logger.error(f"Insufficient funds for CoinJoin: {e}")
+                        logger.error(str(e))
+                        logger.error(
+                            f"CoinJoin requires UTXOs with at least "
+                            f"{self.config.taker_utxo_age} confirmation(s) "
+                            f"(taker_utxo_age setting). Wait for more confirmations or "
+                            f"lower taker_utxo_age in your config."
+                        )
                         self.state = TakerState.FAILED
                         return None
 

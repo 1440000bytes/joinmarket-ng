@@ -104,7 +104,21 @@ class CoinSelectionMixin:
                 break
 
         if total < target_amount:
-            raise ValueError(f"Insufficient funds: need {target_amount}, have {total}")
+            # Compute total balance including unconfirmed UTXOs to give a helpful diagnosis
+            all_utxos = self.utxo_cache.get(mixdepth, [])
+            unconfirmed_total = sum(
+                u.value for u in all_utxos if not u.frozen and u.confirmations < min_confirmations
+            )
+            if unconfirmed_total > 0:
+                raise ValueError(
+                    f"Insufficient confirmed funds: need {target_amount:,} sats, "
+                    f"have {total:,} confirmed sats "
+                    f"({unconfirmed_total:,} sats are unconfirmed and require "
+                    f"{min_confirmations} confirmation(s) before use)"
+                )
+            raise ValueError(
+                f"Insufficient funds: need {target_amount:,} sats, have {total:,} sats"
+            )
 
         return selected
 
@@ -208,7 +222,20 @@ class CoinSelectionMixin:
                 break
 
         if total < target_amount:
-            raise ValueError(f"Insufficient funds: need {target_amount}, have {total}")
+            all_utxos = self.utxo_cache.get(mixdepth, [])
+            unconfirmed_total = sum(
+                u.value for u in all_utxos if not u.frozen and u.confirmations < min_confirmations
+            )
+            if unconfirmed_total > 0:
+                raise ValueError(
+                    f"Insufficient confirmed funds: need {target_amount:,} sats, "
+                    f"have {total:,} confirmed sats "
+                    f"({unconfirmed_total:,} sats are unconfirmed and require "
+                    f"{min_confirmations} confirmation(s) before use)"
+                )
+            raise ValueError(
+                f"Insufficient funds: need {target_amount:,} sats, have {total:,} sats"
+            )
 
         # Record where minimum selection ends
         min_count = len(selected)

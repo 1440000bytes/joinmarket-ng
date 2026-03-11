@@ -155,6 +155,16 @@ class TestSelectUtxos:
         with pytest.raises(ValueError, match="Insufficient funds"):
             wallet_service.select_utxos(0, 500_000, min_confirmations=1)
 
+    def test_select_insufficient_confirmed_funds_mentions_unconfirmed(
+        self, wallet_service: WalletService
+    ):
+        """When confirmed balance is 0 but unconfirmed funds exist, error explains it."""
+        # min_confirmations=100 means none of the UTXOs qualify (all have <100 confirms)
+        with pytest.raises(ValueError, match="unconfirmed") as exc_info:
+            wallet_service.select_utxos(0, 80_000, min_confirmations=100)
+        assert "confirmed" in str(exc_info.value)
+        assert "confirmation" in str(exc_info.value)
+
     def test_select_with_include_utxos(self, wallet_service: WalletService):
         """Mandatory UTXOs are always included (non-md0)."""
         mandatory = [wallet_service.utxo_cache[1][2]]  # 30k UTXO from md1
