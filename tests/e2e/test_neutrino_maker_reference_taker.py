@@ -36,7 +36,6 @@ import pytest
 from loguru import logger
 
 from tests.e2e.test_reference_coinjoin import (
-    COINJOIN_TIMEOUT,
     STARTUP_TIMEOUT,
     _wait_for_node_sync,
     cleanup_wallet_lock,
@@ -51,6 +50,11 @@ from tests.e2e.test_reference_coinjoin import (
     run_compose_cmd,
     wait_for_services,
 )
+
+# Longer timeout than the base COINJOIN_TIMEOUT (600 s) because the neutrino
+# maker can cause the reference taker to retry counterparty selection, adding
+# up to one full negotiation-round timeout on top of the normal coinjoin time.
+NEUTRINO_COINJOIN_TIMEOUT = 780  # 13 minutes
 
 
 def is_neutrino_maker_running() -> bool:
@@ -239,7 +243,11 @@ async def test_reference_taker_coinjoin_with_neutrino_maker_present(
 
     logger.info("Executing CoinJoin via JAM sendpayment with neutrino maker present...")
     result = subprocess.run(
-        cmd, capture_output=True, text=True, timeout=COINJOIN_TIMEOUT, check=False
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=NEUTRINO_COINJOIN_TIMEOUT,
+        check=False,
     )
 
     logger.info(f"sendpayment stdout:\n{result.stdout}")

@@ -74,6 +74,21 @@ class CoinSelectionMixin:
                 return selected
 
             if not eligible:
+                # Provide a helpful message when unconfirmed funds exist
+                all_utxos = self.utxo_cache.get(mixdepth, [])
+                unconfirmed_total = sum(
+                    u.value
+                    for u in all_utxos
+                    if not u.frozen
+                    and not u.is_fidelity_bond
+                    and u.confirmations < min_confirmations
+                )
+                if unconfirmed_total > 0:
+                    raise ValueError(
+                        f"Insufficient confirmed funds: no eligible UTXOs in mixdepth 0 "
+                        f"({unconfirmed_total:,} sats are unconfirmed and require "
+                        f"{min_confirmations} confirmation(s) before use)"
+                    )
                 raise ValueError("Insufficient funds: no eligible UTXOs in mixdepth 0")
             if eligible[0].value + total < target_amount:
                 raise ValueError(

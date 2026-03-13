@@ -172,11 +172,12 @@ class NeutrinoBackend(BlockchainBackend):
                 if not status.get("in_progress", False):
                     return
             except Exception as e:
-                # Endpoint not available (old server version) – stop waiting
+                # Endpoint not available (old server version or any error) – stop waiting
                 if isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 404:
                     logger.warning("GET /v1/rescan/status not available")
-                    return
-                logger.warning(f"GET /v1/rescan/status failed ({e})")
+                else:
+                    logger.warning(f"GET /v1/rescan/status failed ({e})")
+                return
 
             elapsed = asyncio.get_event_loop().time() - start
             if elapsed >= timeout:
