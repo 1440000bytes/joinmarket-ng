@@ -5,7 +5,7 @@ Available backends:
 - BitcoinCoreBackend: Full node via Bitcoin Core RPC (no wallet, uses scantxoutset)
 - DescriptorWalletBackend: Full node with descriptor wallet (uses importdescriptors + listunspent)
 - NeutrinoBackend: Lightweight BIP157/BIP158 SPV client
-- MempoolBackend: Mempool.space API (third-party, no setup required)
+- MempoolBackend: Mempool API (third-party, no setup required)
 
 Backend Selection Guide:
 - DescriptorWalletBackend (Recommended): Fastest for ongoing operations. Uses Bitcoin Core's

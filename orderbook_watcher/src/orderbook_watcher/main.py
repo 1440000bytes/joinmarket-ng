@@ -41,7 +41,7 @@ def _create_blockchain_backend(settings: object) -> BlockchainBackend | None:
     """Create a blockchain backend for bond verification if Bitcoin settings are configured.
 
     Returns a BitcoinCoreBackend for full node configurations, a NeutrinoBackend for
-    neutrino configurations, or None to fall back to the mempool.space API.
+    neutrino configurations, or None to fall back to the mempool API.
     """
     bitcoin_settings = settings.bitcoin  # type: ignore[attr-defined]
     backend_type = bitcoin_settings.backend_type

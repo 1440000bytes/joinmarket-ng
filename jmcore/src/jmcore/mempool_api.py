@@ -1,5 +1,5 @@
 """
-Mempool.space API client for Bitcoin blockchain queries.
+Mempool API client for Bitcoin blockchain queries.
 """
 
 from __future__ import annotations
