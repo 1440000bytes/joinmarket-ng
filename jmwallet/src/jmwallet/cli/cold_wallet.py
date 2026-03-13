@@ -323,8 +323,8 @@ def prepare_certificate_message(
     ] = None,
     mempool_api: Annotated[
         str,
-        typer.Option("--mempool-api", help="Mempool API URL for fetching block height"),
-    ] = "https://mempool.space/api",
+        typer.Option("--mempool-api", help="Mempool API URL for fetching block height (required)"),
+    ] = "",
     log_level: Annotated[str, typer.Option("--log-level")] = "INFO",
 ) -> None:
     """
@@ -664,8 +664,8 @@ def import_certificate(
     ] = False,
     mempool_api: Annotated[
         str,
-        typer.Option("--mempool-api", help="Mempool API URL for fetching block height"),
-    ] = "https://mempool.space/api",
+        typer.Option("--mempool-api", help="Mempool API URL for fetching block height (required)"),
+    ] = "",
     log_level: Annotated[str, typer.Option("--log-level")] = "INFO",
 ) -> None:
     """
