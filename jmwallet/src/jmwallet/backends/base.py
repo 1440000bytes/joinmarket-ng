@@ -176,7 +176,7 @@ class BlockchainBackend(ABC):
     def has_mempool_access(self) -> bool:
         """Check if this backend can access unconfirmed transactions in the mempool.
 
-        Full node backends (Bitcoin Core) and API backends (Mempool.space) have
+        Full node backends (Bitcoin Core) and mempool API backends have
         mempool access and can verify transactions immediately after broadcast.
 
         Light client backends (Neutrino using BIP157/158) cannot access the mempool

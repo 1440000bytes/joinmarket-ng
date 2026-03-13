@@ -1242,7 +1242,7 @@ class OrderbookAggregator:
         logger.info(f"Bond verification complete: {valid_count}/{len(bonds_to_verify)} verified")
 
     async def _calculate_bond_values_via_mempool(self, orderbook: OrderBook) -> None:
-        """Calculate bond values via mempool.space API (legacy path)."""
+        """Calculate bond values via mempool API (legacy path)."""
         current_time = int(datetime.now(UTC).timestamp())
 
         tasks = [

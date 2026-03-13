@@ -1,5 +1,5 @@
 """
-Mempool.space API blockchain backend.
+Mempool API blockchain backend.
 Beginner-friendly backend that requires no setup.
 """
 
@@ -21,7 +21,7 @@ from jmwallet.backends.base import (
 
 class MempoolBackend(BlockchainBackend):
     """
-    Blockchain backend using Mempool.space API.
+    Blockchain backend using Mempool API.
     Works with public instance or self-hosted.
     """
 
@@ -240,7 +240,7 @@ class MempoolBackend(BlockchainBackend):
         self,
         bonds: list[BondVerificationRequest],
     ) -> list[BondVerificationResult]:
-        """Verify fidelity bond UTXOs via parallel mempool.space API calls.
+        """Verify fidelity bond UTXOs via parallel mempool API calls.
 
         Fetches the tip height once, then issues parallel HTTP requests for each
         bond UTXO with a semaphore to respect rate limits.
