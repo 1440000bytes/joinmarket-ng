@@ -654,11 +654,11 @@ class OrderbookWatcherSettings(BaseModel):
         description="Update interval in seconds",
     )
     mempool_api_url: str = Field(
-        default="http://mempopwcaqoi7z5xj5zplfdwk5bgzyl3hemx725d4a3agado6xtk3kqd.onion/api",
+        default="",
         description="Mempool API URL for transaction lookups",
     )
     mempool_web_url: str | None = Field(
-        default="https://mempool.sgn.space",
+        default=None,
         description="Mempool web URL for human-readable links",
     )
     uptime_grace_period: int = Field(
