@@ -34,20 +34,16 @@ The unified `docker-compose.yml` uses profiles to organize services:
 | `neutrino` | + neutrino, maker-neutrino, wallet-funder | Light client testing |
 | `reference-maker` | + jam-maker1, jam-maker2 | Reference makers (rarely needed) |
 
-### Important: Don't Mix Neutrino with Reference
+### Note: Neutrino + Reference Profile Interaction
 
-The `neutrino` and `reference` profiles should NOT be run together because:
+When `neutrino` and `reference` profiles run together, the **neutrino maker** advertises
+offers to the directory server. The **reference taker (JAM)** may pick up these offers,
+but the neutrino maker cannot verify JAM's UTXOs (legacy PoDLE format lacks extended
+metadata). The neutrino maker correctly detects this incompatibility and sends `!error`
+back to the taker. The coinjoin still succeeds because enough regular makers (maker1,
+maker2) are available.
 
-1. The **neutrino maker** advertises offers to the directory server
-2. The **reference taker (JAM)** may pick up these offers
-3. But neutrino connects to the main `bitcoin` node, while JAM's wallet is on `bitcoin-jam`
-4. Result: neutrino maker can't verify JAM's UTXOs and the coinjoin fails
-
-**If you previously ran `--profile all`, stop the neutrino maker first:**
-
-```bash
-docker stop jm-maker-neutrino
-```
+This interaction is tested by `test_neutrino_maker_reference_taker.py`.
 
 ## Test Suites
 
@@ -416,6 +412,7 @@ Pre-configured test wallet mnemonics (regtest only!):
 |--------|----------|
 | Maker 1 | `avoid whisper mesh corn already blur sudden fine planet chicken hover sniff` |
 | Maker 2 | `minute faint grape plate stock mercy tent world space opera apple rocket` |
+| Maker-Neutrino | `ice index boss season jealous supreme nephew kit cool lock caught enter` |
 | Taker | `burden notable love elephant orbit couch message galaxy elevator exile drop toilet` |
 | Generic | `abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about` |
 
@@ -479,22 +476,19 @@ docker compose restart maker1 maker2
 sleep 10
 ```
 
-### Neutrino Maker Interfering with Reference Tests
+### Neutrino Maker and Reference Tests
 
-If reference tests fail with "Makers who didnt respond" or "UTXO not found":
+The neutrino maker has its own unique mnemonic and funded wallet. When running alongside
+reference tests, the neutrino maker correctly detects incompatible takers and sends
+`!error`. Coinjoins succeed because enough regular makers are available.
+
+If reference tests fail with "Makers who didnt respond" or "UTXO not found", the issue
+is likely stale wallet state, not the neutrino maker. Try cleaning volumes:
 
 ```bash
-# Check if neutrino maker is running
-docker ps | grep neutrino
-
-# Stop it
-docker stop jm-maker-neutrino
-
-# Re-run reference tests
-pytest tests/e2e/test_reference_coinjoin.py -v -s
+docker compose --profile reference down -v
+docker compose --profile reference up -d --build
 ```
-
-The issue is that the neutrino maker can't verify UTXOs from the `bitcoin-jam` node.
 
 ### Check Service Status
 

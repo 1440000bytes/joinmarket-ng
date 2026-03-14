@@ -49,6 +49,7 @@ from tests.e2e.test_reference_coinjoin import (
     restart_makers_and_wait,
     run_bitcoin_cmd,
     run_compose_cmd,
+    run_jam_cmd,
     wait_for_services,
 )
 
@@ -56,6 +57,12 @@ from tests.e2e.test_reference_coinjoin import (
 # maker can cause the reference taker to retry counterparty selection, adding
 # up to one full negotiation-round timeout on top of the normal coinjoin time.
 NEUTRINO_COINJOIN_TIMEOUT = 780  # 13 minutes
+
+# Shorter per-attempt timeout for the incompatibility probe.  We only need the
+# taker to *contact* makers (!fill / !auth stage), not complete the full CoinJoin.
+# 300 s (5 min) is generous for that.  4 attempts × 300 s = 20 min total, well
+# within the CI job budget.
+NEUTRINO_PROBE_TIMEOUT = 300  # 5 minutes
 
 # Maximum number of CoinJoin attempts before giving up on seeing the neutrino
 # maker contacted.  With -N 2 and 3 makers the probability of *not* selecting
@@ -183,14 +190,45 @@ async def jam_wallet_for_neutrino_test(neutrino_reference_services):
     }
 
 
+def _kill_sendpayment_in_jam() -> None:
+    """Kill any orphaned sendpayment.py processes inside the JAM container.
+
+    When ``subprocess.run`` times out, only the host-side ``docker compose exec``
+    process is killed.  ``sendpayment.py`` may keep running inside the container,
+    holding the wallet lock and preventing subsequent CoinJoin attempts.
+    """
+    result = run_jam_cmd(
+        ["bash", "-c", "pkill -f sendpayment.py || true"],
+        timeout=15,
+    )
+    if result.returncode == 0:
+        logger.debug("Killed orphaned sendpayment.py inside JAM container")
+
+
 def _run_coinjoin(
     compose_file,
     wallet_name: str,
     wallet_password: str,
     dest_address: str,
     cj_amount: int = 5_000_000,
+    timeout: int = NEUTRINO_COINJOIN_TIMEOUT,
 ) -> subprocess.CompletedProcess[str]:
-    """Run one sendpayment.py CoinJoin round and return the completed process."""
+    """Run one sendpayment.py CoinJoin round and return the completed process.
+
+    Parameters
+    ----------
+    timeout:
+        Per-attempt timeout in seconds.  Defaults to
+        ``NEUTRINO_COINJOIN_TIMEOUT`` (780 s) which is enough for a full
+        CoinJoin.  Pass a smaller value (e.g. 300 s) when you only need
+        the taker to *contact* makers and don't need the transaction to
+        confirm.
+
+    If ``sendpayment.py`` does not finish within *timeout* seconds, the
+    orphaned process is killed inside the container and a synthetic
+    ``CompletedProcess`` with ``returncode=-1`` is returned so callers can
+    inspect partial output without catching ``TimeoutExpired``.
+    """
     cmd = [
         "docker",
         "compose",
@@ -206,13 +244,36 @@ def _run_coinjoin(
         f"-N 2 -m 0 /root/.joinmarket-ng/wallets/{wallet_name} "
         f"{cj_amount} {dest_address} --yes",
     ]
-    return subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=NEUTRINO_COINJOIN_TIMEOUT,
-        check=False,
-    )
+    try:
+        return subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        logger.warning(
+            f"sendpayment.py timed out after {timeout}s — "
+            "killing orphaned process inside JAM container"
+        )
+        _kill_sendpayment_in_jam()
+        # Give the container a moment to release the wallet lock
+        time.sleep(5)
+        cleanup_wallet_lock(wallet_name)
+        # Return a synthetic result so the caller can inspect partial output
+        stdout = (
+            exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+        )
+        stderr = (
+            exc.stderr.decode() if isinstance(exc.stderr, bytes) else (exc.stderr or "")
+        )
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=-1,
+            stdout=f"[TIMEOUT after {timeout}s]\n{stdout}",
+            stderr=stderr,
+        )
 
 
 @pytest.mark.asyncio
@@ -330,7 +391,7 @@ async def test_reference_taker_coinjoin_with_neutrino_maker_present(
 
 
 @pytest.mark.asyncio
-@pytest.mark.timeout(3600)
+@pytest.mark.timeout(1800)
 async def test_neutrino_maker_logs_incompatibility(
     neutrino_reference_services,
     jam_wallet_for_neutrino_test,
@@ -379,7 +440,13 @@ async def test_neutrino_maker_logs_incompatibility(
         # Snapshot time just before this CoinJoin so we can scope log checks
         round_start = datetime.now(tz=timezone.utc)
 
-        result = _run_coinjoin(compose_file, wallet_name, wallet_password, dest_address)
+        result = _run_coinjoin(
+            compose_file,
+            wallet_name,
+            wallet_password,
+            dest_address,
+            timeout=NEUTRINO_PROBE_TIMEOUT,
+        )
 
         logger.info(f"Attempt {attempt} sendpayment output:\n{result.stdout[-1000:]}")
 

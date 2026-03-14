@@ -1087,7 +1087,7 @@ services:
       - all
 
   # Maker with neutrino backend
-  # Uses the same mnemonic as maker1 so it gets funded by wallet-funder
+  # Uses its own unique mnemonic (funded by wallet-funder via fund-test-wallets.sh)
   maker-neutrino:
     image: ${MAKER_IMAGE:-}
     build:
@@ -1107,7 +1107,7 @@ services:
           cpus: "1"
           memory: 512M
     environment:
-      - MNEMONIC=avoid whisper mesh corn already blur sudden fine planet chicken hover sniff
+      - MNEMONIC=ice index boss season jealous supreme nephew kit cool lock caught enter
       - NETWORK_CONFIG__NETWORK=testnet
       - NETWORK_CONFIG__BITCOIN_NETWORK=regtest
       - BITCOIN__BACKEND_TYPE=neutrino

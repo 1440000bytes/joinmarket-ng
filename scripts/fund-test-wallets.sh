@@ -31,6 +31,9 @@ echo "Bitcoin Core is ready"
 # Maker3: "echo rural present blue chapter game keen keen keen keen keen keen"
 #   Address: bcrt1qf5gztst2rddqv4hw2jh4m52ahrrvjrz4zescgw
 #
+# Maker-Neutrino: "ice index boss season jealous supreme nephew kit cool lock caught enter"
+#   Address: bcrt1q6mse43hzgfdqh7fyg05lmd4x2ufhlunn3gw5j3
+#
 # Taker: "burden notable love elephant orbit couch message galaxy elevator exile drop toilet"
 #   Address: bcrt1q84l5vscg3pvjn6se8jp4ruymtyh393ed5v2d9e
 #
@@ -52,6 +55,9 @@ MAKER3_ADDR="bcrt1qe4hmtjq53u7l5vr9uw6sjr9c75ulmklg8jgsj0"
 # Taker address (derived from: burden notable love...)
 TAKER_ADDR="bcrt1q84l5vscg3pvjn6se8jp4ruymtyh393ed5v2d9e"
 
+# Maker-Neutrino address (derived from: ice index boss...)
+MAKER_NEUTRINO_ADDR="bcrt1q6mse43hzgfdqh7fyg05lmd4x2ufhlunn3gw5j3"
+
 # Fidelity bond P2WSH address for Maker1
 # Path: m/84'/1'/0'/2/0 with locktime 4099766400 (Dec 1, 2099)
 # Generated with: python -m jmwallet generate-bond-address --mnemonic "avoid whisper..." --locktime 4099766400 --network regtest
@@ -62,6 +68,7 @@ echo "  Maker1: $MAKER1_ADDR"
 echo "  Maker1 Fidelity Bond: $MAKER1_FIDELITY_BOND_ADDR"
 echo "  Maker2: $MAKER2_ADDR"
 echo "  Maker3: $MAKER3_ADDR"
+echo "  Maker-Neutrino: $MAKER_NEUTRINO_ADDR"
 echo "  Taker:  $TAKER_ADDR"
 
 # Mine blocks to each address to fund them
@@ -77,6 +84,9 @@ echo "Mined $BLOCKS_TO_MINE blocks to Maker3"
 
 $CLI generatetoaddress $BLOCKS_TO_MINE "$TAKER_ADDR"
 echo "Mined $BLOCKS_TO_MINE blocks to Taker"
+
+$CLI generatetoaddress $BLOCKS_TO_MINE "$MAKER_NEUTRINO_ADDR"
+echo "Mined $BLOCKS_TO_MINE blocks to Maker-Neutrino"
 
 # Mine some extra blocks for coinbase maturity
 # After this, all wallets should have spendable funds
