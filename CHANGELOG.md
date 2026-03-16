@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Release verification: skip `jam-ng` layer reproducibility check**: Updated `scripts/verify-release.sh --reproduce` to exclude `jam-ng` from layer digest comparison while still building it, matching the existing behavior in `scripts/sign-release.sh`. The `jam-ng` frontend bundle (react-scripts/webpack) remains non-deterministic across environments, so this avoids false reproducibility failures without skipping the image build.
 
+### Fixed
+
+- **`jmwalletd` coinjoin router settings consistency**: `taker/coinjoin` and `taker/schedule` now populate `TakerConfig` with network, directory server, and Tor stream-isolation settings from `JoinMarketSettings`, matching maker behavior and other modules.
+
 ## [0.21.0] - 2026-03-15
 
 ### Changed

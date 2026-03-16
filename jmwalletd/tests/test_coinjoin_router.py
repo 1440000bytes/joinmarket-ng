@@ -75,8 +75,10 @@ class TestDoCoinjoin:
     @patch("jmwalletd._backend.get_backend", new_callable=AsyncMock)
     @patch("taker.taker.Taker")
     @patch("taker.config.TakerConfig")
+    @patch("jmwalletd.routers.coinjoin.get_settings")
     def test_start_coinjoin(
         self,
+        mock_get_settings: Mock,
         mock_config: Mock,
         mock_taker_cls: Mock,
         mock_backend: AsyncMock,
@@ -85,6 +87,17 @@ class TestDoCoinjoin:
         client, token = authed_client
         mock_taker = AsyncMock()
         mock_taker_cls.return_value = mock_taker
+
+        from jmcore.models import NetworkType
+
+        expected_dirs = ["testdirectoryfakeaddress.onion:5222"]
+        mock_settings = Mock()
+        mock_settings.get_directory_servers.return_value = expected_dirs
+        mock_settings.network_config.network = NetworkType.SIGNET
+        mock_settings.tor.socks_host = "127.0.0.1"
+        mock_settings.tor.socks_port = 9050
+        mock_settings.tor.stream_isolation = False
+        mock_get_settings.return_value = mock_settings
 
         resp = client.post(
             "/api/v1/wallet/test_wallet.jmdat/taker/coinjoin",
@@ -98,6 +111,13 @@ class TestDoCoinjoin:
             headers=_auth_headers(token),
         )
         assert resp.status_code == 202
+
+        _, kwargs = mock_config.call_args
+        assert kwargs["network"] == NetworkType.SIGNET
+        assert kwargs["directory_servers"] == expected_dirs
+        assert kwargs["socks_host"] == "127.0.0.1"
+        assert kwargs["socks_port"] == 9050
+        assert kwargs["stream_isolation"] is False
 
 
 class TestStartMaker:
@@ -135,7 +155,7 @@ class TestStartMaker:
     @patch("jmwalletd._backend.get_backend", new_callable=AsyncMock)
     @patch("maker.bot.MakerBot")
     @patch("maker.config.MakerConfig")
-    @patch("jmcore.settings.get_settings")
+    @patch("jmwalletd.routers.coinjoin.get_settings")
     def test_start_maker_uses_directory_servers_from_settings(
         self,
         mock_get_settings: Mock,

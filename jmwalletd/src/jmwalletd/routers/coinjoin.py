@@ -4,17 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from loguru import logger
 
+from jmcore.settings import get_settings
 from jmwalletd.deps import get_daemon_state, require_auth
 from jmwalletd.errors import (
     ActionNotAllowed,
     BackendNotReady,
     InvalidRequestFormat,
+    NoWalletFound,
     ServiceAlreadyStarted,
     ServiceNotStarted,
     TransactionFailed,
@@ -99,12 +101,18 @@ async def do_coinjoin(
         async def _run_coinjoin() -> None:
             try:
                 backend = await get_backend(state.data_dir, force_new=True)
+                jm_settings = get_settings()
                 config = TakerConfig(
                     mnemonic=ws.mnemonic,  # type: ignore[arg-type]
                     mixdepth=body.mixdepth,
                     amount=body.amount_sats,
                     destination_address=body.destination,  # type: ignore[arg-type]
                     counterparty_count=body.counterparties,
+                    network=jm_settings.network_config.network,
+                    directory_servers=jm_settings.get_directory_servers(),
+                    socks_host=jm_settings.tor.socks_host,
+                    socks_port=jm_settings.tor.socks_port,
+                    stream_isolation=jm_settings.tor.stream_isolation,
                 )
                 taker = Taker(
                     wallet=ws,
@@ -160,8 +168,14 @@ async def run_schedule(
             try:
                 ws = state.wallet_service
                 backend = await get_backend(state.data_dir, force_new=True)
+                jm_settings = get_settings()
                 config = TakerConfig(
                     mnemonic=ws.mnemonic,  # type: ignore[arg-type]
+                    network=jm_settings.network_config.network,
+                    directory_servers=jm_settings.get_directory_servers(),
+                    socks_host=jm_settings.tor.socks_host,
+                    socks_port=jm_settings.tor.socks_port,
+                    stream_isolation=jm_settings.tor.stream_isolation,
                 )
                 taker = Taker(
                     wallet=ws,
@@ -170,7 +184,7 @@ async def run_schedule(
                 )
                 # run_schedule is the closest to tumbler in the Taker API.
                 if hasattr(taker, "run_schedule") and body.destination_addresses:
-                    schedule = body.destination_addresses
+                    schedule = cast(list[str | int | float], body.destination_addresses)
                     state.current_schedule = [schedule]
                 await taker.start()
             except Exception:
@@ -203,8 +217,6 @@ async def get_schedule(
 ) -> GetScheduleResponse:
     """Get the current tumbler schedule."""
     if state.current_schedule is None:
-        from jmwalletd.errors import NoWalletFound
-
         raise NoWalletFound("No schedule is currently running.")
 
     return GetScheduleResponse(schedule=state.current_schedule)
@@ -266,7 +278,6 @@ async def start_maker(
         raise InvalidRequestFormat(f"Invalid maker parameter: {exc}") from exc
 
     try:
-        from jmcore.settings import get_settings
         from jmwalletd._backend import get_backend
         from maker.bot import MakerBot
         from maker.config import MakerConfig
