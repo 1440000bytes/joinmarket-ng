@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Release verification: skip `jam-ng` layer reproducibility check**: Updated `scripts/verify-release.sh --reproduce` to exclude `jam-ng` from layer digest comparison while still building it, matching the existing behavior in `scripts/sign-release.sh`. The `jam-ng` frontend bundle (react-scripts/webpack) remains non-deterministic across environments, so this avoids false reproducibility failures without skipping the image build.
 
+### Added
+
+- **Taker: Multi-directory offer verification**: Implemented cross-validation of offers across multiple independent directories to prevent single-directory Sybil attacks. Takers now track the source directory for each offer and filter out those that do not meet a configurable threshold of directory confirmations.
+
 ### Fixed
 
 - **`jmwalletd` coinjoin router settings consistency**: `taker/coinjoin` and `taker/schedule` now populate `TakerConfig` with network, directory server, and Tor stream-isolation settings from `JoinMarketSettings`, matching maker behavior and other modules.
