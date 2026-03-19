@@ -44,6 +44,10 @@ class BackgroundTasksMixin:
     _directory_reconnect_attempts: dict[str, int]
     _all_directories_disconnected: bool
 
+    def _prune_done_tasks(self) -> None:
+        """Remove completed tasks from listen_tasks to prevent unbounded growth."""
+        self.listen_tasks = [t for t in self.listen_tasks if not t.done()]
+
     async def _periodic_rescan(self: MakerBotProtocol) -> None:
         """Background task to periodically rescan wallet and update offers.
 
@@ -385,7 +389,10 @@ class BackgroundTasksMixin:
                             except Exception as e:
                                 logger.warning(f"Failed to announce offer to {new_node_id}: {e}")
 
-                        # Start listener task
+                        # Start listener task.
+                        # Prune completed tasks first to prevent listen_tasks from growing
+                        # unboundedly on repeated reconnection cycles
+                        self._prune_done_tasks()
                         task = asyncio.create_task(self._listen_client(new_node_id, client))
                         self.listen_tasks.append(task)
 
