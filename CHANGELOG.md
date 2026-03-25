@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 ### Fixed
 - Fixed fidelity bond omission in offer re-announcements after directory reconnection.
+- Fixed memory leak in `MakerBot` where `_rate_limited_log_times` grew unbounded. Added size-based pruning (200,000 entries, ~64MB) and ensured consistent rate limiter cleanup.
 
 ### Changed
 
