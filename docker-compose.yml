@@ -247,6 +247,7 @@ services:
       - BITCOIN__RPC_USER=test
       - BITCOIN__RPC_PASSWORD=test
       - NETWORK_CONFIG__NETWORK=testnet
+      - NETWORK_CONFIG__BITCOIN_NETWORK=regtest
       - JMWALLETD_HOST=0.0.0.0
       - JMWALLETD_NO_TLS=true
       - LOGGING__LEVEL=DEBUG
@@ -299,6 +300,7 @@ services:
       # Use testnet for protocol compatibility with directory server and makers
       # (the reference JoinMarket implementation uses "testnet" for regtest networks)
       - NETWORK_CONFIG__NETWORK=testnet
+      - NETWORK_CONFIG__BITCOIN_NETWORK=regtest
       - JMWALLETD_HOST=0.0.0.0
       - JMWALLETD_NO_TLS=true
       - LOGGING__LEVEL=DEBUG

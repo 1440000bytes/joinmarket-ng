@@ -480,10 +480,13 @@ class TestNeutrinoCoinJoin:
                 logger.info("Waiting for transaction to be broadcast and confirmed...")
                 # The taker returns txid immediately after receiving signatures.
                 # We check mempool and mine manually if found, or wait for confirmation.
+                # As a safety net, broadcast directly via Bitcoin Core after a grace period.
                 import httpx
 
-                max_retries = 30  # Up to ~1.5 minutes total wait time
+                max_retries = 40  # Up to ~2 minutes total wait time
                 retry_delay = 3  # Check every 3 seconds
+                self_broadcast_after = 20  # Broadcast via Core after this many attempts
+                self_broadcast_done = False
                 found = False
 
                 for attempt in range(max_retries):
@@ -527,6 +530,33 @@ class TestNeutrinoCoinJoin:
                                 continue
                     except Exception as e:
                         logger.warning(f"Failed to check mempool: {e}")
+
+                    # 3. Safety net: broadcast directly via Bitcoin Core RPC
+                    # when makers are slow to relay (e.g. Tor not reachable
+                    # from host, or maker broadcast delay).
+                    if (
+                        not self_broadcast_done
+                        and attempt >= self_broadcast_after
+                        and taker.final_tx
+                    ):
+                        logger.info(
+                            "Transaction not seen after "
+                            f"{(attempt + 1) * retry_delay}s, "
+                            "broadcasting directly via Bitcoin Core..."
+                        )
+                        try:
+                            broadcast_txid = (
+                                await bitcoin_backend.broadcast_transaction(
+                                    taker.final_tx.hex()
+                                )
+                            )
+                            logger.info(f"Direct broadcast succeeded: {broadcast_txid}")
+                        except Exception as be:
+                            logger.info(
+                                f"Direct broadcast returned: {be} "
+                                "(may already be in mempool)"
+                            )
+                        self_broadcast_done = True
 
                     if (attempt + 1) % 5 == 0:
                         logger.info(
@@ -834,10 +864,17 @@ class TestNeutrinoCoinJoin:
                     # The taker returns txid immediately after receiving signatures,
                     # but makers receive !push and broadcast asynchronously (~60s later).
                     # We check mempool and mine manually if found, or wait for confirmation.
+                    # As a safety net, if the tx hasn't appeared after a grace period,
+                    # we broadcast it directly via Bitcoin Core RPC (the neutrino taker
+                    # may fail to relay when Tor is not accessible from the test host).
                     import httpx
 
-                    max_retries = 30  # Up to ~1.5 minutes total wait time
+                    max_retries = 40  # Up to ~2 minutes total wait time
                     retry_delay = 3  # Check every 3 seconds
+                    self_broadcast_after = (
+                        20  # Broadcast via Core after this many attempts
+                    )
+                    self_broadcast_done = False
                     found = False
 
                     for attempt in range(max_retries):
@@ -881,6 +918,35 @@ class TestNeutrinoCoinJoin:
                                     continue
                         except Exception as e:
                             logger.warning(f"Failed to check mempool: {e}")
+
+                        # 3. Safety net: broadcast directly via Bitcoin Core RPC
+                        # when makers are slow to relay (e.g. Tor not reachable
+                        # from host, or maker broadcast delay).
+                        if (
+                            not self_broadcast_done
+                            and attempt >= self_broadcast_after
+                            and taker.final_tx
+                        ):
+                            logger.info(
+                                "Transaction not seen after "
+                                f"{(attempt + 1) * retry_delay}s, "
+                                "broadcasting directly via Bitcoin Core..."
+                            )
+                            try:
+                                broadcast_txid = (
+                                    await bitcoin_backend.broadcast_transaction(
+                                        taker.final_tx.hex()
+                                    )
+                                )
+                                logger.info(
+                                    f"Direct broadcast succeeded: {broadcast_txid}"
+                                )
+                            except Exception as be:
+                                logger.info(
+                                    f"Direct broadcast returned: {be} "
+                                    "(may already be in mempool)"
+                                )
+                            self_broadcast_done = True
 
                         if (attempt + 1) % 5 == 0:
                             logger.info(
