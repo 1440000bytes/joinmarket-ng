@@ -267,6 +267,27 @@ def _show_freeze_status(utxos: list[UTXOInfo]) -> None:
         )
 
 
+def _unfreeze_non_fidelity_bonds(wallet: WalletService, utxos: list[UTXOInfo]) -> tuple[int, int]:
+    """Unfreeze only non-fidelity-bond UTXOs.
+
+    Returns:
+        Tuple of (unfrozen_count, skipped_fidelity_bond_count)
+    """
+    unfrozen_count = 0
+    skipped_fidelity_bonds = 0
+
+    for utxo in utxos:
+        if not utxo.frozen:
+            continue
+        if utxo.is_fidelity_bond:
+            skipped_fidelity_bonds += 1
+            continue
+        wallet.toggle_freeze_utxo(utxo.outpoint)
+        unfrozen_count += 1
+
+    return unfrozen_count, skipped_fidelity_bonds
+
+
 def _run_freeze_tui(
     stdscr: curses.window,
     utxos: list[UTXOInfo],
@@ -461,9 +482,12 @@ def _run_freeze_tui(
 
         elif key == ord("n"):  # Unfreeze all
             try:
-                for utxo in utxos:
-                    if utxo.frozen:
-                        wallet.toggle_freeze_utxo(utxo.outpoint)
+                _, skipped_fidelity_bonds = _unfreeze_non_fidelity_bonds(wallet, utxos)
+                if skipped_fidelity_bonds > 0:
+                    error_message = (
+                        f"Skipped {skipped_fidelity_bonds} fidelity bond UTXO(s); kept frozen"
+                    )
+                    error_display_until = time.monotonic() + 5.0
             except OSError as e:
                 error_message = f"Failed to persist freeze state: {e}"
                 error_display_until = time.monotonic() + 5.0

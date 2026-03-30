@@ -2,6 +2,8 @@
 Tests for wallet data models.
 """
 
+import time
+
 import pytest
 
 from jmwallet.wallet.models import AddressInfo, UTXOInfo
@@ -75,12 +77,46 @@ class TestUTXOInfo:
     def test_p2wsh_is_timelocked(self, p2wsh_utxo):
         """Test P2WSH fidelity bond UTXO is timelocked."""
         assert p2wsh_utxo.is_timelocked is True
+        assert p2wsh_utxo.is_fidelity_bond is True
         assert p2wsh_utxo.locktime == 1768435200
 
     def test_p2wsh_without_locktime_not_timelocked(self, p2wsh_utxo_no_locktime):
         """Test P2WSH UTXO without locktime is not considered timelocked."""
         assert p2wsh_utxo_no_locktime.is_p2wsh is True
         assert p2wsh_utxo_no_locktime.is_timelocked is False
+        assert p2wsh_utxo_no_locktime.is_fidelity_bond is False
+
+    def test_is_locked_for_future_locktime(self):
+        """Fidelity bond UTXO is locked when locktime is in the future."""
+        utxo = UTXOInfo(
+            txid="0" * 64,
+            vout=1,
+            value=50000,
+            address="bc1qfuture",
+            confirmations=1,
+            scriptpubkey="0020" + "11" * 32,
+            path="m/84'/0'/0'/2/1",
+            mixdepth=0,
+            locktime=int(time.time()) + 3600,
+        )
+        assert utxo.is_fidelity_bond is True
+        assert utxo.is_locked is True
+
+    def test_is_locked_false_for_expired_locktime(self):
+        """Fidelity bond UTXO is unlocked after locktime passes."""
+        utxo = UTXOInfo(
+            txid="1" * 64,
+            vout=2,
+            value=60000,
+            address="bc1qpast",
+            confirmations=200,
+            scriptpubkey="0020" + "22" * 32,
+            path="m/84'/0'/0'/2/2",
+            mixdepth=0,
+            locktime=int(time.time()) - 3600,
+        )
+        assert utxo.is_fidelity_bond is True
+        assert utxo.is_locked is False
 
     def test_invalid_scriptpubkey_length(self):
         """Test UTXO with invalid scriptpubkey length."""
