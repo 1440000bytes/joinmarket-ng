@@ -5,6 +5,7 @@ Send transaction command.
 from __future__ import annotations
 
 import asyncio
+import math
 from pathlib import Path
 from typing import Annotated
 
@@ -18,6 +19,8 @@ from jmcore.cli_common import (
 from loguru import logger
 
 from jmwallet.cli import app
+
+MAX_MANUAL_FEE_RATE_SAT_VB = 1_000.0
 
 
 @app.command()
@@ -91,6 +94,17 @@ def send(
         logger.error("Cannot specify both --fee-rate and --block-target")
         raise typer.Exit(1)
 
+    if fee_rate is not None:
+        if not math.isfinite(fee_rate) or fee_rate <= 0:
+            logger.error("--fee-rate must be a finite number greater than 0")
+            raise typer.Exit(1)
+        if fee_rate > MAX_MANUAL_FEE_RATE_SAT_VB:
+            logger.error(
+                f"--fee-rate {fee_rate:.2f} sat/vB exceeds safety maximum "
+                f"({MAX_MANUAL_FEE_RATE_SAT_VB:.0f} sat/vB)"
+            )
+            raise typer.Exit(1)
+
     try:
         resolved = resolve_mnemonic(
             settings,
@@ -150,8 +164,6 @@ async def _send_transaction(
     bip39_passphrase: str = "",
 ) -> None:
     """Send transaction implementation."""
-    import math
-
     from jmwallet.backends.bitcoin_core import BitcoinCoreBackend
     from jmwallet.backends.descriptor_wallet import (
         DescriptorWalletBackend,
@@ -484,13 +496,19 @@ async def _send_transaction(
             change_index = wallet.get_next_address_index(mixdepth, 1)
             change_addr = wallet.get_change_address(mixdepth, change_index)
             change_key = wallet.get_key_for_address(change_addr)
-            if change_key:
-                change_script = pubkey_to_p2wpkh_script(
-                    change_key.get_public_key_bytes(compressed=True).hex()
+            if not change_key:
+                logger.error(
+                    "Failed to derive change key for selected change address; "
+                    "cannot build a safe transaction"
                 )
-                outputs_data.extend(change_amount.to_bytes(8, "little"))
-                outputs_data.extend(encode_varint(len(change_script)))
-                outputs_data.extend(change_script)
+                raise typer.Exit(1)
+
+            change_script = pubkey_to_p2wpkh_script(
+                change_key.get_public_key_bytes(compressed=True).hex()
+            )
+            outputs_data.extend(change_amount.to_bytes(8, "little"))
+            outputs_data.extend(encode_varint(len(change_script)))
+            outputs_data.extend(change_script)
 
         # Assemble unsigned transaction (without witness)
         unsigned_tx = (

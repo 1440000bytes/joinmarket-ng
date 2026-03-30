@@ -9,6 +9,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 import typer
 from typer.testing import CliRunner
 
@@ -365,6 +366,160 @@ def test_send_respects_config_block_target():
                     if mock_backend.estimate_fee.call_args:
                         print(f"Actually called with: {mock_backend.estimate_fee.call_args}")
                     raise e
+
+
+def test_send_rejects_excessive_manual_fee_rate():
+    """send should fail fast on absurdly high manual fee rate."""
+    with patch("jmwallet.cli.send.resolve_mnemonic") as mock_resolve:
+        result = runner.invoke(
+            app,
+            [
+                "send",
+                "bcrt1qtestdestination000000000000000000000000000",
+                "--amount",
+                "1000",
+                "--network",
+                "regtest",
+                "--backend",
+                "scantxoutset",
+                "--fee-rate",
+                "2000",
+            ],
+            env={
+                "MNEMONIC": "abandon abandon abandon abandon abandon abandon "
+                "abandon abandon abandon abandon abandon about"
+            },
+        )
+
+    assert result.exit_code == 1
+    mock_resolve.assert_not_called()
+
+
+def test_send_rejects_zero_manual_fee_rate():
+    """send should reject zero manual fee rate."""
+    with patch("jmwallet.cli.send.resolve_mnemonic") as mock_resolve:
+        result = runner.invoke(
+            app,
+            [
+                "send",
+                "bcrt1qtestdestination000000000000000000000000000",
+                "--amount",
+                "1000",
+                "--network",
+                "regtest",
+                "--backend",
+                "scantxoutset",
+                "--fee-rate",
+                "0",
+            ],
+            env={
+                "MNEMONIC": "abandon abandon abandon abandon abandon abandon "
+                "abandon abandon abandon abandon abandon about"
+            },
+        )
+
+    assert result.exit_code == 1
+    mock_resolve.assert_not_called()
+
+
+def test_send_rejects_nan_manual_fee_rate():
+    """send should reject NaN manual fee rate before mnemonic resolution."""
+    with patch("jmwallet.cli.send.resolve_mnemonic") as mock_resolve:
+        result = runner.invoke(
+            app,
+            [
+                "send",
+                "bcrt1qtestdestination000000000000000000000000000",
+                "--amount",
+                "1000",
+                "--network",
+                "regtest",
+                "--backend",
+                "scantxoutset",
+                "--fee-rate",
+                "nan",
+            ],
+            env={
+                "MNEMONIC": "abandon abandon abandon abandon abandon abandon "
+                "abandon abandon abandon abandon abandon about"
+            },
+        )
+
+    assert result.exit_code == 1
+    mock_resolve.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_fails_when_change_key_unavailable():
+    """_send_transaction should fail fast when change key derivation fails."""
+    from jmcore.cli_common import ResolvedBackendSettings
+
+    from jmwallet.cli.send import _send_transaction
+    from jmwallet.wallet.models import UTXOInfo
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        backend_settings = ResolvedBackendSettings(
+            network="regtest",
+            bitcoin_network="regtest",
+            backend_type="scantxoutset",
+            rpc_url="http://127.0.0.1:18443",
+            rpc_user="user",
+            rpc_password="pass",
+            neutrino_url="",
+            neutrino_add_peers=[],
+            data_dir=Path(tmpdir),
+            scan_start_height=None,
+        )
+
+        mock_backend = MagicMock()
+        mock_backend.get_mempool_min_fee = AsyncMock(return_value=None)
+        mock_backend.estimate_fee = AsyncMock(return_value=1.0)
+
+        input_addr = "bcrt1qq6hag67dl53wl99vzg42z8eyzfz2xlkvwk6f7m"
+        change_addr = "bcrt1q0f3u4n4h3g6l6e5f8x4v8z5m6k7n8p9r0t6y"
+        utxo = UTXOInfo(
+            txid="a" * 64,
+            vout=0,
+            value=100_000,
+            address=input_addr,
+            confirmations=6,
+            scriptpubkey="0014" + "11" * 20,
+            path="m/84'/1'/0'/0/0",
+            mixdepth=0,
+        )
+
+        mock_wallet = MagicMock()
+        mock_wallet.sync_all = AsyncMock()
+        mock_wallet.get_balance = AsyncMock(return_value=100_000)
+        mock_wallet.get_utxos = AsyncMock(return_value=[utxo])
+        mock_wallet.close = AsyncMock()
+        mock_wallet.get_next_address_index.return_value = 0
+        mock_wallet.get_change_address.return_value = change_addr
+        mock_wallet.get_key_for_address.side_effect = lambda address: (
+            None if address == change_addr else MagicMock()
+        )
+
+        with (
+            patch("jmwallet.backends.bitcoin_core.BitcoinCoreBackend", return_value=mock_backend),
+            patch("jmwallet.wallet.service.WalletService", return_value=mock_wallet),
+        ):
+            with pytest.raises(typer.Exit) as exc_info:
+                await _send_transaction(
+                    mnemonic="abandon " * 11 + "about",
+                    destination="bcrt1qq6hag67dl53wl99vzg42z8eyzfz2xlkvwk6f7m",
+                    amount=10_000,
+                    mixdepth=0,
+                    fee_rate=1.0,
+                    block_target=None,
+                    backend_settings=backend_settings,
+                    broadcast=False,
+                    skip_confirmation=True,
+                    interactive_utxo_selection=False,
+                    bip39_passphrase="",
+                )
+
+        assert exc_info.value.exit_code == 1
+        mock_wallet.close.assert_awaited_once()
 
 
 def test_history_command_status_display():
