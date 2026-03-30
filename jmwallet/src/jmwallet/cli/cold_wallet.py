@@ -7,7 +7,9 @@ prepare-certificate-message, import-certificate, spend-bond
 from __future__ import annotations
 
 import base64
+import json
 import math
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated
@@ -259,12 +261,14 @@ def generate_hot_keypair(
     privkey = PrivateKey()
     pubkey = privkey.public_key.format(compressed=True)
 
+    resolved_data_dir = data_dir if data_dir else get_default_data_dir()
+
     # Optionally save to registry
     saved_to_registry = False
+    saved_key_file: Path | None = None
     if bond_address:
         from jmwallet.wallet.bond_registry import load_registry, save_registry
 
-        resolved_data_dir = data_dir if data_dir else get_default_data_dir()
         registry = load_registry(resolved_data_dir)
         bond = registry.get_bond_by_address(bond_address)
 
@@ -276,23 +280,44 @@ def generate_hot_keypair(
             logger.info(f"Saved hot keypair to bond registry for {bond_address}")
         else:
             logger.warning(f"Bond not found for address: {bond_address}")
-            logger.info("Keypair will be displayed but NOT saved to registry")
+            logger.info("Private key will be written to a local key file")
+
+    if not saved_to_registry:
+        resolved_data_dir.mkdir(parents=True, exist_ok=True)
+        key_file_name = f"hot_certificate_key_{pubkey.hex()[:16]}.json"
+        saved_key_file = resolved_data_dir / key_file_name
+        key_content = (
+            json.dumps(
+                {
+                    "cert_pubkey": pubkey.hex(),
+                    "cert_privkey": privkey.secret.hex(),
+                },
+                indent=2,
+            )
+            + "\n"
+        )
+        fd = os.open(saved_key_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(key_content)
+        logger.info(f"Wrote hot keypair to {saved_key_file} with mode 0600")
 
     print("\n" + "=" * 80)
     print("HOT WALLET KEYPAIR FOR FIDELITY BOND CERTIFICATE")
     print("=" * 80)
-    print(f"\nPrivate Key (hex): {privkey.secret.hex()}")
     print(f"Public Key (hex):  {pubkey.hex()}")
     if saved_to_registry:
         print(f"\nSaved to bond registry for: {bond_address}")
         print("  (The keypair will be used automatically with import-certificate)")
+    elif saved_key_file is not None:
+        print(f"\nPrivate key saved to: {saved_key_file}")
+        print("  (File permissions set to 0600)")
     print("\n" + "=" * 80)
     print("NEXT STEPS:")
     print("  1. Use the public key with 'prepare-certificate-message'")
     print("  2. Sign the certificate message with your hardware wallet (Sparrow)")
     print("  3. Import the certificate with 'import-certificate'")
-    if not saved_to_registry:
-        print("\nNOTE: Store the private key securely! You will need it for import-certificate.")
+    if not saved_to_registry and saved_key_file is not None:
+        print("\nNOTE: Keep the key file secure; you will need it for import-certificate.")
     print("\nSECURITY:")
     print("  - This is the HOT wallet key - it will be used to sign nick proofs")
     print("  - If this key is compromised, attacker can impersonate your bond")
@@ -343,6 +368,16 @@ def prepare_certificate_message(
             ),
         ),
     ] = "",
+    current_block: Annotated[
+        int | None,
+        typer.Option(
+            "--current-block",
+            help=(
+                "Current block height override for offline/air-gapped workflows. "
+                "Skips all network block-height lookups."
+            ),
+        ),
+    ] = None,
     log_level: Annotated[str, typer.Option("--log-level")] = "INFO",
 ) -> None:
     """
@@ -403,60 +438,66 @@ def prepare_certificate_message(
         raise typer.Exit(1)
 
     # Fetch current block height.
-    # Priority: configured Bitcoin node backend > explicit --mempool-api.
+    # Priority: explicit --current-block > configured node backend > --mempool-api.
     import asyncio
 
-    current_block_height: int | None = None
-
-    backend_settings = resolve_backend_settings(
-        settings,
-        network=network,
-        backend_type=backend_type,
-        rpc_url=rpc_url,
-        neutrino_url=neutrino_url,
-        data_dir=data_dir_opt,
-    )
-
-    node_available = bool(backend_settings.rpc_url or backend_settings.neutrino_url)
-
-    if node_available:
-        from jmwallet.backends.bitcoin_core import BitcoinCoreBackend
-        from jmwallet.backends.neutrino import NeutrinoBackend
-
-        try:
-            if backend_settings.backend_type == "neutrino":
-                node_backend: BitcoinCoreBackend | NeutrinoBackend = NeutrinoBackend(
-                    neutrino_url=backend_settings.neutrino_url,
-                    network=backend_settings.network,
-                )
-            else:
-                node_backend = BitcoinCoreBackend(
-                    rpc_url=backend_settings.rpc_url,
-                    rpc_user=backend_settings.rpc_user,
-                    rpc_password=backend_settings.rpc_password,
-                )
-            current_block_height = asyncio.run(node_backend.get_block_height())
-            logger.info(f"Current block height: {current_block_height} (from node)")
-        except Exception as e:
-            logger.error(f"Failed to fetch block height from Bitcoin node: {e}")
+    current_block_height: int
+    if current_block is not None:
+        if current_block < 0:
+            logger.error("--current-block must be >= 0")
             raise typer.Exit(1)
-    elif mempool_api:
-        from jmwallet.backends.mempool import MempoolBackend
-
-        try:
-            mempool_backend = MempoolBackend(base_url=mempool_api)
-            current_block_height = asyncio.run(mempool_backend.get_block_height())
-            logger.info(f"Current block height: {current_block_height} (from mempool API)")
-        except Exception as e:
-            logger.error(f"Failed to fetch block height from mempool API {mempool_api}: {e}")
-            raise typer.Exit(1)
+        current_block_height = current_block
+        logger.info(f"Current block height: {current_block_height} (from --current-block)")
     else:
-        logger.error("No block height source available.")
-        logger.info(
-            "Configure a Bitcoin node in config.toml, pass --rpc-url / --neutrino-url, "
-            "or supply --mempool-api <url> as a fallback."
+        backend_settings = resolve_backend_settings(
+            settings,
+            network=network,
+            backend_type=backend_type,
+            rpc_url=rpc_url,
+            neutrino_url=neutrino_url,
+            data_dir=data_dir_opt,
         )
-        raise typer.Exit(1)
+
+        node_available = bool(backend_settings.rpc_url or backend_settings.neutrino_url)
+
+        if node_available:
+            from jmwallet.backends.bitcoin_core import BitcoinCoreBackend
+            from jmwallet.backends.neutrino import NeutrinoBackend
+
+            try:
+                if backend_settings.backend_type == "neutrino":
+                    node_backend: BitcoinCoreBackend | NeutrinoBackend = NeutrinoBackend(
+                        neutrino_url=backend_settings.neutrino_url,
+                        network=backend_settings.network,
+                    )
+                else:
+                    node_backend = BitcoinCoreBackend(
+                        rpc_url=backend_settings.rpc_url,
+                        rpc_user=backend_settings.rpc_user,
+                        rpc_password=backend_settings.rpc_password,
+                    )
+                current_block_height = asyncio.run(node_backend.get_block_height())
+                logger.info(f"Current block height: {current_block_height} (from node)")
+            except Exception as e:
+                logger.error(f"Failed to fetch block height from Bitcoin node: {e}")
+                raise typer.Exit(1)
+        elif mempool_api:
+            from jmwallet.backends.mempool import MempoolBackend
+
+            try:
+                mempool_backend = MempoolBackend(base_url=mempool_api)
+                current_block_height = asyncio.run(mempool_backend.get_block_height())
+                logger.info(f"Current block height: {current_block_height} (from mempool API)")
+            except Exception as e:
+                logger.error(f"Failed to fetch block height from mempool API {mempool_api}: {e}")
+                raise typer.Exit(1)
+        else:
+            logger.error("No block height source available.")
+            logger.info(
+                "Provide --current-block for offline mode, configure a Bitcoin node, "
+                "or supply --mempool-api <url> as a fallback."
+            )
+            raise typer.Exit(1)
 
     # Calculate cert_expiry as ABSOLUTE period number
     # Reference: yieldgenerator.py line 139
@@ -700,9 +741,6 @@ def import_certificate(
     cert_pubkey: Annotated[
         str | None, typer.Option("--cert-pubkey", help="Certificate pubkey (hex)")
     ] = None,
-    cert_privkey: Annotated[
-        str | None, typer.Option("--cert-privkey", help="Certificate private key (hex)")
-    ] = None,
     cert_signature: Annotated[
         str, typer.Option("--cert-signature", help="Certificate signature (base64)")
     ] = "",
@@ -746,6 +784,16 @@ def import_certificate(
             ),
         ),
     ] = "",
+    current_block: Annotated[
+        int | None,
+        typer.Option(
+            "--current-block",
+            help=(
+                "Current block height override for offline/air-gapped workflows. "
+                "Skips all network block-height lookups."
+            ),
+        ),
+    ] = None,
     log_level: Annotated[str, typer.Option("--log-level")] = "INFO",
 ) -> None:
     """
@@ -757,8 +805,9 @@ def import_certificate(
     IMPORTANT: The --cert-expiry value must match EXACTLY what was used in
     prepare-certificate-message. This is an ABSOLUTE period number, not a duration.
 
-    If --cert-pubkey and --cert-privkey are not provided, they will be loaded from
-    the bond registry (from a previous 'generate-hot-keypair --bond-address' call).
+    If --cert-pubkey is not provided, it will be loaded from the bond registry.
+    The certificate private key is loaded from the bond registry, or requested via
+    an interactive hidden prompt if unavailable there.
 
     The signature should be the base64 output from Sparrow's message signing tool,
     using the 'Standard (Electrum)' format.
@@ -781,7 +830,7 @@ def import_certificate(
         logger.info("Make sure you have created the bond with 'create-bond-address' first")
         raise typer.Exit(1)
 
-    # Get cert_pubkey and cert_privkey from arguments or registry
+    # Get cert_pubkey from argument or registry
     if not cert_pubkey:
         if bond.cert_pubkey:
             cert_pubkey = bond.cert_pubkey
@@ -791,12 +840,13 @@ def import_certificate(
             logger.info("Run 'generate-hot-keypair --bond-address <addr>' first")
             raise typer.Exit(1)
 
-    if not cert_privkey:
-        if bond.cert_privkey:
-            cert_privkey = bond.cert_privkey
-            logger.info("Using certificate privkey from bond registry")
-        else:
-            logger.error("--cert-privkey is required")
+    cert_privkey = bond.cert_privkey
+    if cert_privkey:
+        logger.info("Using certificate privkey from bond registry")
+    else:
+        cert_privkey = typer.prompt("Certificate private key (hex)", hide_input=True).strip()
+        if not cert_privkey:
+            logger.error("Certificate private key is required")
             logger.info("Run 'generate-hot-keypair --bond-address <addr>' first")
             raise typer.Exit(1)
 
@@ -811,71 +861,82 @@ def import_certificate(
         raise typer.Exit(1)
 
     # Fetch current block height to validate cert_expiry is in the future.
-    # Priority: configured Bitcoin node backend > explicit --mempool-api.
+    # Priority: explicit --current-block > configured node backend > --mempool-api.
     import asyncio
 
     current_block_height: int | None = None
-
-    backend_settings = resolve_backend_settings(
-        settings,
-        network=network,
-        backend_type=backend_type,
-        rpc_url=rpc_url,
-        neutrino_url=neutrino_url,
-        data_dir=data_dir,
-    )
-
-    node_available = bool(backend_settings.rpc_url or backend_settings.neutrino_url)
-
-    if node_available:
-        from jmwallet.backends.bitcoin_core import BitcoinCoreBackend
-        from jmwallet.backends.neutrino import NeutrinoBackend
-
-        try:
-            if backend_settings.backend_type == "neutrino":
-                node_backend: BitcoinCoreBackend | NeutrinoBackend = NeutrinoBackend(
-                    neutrino_url=backend_settings.neutrino_url,
-                    network=backend_settings.network,
-                )
-            else:
-                node_backend = BitcoinCoreBackend(
-                    rpc_url=backend_settings.rpc_url,
-                    rpc_user=backend_settings.rpc_user,
-                    rpc_password=backend_settings.rpc_password,
-                )
-            current_block_height = asyncio.run(node_backend.get_block_height())
-            logger.debug(f"Current block height: {current_block_height} (from node)")
-        except Exception as e:
-            logger.warning(f"Failed to fetch block height from Bitcoin node: {e}")
-            current_block_height = None
-    elif mempool_api:
-        from jmwallet.backends.mempool import MempoolBackend
-
-        try:
-            mempool_backend = MempoolBackend(base_url=mempool_api)
-            current_block_height = asyncio.run(mempool_backend.get_block_height())
-            logger.debug(f"Current block height: {current_block_height} (from mempool API)")
-        except Exception as e:
-            logger.warning(f"Failed to fetch block height from mempool API {mempool_api}: {e}")
-            current_block_height = None
+    if current_block is not None:
+        if current_block < 0:
+            logger.error("--current-block must be >= 0")
+            raise typer.Exit(1)
+        current_block_height = current_block
+        logger.info(f"Current block height: {current_block_height} (from --current-block)")
     else:
-        logger.debug("No node backend or --mempool-api configured; skipping cert expiry validation")
+        backend_settings = resolve_backend_settings(
+            settings,
+            network=network,
+            backend_type=backend_type,
+            rpc_url=rpc_url,
+            neutrino_url=neutrino_url,
+            data_dir=data_dir,
+        )
+
+        node_available = bool(backend_settings.rpc_url or backend_settings.neutrino_url)
+
+        if node_available:
+            from jmwallet.backends.bitcoin_core import BitcoinCoreBackend
+            from jmwallet.backends.neutrino import NeutrinoBackend
+
+            try:
+                if backend_settings.backend_type == "neutrino":
+                    node_backend: BitcoinCoreBackend | NeutrinoBackend = NeutrinoBackend(
+                        neutrino_url=backend_settings.neutrino_url,
+                        network=backend_settings.network,
+                    )
+                else:
+                    node_backend = BitcoinCoreBackend(
+                        rpc_url=backend_settings.rpc_url,
+                        rpc_user=backend_settings.rpc_user,
+                        rpc_password=backend_settings.rpc_password,
+                    )
+                current_block_height = asyncio.run(node_backend.get_block_height())
+                logger.debug(f"Current block height: {current_block_height} (from node)")
+            except Exception as e:
+                logger.warning(f"Failed to fetch block height from Bitcoin node: {e}")
+
+        if current_block_height is None and mempool_api:
+            from jmwallet.backends.mempool import MempoolBackend
+
+            try:
+                mempool_backend = MempoolBackend(base_url=mempool_api)
+                current_block_height = asyncio.run(mempool_backend.get_block_height())
+                logger.debug(f"Current block height: {current_block_height} (from mempool API)")
+            except Exception as e:
+                logger.warning(f"Failed to fetch block height from mempool API {mempool_api}: {e}")
+
+        if current_block_height is None:
+            logger.error("Cannot determine current block height for certificate expiry validation")
+            logger.info(
+                "Provide --current-block for offline mode, configure a Bitcoin node, "
+                "or set --mempool-api <url>."
+            )
+            raise typer.Exit(1)
 
     # Validate cert_expiry is in the future
     retarget_interval = 2016
-    if current_block_height is not None:
-        expiry_block = cert_expiry * retarget_interval
-        if current_block_height >= expiry_block:
-            logger.error("Certificate has ALREADY EXPIRED!")
-            logger.error(f"  Current block: {current_block_height}")
-            logger.error(f"  Cert expiry:   period {cert_expiry} (block {expiry_block})")
-            logger.info("Run 'prepare-certificate-message' again with current block height")
-            logger.info("and re-sign the new message with your hardware wallet.")
-            raise typer.Exit(1)
+    assert current_block_height is not None
+    expiry_block = cert_expiry * retarget_interval
+    if current_block_height >= expiry_block:
+        logger.error("Certificate has ALREADY EXPIRED!")
+        logger.error(f"  Current block: {current_block_height}")
+        logger.error(f"  Cert expiry:   period {cert_expiry} (block {expiry_block})")
+        logger.info("Run 'prepare-certificate-message' again with current block height")
+        logger.info("and re-sign the new message with your hardware wallet.")
+        raise typer.Exit(1)
 
-        blocks_remaining = expiry_block - current_block_height
-        weeks_remaining = blocks_remaining // retarget_interval * 2
-        logger.info(f"Certificate valid for ~{weeks_remaining} weeks ({blocks_remaining} blocks)")
+    blocks_remaining = expiry_block - current_block_height
+    weeks_remaining = blocks_remaining // retarget_interval * 2
+    logger.info(f"Certificate valid for ~{weeks_remaining} weeks ({blocks_remaining} blocks)")
 
     # Validate inputs
     try:
@@ -956,12 +1017,9 @@ def import_certificate(
 
     # Calculate expiry info for display
     expiry_block = cert_expiry * retarget_interval
-    if current_block_height is not None:
-        blocks_remaining = expiry_block - current_block_height
-        weeks_remaining = blocks_remaining // retarget_interval * 2
-        expiry_info = f"~{weeks_remaining} weeks remaining"
-    else:
-        expiry_info = "could not verify"
+    blocks_remaining = expiry_block - current_block_height
+    weeks_remaining = blocks_remaining // retarget_interval * 2
+    expiry_info = f"~{weeks_remaining} weeks remaining"
 
     print("\n" + "=" * 80)
     print("CERTIFICATE IMPORTED SUCCESSFULLY")
