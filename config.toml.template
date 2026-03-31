@@ -216,8 +216,10 @@
 # Simply changing cj_fee_absolute will NOT switch to absolute fees - you must set offer_type.
 #
 # Offer type options:
-#   "sw0reloffer" - relative fee (uses cj_fee_relative) [DEFAULT]
-#   "sw0absoffer" - absolute fee (uses cj_fee_absolute)
+#   "sw0reloffer" - Segwit relative fee (uses cj_fee_relative) [DEFAULT]
+#   "sw0absoffer" - Segwit absolute fee (uses cj_fee_absolute)
+#   "tr0reloffer" - Taproot relative fee (uses cj_fee_relative)
+#   "tr0absoffer" - Taproot absolute fee (uses cj_fee_absolute)
 #
 # Example: To use absolute fees, set BOTH:
 #   offer_type = "sw0absoffer"
