@@ -17,7 +17,7 @@ from jmcore.commitment_blacklist import add_commitment, check_commitment
 from jmcore.crypto import NickIdentity
 from jmcore.deduplication import MessageDeduplicator
 from jmcore.directory_client import DirectoryClient
-from jmcore.models import Offer
+from jmcore.models import Offer, is_taproot_offer_type
 from jmcore.notifications import get_notifier
 from jmcore.protocol import COMMAND_PREFIX, JM_VERSION, MessageType
 from jmcore.rate_limiter import RateLimitAction, RateLimiter
@@ -415,17 +415,6 @@ class ProtocolHandlersMixin:
             taker_pk = parts[3]  # Taker's NaCl pubkey for E2E encryption
             commitment = parts[4]  # PoDLE commitment (with prefix like "P")
 
-            # Parse optional address_type request (backwards compatible)
-            # Format: address_type=p2tr (6th field, if present)
-            requested_address_type = None
-            for part in parts[5:]:
-                if part.startswith("address_type="):
-                    requested_address_type = part.split("=", 1)[1]
-                    logger.info(
-                        f"Taker {taker_nick} requested address_type={requested_address_type}"
-                    )
-                    break
-
             # Strip commitment prefix if present (e.g., "P" for standard PoDLE)
             if commitment.startswith("P"):
                 commitment = commitment[1:]
@@ -446,6 +435,21 @@ class ProtocolHandlersMixin:
                     f"{[o.oid for o in self.current_offers]})"
                 )
                 return
+
+            # Determine address type from offer type (default behavior)
+            requested_address_type = None
+            if is_taproot_offer_type(offer.ordertype):
+                requested_address_type = "p2tr"
+
+            for part in parts[5:]:
+                if part.startswith("address_type="):
+                    requested_address_type = part.split("=", 1)[1]
+                    logger.info(
+                        f"Taker {taker_nick} requested "
+                        f"address_type={requested_address_type} "
+                        f"(offer type: {offer.ordertype.value})"
+                    )
+                    break
 
             is_valid, error = self.offer_manager.validate_offer_fill(offer, amount)
             if not is_valid:
