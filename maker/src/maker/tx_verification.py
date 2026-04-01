@@ -173,34 +173,36 @@ def parse_transaction(
 
         offset = 0
 
-        int.from_bytes(tx_bytes[offset : offset + 4], "little")
+        version = int.from_bytes(tx_bytes[offset : offset + 4], "little")
+        if version not in (1, 2, 3):
+            return None
         offset += 4
 
-        if tx_bytes[offset] == 0x00:
-            marker = tx_bytes[offset]
-            flag = tx_bytes[offset + 1]
-            if marker == 0x00 and flag == 0x01:
-                offset += 2
+        # Mandate SegWit marker and flag (0001)
+        if tx_bytes[offset] != 0x00 or tx_bytes[offset + 1] != 0x01:
+            return None
+        offset += 2
 
         input_count, offset = decode_varint(tx_bytes, offset)
+        if input_count == 0:
+            return None
 
         inputs = []
         for _ in range(input_count):
             txid = tx_bytes[offset : offset + 32][::-1].hex()
             offset += 32
-
             vout = int.from_bytes(tx_bytes[offset : offset + 4], "little")
             offset += 4
-
             script_len, offset = decode_varint(tx_bytes, offset)
             offset += script_len
-
-            int.from_bytes(tx_bytes[offset : offset + 4], "little")
+            sequence = int.from_bytes(tx_bytes[offset : offset + 4], "little")
             offset += 4
 
             inputs.append({"txid": txid, "vout": vout})
 
         output_count, offset = decode_varint(tx_bytes, offset)
+        if output_count == 0:
+            return None
 
         outputs = []
         for _ in range(output_count):
@@ -216,8 +218,18 @@ def parse_transaction(
             # Convert to network string for scriptpubkey_to_address
             network_str = network.value if isinstance(network, NetworkType) else network
             address = script_to_address(script_pubkey, network_str)
-
             outputs.append({"value": value, "address": address})
+
+        # Parse witness data
+        for _ in range(input_count):
+            stack_items, offset = decode_varint(tx_bytes, offset)
+            for _ in range(stack_items):
+                item_len, offset = decode_varint(tx_bytes, offset)
+                offset += item_len
+
+        # Zero-garbage check: exactly 4 bytes (nLockTime) must remain
+        if len(tx_bytes) - offset != 4:
+            return None
 
         return {"inputs": inputs, "outputs": outputs}
 
