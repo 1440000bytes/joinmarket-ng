@@ -169,7 +169,7 @@ bitcoin-cli getblockchaininfo
 ### Option B: Neutrino (Light Client)
 
 **Pros:** ~500MB disk space, syncs in minutes
-**Cons:** Less privacy than full node, some maker limitations
+**Cons:** Some maker limitations
 
 1. Install Docker:
 
@@ -446,6 +446,17 @@ sudo apt install python3-venv
 **Installation takes a long time**
 
 Some dependencies (like `coincurve`) compile from source. This is normal, especially on Raspberry Pi.
+
+For `jmwallet` source installs, prefer the pinned lockfiles:
+
+```bash
+cd jmwallet
+pip install -r requirements.txt
+pip install -r requirements-dev.txt  # optional, for contributors
+```
+
+This enforces dependency hashes from the lockfiles (important while `coincurve`
+is temporarily pinned to an upstream commit for Python 3.14 compatibility).
 
 **curl | bash not working**
 

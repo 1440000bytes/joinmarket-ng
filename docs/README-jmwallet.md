@@ -1,5 +1,7 @@
 # JoinMarket Wallet Library (jmwallet)
 
+> NOTE: For source installs, use the pinned lockfiles (`requirements.txt` / `requirements-dev.txt`) so dependency hashes are enforced, especially for `coincurve` while Python 3.14 support is pinned to an upstream commit.
+
 Modern HD wallet for JoinMarket with support for Bitcoin Core nodes and lightweight Neutrino SPV.
 
 ## Installation
@@ -46,6 +48,7 @@ jm-wallet generate --no-save --no-prompt-password
 jm-wallet import
 
 # Or pass mnemonic via environment variable (for scripting)
+# Recommended: use interactive entry on shared systems.
 MNEMONIC="your twelve or twenty-four word mnemonic phrase ..." jm-wallet import
 
 # Import a 12-word mnemonic
@@ -110,7 +113,7 @@ Lightweight SPV backend using BIP157/158 compact block filters.
 
 **Storage**: ~500 MB (vs ~900 GB for full node)
 
-**Privacy**: High (downloads filters, not addresses)
+**Privacy**: High when neutrino-api is run locally (default and recommended setup).
 
 Start Neutrino server with Docker:
 
@@ -144,7 +147,7 @@ jm-wallet info --backend neutrino
 | **Sync Speed** | ~1s | ~90s | ~5s |
 | **Storage** | ~900 GB | ~900 GB | ~500 MB |
 | **Setup** | One-time import | None | External server |
-| **Privacy** | High (own node) | High (own node) | High (filters) |
+| **Privacy** | High (own node) | High (own node) | High (local daemon) |
 | **Mempool** | ✅ Yes | ✅ Yes | ❌ No |
 
 ### 3. View Your Addresses
@@ -528,9 +531,11 @@ For detailed help on any command, see the auto-generated help sections below.
  prepare-certificate-message. This is an ABSOLUTE period number, not a
  duration.
 
- If --cert-pubkey and --cert-privkey are not provided, they will be loaded from
- the bond registry (from a previous 'generate-hot-keypair --bond-address'
- call).
+ If --cert-pubkey is not provided, it will be loaded from the bond registry
+ (from a previous 'generate-hot-keypair --bond-address' call).
+
+ The certificate private key is loaded from bond registry or requested via
+ secure prompt if not available.
 
  The signature should be the base64 output from Sparrow's message signing tool,
  using the 'Standard (Electrum)' format.
@@ -540,7 +545,6 @@ For detailed help on any command, see the auto-generated help sections below.
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --cert-pubkey              TEXT     Certificate pubkey (hex)                 │
-│ --cert-privkey             TEXT     Certificate private key (hex)            │
 │ --cert-signature           TEXT     Certificate signature (base64)           │
 │ --cert-expiry              INTEGER  Certificate expiry as ABSOLUTE period    │
 │                                     number (from                             │

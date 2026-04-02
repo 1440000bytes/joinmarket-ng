@@ -36,6 +36,8 @@ TEST_MNEMONIC = (
 
 # m/84'/0'/0'/0/0
 EXPECTED_PUBKEY_0_0 = "0330d54fd0dd420a6e5f8d3624f5f3482cae350f79d5f0753bf5beef9c2d91af3c"
+# NOTE: This private key comes from the public BIP39 "abandon ... about" test
+# vector mnemonic and is used only for deterministic regression tests.
 EXPECTED_PRIVKEY_0_0 = "4604b4b710fe91f584fff084e1a9159fe4f8408fff380596a604948474ce4fa3"
 
 # m/84'/0'/0'/0/1
