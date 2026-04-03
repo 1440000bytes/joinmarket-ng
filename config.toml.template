@@ -232,6 +232,14 @@
 # UTXO merge algorithm: "default", "gradual", "greedy", "random"
 # merge_algorithm = "default"
 
+# Mixdepth 0 privacy restriction.
+# By default, UTXOs in mixdepth 0 are restricted to a single UTXO per CoinJoin
+# to prevent linking deposits and fidelity bonds.  CoinJoin outputs (cj-out)
+# are always exempt from this restriction because they already have CoinJoin
+# privacy.  Set to true to disable the restriction entirely and allow merging
+# all md0 UTXOs (experienced makers only -- reduces privacy).
+# allow_mixdepth_zero_merge = false
+
 # Fidelity bond settings
 # Set to true to run without a fidelity bond even if bonds exist in the registry.
 # This can be useful for privacy - bonds are public and linkable to your offers.

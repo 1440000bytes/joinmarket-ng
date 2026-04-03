@@ -412,6 +412,13 @@ class MakerSettings(BaseModel):
         ge=0,
         description="Minimum confirmations for UTXOs",
     )
+    allow_mixdepth_zero_merge: bool = Field(
+        default=False,
+        description=(
+            "Disable the mixdepth 0 single-UTXO restriction "
+            "(experienced makers only, reduces privacy)"
+        ),
+    )
     merge_algorithm: str = Field(
         default="default",
         description="UTXO selection: default, gradual, greedy, random",
