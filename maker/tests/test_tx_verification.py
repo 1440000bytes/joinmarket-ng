@@ -10,6 +10,7 @@ from jmwallet.wallet.models import UTXOInfo
 
 from maker.tx_verification import (
     calculate_cj_fee,
+    parse_transaction,
     verify_unsigned_transaction,
 )
 
@@ -633,6 +634,130 @@ def test_verify_transaction_exception_handling():
 
     assert not is_valid
     assert "Verification error" in error
+
+
+class TestParseTransactionOutputValueRange:
+    """Regression tests for output value range validation (MAX_MONEY / negative).
+
+    Bitcoin Core treats output values as signed 64-bit integers and rejects
+    values < 0 or > MAX_MONEY (21M BTC = 2,100,000,000,000,000 sats).
+    Our parser must match this behavior to avoid logic mismatches with the
+    reference implementation, which could allow a malicious taker to craft
+    transactions that our maker interprets differently from the network.
+    """
+
+    def test_reject_output_value_exceeding_max_money(self) -> None:
+        """Output value of 21,000,001 BTC exceeds MAX_MONEY and must be rejected."""
+        # Non-segwit tx: 1 input (all zeros), 1 output with value = 21_000_001 * 1e8 sats
+        tx_hex = (
+            "01000000"  # version 1
+            "01"  # 1 input
+            "0000000000000000000000000000000000000000000000000000000000000000"  # txid
+            "00000000"  # vout 0
+            "00"  # empty scriptsig
+            "ffffffff"  # sequence
+            "01"  # 1 output
+            "0021fd5ff0750700"  # value = 2_100_000_100_000_000 sats (> MAX_MONEY)
+            "160014"
+            "0000000000000000000000000000000000000000"  # P2WPKH script
+            "00000000"  # locktime
+        )
+        result = parse_transaction(tx_hex, network="mainnet")
+        assert result is None
+
+    def test_reject_negative_output_value(self) -> None:
+        """Output value with bit 63 set is negative as signed int64 and must be rejected."""
+        # Non-segwit tx: 1 input (all zeros), 1 output with value = -(2^63 - 1)
+        tx_hex = (
+            "01000000"  # version 1
+            "01"  # 1 input
+            "0000000000000000000000000000000000000000000000000000000000000000"  # txid
+            "00000000"  # vout 0
+            "00"  # empty scriptsig
+            "ffffffff"  # sequence
+            "01"  # 1 output
+            "0100000000000080"  # value = -9223372036854775807 (signed)
+            "160014"
+            "0000000000000000000000000000000000000000"  # P2WPKH script
+            "00000000"  # locktime
+        )
+        result = parse_transaction(tx_hex, network="mainnet")
+        assert result is None
+
+    def test_accept_valid_output_value(self) -> None:
+        """Output value of 1 BTC (100,000,000 sats) is valid and must parse."""
+        tx_hex = (
+            "01000000"  # version 1
+            "01"  # 1 input
+            "0000000000000000000000000000000000000000000000000000000000000000"  # txid
+            "00000000"  # vout 0
+            "00"  # empty scriptsig
+            "ffffffff"  # sequence
+            "01"  # 1 output
+            "00e1f50500000000"  # value = 100_000_000 sats (1 BTC)
+            "160014"
+            "0000000000000000000000000000000000000000"  # P2WPKH script
+            "00000000"  # locktime
+        )
+        result = parse_transaction(tx_hex, network="mainnet")
+        assert result is not None
+        assert result["outputs"][0]["value"] == 100_000_000
+
+    def test_accept_max_money_boundary(self) -> None:
+        """Output value exactly at MAX_MONEY (21M BTC) should be accepted."""
+        import struct
+
+        max_money = 21_000_000 * 100_000_000
+        value_hex = struct.pack("<q", max_money).hex()
+        tx_hex = (
+            "01000000"
+            "01"
+            "0000000000000000000000000000000000000000000000000000000000000000"
+            "00000000"
+            "00"
+            "ffffffff"
+            "01" + value_hex + "160014"
+            "0000000000000000000000000000000000000000"
+            "00000000"
+        )
+        result = parse_transaction(tx_hex, network="mainnet")
+        assert result is not None
+        assert result["outputs"][0]["value"] == max_money
+
+    def test_reject_max_money_plus_one(self) -> None:
+        """Output value one sat above MAX_MONEY must be rejected."""
+        import struct
+
+        over_max = 21_000_000 * 100_000_000 + 1
+        value_hex = struct.pack("<q", over_max).hex()
+        tx_hex = (
+            "01000000"
+            "01"
+            "0000000000000000000000000000000000000000000000000000000000000000"
+            "00000000"
+            "00"
+            "ffffffff"
+            "01" + value_hex + "160014"
+            "0000000000000000000000000000000000000000"
+            "00000000"
+        )
+        result = parse_transaction(tx_hex, network="mainnet")
+        assert result is None
+
+    def test_fuzz_crash_input(self) -> None:
+        """Regression test for the original fuzzer crash input from PR #421.
+
+        This malformed transaction has a varint-encoded output count of 0xFF
+        that shifts the output value field into script data, producing a value
+        that exceeds MAX_MONEY when decoded.
+        """
+        tx_hex = (
+            "010000000001010000000000000000000000000000000000000001000000"
+            "660000000000000000000000000000ffffffff0140420f000000008616"
+            "001475420f00000000b6240500a89d7b4c48398a6f3b0021fc0000"
+        )
+        result = parse_transaction(tx_hex, network="mainnet")
+        assert result is None
 
 
 if __name__ == "__main__":
