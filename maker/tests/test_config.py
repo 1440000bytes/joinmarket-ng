@@ -447,6 +447,34 @@ class TestBuildMakerConfig:
                 fidelity_bond_locktimes=[1700000000],
             )
 
+    def test_allow_mixdepth_zero_merge_passed_from_settings(self) -> None:
+        """Test that allow_mixdepth_zero_merge is passed from settings to MakerConfig.
+
+        Regression: the setting was defined on MakerSettings but never wired
+        through build_maker_config, so the user's config was silently ignored.
+        """
+        from jmcore.settings import JoinMarketSettings
+
+        from maker.cli import build_maker_config
+
+        # Default should be False
+        settings = JoinMarketSettings()
+        config = build_maker_config(
+            settings=settings,
+            mnemonic=TEST_MNEMONIC,
+            passphrase="",
+        )
+        assert config.allow_mixdepth_zero_merge is False
+
+        # When enabled in settings, it should propagate
+        settings.maker.allow_mixdepth_zero_merge = True
+        config = build_maker_config(
+            settings=settings,
+            mnemonic=TEST_MNEMONIC,
+            passphrase="",
+        )
+        assert config.allow_mixdepth_zero_merge is True
+
 
 class TestCreateWalletService:
     """Tests for create_wallet_service function.

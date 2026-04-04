@@ -335,6 +335,7 @@ def build_maker_config(
         no_fidelity_bond=no_fidelity_bond,
         merge_algorithm=parsed_merge_algorithm,
         offer_configs=offer_configs,
+        allow_mixdepth_zero_merge=settings.maker.allow_mixdepth_zero_merge,
     )
 
 
