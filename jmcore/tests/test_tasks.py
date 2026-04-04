@@ -80,23 +80,25 @@ class TestRunPeriodicTask:
     async def test_exception_in_callback_does_not_crash(self) -> None:
         """Exceptions in callback should be caught; task keeps running."""
         call_count = 0
+        keep_running = True
 
         async def callback() -> None:
-            nonlocal call_count
+            nonlocal call_count, keep_running
             call_count += 1
             if call_count == 1:
                 raise ValueError("test error")
+            keep_running = False
 
-        task = asyncio.create_task(
+        await asyncio.wait_for(
             run_periodic_task(
                 name="error-test",
                 callback=callback,
                 interval=0.01,
-            )
+                running_check=lambda: keep_running,
+            ),
+            timeout=1.0,
         )
-        await asyncio.sleep(0.05)
-        task.cancel()
-        await task  # returns normally after catching CancelledError
+
         assert call_count >= 2
 
     @pytest.mark.asyncio
