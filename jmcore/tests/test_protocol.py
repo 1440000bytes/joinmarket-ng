@@ -3,6 +3,7 @@ Tests for jmcore.protocol
 """
 
 import pytest
+from pydantic import ValidationError
 
 from jmcore.protocol import (
     FEATURE_NEUTRINO_COMPAT,
@@ -113,8 +114,9 @@ class TestUTXOMetadata:
 
     def test_legacy_format_parse(self):
         """Parse legacy txid:vout format."""
-        utxo = UTXOMetadata.from_str("abc123def456:0")
-        assert utxo.txid == "abc123def456"
+        txid = "a" * 64
+        utxo = UTXOMetadata.from_str(f"{txid}:0")
+        assert utxo.txid == txid
         assert utxo.vout == 0
         assert utxo.scriptpubkey is None
         assert utxo.blockheight is None
@@ -122,8 +124,9 @@ class TestUTXOMetadata:
 
     def test_extended_format_parse(self):
         """Parse extended txid:vout:scriptpubkey:blockheight format."""
-        utxo = UTXOMetadata.from_str("abc123def456:1:0014a1b2c3d4e5f6:750000")
-        assert utxo.txid == "abc123def456"
+        txid = "b" * 64
+        utxo = UTXOMetadata.from_str(f"{txid}:1:0014a1b2c3d4e5f6:750000")
+        assert utxo.txid == txid
         assert utxo.vout == 1
         assert utxo.scriptpubkey == "0014a1b2c3d4e5f6"
         assert utxo.blockheight == 750000
@@ -131,32 +134,64 @@ class TestUTXOMetadata:
 
     def test_legacy_format_output(self):
         """Output legacy format."""
-        utxo = UTXOMetadata(txid="abc123", vout=2)
-        assert utxo.to_legacy_str() == "abc123:2"
+        txid = "c" * 64
+        utxo = UTXOMetadata(txid=txid, vout=2)
+        assert utxo.to_legacy_str() == f"{txid}:2"
 
     def test_extended_format_output(self):
         """Output extended format."""
-        utxo = UTXOMetadata(txid="abc123", vout=2, scriptpubkey="0014deadbeef", blockheight=800000)
-        assert utxo.to_extended_str() == "abc123:2:0014deadbeef:800000"
+        txid = "d" * 64
+        utxo = UTXOMetadata(txid=txid, vout=2, scriptpubkey="0014deadbeef", blockheight=800000)
+        assert utxo.to_extended_str() == f"{txid}:2:0014deadbeef:800000"
 
     def test_extended_format_fallback_to_legacy(self):
         """Extended format falls back to legacy when metadata missing."""
-        utxo = UTXOMetadata(txid="abc123", vout=2)
-        assert utxo.to_extended_str() == "abc123:2"
+        txid = "e" * 64
+        utxo = UTXOMetadata(txid=txid, vout=2)
+        assert utxo.to_extended_str() == f"{txid}:2"
 
-        utxo_partial = UTXOMetadata(txid="abc123", vout=2, scriptpubkey="0014deadbeef")
-        assert utxo_partial.to_extended_str() == "abc123:2"
+        utxo_partial = UTXOMetadata(txid=txid, vout=2, scriptpubkey="0014deadbeef")
+        assert utxo_partial.to_extended_str() == f"{txid}:2"
 
     def test_invalid_format_raises(self):
         """Invalid formats raise ValueError."""
         with pytest.raises(ValueError):
             UTXOMetadata.from_str("invalid")
 
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="Invalid UTXO format"):
             UTXOMetadata.from_str("abc:1:2")  # 3 parts
 
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="Invalid UTXO format"):
             UTXOMetadata.from_str("abc:1:2:3:4")  # 5 parts
+
+    def test_strict_validation_failures(self):
+        """Verify strict validation of TXID and vout."""
+        valid_txid = "f" * 64
+
+        # Invalid length (via from_str)
+        with pytest.raises(ValueError, match="Invalid TXID length"):
+            UTXOMetadata.from_str("abcd:0")
+
+        # Invalid length (via constructor)
+        with pytest.raises(ValidationError, match="Invalid TXID length"):
+            UTXOMetadata(txid="abcd", vout=0)
+
+        # Invalid hex
+        with pytest.raises(ValidationError, match="Invalid TXID hex"):
+            invalid_hex_txid = "g" * 64
+            UTXOMetadata(txid=invalid_hex_txid, vout=0)
+
+        # Negative vout
+        with pytest.raises(ValidationError, match="non-negative"):
+            UTXOMetadata(txid=valid_txid, vout=-1)
+
+        # Non-integer vout (from_str handles conversion)
+        with pytest.raises(ValueError, match="not an integer"):
+            UTXOMetadata.from_str(f"{valid_txid}:abc")
+
+        # Vout overflow (2^32)
+        with pytest.raises(ValidationError, match="4294967295"):
+            UTXOMetadata(txid=valid_txid, vout=0x100000000)
 
     def test_scriptpubkey_validation(self):
         """Validate scriptPubKey format."""
@@ -177,15 +212,13 @@ class TestUTXOMetadata:
 
     def test_roundtrip_legacy(self):
         """Round-trip legacy format."""
-        original = "abc123def456789012345678901234567890123456789012345678901234:5"
+        original = ("a" * 64) + ":5"
         utxo = UTXOMetadata.from_str(original)
         assert utxo.to_legacy_str() == original
 
     def test_roundtrip_extended(self):
         """Round-trip extended format."""
-        original = (
-            "abc123def456789012345678901234567890123456789012345678901234:5:0014deadbeef1234:850000"
-        )
+        original = ("b" * 64) + ":5:0014deadbeef1234:850000"
         utxo = UTXOMetadata.from_str(original)
         assert utxo.to_extended_str() == original
 
@@ -199,21 +232,31 @@ class TestParseUtxoList:
 
     def test_single_legacy_utxo(self):
         """Parse single legacy UTXO."""
-        utxos = parse_utxo_list("abc123:0")
+        txid = "a" * 64
+        utxos = parse_utxo_list(f"{txid}:0")
         assert len(utxos) == 1
-        assert utxos[0].txid == "abc123"
+        assert utxos[0].txid == txid
         assert utxos[0].vout == 0
 
     def test_multiple_legacy_utxos(self):
         """Parse multiple legacy UTXOs."""
-        utxos = parse_utxo_list("abc123:0,def456:1,ghi789:2")
+        txid1 = "1" * 64
+        txid2 = "2" * 64
+        txid3 = "3" * 64
+        utxos = parse_utxo_list(f"{txid1}:0,{txid2}:1,{txid3}:2")
         assert len(utxos) == 3
-        assert utxos[1].txid == "def456"
+        assert utxos[0].txid == txid1
+        assert utxos[1].txid == txid2
         assert utxos[2].vout == 2
 
     def test_multiple_extended_utxos(self):
         """Parse multiple extended UTXOs."""
-        utxos = parse_utxo_list("abc123:0:0014aaa:100,def456:1:0014bbb:200,ghi789:2:0014ccc:300")
+        txid1 = "1" * 64
+        txid2 = "2" * 64
+        txid3 = "3" * 64
+        utxos = parse_utxo_list(
+            f"{txid1}:0:0014aaa:100,{txid2}:1:0014bbb:200,{txid3}:2:0014ccc:300"
+        )
         assert len(utxos) == 3
         assert all(u.has_neutrino_metadata() for u in utxos)
         assert utxos[0].blockheight == 100
@@ -221,20 +264,28 @@ class TestParseUtxoList:
 
     def test_mixed_formats(self):
         """Parse mixed legacy and extended UTXOs."""
-        utxos = parse_utxo_list("abc123:0,def456:1:0014bbb:200")
+        txid1 = "a" * 64
+        txid2 = "b" * 64
+        utxos = parse_utxo_list(f"{txid1}:0,{txid2}:1:0014bbb:200")
         assert len(utxos) == 2
         assert not utxos[0].has_neutrino_metadata()
         assert utxos[1].has_neutrino_metadata()
 
     def test_require_metadata_success(self):
         """require_metadata=True succeeds when all have metadata."""
-        utxos = parse_utxo_list("abc123:0:0014aaa:100,def456:1:0014bbb:200", require_metadata=True)
+        txid1 = "1" * 64
+        txid2 = "2" * 64
+        utxos = parse_utxo_list(
+            f"{txid1}:0:0014aaa:100,{txid2}:1:0014bbb:200", require_metadata=True
+        )
         assert len(utxos) == 2
 
     def test_require_metadata_failure(self):
         """require_metadata=True raises when metadata missing."""
+        txid1 = "1" * 64
+        txid2 = "2" * 64
         with pytest.raises(ValueError, match="missing Neutrino metadata"):
-            parse_utxo_list("abc123:0,def456:1:0014bbb:200", require_metadata=True)
+            parse_utxo_list(f"{txid1}:0,{txid2}:1:0014bbb:200", require_metadata=True)
 
 
 class TestFormatUtxoList:
@@ -242,21 +293,25 @@ class TestFormatUtxoList:
 
     def test_format_legacy(self):
         """Format UTXOs in legacy format."""
+        txid1 = "1" * 64
+        txid2 = "2" * 64
         utxos = [
-            UTXOMetadata(txid="abc123", vout=0, scriptpubkey="0014aaa", blockheight=100),
-            UTXOMetadata(txid="def456", vout=1, scriptpubkey="0014bbb", blockheight=200),
+            UTXOMetadata(txid=txid1, vout=0, scriptpubkey="0014aaa", blockheight=100),
+            UTXOMetadata(txid=txid2, vout=1, scriptpubkey="0014bbb", blockheight=200),
         ]
         result = format_utxo_list(utxos, extended=False)
-        assert result == "abc123:0,def456:1"
+        assert result == f"{txid1}:0,{txid2}:1"
 
     def test_format_extended(self):
         """Format UTXOs in extended format."""
+        txid1 = "1" * 64
+        txid2 = "2" * 64
         utxos = [
-            UTXOMetadata(txid="abc123", vout=0, scriptpubkey="0014aaa", blockheight=100),
-            UTXOMetadata(txid="def456", vout=1, scriptpubkey="0014bbb", blockheight=200),
+            UTXOMetadata(txid=txid1, vout=0, scriptpubkey="0014aaa", blockheight=100),
+            UTXOMetadata(txid=txid2, vout=1, scriptpubkey="0014bbb", blockheight=200),
         ]
         result = format_utxo_list(utxos, extended=True)
-        assert result == "abc123:0:0014aaa:100,def456:1:0014bbb:200"
+        assert result == f"{txid1}:0:0014aaa:100,{txid2}:1:0014bbb:200"
 
 
 # ==============================================================================
