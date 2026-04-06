@@ -530,10 +530,14 @@ class TestNeutrinoBackend:
             await backend.get_utxos(["bc1qtest123"])
 
         # The initial rescan should use start_height=750000
-        rescan_call = backend._api_call.call_args_list[0]
-        assert rescan_call[0] == ("POST", "v1/rescan")
-        assert rescan_call[1]["data"]["start_height"] == 750000
-        assert rescan_call[1]["data"]["addresses"] == ["bc1qtest123"]
+        rescan_posts = [
+            call
+            for call in backend._api_call.call_args_list
+            if call[0][0] == "POST" and call[0][1] == "v1/rescan"
+        ]
+        assert len(rescan_posts) == 1
+        assert rescan_posts[0][1]["data"]["start_height"] == 750000
+        assert rescan_posts[0][1]["data"]["addresses"] == ["bc1qtest123"]
         await backend.close()
 
     @pytest.mark.asyncio
@@ -1106,6 +1110,186 @@ class TestNeutrinoBackend:
         assert result.valid is False
         assert "exceeds max" in (result.error or "")
 
+        await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_get_rescan_coverage_returns_metadata(self):
+        """_get_rescan_coverage should parse last_start_height and last_scanned_tip."""
+        from unittest.mock import AsyncMock
+
+        backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="mainnet")
+        backend._api_call = AsyncMock(
+            return_value={
+                "in_progress": False,
+                "last_start_height": 481824,
+                "last_scanned_tip": 900000,
+            }
+        )
+
+        start, tip = await backend._get_rescan_coverage()
+        assert start == 481824
+        assert tip == 900000
+        backend._api_call.assert_called_once_with("GET", "v1/rescan/status")
+        await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_get_rescan_coverage_returns_zeros_on_error(self):
+        """_get_rescan_coverage should return (0, 0) when endpoint is unavailable."""
+        from unittest.mock import AsyncMock
+
+        backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="mainnet")
+        backend._api_call = AsyncMock(side_effect=Exception("connection refused"))
+
+        start, tip = await backend._get_rescan_coverage()
+        assert start == 0
+        assert tip == 0
+        await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_get_utxos_skips_initial_rescan_when_full_coverage(self):
+        """When neutrino-api already has full coverage, skip the initial rescan."""
+        from unittest.mock import AsyncMock, patch
+
+        backend = NeutrinoBackend(
+            neutrino_url="http://localhost:8334",
+            network="mainnet",
+            scan_start_height=750000,
+        )
+        backend._api_call = AsyncMock(return_value={"utxos": []})
+        backend.get_block_height = AsyncMock(return_value=800000)
+
+        # Simulate neutrino-api having full coverage
+        with (
+            patch.object(backend, "wait_for_sync", new_callable=AsyncMock) as mock_sync,
+            patch.object(
+                backend,
+                "_get_rescan_coverage",
+                new_callable=AsyncMock,
+                return_value=(750000, 800000),
+            ),
+            patch.object(backend, "_wait_for_rescan", new_callable=AsyncMock) as mock_wait,
+        ):
+            mock_sync.return_value = True
+            await backend.get_utxos(["bc1qtest123"])
+
+        # No rescan should have been triggered
+        rescan_posts = [
+            call
+            for call in backend._api_call.call_args_list
+            if call[0][0] == "POST" and call[0][1] == "v1/rescan"
+        ]
+        assert len(rescan_posts) == 0
+        mock_wait.assert_not_called()
+
+        # But initial rescan should be marked as done
+        assert backend._initial_rescan_done is True
+        assert backend._last_rescan_height == 800000
+        # No UTXO retries since no actual scan happened
+        assert backend._just_rescanned is False
+        await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_get_utxos_no_retries_for_trivial_rescan(self):
+        """Trivial rescans (few blocks) should not trigger UTXO retries."""
+        from unittest.mock import AsyncMock, patch
+
+        backend = NeutrinoBackend(
+            neutrino_url="http://localhost:8334",
+            network="mainnet",
+            scan_start_height=750000,
+        )
+        backend._api_call = AsyncMock(return_value={"utxos": []})
+        backend.get_block_height = AsyncMock(return_value=800010)
+
+        # Simulate neutrino-api having coverage up to 800000 (10 blocks behind)
+        coverage_calls = iter([(750000, 800000), (750000, 800010)])
+
+        with (
+            patch.object(backend, "wait_for_sync", new_callable=AsyncMock) as mock_sync,
+            patch.object(
+                backend,
+                "_get_rescan_coverage",
+                new_callable=AsyncMock,
+                side_effect=lambda: next(coverage_calls),
+            ),
+            patch.object(backend, "_wait_for_rescan", new_callable=AsyncMock) as mock_wait,
+        ):
+            mock_sync.return_value = True
+            mock_wait.return_value = True
+            await backend.get_utxos(["bc1qtest123"])
+
+        # Rescan should have been triggered (partial gap)
+        assert backend._initial_rescan_done is True
+        # But no UTXO retries since only 10 blocks were scanned (< _TRIVIAL_RESCAN_BLOCKS)
+        assert backend._just_rescanned is False
+        await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_get_utxos_retries_for_large_rescan(self):
+        """Large rescans should trigger UTXO retries for async indexing."""
+        from unittest.mock import AsyncMock, patch
+
+        backend = NeutrinoBackend(
+            neutrino_url="http://localhost:8334",
+            network="mainnet",
+            scan_start_height=750000,
+        )
+        backend._api_call = AsyncMock(return_value={"utxos": []})
+        backend.get_block_height = AsyncMock(return_value=800000)
+
+        # Simulate no prior coverage (fresh neutrino-api)
+        coverage_calls = iter([(0, 0), (750000, 800000)])
+
+        with (
+            patch.object(backend, "wait_for_sync", new_callable=AsyncMock) as mock_sync,
+            patch.object(
+                backend,
+                "_get_rescan_coverage",
+                new_callable=AsyncMock,
+                side_effect=lambda: next(coverage_calls),
+            ),
+            patch.object(backend, "_wait_for_rescan", new_callable=AsyncMock) as mock_wait,
+        ):
+            mock_sync.return_value = True
+            mock_wait.return_value = True
+            await backend.get_utxos(["bc1qtest123"])
+
+        assert backend._initial_rescan_done is True
+        # 50000 blocks scanned (> _TRIVIAL_RESCAN_BLOCKS), retries should fire.
+        # _just_rescanned is reset after the retry loop, so verify via call count:
+        # 5 UTXO queries = max_retries when _just_rescanned was True.
+        utxo_posts = [
+            call
+            for call in backend._api_call.call_args_list
+            if call[0][0] == "POST" and call[0][1] == "v1/utxos"
+        ]
+        assert len(utxo_posts) == 5
+        await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_get_utxos_incremental_uses_metadata_tip(self):
+        """Incremental rescan should use metadata tip for _last_rescan_height."""
+        from unittest.mock import AsyncMock, patch
+
+        backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="signet")
+        backend._initial_rescan_done = True
+        backend._last_rescan_height = 1000
+        backend.get_block_height = AsyncMock(return_value=1050)
+        backend._api_call = AsyncMock(return_value={"utxos": []})
+
+        # After incremental rescan, metadata shows tip at 1055 (blocks arrived during scan)
+        with patch.object(
+            backend,
+            "_get_rescan_coverage",
+            new_callable=AsyncMock,
+            return_value=(0, 1055),
+        ):
+            with patch.object(backend, "_wait_for_rescan", new_callable=AsyncMock) as mock_wait:
+                mock_wait.return_value = True
+                await backend.get_utxos(["tb1qtest123"])
+
+        # _last_rescan_height should use the higher metadata tip
+        assert backend._last_rescan_height == 1055
         await backend.close()
 
     def test_neutrino_config_init(self):

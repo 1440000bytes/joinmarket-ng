@@ -52,6 +52,7 @@ class NeutrinoBackend(BlockchainBackend):
     supports_watch_address: bool = True
     _INITIAL_RESCAN_TIMEOUT_SECONDS: float = 1800.0
     _ONGOING_INITIAL_RESCAN_CHECK_TIMEOUT_SECONDS: float = 30.0
+    _TRIVIAL_RESCAN_BLOCKS: int = 1000
 
     def __init__(
         self,
@@ -356,6 +357,27 @@ class NeutrinoBackend(BlockchainBackend):
         self._watched_outpoints.add(outpoint)
         logger.debug(f"Watching outpoint: {txid}:{vout}")
 
+    async def _get_rescan_coverage(self) -> tuple[int, int]:
+        """Query neutrino-api for persisted rescan coverage.
+
+        The neutrino-api ``GET /v1/rescan/status`` endpoint returns metadata
+        about the most recent rescan: ``last_start_height`` and
+        ``last_scanned_tip``.  These are persisted to disk and survive
+        neutrino-api restarts.
+
+        Returns:
+            ``(last_start_height, last_scanned_tip)``.  Both are 0 when no
+            prior rescan has been performed or the endpoint is unavailable.
+        """
+        try:
+            status = await self._api_call("GET", "v1/rescan/status")
+            return (
+                int(status.get("last_start_height", 0)),
+                int(status.get("last_scanned_tip", 0)),
+            )
+        except Exception:
+            return (0, 0)
+
     async def _resolve_scan_start_height(self, tip_height: int) -> int:
         """Compute the effective scan start height for the initial rescan.
 
@@ -444,57 +466,103 @@ class NeutrinoBackend(BlockchainBackend):
             # Resolve the scan start height now that we know the chain tip.
             self._scan_start_height = await self._resolve_scan_start_height(current_height)
 
-            completed = False
-            if not self._initial_rescan_started:
-                logger.info(
-                    f"Performing initial blockchain rescan for {len(self._watched_addresses)} "
-                    f"watched addresses from height {self._scan_start_height} "
-                    f"to {current_height} (this may take a moment)..."
-                )
-                try:
-                    # Trigger rescan from configured start height for all watched addresses.
-                    # Only trigger this once; if completion is still pending later, keep
-                    # polling status instead of restarting from genesis.
-                    await self._api_call(
-                        "POST",
-                        "v1/rescan",
-                        data={
-                            "addresses": list(self._watched_addresses),
-                            "start_height": self._scan_start_height,
-                        },
-                    )
-                    self._initial_rescan_started = True
-                    completed = await self._wait_for_rescan(
-                        require_started=True,
-                        timeout=self._INITIAL_RESCAN_TIMEOUT_SECONDS,
-                    )
-                except Exception as e:
-                    self._initial_rescan_started = False
-                    logger.warning(f"Initial rescan failed (will retry on next sync): {e}")
-            else:
-                completed = await self._wait_for_rescan(
-                    require_started=False,
-                    timeout=self._ONGOING_INITIAL_RESCAN_CHECK_TIMEOUT_SECONDS,
-                )
+            # Check if neutrino-api already has rescan coverage for our range.
+            # This avoids redundant initial rescans on every CLI invocation --
+            # the neutrino-api persists scan metadata to disk, so blocks scanned
+            # by a prior process are not re-scanned.
+            prior_start, prior_tip = await self._get_rescan_coverage()
 
-            if completed:
-                self._initial_rescan_done = True
-                self._initial_rescan_started = False
-                self._last_rescan_height = current_height
-                self._rescan_in_progress = False
-                self._just_rescanned = True
-                logger.info("Initial blockchain rescan completed")
-            else:
-                logger.warning(
-                    "Initial rescan completion could not be confirmed; rescan still pending"
+            if (
+                prior_tip >= current_height
+                and prior_start > 0
+                and prior_start <= self._scan_start_height
+            ):
+                # neutrino-api already scanned from our start height to the
+                # current tip.  No rescan needed -- just query UTXOs directly.
+                logger.info(
+                    f"Neutrino already scanned to tip {prior_tip} "
+                    f"(from height {prior_start}); skipping initial rescan"
                 )
-                self._rescan_in_progress = False
+                self._initial_rescan_done = True
+                self._last_rescan_height = prior_tip
+                # Don't set _just_rescanned -- no async UTXO indexing to wait for.
+            else:
+                completed = False
+                if not self._initial_rescan_started:
+                    # Estimate how many new blocks actually need scanning.
+                    effective_prior_tip = max(prior_tip, self._scan_start_height)
+                    blocks_to_scan = max(0, current_height - effective_prior_tip)
+
+                    logger.info(
+                        f"Performing initial blockchain rescan for "
+                        f"{len(self._watched_addresses)} watched addresses "
+                        f"from height {self._scan_start_height} to {current_height} "
+                        f"(~{blocks_to_scan} blocks to scan)..."
+                    )
+                    try:
+                        await self._api_call(
+                            "POST",
+                            "v1/rescan",
+                            data={
+                                "addresses": list(self._watched_addresses),
+                                "start_height": self._scan_start_height,
+                            },
+                        )
+                        self._initial_rescan_started = True
+                        completed = await self._wait_for_rescan(
+                            require_started=True,
+                            timeout=self._INITIAL_RESCAN_TIMEOUT_SECONDS,
+                        )
+                    except Exception as e:
+                        self._initial_rescan_started = False
+                        logger.warning(f"Initial rescan failed (will retry on next sync): {e}")
+                else:
+                    completed = await self._wait_for_rescan(
+                        require_started=False,
+                        timeout=self._ONGOING_INITIAL_RESCAN_CHECK_TIMEOUT_SECONDS,
+                    )
+
+                if completed:
+                    self._initial_rescan_done = True
+                    self._initial_rescan_started = False
+                    self._rescan_in_progress = False
+
+                    # Use the actual scanned tip from metadata for accuracy.
+                    # This may be higher than *current_height* if new blocks
+                    # arrived during the rescan.
+                    _, post_tip = await self._get_rescan_coverage()
+                    self._last_rescan_height = max(post_tip, current_height)
+
+                    # Only enable UTXO retries when a significant number of
+                    # blocks were actually scanned.  For trivial catch-ups
+                    # (e.g. a few blocks), async indexing completes instantly
+                    # and retries just waste 8-13 seconds on empty wallets.
+                    blocks_actually_scanned = max(
+                        0, post_tip - max(prior_tip, self._scan_start_height - 1)
+                    )
+                    if blocks_actually_scanned > self._TRIVIAL_RESCAN_BLOCKS:
+                        self._just_rescanned = True
+                        logger.info(
+                            f"Initial blockchain rescan completed "
+                            f"({blocks_actually_scanned} blocks scanned)"
+                        )
+                    else:
+                        logger.info(
+                            f"Initial blockchain rescan completed (trivial: "
+                            f"{blocks_actually_scanned} blocks, skipping UTXO retries)"
+                        )
+                else:
+                    logger.warning(
+                        "Initial rescan completion could not be confirmed; rescan still pending"
+                    )
+                    self._rescan_in_progress = False
         elif current_height > self._last_rescan_height and not self._rescan_in_progress:
-            # New blocks have arrived since last rescan - need to scan them
-            # This is critical for finding CoinJoin outputs that were just confirmed
-            # We rescan ALL watched addresses, not just the ones in the current query,
-            # because wallet sync happens mixdepth by mixdepth and we need to find
-            # outputs to any of our addresses
+            # New blocks have arrived since last rescan - need to scan them.
+            # neutrino-api does NOT automatically watch addresses for new
+            # blocks; each rescan must be explicitly triggered.
+            # We rescan ALL watched addresses, not just the ones in the
+            # current query, because wallet sync happens mixdepth by mixdepth
+            # and we need to find outputs to any of our addresses.
             self._rescan_in_progress = True
             logger.info(
                 f"New blocks detected ({self._last_rescan_height} -> {current_height}), "
@@ -512,20 +580,19 @@ class NeutrinoBackend(BlockchainBackend):
                         "start_height": start_height,
                     },
                 )
-                # Wait for rescan to complete by polling /v1/rescan/status.
-                # NOTE: The rescan is asynchronous - neutrino needs time to:
-                # 1. Match block filters
-                # 2. Download full blocks that match
-                # 3. Extract and index UTXOs
                 completed = await self._wait_for_rescan(require_started=True)
 
                 if completed:
-                    self._last_rescan_height = current_height
+                    _, post_tip = await self._get_rescan_coverage()
+                    self._last_rescan_height = max(post_tip, current_height)
                     self._rescan_in_progress = False
-                    self._just_rescanned = True
+
+                    blocks_scanned = max(0, current_height - start_height)
+                    if blocks_scanned > self._TRIVIAL_RESCAN_BLOCKS:
+                        self._just_rescanned = True
                     logger.info(
-                        "Incremental rescan completed from block "
-                        f"{start_height} to {current_height}"
+                        f"Incremental rescan completed from block "
+                        f"{start_height} to {self._last_rescan_height}"
                     )
                 else:
                     logger.warning(
@@ -537,13 +604,10 @@ class NeutrinoBackend(BlockchainBackend):
                 logger.warning(f"Incremental rescan failed: {e}")
                 self._rescan_in_progress = False
         elif self._rescan_in_progress:
-            # A rescan was just triggered by a previous get_utxos call in this batch
-            # Wait a bit for it to complete, but don't wait the full 7 seconds
+            # A rescan was just triggered by a previous get_utxos call in this batch.
+            # Wait briefly for it to complete.
             logger.debug("Rescan in progress from previous query, waiting briefly...")
             await asyncio.sleep(1.0)
-        else:
-            # No new blocks, just wait for filter matching / async UTXO lookups
-            await asyncio.sleep(0.5)
 
         try:
             # Request UTXO scan for addresses with retry logic
