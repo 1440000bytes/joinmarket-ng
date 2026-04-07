@@ -23,6 +23,7 @@ arbitrary queries by:
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -36,6 +37,30 @@ from jmwallet.backends.base import (
     Transaction,
     UTXOVerificationResult,
 )
+
+
+@dataclass
+class ServerCapabilities:
+    """Detected capabilities of the neutrino-api server.
+
+    Populated once on first successful connection via
+    ``NeutrinoBackend._detect_server_capabilities()``.  Provides
+    feature-flag information that allows the backend to degrade
+    gracefully when running against older server versions.
+    """
+
+    #: True once detection has run (even if probes failed).
+    detected: bool = False
+
+    #: ``GET /v1/rescan/status`` is available (v0.7.0+).
+    has_rescan_status: bool = False
+
+    #: Rescan status includes ``last_start_height``/``last_scanned_tip``
+    #: (v0.9.0+ with persistent state).
+    has_persistent_rescan_state: bool = False
+
+    #: Extra fields returned by ``/v1/status`` (informational).
+    status_fields: dict[str, Any] = field(default_factory=dict)
 
 
 class NeutrinoBackend(BlockchainBackend):
@@ -134,6 +159,9 @@ class NeutrinoBackend(BlockchainBackend):
             scan_start_height if scan_start_height is not None else self._min_valid_blockheight
         )
 
+        # Server capability detection (populated once on first connection).
+        self._server_capabilities = ServerCapabilities()
+
     def set_wallet_creation_height(self, height: int | None) -> None:
         """Use wallet creation height as scan start if no explicit override.
 
@@ -165,6 +193,88 @@ class NeutrinoBackend(BlockchainBackend):
             return
         self._wallet_creation_height = height
         logger.info(f"Wallet creation height set to {height} (will use as scan start hint)")
+
+    @property
+    def server_capabilities(self) -> ServerCapabilities:
+        """Return the detected server capabilities (read-only)."""
+        return self._server_capabilities
+
+    async def _detect_server_capabilities(self) -> None:
+        """Probe neutrino-api endpoints once to determine server capabilities.
+
+        Called automatically during the first ``wait_for_sync()`` call.
+        Results are cached in ``_server_capabilities`` for the lifetime
+        of the backend instance (reset on ``close()``).
+
+        The detection is best-effort: network errors are logged as
+        warnings and treated as "capability not available".
+        """
+        if self._server_capabilities.detected:
+            return
+
+        caps = self._server_capabilities
+
+        # --- Probe /v1/status (always available) ---
+        try:
+            status = await self._api_call("GET", "v1/status")
+            caps.status_fields = dict(status) if isinstance(status, dict) else {}
+            logger.info(
+                "Neutrino server: block_height={}, filter_height={}, synced={}",
+                status.get("block_height", "?"),
+                status.get("filter_height", "?"),
+                status.get("synced", "?"),
+            )
+        except Exception as exc:
+            logger.warning(f"Could not probe neutrino-api /v1/status: {exc}")
+            caps.detected = True
+            return
+
+        # --- Probe /v1/rescan/status (v0.7.0+) ---
+        try:
+            rescan_status = await self._api_call("GET", "v1/rescan/status")
+            caps.has_rescan_status = True
+
+            # Check for persistent state fields (v0.9.0+)
+            if "last_start_height" in rescan_status and "last_scanned_tip" in rescan_status:
+                caps.has_persistent_rescan_state = True
+                logger.info(
+                    "Neutrino rescan state: last_start={}, last_tip={}, in_progress={}",
+                    rescan_status.get("last_start_height", 0),
+                    rescan_status.get("last_scanned_tip", 0),
+                    rescan_status.get("in_progress", False),
+                )
+            else:
+                logger.info(
+                    "Neutrino rescan status available (no persistent state -- "
+                    "server older than v0.9.0)"
+                )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                logger.warning(
+                    "GET /v1/rescan/status returned 404 -- neutrino-api may be "
+                    "older than v0.7.0. Rescan completion polling will not work; "
+                    "consider upgrading to v0.9.0+."
+                )
+            else:
+                logger.warning(f"Rescan status probe failed: {exc}")
+        except Exception as exc:
+            logger.warning(f"Rescan status probe failed: {exc}")
+
+        caps.detected = True
+
+        # Summary log line
+        features = []
+        if caps.has_rescan_status:
+            features.append("rescan-status")
+        if caps.has_persistent_rescan_state:
+            features.append("persistent-state")
+        if features:
+            logger.info(f"Neutrino server capabilities: {', '.join(features)}")
+        else:
+            logger.warning(
+                "Neutrino server has no detected advanced capabilities. "
+                "Upgrade to neutrino-api v0.9.0+ for best performance."
+            )
 
     async def _api_call(
         self,
@@ -224,6 +334,12 @@ class NeutrinoBackend(BlockchainBackend):
             True if rescan completion was confirmed via status polling,
             False if status could not be confirmed (timeout or endpoint error).
         """
+        # When the server does not expose /v1/rescan/status, polling is
+        # pointless.  Fall back immediately so the caller uses a fixed delay.
+        if self._server_capabilities.detected and not self._server_capabilities.has_rescan_status:
+            logger.debug("Server lacks /v1/rescan/status; cannot poll for completion")
+            return False
+
         start = asyncio.get_event_loop().time()
         saw_in_progress = False
         while True:
@@ -273,6 +389,10 @@ class NeutrinoBackend(BlockchainBackend):
         """
         start_time = asyncio.get_event_loop().time()
         last_progress_log = start_time
+
+        # Detect server capabilities once on the first sync attempt.
+        if not self._server_capabilities.detected:
+            await self._detect_server_capabilities()
 
         while True:
             try:
@@ -365,10 +485,21 @@ class NeutrinoBackend(BlockchainBackend):
         ``last_scanned_tip``.  These are persisted to disk and survive
         neutrino-api restarts.
 
+        On servers older than v0.9.0 (no persistent state fields), this
+        always returns ``(0, 0)`` which forces a fresh rescan -- the safe
+        fallback when we cannot know what has been scanned previously.
+
         Returns:
             ``(last_start_height, last_scanned_tip)``.  Both are 0 when no
             prior rescan has been performed or the endpoint is unavailable.
         """
+        # Short-circuit when we already know the server cannot provide this.
+        if (
+            self._server_capabilities.detected
+            and not self._server_capabilities.has_persistent_rescan_state
+        ):
+            return (0, 0)
+
         try:
             status = await self._api_call("GET", "v1/rescan/status")
             return (
@@ -1311,6 +1442,7 @@ class NeutrinoBackend(BlockchainBackend):
         self._last_rescan_height = 0
         self._rescan_in_progress = False
         self._just_rescanned = False
+        self._server_capabilities = ServerCapabilities()
 
 
 class NeutrinoConfig:

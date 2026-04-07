@@ -1292,6 +1292,167 @@ class TestNeutrinoBackend:
         assert backend._last_rescan_height == 1055
         await backend.close()
 
+    @pytest.mark.asyncio
+    async def test_detect_server_capabilities_full(self):
+        """Full capability detection for v0.9.0+ server."""
+        from unittest.mock import AsyncMock
+
+        backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="mainnet")
+        backend._api_call = AsyncMock(
+            side_effect=[
+                # /v1/status response
+                {"block_height": 900000, "filter_height": 900000, "synced": True},
+                # /v1/rescan/status response (v0.9.0+)
+                {
+                    "in_progress": False,
+                    "last_start_height": 481824,
+                    "last_scanned_tip": 900000,
+                },
+            ]
+        )
+
+        await backend._detect_server_capabilities()
+
+        caps = backend.server_capabilities
+        assert caps.detected is True
+        assert caps.has_rescan_status is True
+        assert caps.has_persistent_rescan_state is True
+        assert caps.status_fields["block_height"] == 900000
+        await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_detect_server_capabilities_v07(self):
+        """Capability detection for v0.7.0 server (rescan status, no persistent state)."""
+        from unittest.mock import AsyncMock
+
+        backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="mainnet")
+        backend._api_call = AsyncMock(
+            side_effect=[
+                {"block_height": 800000, "filter_height": 800000, "synced": True},
+                # v0.7.0 has rescan/status but no persistent fields
+                {"in_progress": False},
+            ]
+        )
+
+        await backend._detect_server_capabilities()
+
+        caps = backend.server_capabilities
+        assert caps.detected is True
+        assert caps.has_rescan_status is True
+        assert caps.has_persistent_rescan_state is False
+        await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_detect_server_capabilities_old_server(self):
+        """Capability detection for pre-v0.7.0 server (no rescan status endpoint)."""
+        from unittest.mock import AsyncMock
+
+        import httpx
+
+        backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="mainnet")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 404
+        mock_response.request = MagicMock()
+
+        backend._api_call = AsyncMock(
+            side_effect=[
+                {"block_height": 700000, "filter_height": 700000, "synced": True},
+                httpx.HTTPStatusError("Not Found", response=mock_response, request=MagicMock()),
+            ]
+        )
+
+        await backend._detect_server_capabilities()
+
+        caps = backend.server_capabilities
+        assert caps.detected is True
+        assert caps.has_rescan_status is False
+        assert caps.has_persistent_rescan_state is False
+        await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_detect_server_capabilities_unreachable(self):
+        """Capability detection when server is unreachable."""
+        from unittest.mock import AsyncMock
+
+        backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="mainnet")
+        backend._api_call = AsyncMock(side_effect=Exception("connection refused"))
+
+        await backend._detect_server_capabilities()
+
+        caps = backend.server_capabilities
+        assert caps.detected is True
+        assert caps.has_rescan_status is False
+        assert caps.has_persistent_rescan_state is False
+        assert caps.status_fields == {}
+        await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_detect_server_capabilities_idempotent(self):
+        """Detection runs only once even when called multiple times."""
+        from unittest.mock import AsyncMock
+
+        backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="mainnet")
+        backend._api_call = AsyncMock(
+            side_effect=[
+                {"block_height": 900000, "filter_height": 900000, "synced": True},
+                {"in_progress": False, "last_start_height": 0, "last_scanned_tip": 0},
+            ]
+        )
+
+        await backend._detect_server_capabilities()
+        await backend._detect_server_capabilities()  # Should be a no-op
+
+        # Only 2 API calls total (status + rescan/status), not 4
+        assert backend._api_call.call_count == 2
+        await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_capabilities_reset_on_close(self):
+        """Closing the backend should reset detected capabilities."""
+        backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="mainnet")
+        backend._server_capabilities.detected = True
+        backend._server_capabilities.has_rescan_status = True
+
+        await backend.close()
+
+        assert backend.server_capabilities.detected is False
+        assert backend.server_capabilities.has_rescan_status is False
+        await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_get_rescan_coverage_skips_call_without_persistent_state(self):
+        """_get_rescan_coverage short-circuits when server lacks persistent state."""
+        from unittest.mock import AsyncMock
+
+        backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="mainnet")
+        backend._server_capabilities.detected = True
+        backend._server_capabilities.has_persistent_rescan_state = False
+        backend._api_call = AsyncMock()
+
+        start, tip = await backend._get_rescan_coverage()
+
+        assert start == 0
+        assert tip == 0
+        backend._api_call.assert_not_called()
+        await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_wait_for_rescan_skips_poll_without_rescan_status(self):
+        """_wait_for_rescan returns False immediately when server lacks endpoint."""
+        from unittest.mock import AsyncMock
+
+        backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="mainnet")
+        backend._server_capabilities.detected = True
+        backend._server_capabilities.has_rescan_status = False
+        backend._api_call = AsyncMock()
+
+        result = await backend._wait_for_rescan()
+
+        assert result is False
+        backend._api_call.assert_not_called()
+        await backend.close()
+
     def test_neutrino_config_init(self):
         """Test NeutrinoConfig initialization."""
         config = NeutrinoConfig(
