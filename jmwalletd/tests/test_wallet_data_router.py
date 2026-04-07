@@ -250,7 +250,8 @@ class TestNewAddress:
             "/api/v1/wallet/other_wallet.jmdat/address/new/0",
             headers=_auth_headers(token),
         )
-        assert resp.status_code == 400
+        # require_wallet_match intercepts before business logic: 404, not 400
+        assert resp.status_code == 404
 
 
 class TestGetSeed:

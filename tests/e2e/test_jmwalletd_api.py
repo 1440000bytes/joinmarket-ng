@@ -407,15 +407,16 @@ async def test_unlock_nonexistent_wallet(clean_client: httpx.AsyncClient) -> Non
 async def test_lock_wrong_wallet_name(
     wallet: tuple[str, str, str, httpx.AsyncClient],
 ) -> None:
-    """Locking with a different wallet name than the loaded one.
+    """Locking with a different wallet name than the loaded one must be rejected.
 
-    The current implementation locks whatever wallet is loaded regardless
-    of the name in the URL (matching reference jmwalletd behaviour).
+    Previously, the implementation would lock whatever wallet was loaded regardless
+    of the name in the URL (matching reference jmwalletd behavior). We now
+    enforce a match in JoinMarket-NG for security (IDOR prevention).
     """
     _, token, _, client = wallet
     r = await client.get(
         f"{API}/wallet/wrong-name.jmdat/lock",
         headers=_auth(token),
     )
-    # Reference implementation locks any loaded wallet regardless of name.
-    assert r.status_code in (200, 400, 409)
+    # JoinMarket-NG returns 404 when the URL name doesn't match the loaded one.
+    assert r.status_code == 404
