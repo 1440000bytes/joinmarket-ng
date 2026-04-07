@@ -730,6 +730,50 @@ class TestParsePodleRevelationExtended:
         parsed = parse_podle_revelation(revelation)
         assert parsed is None
 
+    def test_parse_short_txid_rejected(self) -> None:
+        """TXID shorter than 64 hex chars is rejected."""
+        revelation = {
+            "P": "02" + "aa" * 32,
+            "P2": "03" + "bb" * 32,
+            "sig": "cc" * 32,
+            "e": "dd" * 32,
+            "utxo": "abcd:0",
+        }
+        assert parse_podle_revelation(revelation) is None
+
+    def test_parse_non_hex_txid_rejected(self) -> None:
+        """TXID with non-hex characters is rejected."""
+        revelation = {
+            "P": "02" + "aa" * 32,
+            "P2": "03" + "bb" * 32,
+            "sig": "cc" * 32,
+            "e": "dd" * 32,
+            "utxo": "g" * 64 + ":0",
+        }
+        assert parse_podle_revelation(revelation) is None
+
+    def test_parse_negative_vout_rejected(self) -> None:
+        """Negative vout is rejected."""
+        revelation = {
+            "P": "02" + "aa" * 32,
+            "P2": "03" + "bb" * 32,
+            "sig": "cc" * 32,
+            "e": "dd" * 32,
+            "utxo": "aa" * 32 + ":-1",
+        }
+        assert parse_podle_revelation(revelation) is None
+
+    def test_parse_vout_overflow_rejected(self) -> None:
+        """Vout exceeding uint32 max is rejected."""
+        revelation = {
+            "P": "02" + "aa" * 32,
+            "P2": "03" + "bb" * 32,
+            "sig": "cc" * 32,
+            "e": "dd" * 32,
+            "utxo": "aa" * 32 + ":4294967296",
+        }
+        assert parse_podle_revelation(revelation) is None
+
 
 class TestDeserializeRevelationEdgeCases:
     """Edge cases for deserialize_revelation."""
