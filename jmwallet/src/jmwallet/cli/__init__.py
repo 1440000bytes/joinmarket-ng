@@ -50,6 +50,7 @@ from jmwallet.cli.mnemonic import (  # noqa: E402, F401, I001
 from jmwallet.cli import (  # noqa: E402, F401
     bonds,
     cold_wallet,
+    debug_info,
     freeze,
     history_cmd,
     registry,
