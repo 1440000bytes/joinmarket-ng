@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 from loguru import logger
 
 from jmcore.settings import get_settings
-from jmwalletd.deps import get_daemon_state, require_auth
+from jmwalletd.deps import get_daemon_state, require_auth, require_wallet_match
 from jmwalletd.errors import (
     ActionNotAllowed,
     BackendNotReady,
@@ -45,6 +45,7 @@ async def direct_send(
     walletname: str,
     body: DirectSendRequest,
     _auth: dict[str, Any] = Depends(require_auth),
+    _wallet: None = Depends(require_wallet_match),
     state: DaemonState = Depends(get_daemon_state),
 ) -> DirectSendResponse:
     """Send bitcoin directly (without coinjoin)."""
@@ -85,6 +86,7 @@ async def do_coinjoin(
     walletname: str,
     body: DoCoinjoinRequest,
     _auth: dict[str, Any] = Depends(require_auth),
+    _wallet: None = Depends(require_wallet_match),
     state: DaemonState = Depends(get_daemon_state),
 ) -> JSONResponse:
     """Initiate a coinjoin transaction (asynchronous)."""
@@ -156,6 +158,7 @@ async def run_schedule(
     walletname: str,
     body: RunScheduleRequest,
     _auth: dict[str, Any] = Depends(require_auth),
+    _wallet: None = Depends(require_wallet_match),
     state: DaemonState = Depends(get_daemon_state),
 ) -> JSONResponse:
     """Start a tumbler schedule (asynchronous).
@@ -241,6 +244,7 @@ async def run_schedule(
 async def get_schedule(
     walletname: str,
     _auth: dict[str, Any] = Depends(require_auth),
+    _wallet: None = Depends(require_wallet_match),
     state: DaemonState = Depends(get_daemon_state),
 ) -> GetScheduleResponse:
     """Get the current tumbler schedule."""
@@ -257,6 +261,7 @@ async def get_schedule(
 async def stop_coinjoin(
     walletname: str,
     _auth: dict[str, Any] = Depends(require_auth),
+    _wallet: None = Depends(require_wallet_match),
     state: DaemonState = Depends(get_daemon_state),
 ) -> JSONResponse:
     """Stop a running coinjoin/tumbler."""
@@ -290,6 +295,7 @@ async def start_maker(
     walletname: str,
     body: StartMakerRequest,
     _auth: dict[str, Any] = Depends(require_auth),
+    _wallet: None = Depends(require_wallet_match),
     state: DaemonState = Depends(get_daemon_state),
 ) -> JSONResponse:
     """Start the yield generator (maker) service."""
@@ -372,6 +378,7 @@ async def start_maker(
 async def stop_maker(
     walletname: str,
     _auth: dict[str, Any] = Depends(require_auth),
+    _wallet: None = Depends(require_wallet_match),
     state: DaemonState = Depends(get_daemon_state),
 ) -> JSONResponse:
     """Stop the yield generator (maker) service."""

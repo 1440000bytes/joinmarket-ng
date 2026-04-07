@@ -12,7 +12,7 @@ from loguru import logger
 from jmwallet.history import get_address_history_types, get_used_addresses
 from jmwallet.wallet.bond_registry import create_bond_info, load_registry, save_registry
 from jmwallet.wallet.constants import FIDELITY_BOND_BRANCH
-from jmwalletd.deps import get_daemon_state, require_auth
+from jmwalletd.deps import get_daemon_state, require_auth, require_wallet_match
 from jmwalletd.errors import (
     ActionNotAllowed,
     ConfigNotPresent,
@@ -51,6 +51,7 @@ router = APIRouter()
 async def wallet_display(
     walletname: str,
     _auth: dict[str, Any] = Depends(require_auth),
+    _wallet: None = Depends(require_wallet_match),
     state: DaemonState = Depends(get_daemon_state),
 ) -> WalletDisplayResponse:
     """Return full wallet display with accounts, branches, and entries."""
@@ -137,6 +138,7 @@ async def wallet_display(
 async def list_utxos(
     walletname: str,
     _auth: dict[str, Any] = Depends(require_auth),
+    _wallet: None = Depends(require_wallet_match),
     state: DaemonState = Depends(get_daemon_state),
 ) -> ListUtxosResponse:
     """List all UTXOs in the wallet."""
@@ -175,6 +177,7 @@ async def get_new_address(
     walletname: str,
     mixdepth: str,
     _auth: dict[str, Any] = Depends(require_auth),
+    _wallet: None = Depends(require_wallet_match),
     state: DaemonState = Depends(get_daemon_state),
 ) -> GetAddressResponse:
     """Get a new receive address for the specified mixdepth."""
@@ -184,8 +187,6 @@ async def get_new_address(
         raise InvalidRequestFormat(f"Invalid mixdepth: {mixdepth}") from exc
 
     ws = state.wallet_service
-    if walletname != state.wallet_name:
-        raise InvalidRequestFormat(f"Wallet {walletname} is not unlocked")
 
     if md < 0 or md >= ws.mixdepth_count:
         raise InvalidRequestFormat(f"Mixdepth {md} out of range (0-{ws.mixdepth_count - 1})")
@@ -202,6 +203,7 @@ async def get_timelock_address(
     walletname: str,
     lockdate: str,
     _auth: dict[str, Any] = Depends(require_auth),
+    _wallet: None = Depends(require_wallet_match),
     state: DaemonState = Depends(get_daemon_state),
 ) -> GetAddressResponse:
     """Get a new timelocked (fidelity bond) address.
@@ -271,6 +273,7 @@ async def get_timelock_address(
 async def get_seed(
     walletname: str,
     _auth: dict[str, Any] = Depends(require_auth),
+    _wallet: None = Depends(require_wallet_match),
     state: DaemonState = Depends(get_daemon_state),
 ) -> GetSeedResponse:
     """Return the wallet's BIP39 mnemonic seed phrase."""
@@ -287,6 +290,7 @@ async def freeze_utxo(
     walletname: str,
     body: FreezeRequest,
     _auth: dict[str, Any] = Depends(require_auth),
+    _wallet: None = Depends(require_wallet_match),
     state: DaemonState = Depends(get_daemon_state),
 ) -> dict[str, str]:
     """Freeze or unfreeze a UTXO."""
@@ -340,6 +344,7 @@ async def config_get(
     walletname: str,
     body: ConfigGetRequest,
     _auth: dict[str, Any] = Depends(require_auth),
+    _wallet: None = Depends(require_wallet_match),
     state: DaemonState = Depends(get_daemon_state),
 ) -> ConfigGetResponse:
     """Read a config variable (in-memory override takes priority)."""
@@ -410,6 +415,7 @@ async def config_set(
     walletname: str,
     body: ConfigSetRequest,
     _auth: dict[str, Any] = Depends(require_auth),
+    _wallet: None = Depends(require_wallet_match),
     state: DaemonState = Depends(get_daemon_state),
 ) -> dict[str, str]:
     """Set a config variable (in-memory only, not persisted)."""
@@ -432,6 +438,7 @@ async def rescan_blockchain(
     walletname: str,
     blockheight: int,
     _auth: dict[str, Any] = Depends(require_auth),
+    _wallet: None = Depends(require_wallet_match),
     state: DaemonState = Depends(get_daemon_state),
 ) -> RescanBlockchainResponse:
     """Trigger a blockchain rescan from the given block height."""
@@ -466,6 +473,7 @@ async def rescan_blockchain(
 async def get_rescan_info(
     walletname: str,
     _auth: dict[str, Any] = Depends(require_auth),
+    _wallet: None = Depends(require_wallet_match),
     state: DaemonState = Depends(get_daemon_state),
 ) -> RescanInfoResponse:
     """Get rescan progress information."""
@@ -482,6 +490,7 @@ async def sign_message(
     walletname: str,
     body: SignMessageRequest,
     _auth: dict[str, Any] = Depends(require_auth),
+    _wallet: None = Depends(require_wallet_match),
     state: DaemonState = Depends(get_daemon_state),
 ) -> SignMessageResponse:
     """Sign a message with a wallet key at the given HD path."""

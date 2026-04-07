@@ -1,8 +1,8 @@
 """FastAPI dependency injection helpers.
 
-Provides ``get_daemon_state``, ``get_bearer_token``, and ``require_auth``
-which are used by route handlers to access the daemon state and enforce
-authentication.
+Provides ``get_daemon_state``, ``get_bearer_token``, ``require_auth``, and
+``require_wallet_match`` which are used by route handlers to access the daemon
+state and enforce authentication and resource ownership.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import jwt
 from fastapi import Depends, Request
 from loguru import logger
 
-from jmwalletd.errors import InvalidToken, NoWalletFound
+from jmwalletd.errors import InvalidToken, NoWalletFound, WalletNotFound
 from jmwalletd.state import DaemonState
 
 # Module-level singleton -- set by ``create_app()``.
@@ -103,3 +103,22 @@ def require_auth_allow_expired(
         raise InvalidToken(str(exc)) from exc
 
     return payload
+
+
+def require_wallet_match(
+    walletname: str,
+    state: DaemonState = Depends(get_daemon_state),
+) -> None:
+    """FastAPI path-dependency that validates the ``walletname`` URL parameter.
+
+    Every route whose URL contains ``{walletname}`` must include this
+    dependency to prevent IDOR: an authenticated client with a valid token
+    must only be able to act on the wallet that is actually loaded, not any
+    arbitrary name they pass in the path.
+
+    Raises:
+        WalletNotFound: If no wallet is loaded, or if the requested walletname
+            does not match the currently loaded wallet.
+    """
+    if not state.wallet_loaded or state.wallet_name != walletname:
+        raise WalletNotFound()

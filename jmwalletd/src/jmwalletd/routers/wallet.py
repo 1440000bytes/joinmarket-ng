@@ -18,6 +18,7 @@ from jmwalletd.deps import (
     get_optional_token,
     require_auth,
     require_auth_allow_expired,
+    require_wallet_match,
 )
 from jmwalletd.errors import (
     InvalidCredentials,
@@ -353,6 +354,7 @@ async def wallet_unlock(
 async def wallet_lock(
     walletname: str,
     _auth: dict[str, Any] = Depends(require_auth),
+    _wallet: None = Depends(require_wallet_match),
     state: DaemonState = Depends(get_daemon_state),
 ) -> LockWalletResponse:
     """Lock the current wallet and stop all services."""
