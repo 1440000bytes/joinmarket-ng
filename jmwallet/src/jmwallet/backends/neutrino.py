@@ -1047,6 +1047,15 @@ class NeutrinoBackend(BlockchainBackend):
             return []
 
         current_height = await self.get_block_height()
+
+        # ``verify_bonds()`` can be called before the first wallet sync has run
+        # on this backend instance (e.g. jmwalletd taker flow where wallet sync
+        # may use a different backend object). In that case ``_scan_start_height``
+        # is still the constructor default (often 0 on signet/regtest), which can
+        # trigger very deep scans and slow responses. Resolve it lazily from tip.
+        resolved_scan_start = await self._resolve_scan_start_height(current_height)
+        self._scan_start_height = resolved_scan_start
+
         semaphore = asyncio.Semaphore(10)
 
         async def _verify_one(bond: BondVerificationRequest) -> BondVerificationResult:
@@ -1061,7 +1070,7 @@ class NeutrinoBackend(BlockchainBackend):
                         f"v1/utxo/{bond.txid}/{bond.vout}",
                         params={
                             "address": bond.address,
-                            "start_height": self._scan_start_height,
+                            "start_height": resolved_scan_start,
                         },
                     )
 

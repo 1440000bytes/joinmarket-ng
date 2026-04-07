@@ -581,6 +581,46 @@ class TestNeutrinoBackend:
         await backend.close()
 
     @pytest.mark.asyncio
+    async def test_neutrino_backend_verify_bonds_resolves_scan_start_height_lazy(self):
+        """verify_bonds should resolve scan start when backend wasn't synced yet."""
+        from unittest.mock import AsyncMock
+
+        backend = NeutrinoBackend(
+            neutrino_url="http://localhost:8334",
+            network="signet",
+            scan_start_height=None,
+            scan_lookback_blocks=105120,
+        )
+        backend.get_block_height = AsyncMock(return_value=300000)
+        backend._api_call = AsyncMock(
+            return_value={
+                "unspent": True,
+                "value": 100000,
+                "block_height": 299000,
+            }
+        )
+        backend.get_block_time = AsyncMock(return_value=1700000000)
+
+        bond = BondVerificationRequest(
+            txid="b" * 64,
+            vout=0,
+            utxo_pub=b"\x02" + b"\x01" * 32,
+            locktime=1800000000,
+            address="tb1qtest",
+            scriptpubkey="0020" + "11" * 32,
+        )
+
+        results = await backend.verify_bonds([bond])
+        assert len(results) == 1
+        assert results[0].valid is True
+
+        expected_start = 300000 - 105120
+        utxo_call = backend._api_call.call_args
+        assert utxo_call[1]["params"]["start_height"] == expected_start
+        assert backend._scan_start_height == expected_start
+        await backend.close()
+
+    @pytest.mark.asyncio
     async def test_wait_for_rescan_completes_immediately(self):
         """Test _wait_for_rescan returns immediately when in_progress is False."""
         from unittest.mock import AsyncMock
