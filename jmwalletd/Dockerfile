@@ -4,13 +4,13 @@
 # Update with: ./scripts/update-base-images.sh
 # =============================================================================
 ARG PYTHON_VERSION=3.14
-ARG PYTHON_SLIM_DIGEST=sha256:fb83750094b46fd6b8adaa80f66e2302ecbe45d513f6cece637a841e1025b4ca
+ARG PYTHON_SLIM_DIGEST=sha256:5e59aae31ff0e87511226be8e2b94d78c58f05216efda3b07dbbed938ec8583b
 ARG NODE_VERSION=24
-ARG NODE_SLIM_DIGEST=sha256:06e5c9f86bfa0aaa7163cf37a5eaa8805f16b9acb48e3f85645b09d459fc2a9f
+ARG NODE_SLIM_DIGEST=sha256:b506e7321f176aae77317f99d67a24b272c1f09f1d10f1761f2773447d8da26c
 
 # JAM frontend: pinned commit hash for reproducible builds
 # Update with: ./scripts/update-base-images.sh
-ARG JAM_COMMIT=d3f7e499c14dd1960d3fc728f80b1fa62a1474bd
+ARG JAM_COMMIT=c443b575fe087cb4b1df8da5a863d1701a12e5c6
 
 # Pin build tools for reproducible builds
 # setuptools version is stamped into WHEEL metadata (Generator: setuptools (x.y.z))
@@ -192,7 +192,7 @@ ARG S6_OVERLAY_VERSION=3.2.2.0
 RUN apt-get update && apt-get install -y --no-install-recommends \
     wget=1.25.0-2 \
     xz-utils=5.8.1-1 \
-    tor=0.4.8.16-1 \
+    tor=0.4.9.6-0+deb13u1 \
     && rm -rf /var/lib/apt/lists/* \
     && rm -f /var/log/dpkg.log /var/log/apt/*.log /var/cache/ldconfig/aux-cache
 
