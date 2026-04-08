@@ -454,13 +454,17 @@ async function showBondModal(bondData, bondAmount, bondValue) {
     document.getElementById('bond-utxo-pub').textContent = bondData.utxo_pub;
     document.getElementById('bond-cert-pub').textContent = bondData.cert_pub || 'N/A';
 
-    // Certificate type (self-signed vs cold storage)
+    // Certificate type (self-signed vs delegated)
+    // Note: We cannot determine cold vs hot storage from the wire format alone.
+    // The reference implementation always uses delegated certificates even for
+    // hot wallets (generates a random cert keypair each time), so
+    // utxo_pub != cert_pub does NOT imply cold storage.
     const isSelfSigned = bondData.utxo_pub === bondData.cert_pub;
     const certTypeEl = document.getElementById('bond-cert-type');
     if (isSelfSigned) {
-        certTypeEl.textContent = 'Self-signed (hot wallet)';
+        certTypeEl.textContent = 'Self-signed certificate';
     } else {
-        certTypeEl.textContent = 'Delegated certificate (cold storage)';
+        certTypeEl.textContent = 'Delegated certificate';
     }
 
     // Certificate expiry with validation

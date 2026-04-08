@@ -274,9 +274,9 @@ def create_fidelity_bond_proof(
     The proof structure (252 bytes total):
     - 72 bytes: Nick signature (signs "taker_nick|maker_nick" with Bitcoin message format)
     - 72 bytes: Certificate signature (signs cert message with Bitcoin message format)
-    - 33 bytes: Certificate public key (hot wallet key or same as utxo_pub for self-signed)
+    - 33 bytes: Certificate public key (same as utxo_pub for self-signed, separate key otherwise)
     - 2 bytes: Certificate expiry (retarget period number when cert becomes invalid)
-    - 33 bytes: UTXO public key (cold wallet key)
+    - 33 bytes: UTXO public key (the key that can spend the bond UTXO)
     - 32 bytes: TXID (little-endian)
     - 4 bytes: Vout (little-endian)
     - 4 bytes: Locktime (little-endian)
