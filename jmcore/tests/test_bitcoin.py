@@ -74,7 +74,7 @@ def create_synthetic_segwit_tx(num_inputs: int, num_outputs: int) -> bytes:
 
     # Outputs: each has value(8) + script_len(1) + P2WPKH script(22)
     for _ in range(num_outputs):
-        parts.append(os.urandom(8))  # Random value
+        parts.append(struct.pack("<q", 100_000))  # 100k sats (valid amount)
         parts.append(b"\x16")  # Script length = 22
         parts.append(b"\x00\x14")  # OP_0 PUSH20
         parts.append(os.urandom(20))  # Random pubkey hash
@@ -126,7 +126,7 @@ def create_synthetic_legacy_tx(num_inputs: int, num_outputs: int) -> bytes:
 
     # Outputs: each has value(8) + script_len(1) + P2PKH script(25)
     for _ in range(num_outputs):
-        parts.append(os.urandom(8))  # Random value
+        parts.append(struct.pack("<q", 100_000))  # 100k sats (valid amount)
         parts.append(b"\x19")  # Script length = 25
         parts.append(b"\x76\xa9\x14")  # OP_DUP OP_HASH160 PUSH20
         parts.append(os.urandom(20))  # Random pubkey hash
