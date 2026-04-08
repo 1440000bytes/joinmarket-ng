@@ -17,7 +17,8 @@ JoinMarket NG uses protocol version 5 and negotiates optional capabilities via h
 
 Example feature keys include:
 
-- `extended_peerlist`
+- `peerlist_features`
+- `ping`
 - `neutrino_compat`
 
 This allows gradual rollout without a network-wide protocol version bump.

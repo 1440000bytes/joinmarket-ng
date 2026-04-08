@@ -492,3 +492,93 @@ class TestChunkedPeerlist:
         envelope = MessageEnvelope.from_bytes(sent_messages[0][1])
         assert envelope.message_type == MessageType.PEERLIST
         assert envelope.payload == ""
+
+
+class TestPingPongRouting:
+    """Tests for PING/PONG message routing."""
+
+    @pytest.mark.anyio
+    async def test_ping_sends_pong_response(self, registry, sample_peers):
+        """When a PING is received, the router should respond with a PONG."""
+        sent_messages: list[tuple[str, bytes]] = []
+
+        async def mock_send(peer_key: str, data: bytes) -> None:
+            sent_messages.append((peer_key, data))
+
+        router = MessageRouter(
+            peer_registry=registry,
+            send_callback=mock_send,
+        )
+
+        from_key = sample_peers[0].location_string
+        envelope = MessageEnvelope(message_type=MessageType.PING, payload="")
+
+        await router.route_message(envelope, from_key)
+
+        assert len(sent_messages) == 1
+        peer_key, data = sent_messages[0]
+        assert peer_key == from_key
+        response = MessageEnvelope.from_bytes(data)
+        assert response.message_type == MessageType.PONG
+        assert response.payload == ""
+
+    @pytest.mark.anyio
+    async def test_pong_calls_on_pong_callback(self, registry, sample_peers):
+        """When a PONG is received, the on_pong callback should be invoked."""
+        pong_keys: list[str] = []
+
+        async def mock_send(peer_key: str, data: bytes) -> None:
+            pass
+
+        def on_pong(peer_key: str) -> None:
+            pong_keys.append(peer_key)
+
+        router = MessageRouter(
+            peer_registry=registry,
+            send_callback=mock_send,
+            on_pong=on_pong,
+        )
+
+        from_key = sample_peers[0].location_string
+        envelope = MessageEnvelope(message_type=MessageType.PONG, payload="")
+
+        await router.route_message(envelope, from_key)
+
+        assert pong_keys == [from_key]
+
+    @pytest.mark.anyio
+    async def test_pong_without_callback_does_not_raise(self, registry, sample_peers):
+        """When a PONG is received with no on_pong callback, nothing should happen."""
+
+        async def mock_send(peer_key: str, data: bytes) -> None:
+            pass
+
+        router = MessageRouter(
+            peer_registry=registry,
+            send_callback=mock_send,
+            on_pong=None,
+        )
+
+        from_key = sample_peers[0].location_string
+        envelope = MessageEnvelope(message_type=MessageType.PONG, payload="")
+
+        # Should not raise
+        await router.route_message(envelope, from_key)
+
+    @pytest.mark.anyio
+    async def test_ping_send_failure_does_not_raise(self, registry, sample_peers):
+        """If sending the PONG response fails, it should be handled gracefully."""
+
+        async def failing_send(peer_key: str, data: bytes) -> None:
+            raise ConnectionError("Connection closed")
+
+        router = MessageRouter(
+            peer_registry=registry,
+            send_callback=failing_send,
+        )
+
+        from_key = sample_peers[0].location_string
+        envelope = MessageEnvelope(message_type=MessageType.PING, payload="")
+
+        # Should not raise
+        await router.route_message(envelope, from_key)

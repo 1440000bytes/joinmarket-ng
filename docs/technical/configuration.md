@@ -69,6 +69,17 @@ socks_port = 9050
 - `scantxoutset`
 - `neutrino`
 
+## Directory Server Heartbeat Settings
+
+The `[directory_server]` section supports heartbeat liveness controls:
+
+- `heartbeat_sweep_interval` (default `60.0`): seconds between sweep cycles
+- `heartbeat_idle_threshold` (default `600.0`): idle seconds before probing
+- `heartbeat_hard_evict` (default `1500.0`): idle seconds before unconditional eviction
+- `heartbeat_pong_wait` (default `30.0`): seconds to wait for PONG reply
+
+These values are tuned to match joinmarket-rs defaults for interoperability.
+
 ## Notes
 
 - BIP39 passphrases are not intended to be stored in config for normal operations.

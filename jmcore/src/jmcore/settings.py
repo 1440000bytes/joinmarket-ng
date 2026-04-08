@@ -713,6 +713,26 @@ class DirectoryServerSettings(BaseModel):
         default="JoinMarket NG Directory Server https://github.com/joinmarket-ng/joinmarket-ng/",
         description="Message of the day sent to clients",
     )
+    heartbeat_sweep_interval: float = Field(
+        default=60.0,
+        gt=0.0,
+        description="Seconds between heartbeat sweep cycles (default 60)",
+    )
+    heartbeat_idle_threshold: float = Field(
+        default=600.0,
+        gt=0.0,
+        description="Seconds of inactivity before probing a peer (default 600 = 10 min)",
+    )
+    heartbeat_hard_evict: float = Field(
+        default=1500.0,
+        gt=0.0,
+        description="Seconds of inactivity before unconditional eviction (default 1500 = 25 min)",
+    )
+    heartbeat_pong_wait: float = Field(
+        default=30.0,
+        gt=0.0,
+        description="Seconds to wait for PONG after sending PING (default 30)",
+    )
 
 
 class OrderbookWatcherSettings(BaseModel):

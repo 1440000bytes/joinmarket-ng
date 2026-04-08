@@ -377,6 +377,12 @@
 # Message of the day
 # motd = "JoinMarket NG Directory Server https://github.com/joinmarket-ng/joinmarket-ng/"
 
+# Heartbeat liveness detection (PING/PONG protocol, compatible with joinmarket-rs)
+# heartbeat_sweep_interval = 60.0    # Seconds between heartbeat sweeps
+# heartbeat_idle_threshold = 600.0   # Seconds idle before probing (10 min)
+# heartbeat_hard_evict = 1500.0      # Seconds idle before unconditional eviction (25 min)
+# heartbeat_pong_wait = 30.0         # Seconds to wait for PONG after PING
+
 # ============================================================================
 # Orderbook Watcher Settings
 # ============================================================================

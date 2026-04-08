@@ -10,6 +10,7 @@ from jmcore.models import NetworkType, PeerInfo, PeerStatus
 from jmcore.protocol import (
     FEATURE_NEUTRINO_COMPAT,
     FEATURE_PEERLIST_FEATURES,
+    FEATURE_PING,
     JM_VERSION,
     JM_VERSION_MIN,
     NOT_SERVING_ONION_HOSTNAME,
@@ -86,8 +87,8 @@ class HandshakeHandler:
                 neutrino_compat=peer_neutrino_compat,
             )
 
-            # Build our feature set - always include peerlist_features
-            server_features: set[str] = {FEATURE_PEERLIST_FEATURES}
+            # Build our feature set - always include peerlist_features and ping
+            server_features: set[str] = {FEATURE_PEERLIST_FEATURES, FEATURE_PING}
             if self.neutrino_compat:
                 server_features.add(FEATURE_NEUTRINO_COMPAT)
             feature_set = FeatureSet(features=server_features)

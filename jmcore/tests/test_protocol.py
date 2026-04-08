@@ -5,8 +5,10 @@ Tests for jmcore.protocol
 import pytest
 
 from jmcore.protocol import (
+    ALL_FEATURES,
     FEATURE_NEUTRINO_COMPAT,
     FEATURE_PEERLIST_FEATURES,
+    FEATURE_PING,
     FEATURE_PUSH_ENCRYPTED,
     JM_VERSION,
     JM_VERSION_MIN,
@@ -817,3 +819,57 @@ class TestParsePeerLocationEdgeCases:
         """Location without colon raises ValueError."""
         with pytest.raises(ValueError, match="Invalid location"):
             parse_peer_location("test.onion")
+
+
+# ==============================================================================
+# Ping Feature Constants and FeatureSet.supports_ping()
+# ==============================================================================
+
+
+class TestPingFeature:
+    """Tests for the FEATURE_PING constant and FeatureSet.supports_ping()."""
+
+    def test_feature_ping_constant_value(self):
+        """FEATURE_PING should be the string 'ping'."""
+        assert FEATURE_PING == "ping"
+
+    def test_feature_ping_in_all_features(self):
+        """FEATURE_PING should be included in ALL_FEATURES."""
+        assert FEATURE_PING in ALL_FEATURES
+
+    def test_feature_set_supports_ping_true(self):
+        """FeatureSet with ping feature should report supports_ping() == True."""
+        fs = FeatureSet(features={FEATURE_PING})
+        assert fs.supports_ping() is True
+
+    def test_feature_set_supports_ping_false(self):
+        """FeatureSet without ping feature should report supports_ping() == False."""
+        fs = FeatureSet(features=set())
+        assert fs.supports_ping() is False
+
+    def test_feature_set_supports_ping_with_other_features(self):
+        """supports_ping() should work alongside other features."""
+        fs = FeatureSet(features={FEATURE_NEUTRINO_COMPAT, FEATURE_PING})
+        assert fs.supports_ping() is True
+        assert fs.supports_neutrino_compat() is True
+
+    def test_ping_and_pong_message_types_exist(self):
+        """MessageType should have PING and PONG entries."""
+        assert MessageType.PING == 797
+        assert MessageType.PONG == 799
+
+    def test_feature_set_to_dict_includes_ping(self):
+        """FeatureSet.to_dict() should include ping when present."""
+        fs = FeatureSet(features={FEATURE_PING})
+        d = fs.to_dict()
+        assert d["ping"] is True
+
+    def test_feature_set_from_handshake_with_ping(self):
+        """FeatureSet.from_handshake() should recognize ping feature."""
+        fs = FeatureSet.from_handshake({"features": {"ping": True}})
+        assert fs.supports_ping() is True
+
+    def test_feature_set_from_handshake_ping_false(self):
+        """FeatureSet.from_handshake() with ping=False should not include it."""
+        fs = FeatureSet.from_handshake({"features": {"ping": False}})
+        assert fs.supports_ping() is False

@@ -391,3 +391,211 @@ def test_active_peers_exclude_directories(registry):
     active_peers = registry.get_active_peers()
     assert len(active_peers) == 1
     assert active_peers[0].nick == "maker1"
+
+
+# ---------------------------------------------------------------------------
+# Heartbeat-related methods
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateLastSeen:
+    """Tests for update_last_seen()."""
+
+    def test_updates_timestamp(self, registry):
+        from datetime import UTC, datetime, timedelta
+
+        peer = PeerInfo(
+            nick="maker1",
+            onion_address=f"{'a' * 56}.onion",
+            port=5222,
+            network=NetworkType.MAINNET,
+        )
+        registry.register(peer)
+        key = peer.location_string
+
+        # Backdate last_seen
+        p = registry.get_by_key(key)
+        old_time = datetime.now(UTC) - timedelta(hours=1)
+        p.last_seen = old_time
+
+        registry.update_last_seen(key)
+
+        assert p.last_seen > old_time
+
+    def test_noop_for_unknown_key(self, registry):
+        # Should not raise for non-existent key
+        registry.update_last_seen("nonexistent_key")
+
+
+class TestGetPeersIdleSince:
+    """Tests for get_peers_idle_since()."""
+
+    def test_returns_peers_older_than_cutoff(self, registry):
+        from datetime import UTC, datetime, timedelta
+
+        old_time = datetime.now(UTC) - timedelta(minutes=20)
+        recent_time = datetime.now(UTC) - timedelta(seconds=30)
+
+        old_peer = PeerInfo(
+            nick="old_maker",
+            onion_address=f"{'a' * 56}.onion",
+            port=5222,
+            network=NetworkType.MAINNET,
+            status=PeerStatus.HANDSHAKED,
+        )
+        registry.register(old_peer)
+        old_peer.last_seen = old_time
+
+        recent_peer = PeerInfo(
+            nick="recent_maker",
+            onion_address=f"{'b' * 56}.onion",
+            port=5222,
+            network=NetworkType.MAINNET,
+            status=PeerStatus.HANDSHAKED,
+        )
+        registry.register(recent_peer)
+        recent_peer.last_seen = recent_time
+
+        cutoff = datetime.now(UTC) - timedelta(minutes=10)
+        idle = registry.get_peers_idle_since(cutoff)
+
+        assert len(idle) == 1
+        assert idle[0][1].nick == "old_maker"
+
+    def test_excludes_non_handshaked(self, registry):
+        from datetime import UTC, datetime, timedelta
+
+        old_time = datetime.now(UTC) - timedelta(minutes=20)
+
+        peer = PeerInfo(
+            nick="connecting_peer",
+            onion_address=f"{'a' * 56}.onion",
+            port=5222,
+            network=NetworkType.MAINNET,
+            status=PeerStatus.CONNECTED,
+        )
+        registry.register(peer)
+        peer.last_seen = old_time
+
+        cutoff = datetime.now(UTC) - timedelta(minutes=10)
+        idle = registry.get_peers_idle_since(cutoff)
+
+        assert len(idle) == 0
+
+    def test_excludes_directories(self, registry):
+        from datetime import UTC, datetime, timedelta
+
+        old_time = datetime.now(UTC) - timedelta(minutes=20)
+
+        dir_peer = PeerInfo(
+            nick="directory_node",
+            onion_address=f"{'a' * 56}.onion",
+            port=5222,
+            network=NetworkType.MAINNET,
+            status=PeerStatus.HANDSHAKED,
+            is_directory=True,
+        )
+        registry.register(dir_peer)
+        dir_peer.last_seen = old_time
+
+        cutoff = datetime.now(UTC) - timedelta(minutes=10)
+        idle = registry.get_peers_idle_since(cutoff)
+
+        assert len(idle) == 0
+
+    def test_excludes_peers_without_last_seen(self, registry):
+        from datetime import UTC, datetime, timedelta
+
+        peer = PeerInfo(
+            nick="no_seen_peer",
+            onion_address=f"{'a' * 56}.onion",
+            port=5222,
+            network=NetworkType.MAINNET,
+            status=PeerStatus.HANDSHAKED,
+        )
+        registry.register(peer)
+        # register() sets last_seen, so clear it
+        peer.last_seen = None
+
+        cutoff = datetime.now(UTC) - timedelta(minutes=10)
+        idle = registry.get_peers_idle_since(cutoff)
+
+        assert len(idle) == 0
+
+
+class TestSupportsPing:
+    """Tests for supports_ping()."""
+
+    def test_peer_with_ping_feature(self, registry):
+        peer = PeerInfo(
+            nick="ping_maker",
+            onion_address=f"{'a' * 56}.onion",
+            port=5222,
+            network=NetworkType.MAINNET,
+            features={"ping": True},
+        )
+        registry.register(peer)
+        key = peer.location_string
+
+        assert registry.supports_ping(key) is True
+
+    def test_peer_without_ping_feature(self, registry):
+        peer = PeerInfo(
+            nick="legacy_maker",
+            onion_address=f"{'a' * 56}.onion",
+            port=5222,
+            network=NetworkType.MAINNET,
+            features={},
+        )
+        registry.register(peer)
+        key = peer.location_string
+
+        assert registry.supports_ping(key) is False
+
+    def test_peer_with_ping_false(self, registry):
+        peer = PeerInfo(
+            nick="ping_off_maker",
+            onion_address=f"{'a' * 56}.onion",
+            port=5222,
+            network=NetworkType.MAINNET,
+            features={"ping": False},
+        )
+        registry.register(peer)
+        key = peer.location_string
+
+        assert registry.supports_ping(key) is False
+
+    def test_unknown_key(self, registry):
+        assert registry.supports_ping("nonexistent") is False
+
+
+class TestIsMaker:
+    """Tests for is_maker()."""
+
+    def test_peer_with_onion_address(self, registry):
+        peer = PeerInfo(
+            nick="real_maker",
+            onion_address=f"{'a' * 56}.onion",
+            port=5222,
+            network=NetworkType.MAINNET,
+        )
+        registry.register(peer)
+        key = peer.location_string
+
+        assert registry.is_maker(key) is True
+
+    def test_peer_not_serving_onion(self, registry):
+        peer = PeerInfo(
+            nick="taker_nick",
+            onion_address="NOT-SERVING-ONION",
+            port=-1,
+            network=NetworkType.MAINNET,
+        )
+        registry.register(peer)
+        # NOT-SERVING-ONION peers are keyed by nick
+        key = peer.nick
+
+        assert registry.is_maker(key) is False
+
+    def test_unknown_key(self, registry):
+        assert registry.is_maker("nonexistent") is False

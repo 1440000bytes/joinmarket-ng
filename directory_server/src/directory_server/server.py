@@ -19,6 +19,7 @@ from loguru import logger
 
 from directory_server.handshake_handler import HandshakeError, HandshakeHandler
 from directory_server.health import HealthCheckServer
+from directory_server.heartbeat import HeartbeatConfig, HeartbeatManager
 from directory_server.message_router import MessageRouter
 from directory_server.peer_registry import PeerRegistry
 
@@ -50,11 +51,27 @@ class DirectoryServer:
         self.peer_registry = PeerRegistry(max_peers=settings.max_peers)
         self.connections = ConnectionPool(max_connections=settings.max_peers)
         self.peer_key_to_conn_id: dict[str, str] = {}
+
+        # Heartbeat manager for peer liveness detection
+        heartbeat_config = HeartbeatConfig(
+            sweep_interval_sec=settings.heartbeat_sweep_interval,
+            idle_threshold_sec=settings.heartbeat_idle_threshold,
+            hard_evict_sec=settings.heartbeat_hard_evict,
+            pong_wait_sec=settings.heartbeat_pong_wait,
+        )
+        self.heartbeat = HeartbeatManager(
+            peer_registry=self.peer_registry,
+            send_callback=self._send_to_peer,
+            evict_callback=self._evict_peer,
+            config=heartbeat_config,
+        )
+
         self.message_router = MessageRouter(
             peer_registry=self.peer_registry,
             send_callback=self._send_to_peer,
             broadcast_batch_size=settings.broadcast_batch_size,
             on_send_failed=self._handle_send_failed,
+            on_pong=self.heartbeat.handle_pong,
         )
         self.handshake_handler = HandshakeHandler(
             network=self.network,
@@ -94,6 +111,7 @@ class DirectoryServer:
         )
 
         self.health_server.start(self)
+        self.heartbeat.start()
 
         async with self.server:
             await self.server.serve_forever()
@@ -112,6 +130,7 @@ class DirectoryServer:
         logger.info("Shutting down directory server...")
         self._shutdown = True
 
+        await self.heartbeat.stop()
         self.health_server.stop()
 
         # Cancel all client handler tasks before closing server
@@ -255,6 +274,9 @@ class DirectoryServer:
             try:
                 data = await connection.receive()
 
+                # Update last_seen on every received message for heartbeat liveness
+                self.peer_registry.update_last_seen(peer_key)
+
                 # Rate limiting by connection ID to prevent nick spoofing attacks.
                 # A malicious peer could claim another's nick in handshake and spam
                 # to get the legitimate peer rate-limited. Using conn_id ensures
@@ -375,6 +397,46 @@ class DirectoryServer:
         if peer_info:
             logger.debug(f"Unregistering failed peer: {peer_key}")
             self.peer_registry.unregister(peer_key)
+
+    async def _evict_peer(self, peer_key: str, reason: str) -> None:
+        """Evict a peer due to heartbeat timeout.
+
+        Broadcasts disconnect, unregisters from registry, closes the
+        underlying TCP connection, and cleans up all mappings.
+        """
+        peer_info = self.peer_registry.get_by_key(peer_key)
+        if not peer_info:
+            return
+
+        logger.info(f"Evicting peer {peer_info.nick} ({peer_key}): {reason}")
+
+        # Broadcast disconnect to other peers
+        try:
+            await self.message_router.broadcast_peer_disconnect(
+                peer_info.location_string, peer_info.network
+            )
+        except Exception as e:
+            logger.debug(f"Failed to broadcast disconnect for {peer_key}: {e}")
+
+        # Fire-and-forget notification
+        total_peers = self.peer_registry.count() - 1
+        asyncio.create_task(get_notifier().notify_peer_disconnected(peer_info.nick, total_peers))
+
+        # Unregister from registry
+        self.peer_registry.unregister(peer_key)
+        self.message_router.remove_peer_offers(peer_key)
+
+        # Close the underlying connection
+        conn_id = self.peer_key_to_conn_id.pop(peer_key, None)
+        if conn_id:
+            self.rate_limiter.remove_peer(conn_id)
+            connection = self.connections.get(conn_id)
+            if connection:
+                self.connections.remove(conn_id)
+                try:
+                    await connection.close()
+                except Exception as e:
+                    logger.trace(f"Error closing evicted connection: {e}")
 
     def is_healthy(self) -> bool:
         return (

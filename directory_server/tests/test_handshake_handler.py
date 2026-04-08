@@ -382,3 +382,67 @@ class TestPeerInfoVersionSupport:
         )
 
         assert peer.supports_extended_utxo() is False
+
+
+class TestPingFeatureNegotiation:
+    """Tests for ping feature negotiation during handshake."""
+
+    @pytest.fixture
+    def handler(self):
+        return HandshakeHandler(
+            network=NetworkType.MAINNET, server_nick="test_directory", motd="Test Server"
+        )
+
+    def test_server_response_includes_ping_feature(self, handler):
+        """Server handshake response should always advertise ping feature."""
+        handshake_data = json.dumps(
+            {
+                "app-name": "joinmarket",
+                "directory": False,
+                "location-string": "abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrstuvwx.onion:5222",
+                "proto-ver": JM_VERSION,
+                "features": {},
+                "nick": "test_client",
+                "network": "mainnet",
+            }
+        )
+
+        _peer_info, response = handler.process_handshake(handshake_data, "127.0.0.1:12345")
+
+        assert response["features"]["ping"] is True
+
+    def test_client_ping_feature_stored_in_peer_info(self, handler):
+        """Client advertising ping feature should have it stored in PeerInfo."""
+        handshake_data = json.dumps(
+            {
+                "app-name": "joinmarket",
+                "directory": False,
+                "location-string": "abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrstuvwx.onion:5222",
+                "proto-ver": JM_VERSION,
+                "features": {"ping": True},
+                "nick": "ping_client",
+                "network": "mainnet",
+            }
+        )
+
+        peer_info, _response = handler.process_handshake(handshake_data, "127.0.0.1:12345")
+
+        assert peer_info.features.get("ping") is True
+
+    def test_client_without_ping_feature(self, handler):
+        """Client not advertising ping feature should not have it in PeerInfo."""
+        handshake_data = json.dumps(
+            {
+                "app-name": "joinmarket",
+                "directory": False,
+                "location-string": "abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrstuvwx.onion:5222",
+                "proto-ver": JM_VERSION,
+                "features": {},
+                "nick": "legacy_client",
+                "network": "mainnet",
+            }
+        )
+
+        peer_info, _response = handler.process_handshake(handshake_data, "127.0.0.1:12345")
+
+        assert peer_info.features.get("ping") is not True

@@ -257,7 +257,8 @@ This implementation uses feature flags instead of protocol version bumps to enab
 
 | Feature | Description |
 |---------|-------------|
-| `extended_peerlist` | Supports extended peerlist format with feature flags in `F:` field |
+| `peerlist_features` | Supports extended peerlist format with feature flags in `F:` field |
+| `ping` | Supports application-level PING/PONG heartbeat liveness checks |
 | `neutrino_compat` | Can provide extended UTXO format with scriptPubKey and blockheight for own UTXOs |
 
 **Extended Peerlist Format:**
@@ -284,10 +285,27 @@ Both full-node and neutrino joinmarket-ng makers advertise `neutrino_compat` bec
 ```json
 {
   "proto-ver": 5,
-  "features": {"extended_peerlist": true, "neutrino_compat": true}
+  "features": {"peerlist_features": true, "ping": true, "neutrino_compat": true}
 }
 ```
 
 The `features` dict is ignored by reference implementation but preserved for our peers.
+
+### Heartbeat and Idle Eviction
+
+Directory servers run an application-level heartbeat to detect stale Tor connections that remain open but unresponsive.
+
+- Every peer message updates `last_seen`
+- On each heartbeat sweep, peers idle past `heartbeat_idle_threshold` are probed
+- Ping-capable peers receive `PING` (`type=797`) and must answer with `PONG` (`type=799`) within `heartbeat_pong_wait`
+- Non-ping makers receive a unicast `!orderbook` probe as a compatibility fallback
+- Peers idle past `heartbeat_hard_evict` are evicted unconditionally
+
+Defaults match joinmarket-rs behavior for interoperability:
+
+- Sweep interval: 60s
+- Idle probe threshold: 600s (10 min)
+- Hard eviction: 1500s (25 min)
+- PONG wait: 30s
 
 ---

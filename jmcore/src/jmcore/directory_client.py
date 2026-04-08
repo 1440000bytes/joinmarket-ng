@@ -38,6 +38,7 @@ from jmcore.protocol import (
     COMMAND_PREFIX,
     FEATURE_NEUTRINO_COMPAT,
     FEATURE_PEERLIST_FEATURES,
+    FEATURE_PING,
     JM_VERSION,
     NICK_PEERLOCATOR_SEPARATOR,
     FeatureSet,
@@ -298,8 +299,9 @@ class DirectoryClient:
             raise DirectoryClientError("Not connected")
 
         # Build our feature set - always include peerlist_features to indicate we support
-        # the extended peerlist format with F: suffix for feature information
-        our_features: set[str] = {FEATURE_PEERLIST_FEATURES}
+        # the extended peerlist format with F: suffix for feature information.
+        # Always include ping to indicate we support application-level PING/PONG heartbeat.
+        our_features: set[str] = {FEATURE_PEERLIST_FEATURES, FEATURE_PING}
         if self.neutrino_compat:
             our_features.add(FEATURE_NEUTRINO_COMPAT)
         feature_set = FeatureSet(features=our_features)
@@ -509,6 +511,11 @@ class DirectoryClient:
                     continue
 
                 # Buffer unexpected messages (like PUBMSG offers) for later processing
+                # Handle PING immediately instead of buffering
+                if msg_type == MessageType.PING.value:
+                    await self._send_pong()
+                    continue
+
                 logger.trace(
                     f"Buffering unexpected message type {msg_type} while waiting for PEERLIST"
                 )
@@ -703,6 +710,13 @@ class DirectoryClient:
                     f"Received message type {response.get('type')}: "
                     f"{response.get('line', '')[:80]}..."
                 )
+
+                # Handle PING immediately by sending PONG back -- don't buffer
+                if response.get("type") == MessageType.PING.value:
+                    await self._send_pong()
+                    consecutive_errors = 0
+                    continue
+
                 messages.append(response)
                 consecutive_errors = 0
 
@@ -996,6 +1010,17 @@ class DirectoryClient:
                 await self.connection.close()
                 self.connection = None
 
+    async def _send_pong(self) -> None:
+        """Send a PONG response to a PING from the directory server."""
+        if not self.connection:
+            return
+        try:
+            pong_msg = json.dumps({"type": MessageType.PONG.value, "line": ""}).encode("utf-8")
+            await self.connection.send(pong_msg)
+            logger.trace(f"Sent PONG to {self.host}:{self.port}")
+        except Exception as e:
+            logger.debug(f"Failed to send PONG: {e}")
+
     def stop(self) -> None:
         """Stop continuous listening."""
         self.running = False
@@ -1074,6 +1099,11 @@ class DirectoryClient:
                         self._handle_peerlist_response(line)
                     except Exception as e:
                         logger.debug(f"Failed to process PEERLIST: {e}")
+                    continue
+
+                # Handle PING by sending PONG back immediately
+                if msg_type == MessageType.PING.value:
+                    await self._send_pong()
                     continue
 
                 # Process PUBMSG and PRIVMSG to update offers/bonds cache

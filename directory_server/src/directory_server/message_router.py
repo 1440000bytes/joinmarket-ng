@@ -16,6 +16,7 @@ from directory_server.peer_registry import PeerRegistry
 
 SendCallback = Callable[[str, bytes], Awaitable[None]]
 FailedSendCallback = Callable[[str], Awaitable[None]]
+PongCallback = Callable[[str], None]
 
 # Default batch size for concurrent broadcasts to limit memory usage
 # This can be overridden via Settings.broadcast_batch_size
@@ -29,11 +30,13 @@ class MessageRouter:
         send_callback: SendCallback,
         broadcast_batch_size: int = DEFAULT_BROADCAST_BATCH_SIZE,
         on_send_failed: FailedSendCallback | None = None,
+        on_pong: PongCallback | None = None,
     ):
         self.peer_registry = peer_registry
         self.send_callback = send_callback
         self.broadcast_batch_size = broadcast_batch_size
         self.on_send_failed = on_send_failed
+        self.on_pong = on_pong
         # Track peers that failed during current operation to avoid repeated attempts
         self._failed_peers: set[str] = set()
         # Track offers per peer (peer_key -> set of order IDs)
@@ -48,6 +51,8 @@ class MessageRouter:
             await self._handle_peerlist_request(from_key)
         elif envelope.message_type == MessageType.PING:
             await self._handle_ping(from_key)
+        elif envelope.message_type == MessageType.PONG:
+            self._handle_pong(from_key)
         else:
             logger.debug(f"Unhandled message type: {envelope.message_type}")
 
@@ -249,6 +254,15 @@ class MessageRouter:
             logger.trace(f"Sent PONG to {from_key}")
         except Exception as e:
             logger.trace(f"Failed to send PONG: {e}")
+
+    def _handle_pong(self, from_key: str) -> None:
+        """Handle a PONG response from a peer.
+
+        Delegates to the heartbeat module via callback to clear pong_pending.
+        """
+        logger.trace(f"Received PONG from {from_key}")
+        if self.on_pong:
+            self.on_pong(from_key)
 
     async def send_peerlist(
         self,

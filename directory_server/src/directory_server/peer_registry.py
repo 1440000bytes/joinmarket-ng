@@ -66,6 +66,15 @@ class PeerRegistry:
             if status in (PeerStatus.CONNECTED, PeerStatus.HANDSHAKED):
                 peer.last_seen = datetime.now(UTC)
 
+    def update_last_seen(self, key: str) -> None:
+        """Update the last_seen timestamp for a peer.
+
+        Called on every received message to track peer liveness for heartbeat.
+        """
+        peer = self.get_by_key(key)
+        if peer:
+            peer.last_seen = datetime.now(UTC)
+
     def _iter_connected(self, network: NetworkType | None = None) -> Iterator[PeerInfo]:
         """Iterator over connected peers.
 
@@ -181,3 +190,33 @@ class PeerRegistry:
         which is required for Neutrino backend verification.
         """
         return [p for p in self._iter_connected(network) if p.neutrino_compat]
+
+    def get_peers_idle_since(self, cutoff: datetime) -> list[tuple[str, PeerInfo]]:
+        """Get connected peers whose last_seen is older than cutoff.
+
+        Returns list of (peer_key, peer_info) tuples.
+        """
+        result: list[tuple[str, PeerInfo]] = []
+        for key, peer in list(self._peers.items()):
+            if (
+                peer.status == PeerStatus.HANDSHAKED
+                and not peer.is_directory
+                and peer.last_seen is not None
+                and peer.last_seen < cutoff
+            ):
+                result.append((key, peer))
+        return result
+
+    def supports_ping(self, key: str) -> bool:
+        """Check if a peer supports PING/PONG heartbeat."""
+        peer = self.get_by_key(key)
+        if peer is None:
+            return False
+        return peer.features.get("ping", False) is True
+
+    def is_maker(self, key: str) -> bool:
+        """Check if a peer is a maker (serves an onion address)."""
+        peer = self.get_by_key(key)
+        if peer is None:
+            return False
+        return peer.onion_address != "NOT-SERVING-ONION"

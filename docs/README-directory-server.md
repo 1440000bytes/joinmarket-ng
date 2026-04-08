@@ -49,6 +49,19 @@ MESSAGE_RATE_LIMIT=100
 LOG_LEVEL=INFO
 ```
 
+Heartbeat liveness settings (section `[directory_server]` in `config.toml`):
+
+- `heartbeat_sweep_interval` (default `60.0`)
+- `heartbeat_idle_threshold` (default `600.0`)
+- `heartbeat_hard_evict` (default `1500.0`)
+- `heartbeat_pong_wait` (default `30.0`)
+
+Behavior summary:
+
+- Idle peers are probed with PING/PONG when they advertise `"ping": true` in handshake features
+- Legacy/non-ping makers receive `!orderbook` as a compatibility liveness probe
+- Peers idle beyond hard eviction threshold are disconnected
+
 ## Running
 
 ### Docker Compose (Recommended)
