@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-04-08
+
+### Added
+
+- With the Neutrino backend, sync block headersover ([ec627ba4](../../commit/ec627ba4ad057b56bf3677ec93ac6962ab85c477))
+- With the Neutrino backend, prefetch only last ~2 years of ([ec627ba4](../../commit/ec627ba4ad057b56bf3677ec93ac6962ab85c477))
+- Add a .meta file companion to mnemonic files to store wallet ([0fcffac5](../../commit/0fcffac5fbf175ad6f476208e62c13e30b7a239a))
+- Skip redundant neutrino rescans using persisted server-side coverage metadata. ([d51d9de4](../../commit/d51d9de4ae6dee7f514bcf1e10cc7d796efe3a25))
+- Detect and log neutrino-api server capabilities on connect ([4e4a4414](../../commit/4e4a44149dd9c52c3ec6ae0264ba81e4b31fea3a))
+- Improve jm-wallet debug-info with neutrino server version and watch diagnostics ([861bf3db](../../commit/861bf3db00151d1f3ea4eb072fdea069f808e6e0))
+- Support TLS and token auth for neutrino-api communication ([9688432d](../../commit/9688432d2e750c06856e2be6e64ff870f56a364a))
+- Add https://github.com/joinmarket-rs/joinmarket-rs (Rust ([b468a601](../../commit/b468a601ef6ea02506e81f7949bdfcddfbc8b99f))
+
+### Fixed
+
+- fix a bug where the orderbook command was being sent as ([cad9c138](../../commit/cad9c138c64faf08240939db6ff14cae9c040588))
+- Harden UTXO parsing in jmcore and refactor PoDLE revelation validation to use a single strict implementation matching the reference ([37e2bdab](../../commit/37e2bdab226aef96de09d56adae09e2c93c8a0c6))
+- Restrict CORS origins to local hosts for security ([1e794fba](../../commit/1e794fba8cb1e0137da86080325f18e81797ebe8))
+- Fix IDOR where any walletname in the URL would return real wallet data ([6bfd8442](../../commit/6bfd8442663bc27945b0e4435435f36830efc063))
+- Stabilize neutrino bond verification by resolving scan start height lazily ([61a13903](../../commit/61a13903c7f4c5b8c5a42c51132f1e903dd2ecf5))
+- Make Flatpak orderbook watcher honor dynamic Tor SOCKS and control ports ([19a6539e](../../commit/19a6539eae31acfc9fe83e06b29627eafa8b9912))
+- Enable authenticated neutrino bond verification in orderbook watcher ([e09c9c03](../../commit/e09c9c032ea154c83f00fd8b0433a1caaa71f5db))
+- Add Flatpak --log-level option and improve GUI log readability ([8d2130a8](../../commit/8d2130a85c26fb0c09a8e06c03ec956b48f95c2b))
+- Neutrino makers now advertise the `neutrino_compat` feature ([c7993660](../../commit/c7993660fa7fa909b1cb97805d6987c3e75ff42f))
+- Fixed error message when a Neutrino taker encounters a maker ([c7993660](../../commit/c7993660fa7fa909b1cb97805d6987c3e75ff42f))
+- Mandate SegWit serialization and non-zero counts to prevent structural lensience bugs ([867871e3](../../commit/867871e344ff48d484350f7364a5daf63c862fda))
+- Harden transaction parsing against truncated and oversized varint-driven payloads ([37cd42e0](../../commit/37cd42e0378ab737a78306cba273fcfacf97bdea))
+- Accept TRUC-style version 3 transactions in maker tx verification parser ([742a498d](../../commit/742a498dc313d646c97a09547184b06739e0be1f))
+- Prevent resource leak of StreamWriter objects during server shutdown ([6bf22694](../../commit/6bf22694da476ab439c067dd3241086c714dc20a))
+- Remove incorrect cold storage labels from fidelity bond details in the orderbook ([d17ab75f](../../commit/d17ab75f6644e664903368c307ed44e7730de462))
+- Use ephemeral cert keypairs for hot wallet fidelity bonds to match reference implementation ([a826959f](../../commit/a826959fe0d066916806caa2b44570f96305b04a))
+
 ## [0.23.1] - 2026-04-04
 
 ### Fixed
@@ -1127,7 +1159,8 @@ Releases prior to these changes (including 0.13.5, 0.13.6, and 0.13.7) cannot be
 - Pre-built image support for directory server compose.
 - Tor configuration instructions.
 
-[Unreleased]: ../../compare/0.23.1...HEAD
+[Unreleased]: ../../compare/0.24.0...HEAD
+[0.24.0]: ../../compare/0.23.1...0.24.0
 [0.23.1]: ../../compare/0.23.0...0.23.1
 [0.23.0]: ../../compare/0.22.0...0.23.0
 [0.22.0]: ../../compare/0.21.0...0.22.0
