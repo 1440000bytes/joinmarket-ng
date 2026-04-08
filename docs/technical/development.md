@@ -56,20 +56,20 @@ What this does:
 
 - installs docs dependencies from `requirements-docs.txt`
 - installs editable project packages used by API doc generation
-- runs `mkdocs build` and writes output to `site/`
+- runs `properdocs build -f mkdocs.yml` and writes output to `site/`
 
 If you want to run the steps manually:
 
 ```bash
 python -m pip install -r requirements-docs.txt
 python -m pip install -e jmcore -e jmwallet -e taker -e maker -e directory_server -e orderbook_watcher
-python -m mkdocs build
+python -m properdocs build -f mkdocs.yml
 ```
 
 For local preview:
 
 ```bash
-python -m mkdocs serve
+python -m properdocs serve -f mkdocs.yml
 ```
 
 ## Reference Compatibility Tests

@@ -6,7 +6,7 @@ Utility scripts for JoinMarket NG development and operations.
 
 ### Development & Operations
 
-- **build_docs.py** - Reproduce `.github/workflows/mkdocs-pages.yml` locally (install docs deps + editable packages, then run `mkdocs build`)
+- **build_docs.py** - Reproduce `.github/workflows/mkdocs-pages.yml` locally (install docs deps + editable packages, then run `properdocs build -f mkdocs.yml`)
 - **bump_version.py** - Bump the project version across all components
 - **coinjoin_notifier.py** - Monitor and notify about CoinJoin events
 - **fidelity_bond_tool.py** - Fetch, parse, and analyze fidelity bond proofs from mainnet makers

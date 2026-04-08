@@ -131,7 +131,7 @@ The `__init__` will be **preserved** because it has a docstring.
 
 ### How to Test After Updates
 
-1. Run `mkdocs serve` locally
+1. Run `properdocs serve -f mkdocs.yml` locally
 2. Navigate to any dataclass documentation page
 3. Verify `__init__` is not shown for simple dataclasses
 4. Verify `__init__` IS shown for classes with custom `__init__` methods
@@ -147,7 +147,7 @@ def on_class(self, *, cls: griffe.Class, **kwargs) -> None:
         # ... rest of code
 ```
 
-Then run `mkdocs serve` and check the console output.
+Then run `properdocs serve -f mkdocs.yml` and check the console output.
 
 ---
 

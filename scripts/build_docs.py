@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Reproduce the MkDocs Pages build job locally.
+"""Reproduce the ProperDocs Pages build job locally.
 
 This script mirrors `.github/workflows/mkdocs-pages.yml`:
 
 1. Install docs dependencies from `requirements-docs.txt`
 2. Install editable project packages needed for API docs generation
-3. Run `mkdocs build`
+3. Run `properdocs build -f mkdocs.yml`
 
 It runs all commands via the current Python interpreter so the behavior is
 consistent inside a virtualenv and in CI-like local environments.
@@ -39,7 +39,7 @@ def main() -> None:
     python = sys.executable
 
     print("=" * 60)
-    print("Reproducing GitHub MkDocs build workflow")
+    print("Reproducing GitHub ProperDocs build workflow")
     print("=" * 60)
 
     print("Installing docs dependencies...")
@@ -52,8 +52,8 @@ def main() -> None:
         editable_install_cmd.extend(["-e", editable_path])
     _run(editable_install_cmd)
 
-    print("Building documentation with MkDocs...")
-    _run([python, "-m", "mkdocs", "build"])
+    print("Building documentation with ProperDocs...")
+    _run([python, "-m", "properdocs", "build", "-f", "mkdocs.yml"])
 
     print("=" * 60)
     print("Build complete: site/")

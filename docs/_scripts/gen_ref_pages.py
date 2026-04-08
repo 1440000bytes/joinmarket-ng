@@ -1,6 +1,6 @@
 """Auto-generate API reference pages for mkdocs-gen-files.
 
-This script is executed during `mkdocs build` by the mkdocs-gen-files plugin.
+This script is executed during `properdocs build` by the mkdocs-gen-files plugin.
 It scans all Python source directories and generates:
   - One .md file per Python module with a `:::` mkdocstrings directive
   - Index pages per package with a table linking to each module
