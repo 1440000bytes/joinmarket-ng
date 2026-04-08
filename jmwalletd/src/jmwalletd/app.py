@@ -1,7 +1,7 @@
 """FastAPI application factory.
 
 Creates the ``FastAPI`` app with:
-- CORS middleware matching reference implementation (``Access-Control-Allow-Origin: *``).
+- CORS middleware restricted to local origins (localhost, 127.0.0.1, [::1]).
 - All API routes under ``/api/v1``.
 - WebSocket endpoint at ``/ws`` (for direct connections) and ``/api/v1/ws``.
 - Global exception handlers that produce reference-compatible error responses.
@@ -10,6 +10,7 @@ Creates the ``FastAPI`` app with:
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -127,7 +128,6 @@ def create_app(*, data_dir: Path | None = None) -> FastAPI:
     @app.options("/")
     async def cors_preflight(request: Request) -> JSONResponse:
         origin = request.headers.get("Origin")
-        import re
 
         # Only allow local origins
         def is_allowed(o: str | None) -> bool:
