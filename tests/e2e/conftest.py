@@ -138,25 +138,45 @@ def _extract_neutrino_tls_cert(tmp_dir: Path) -> str | None:
     return None
 
 
-@pytest.fixture(scope="session")
-def neutrino_url(request: pytest.FixtureRequest) -> str:
-    """Get the neutrino URL from command line or environment.
+def _resolve_neutrino_url(explicit_url: str | None, auth_token: str | None) -> str:
+    """Resolve neutrino URL, upgrading stale HTTP config when auth is enabled.
 
-    Auto-detects HTTPS vs HTTP based on whether TLS credentials are
-    available in the neutrino Docker volume.
+    In TLS/auth mode, neutrino-api serves HTTPS only. Some CI/base workflow
+    paths may still provide ``NEUTRINO_URL=http://...``; when an auth token is
+    present, that URL must be upgraded to HTTPS or requests will fail with
+    "client sent an HTTP request to an HTTPS server".
     """
-    url = request.config.getoption("--neutrino-url")
-    if url is not None:
-        return url
-    url = os.environ.get("NEUTRINO_URL")
-    if url is not None:
-        return url
+    if explicit_url is not None:
+        if auth_token and explicit_url.startswith("http://"):
+            upgraded = "https://" + explicit_url.removeprefix("http://")
+            logger.warning(
+                "Neutrino auth token detected; upgrading URL from "
+                f"{explicit_url} to {upgraded}"
+            )
+            return upgraded
+        return explicit_url
 
-    # Auto-detect: check if neutrino has TLS enabled
-    token = _read_neutrino_credential("auth_token")
-    if token:
+    if auth_token:
         return "https://127.0.0.1:8334"
     return "http://127.0.0.1:8334"
+
+
+@pytest.fixture(scope="session")
+def neutrino_url(
+    request: pytest.FixtureRequest,
+    neutrino_auth_token: str | None,
+) -> str:
+    """Get the neutrino URL from command line or environment.
+
+    Auto-detects HTTPS vs HTTP based on whether auth credentials are
+    available, and upgrades stale ``http://`` overrides to ``https://`` when
+    auth is enabled.
+    """
+    explicit_url = request.config.getoption("--neutrino-url")
+    if explicit_url is None:
+        explicit_url = os.environ.get("NEUTRINO_URL")
+
+    return _resolve_neutrino_url(explicit_url, neutrino_auth_token)
 
 
 @pytest.fixture(scope="session")
