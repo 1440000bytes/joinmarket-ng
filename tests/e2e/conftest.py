@@ -13,10 +13,13 @@ import asyncio
 import json
 import os
 import socket
+import ssl
+import subprocess
 import urllib.error
 import urllib.request
 import time
 from collections.abc import AsyncGenerator
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -32,8 +35,20 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption(
         "--neutrino-url",
         action="store",
-        default="http://127.0.0.1:8334",
-        help="Neutrino REST API URL",
+        default=None,
+        help="Neutrino REST API URL (auto-detected if not set)",
+    )
+    parser.addoption(
+        "--neutrino-tls-cert",
+        action="store",
+        default=None,
+        help="Path to neutrino TLS certificate",
+    )
+    parser.addoption(
+        "--neutrino-auth-token",
+        action="store",
+        default=None,
+        help="Neutrino API auth token",
     )
 
 
@@ -77,11 +92,108 @@ def pytest_collection_modifyitems(
             item.add_marker(docker_marker)
 
 
+def _read_neutrino_credential(filename: str) -> str | None:
+    """Read a neutrino credential file from the Docker volume.
+
+    Copies the file from the jm-neutrino container to read its contents.
+    Returns None if the container is not running or the file doesn't exist.
+    """
+    try:
+        result = subprocess.run(
+            ["docker", "exec", "jm-neutrino", "cat", f"/data/neutrino/{filename}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    return None
+
+
+def _extract_neutrino_tls_cert(tmp_dir: Path) -> str | None:
+    """Copy the neutrino TLS cert from Docker volume to a local temp file.
+
+    Returns the path to the extracted cert or None.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "docker",
+                "cp",
+                "jm-neutrino:/data/neutrino/tls.cert",
+                str(tmp_dir / "tls.cert"),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            cert_path = tmp_dir / "tls.cert"
+            if cert_path.exists():
+                return str(cert_path)
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    return None
+
+
 @pytest.fixture(scope="session")
 def neutrino_url(request: pytest.FixtureRequest) -> str:
-    """Get the neutrino URL from command line or environment."""
+    """Get the neutrino URL from command line or environment.
+
+    Auto-detects HTTPS vs HTTP based on whether TLS credentials are
+    available in the neutrino Docker volume.
+    """
     url = request.config.getoption("--neutrino-url")
-    return os.environ.get("NEUTRINO_URL", url)
+    if url is not None:
+        return url
+    url = os.environ.get("NEUTRINO_URL")
+    if url is not None:
+        return url
+
+    # Auto-detect: check if neutrino has TLS enabled
+    token = _read_neutrino_credential("auth_token")
+    if token:
+        return "https://127.0.0.1:8334"
+    return "http://127.0.0.1:8334"
+
+
+@pytest.fixture(scope="session")
+def neutrino_tls_cert(
+    request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPathFactory
+) -> str | None:
+    """Get the neutrino TLS certificate path.
+
+    Reads from CLI option, environment, or extracts from Docker volume.
+    """
+    cert = request.config.getoption("--neutrino-tls-cert")
+    if cert is not None:
+        return cert
+    cert = os.environ.get("NEUTRINO_TLS_CERT")
+    if cert is not None:
+        return cert
+
+    # Try to extract from Docker volume
+    tmp_dir = tmp_path_factory.mktemp("neutrino_creds")
+    return _extract_neutrino_tls_cert(tmp_dir)
+
+
+@pytest.fixture(scope="session")
+def neutrino_auth_token(request: pytest.FixtureRequest) -> str | None:
+    """Get the neutrino auth token.
+
+    Reads from CLI option, environment, or Docker volume.
+    """
+    token = request.config.getoption("--neutrino-auth-token")
+    if token is not None:
+        return token
+    token = os.environ.get("NEUTRINO_AUTH_TOKEN")
+    if token is not None:
+        return token
+
+    # Try to read from Docker volume
+    return _read_neutrino_credential("auth_token")
 
 
 @pytest.fixture
@@ -113,6 +225,8 @@ async def bitcoin_core_backend(
 @pytest_asyncio.fixture
 async def neutrino_backend_fixture(
     neutrino_url: str,
+    neutrino_tls_cert: str | None,
+    neutrino_auth_token: str | None,
 ) -> AsyncGenerator[BlockchainBackend, None]:
     """Create Neutrino backend for tests."""
     from jmwallet.backends.neutrino import NeutrinoBackend
@@ -120,6 +234,8 @@ async def neutrino_backend_fixture(
     backend = NeutrinoBackend(
         neutrino_url=neutrino_url,
         network="regtest",
+        tls_cert_path=neutrino_tls_cert,
+        auth_token=neutrino_auth_token,
     )
 
     # Verify neutrino is available - fail if not
@@ -185,6 +301,10 @@ def is_bitcoin_running(host: str = "127.0.0.1", port: int = 18443) -> bool:
 def wait_for_neutrino_ready_if_present(timeout: float = 180.0) -> bool:
     """Wait for local neutrino to have a usable height when running.
 
+    Tries HTTPS with auth token first, then falls back to plain HTTP.
+    When TLS is enabled, reads the auth token from the Docker volume and
+    uses an unverified SSL context (health check only).
+
     Returns:
         True if neutrino is not running locally or became ready.
         False if neutrino is running but never became ready.
@@ -193,11 +313,27 @@ def wait_for_neutrino_ready_if_present(timeout: float = 180.0) -> bool:
         return True
 
     deadline = time.time() + timeout
-    status_url = "http://127.0.0.1:8334/v1/status"
+
+    # Try to read auth token for TLS mode
+    token = _read_neutrino_credential("auth_token")
+
+    # Build URL and request based on TLS availability
+    if token:
+        status_url = "https://127.0.0.1:8334/v1/status"
+        # Skip cert verification for health check
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    else:
+        status_url = "http://127.0.0.1:8334/v1/status"
+        ctx = None
 
     while time.time() < deadline:
         try:
-            with urllib.request.urlopen(status_url, timeout=2) as response:
+            req = urllib.request.Request(status_url)
+            if token:
+                req.add_header("Authorization", f"Bearer {token}")
+            with urllib.request.urlopen(req, timeout=2, context=ctx) as response:
                 payload = json.loads(response.read().decode("utf-8"))
                 height = int(payload.get("block_height", 0))
                 if height > 0:

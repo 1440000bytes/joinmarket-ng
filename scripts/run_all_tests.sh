@@ -206,13 +206,30 @@ wait_for_wallet_funder() {
 }
 
 # Wait for Neutrino sync
+# When TLS+auth is enabled (default), reads the auth token from the Docker
+# volume and passes it as a Bearer header.  Falls back to plain HTTP when
+# NO_AUTH=true.
 wait_for_neutrino() {
     log_info "Waiting for Neutrino to sync..."
 
+    # Try to read the auth token from the neutrino volume.
+    local token
+    token=$(docker exec jm-neutrino cat /data/neutrino/auth_token 2>/dev/null || true)
+
     for i in {1..60}; do
-        if curl -s http://localhost:8334/v1/status 2>/dev/null | grep -q '"synced":true'; then
-            log_success "Neutrino synced!"
-            return 0
+        if [ -n "$token" ]; then
+            # TLS enabled: use HTTPS with --insecure (skip cert verify) + Bearer token
+            if curl -sk -H "Authorization: Bearer $token" \
+                https://localhost:8334/v1/status 2>/dev/null | grep -q '"synced":true'; then
+                log_success "Neutrino synced! (TLS)"
+                return 0
+            fi
+        else
+            # Plain HTTP (NO_AUTH=true)
+            if curl -s http://localhost:8334/v1/status 2>/dev/null | grep -q '"synced":true'; then
+                log_success "Neutrino synced! (plain HTTP)"
+                return 0
+            fi
         fi
         echo "  Attempt $i/60: Neutrino syncing..."
         sleep 5

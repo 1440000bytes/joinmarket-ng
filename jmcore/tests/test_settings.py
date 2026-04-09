@@ -12,6 +12,7 @@ import pytest
 from jmcore.constants import DUST_THRESHOLD
 from jmcore.models import NetworkType
 from jmcore.settings import (
+    BitcoinSettings,
     JoinMarketSettings,
     MakerSettings,
     NetworkSettings,
@@ -588,3 +589,50 @@ class TestCommaListEnvSettingsSource:
         settings = JoinMarketSettings()
         servers = settings.network_config.directory_servers
         assert servers == ["host1.onion:5222", "host2.onion:5222"]
+
+
+class TestNeutrinoAuthTokenFile:
+    """Tests for the neutrino_auth_token_file setting."""
+
+    def test_token_loaded_from_file(self, tmp_path: Path) -> None:
+        """Auth token should be read from file when neutrino_auth_token_file is set."""
+        token_file = tmp_path / "auth_token"
+        token_file.write_text("deadbeef1234\n")
+        settings = BitcoinSettings(neutrino_auth_token_file=str(token_file))
+        assert settings.neutrino_auth_token == "deadbeef1234"
+
+    def test_explicit_token_takes_priority(self, tmp_path: Path) -> None:
+        """Explicit neutrino_auth_token should not be overridden by file."""
+        token_file = tmp_path / "auth_token"
+        token_file.write_text("from-file")
+        settings = BitcoinSettings(
+            neutrino_auth_token="from-env",
+            neutrino_auth_token_file=str(token_file),
+        )
+        assert settings.neutrino_auth_token == "from-env"
+
+    def test_missing_file_ignored(self) -> None:
+        """Missing token file should not cause an error."""
+        settings = BitcoinSettings(neutrino_auth_token_file="/nonexistent/path")
+        assert settings.neutrino_auth_token is None
+
+    def test_no_file_no_token(self) -> None:
+        """Without file or token, auth_token stays None."""
+        settings = BitcoinSettings()
+        assert settings.neutrino_auth_token is None
+        assert settings.neutrino_auth_token_file is None
+
+    def test_token_loaded_from_tilde_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Token file path should support ~ expansion."""
+        fake_home = tmp_path / "home"
+        token_dir = fake_home / ".joinmarket-ng" / "neutrino"
+        token_dir.mkdir(parents=True)
+        token_file = token_dir / "auth_token"
+        token_file.write_text("tilde-token")
+
+        monkeypatch.setenv("HOME", str(fake_home))
+
+        settings = BitcoinSettings(neutrino_auth_token_file="~/.joinmarket-ng/neutrino/auth_token")
+        assert settings.neutrino_auth_token == "tilde-token"
