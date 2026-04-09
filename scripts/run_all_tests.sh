@@ -648,7 +648,7 @@ main() {
             coverage combine "${EXISTING_COVERAGE_FILES[@]}" 2>&1 || log_warning "Coverage combine had warnings"
 
             # Generate combined reports
-            coverage report --skip-covered
+            coverage report
             coverage html -d htmlcov/combined
             coverage xml -o coverage.xml
 

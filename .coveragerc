@@ -4,6 +4,7 @@ omit =
     */test_*
     conftest.py
     tests/*
+    joinmarket-clientserver/*
 
 [report]
 omit =
@@ -11,6 +12,7 @@ omit =
     */test_*
     conftest.py
     tests/*
+    joinmarket-clientserver/*
 exclude_lines =
     pragma: no cover
     if TYPE_CHECKING:
