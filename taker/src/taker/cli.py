@@ -32,7 +32,6 @@ from taker.config import BroadcastPolicy, MaxCjFee, Schedule, ScheduleEntry, Tak
 app = typer.Typer(
     name="jm-taker",
     help="JoinMarket Taker - Execute CoinJoin transactions",
-    add_completion=False,
 )
 
 

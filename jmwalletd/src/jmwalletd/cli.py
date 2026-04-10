@@ -15,7 +15,6 @@ import typer
 app = typer.Typer(
     name="jmwalletd",
     help="JoinMarket wallet daemon - JAM-compatible HTTP/WebSocket API.",
-    add_completion=False,
 )
 
 

@@ -13,7 +13,6 @@ import typer
 app = typer.Typer(
     name="jm-wallet",
     help="JoinMarket Wallet Management",
-    add_completion=False,
 )
 
 

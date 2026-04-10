@@ -490,9 +490,54 @@ EOF
     fi
 }
 
+# Install pre-generated static shell completion scripts.
+# These are produced by scripts/generate_completions.py and shipped in
+# the completions/ directory of the repository, so no Python subprocess
+# is needed at install time or at tab-press time.
+setup_cli_completion() {
+    local completions_dir="$DATA_DIR/completions"
+    mkdir -p "$completions_dir"
+    chmod 700 "$completions_dir"
+
+    # Determine which commands are being installed
+    local commands=("jm-wallet" "jmwalletd")
+    if [[ "$INSTALL_MAKER" == "true" ]]; then
+        commands+=("jm-maker")
+    fi
+    if [[ "$INSTALL_TAKER" == "true" ]]; then
+        commands+=("jm-taker")
+    fi
+
+    local installed_count=0
+    local raw_base="https://raw.githubusercontent.com/${GITHUB_REPO}/${VERSION:-main}/completions"
+
+    for cmd in "${commands[@]}"; do
+        for ext in bash zsh; do
+            local dst="$completions_dir/${cmd}.${ext}"
+            local url="$raw_base/${cmd}.${ext}"
+            if curl -fsSL "$url" -o "$dst" 2>/dev/null; then
+                chmod 644 "$dst"
+                installed_count=$((installed_count + 1))
+            else
+                rm -f "$dst"
+            fi
+        done
+    done
+
+    if [[ "$installed_count" -gt 0 ]]; then
+        print_success "Static shell completions installed to $completions_dir"
+    else
+        print_warning "Could not download shell completion scripts"
+        print_warning "Run 'python scripts/generate_completions.py' to generate them locally"
+    fi
+}
+
 # Create shell integration script
 create_shell_integration() {
     print_header "Setting Up Shell Integration"
+
+    mkdir -p "$DATA_DIR"
+    setup_cli_completion
 
     local shell_script="$DATA_DIR/activate.sh"
 
@@ -503,6 +548,24 @@ create_shell_integration() {
 
 export JOINMARKET_DATA_DIR="$DATA_DIR"
 export PATH="$VENV_DIR/bin:\$PATH"
+
+# Load generated completion scripts (bash/zsh)
+if [ -n "\${BASH_VERSION:-}" ]; then
+    for completion_file in "$DATA_DIR"/completions/*.bash; do
+        [ -f "\$completion_file" ] || continue
+        . "\$completion_file"
+    done
+elif [ -n "\${ZSH_VERSION:-}" ]; then
+    if ! type compdef >/dev/null 2>&1; then
+        autoload -Uz compinit 2>/dev/null || true
+        compinit -i >/dev/null 2>&1 || true
+    fi
+    setopt localoptions nonomatch 2>/dev/null || true
+    for completion_file in "$DATA_DIR"/completions/*.zsh; do
+        [ -f "\$completion_file" ] || continue
+        . "\$completion_file"
+    done
+fi
 
 # Optional: Alias for convenience
 alias jm-activate='source "$VENV_DIR/bin/activate"'
@@ -784,6 +847,7 @@ main() {
         # Update mode - update packages and verify Tor config
         setup_virtualenv
         update_packages
+        create_shell_integration
         if [[ "$SKIP_TOR" == "false" ]]; then
             setup_tor
         fi

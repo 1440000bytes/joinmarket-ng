@@ -29,6 +29,7 @@ What this does:
 - installs `jmcore`, `jmwallet`, `jm-maker`, and `jm-taker`
 - creates `~/.joinmarket-ng/config.toml`
 - installs/configures Tor unless you pass `--skip-tor`
+- installs static shell completion scripts for bash and zsh (near-instant tab completion)
 
 Common options:
 
@@ -176,6 +177,26 @@ python -m pip install -e ./jmcore
 python -m pip install -e ./jmwallet
 python -m pip install -e ./maker
 python -m pip install -e ./taker
+```
+
+Shell completions are pre-generated and installed automatically by the installer.
+For editable (development) installs, source the static scripts from the repo:
+
+```bash
+# bash
+source completions/jm-wallet.bash
+source completions/jm-maker.bash
+source completions/jm-taker.bash
+source completions/jmwalletd.bash
+
+# zsh (add to .zshrc)
+for f in completions/*.zsh; do source "$f"; done
+```
+
+To regenerate after CLI changes:
+
+```bash
+python scripts/generate_completions.py
 ```
 
 ## Tor Notes

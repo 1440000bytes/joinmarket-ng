@@ -8,8 +8,20 @@ from unittest.mock import MagicMock
 
 import pytest
 from jmcore.models import NetworkType
+from typer.testing import CliRunner
 
-from taker.cli import build_taker_config, create_backend
+from taker.cli import app, build_taker_config, create_backend
+
+runner = CliRunner()
+
+
+def test_root_help_shows_completion_options() -> None:
+    """Taker CLI should expose Typer shell completion options."""
+    result = runner.invoke(app, ["--help"], prog_name="jm-taker")
+
+    assert result.exit_code == 0
+    assert "--install-completion" in result.stdout
+    assert "--show-completion" in result.stdout
 
 
 class TestBuildTakerConfig:

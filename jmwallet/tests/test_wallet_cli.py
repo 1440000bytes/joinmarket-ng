@@ -18,6 +18,15 @@ from jmwallet.cli import app
 runner = CliRunner()
 
 
+def test_root_help_shows_completion_options() -> None:
+    """Wallet CLI should expose Typer shell completion options."""
+    result = runner.invoke(app, ["--help"], prog_name="jm-wallet")
+
+    assert result.exit_code == 0
+    assert "--install-completion" in result.stdout
+    assert "--show-completion" in result.stdout
+
+
 def test_bip39_import_with_passphrase_zpub_and_address():
     """
     E2E test: Import a BIP39 mnemonic with passphrase via CLI and verify zpub and address.
