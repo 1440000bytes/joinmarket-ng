@@ -101,6 +101,35 @@ def pick_asset_url(
     raise UpdateError(f"Could not find asset: {description}")
 
 
+def latest_libsodium_source_url(release: dict[str, Any]) -> str:
+    try:
+        return pick_asset_url(
+            release,
+            lambda name: (
+                re.fullmatch(r"libsodium-\d+\.\d+\.\d+\.tar\.gz", name) is not None
+            ),
+            "libsodium source tarball",
+        )
+    except UpdateError:
+        pass
+
+    tag_name = release.get("tag_name")
+    if isinstance(tag_name, str):
+        version_match = re.fullmatch(r"(\d+\.\d+\.\d+)(?:-RELEASE)?", tag_name)
+        if version_match is not None:
+            version = version_match.group(1)
+            return (
+                "https://download.libsodium.org/libsodium/releases/"
+                f"libsodium-{version}.tar.gz"
+            )
+
+    tarball_url = release.get("tarball_url")
+    if isinstance(tarball_url, str) and tarball_url:
+        return tarball_url
+
+    raise UpdateError("Could not determine libsodium source tarball URL")
+
+
 def latest_tor_version() -> str:
     html = fetch_text("https://dist.torproject.org/")
     versions = set(re.findall(r"tor-(0\.4\.\d+\.\d+)\.tar\.gz", html))
@@ -251,13 +280,7 @@ def main() -> int:
     latest_tor_sha = sha256_url(latest_tor_url)
 
     libsodium_release = latest_release("jedisct1/libsodium")
-    latest_libsodium_url = pick_asset_url(
-        libsodium_release,
-        lambda name: (
-            re.fullmatch(r"libsodium-\d+\.\d+\.\d+\.tar\.gz", name) is not None
-        ),
-        "libsodium source tarball",
-    )
+    latest_libsodium_url = latest_libsodium_source_url(libsodium_release)
     latest_libsodium_sha = sha256_url(latest_libsodium_url)
 
     neutrino_release = latest_release("m0wer/neutrino-api")

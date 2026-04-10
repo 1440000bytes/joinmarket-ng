@@ -65,3 +65,50 @@ def test_latest_tor_version_selects_highest(monkeypatch) -> None:
     monkeypatch.setattr(module, "fetch_text", lambda _url: html)
 
     assert module.latest_tor_version() == "0.4.9.6"
+
+
+def test_latest_libsodium_source_url_prefers_release_asset() -> None:
+    module = _load_update_flatpak_deps_module()
+    release = {
+        "tag_name": "1.0.21-RELEASE",
+        "assets": [
+            {
+                "name": "libsodium-1.0.21.tar.gz",
+                "browser_download_url": "https://example.com/libsodium-1.0.21.tar.gz",
+            }
+        ],
+        "tarball_url": "https://api.github.com/repos/jedisct1/libsodium/tarball/1.0.21-RELEASE",
+    }
+
+    assert (
+        module.latest_libsodium_source_url(release)
+        == "https://example.com/libsodium-1.0.21.tar.gz"
+    )
+
+
+def test_latest_libsodium_source_url_falls_back_to_download_site() -> None:
+    module = _load_update_flatpak_deps_module()
+    release = {
+        "tag_name": "1.0.22-RELEASE",
+        "assets": [],
+        "tarball_url": "https://api.github.com/repos/jedisct1/libsodium/tarball/1.0.22-RELEASE",
+    }
+
+    assert (
+        module.latest_libsodium_source_url(release)
+        == "https://download.libsodium.org/libsodium/releases/libsodium-1.0.22.tar.gz"
+    )
+
+
+def test_latest_libsodium_source_url_falls_back_to_tarball_url() -> None:
+    module = _load_update_flatpak_deps_module()
+    release = {
+        "tag_name": "latest",
+        "assets": [],
+        "tarball_url": "https://api.github.com/repos/jedisct1/libsodium/tarball/1.0.22-RELEASE",
+    }
+
+    assert (
+        module.latest_libsodium_source_url(release)
+        == "https://api.github.com/repos/jedisct1/libsodium/tarball/1.0.22-RELEASE"
+    )
