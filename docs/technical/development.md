@@ -114,6 +114,9 @@ CI will build the same images independently and verify its layer digests
 match your signed local manifest. The release is confirmed reproducible
 when CI passes.
 
+Note: strict layer-digest matching is currently skipped for `jam-ng` because
+the CRA/webpack frontend build is non-deterministic across environments.
+
 ### CI-First Workflow (For Additional Signers)
 
 Wait for CI to complete, then reproduce and sign.
@@ -124,6 +127,7 @@ Wait for CI to complete, then reproduce and sign.
 ```
 
 This downloads the manifest, rebuilds locally, and signs if digests match.
+The same `jam-ng` skip rule applies for strict layer matching.
 
 ## Verify a Release
 
