@@ -33,7 +33,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libffi-dev=3.4.8-2 \
     libsodium-dev=1.0.18-1+deb13u1 \
     && rm -rf /var/lib/apt/lists/* \
-    && rm -f /var/log/dpkg.log /var/log/apt/*.log
+    && rm -rf /var/log/dpkg.log /var/log/apt/*
 
 # Reproducible builds: SOURCE_DATE_EPOCH must be set via --build-arg for reproducible builds
 # When not provided, pip install runs without it (non-reproducible but works)
@@ -123,7 +123,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tini=0.19.0-3+b6 \
     libsodium23=1.0.18-1+deb13u1 \
     && rm -rf /var/lib/apt/lists/* \
-    && rm -f /var/log/dpkg.log /var/log/apt/*.log /var/cache/ldconfig/aux-cache
+    && rm -rf /var/log/dpkg.log /var/log/apt/* /var/cache/ldconfig/aux-cache
 
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
@@ -194,7 +194,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     xz-utils=5.8.1-1 \
     tor=0.4.9.6-0+deb13u1 \
     && rm -rf /var/lib/apt/lists/* \
-    && rm -f /var/log/dpkg.log /var/log/apt/*.log /var/cache/ldconfig/aux-cache
+    && rm -rf /var/log/dpkg.log /var/log/apt/* /var/cache/ldconfig/aux-cache
 
 # Install s6-overlay (noarch + arch-specific, checksums pinned)
 # noarch tarball is the same for all platforms
