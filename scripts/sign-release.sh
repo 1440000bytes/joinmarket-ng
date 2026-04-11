@@ -34,6 +34,10 @@ log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
+# Images currently excluded from strict layer reproducibility checks.
+# jam-ng: frontend bundle build (CRA/webpack) is non-deterministic across environments.
+SKIP_VERIFY_IMAGES=("jam-ng")
+
 usage() {
     cat << EOF
 Usage: $(basename "$0") [version] [options]
@@ -382,14 +386,6 @@ if [[ "$REPRODUCE" == true ]]; then
     DOCKERFILES=("./directory_server/Dockerfile" "./maker/Dockerfile" "./taker/Dockerfile" "./orderbook_watcher/Dockerfile" "./jmwalletd/Dockerfile" "./jmwalletd/Dockerfile")
     TARGETS=("production" "" "" "" "jmwalletd" "jam-ng")  # Empty string means no --target (uses default)
 
-    # Images excluded from layer-digest verification (still built and signed).
-    # jam-ng: the jam-builder stage runs react-scripts (CRA/webpack). Despite setting
-    # SOURCE_DATE_EPOCH and normalizing git mtime, some npm postinstall script or
-    # webpack plugin produces non-deterministic output across build environments.
-    # The jmwalletd Python layer inside jam-ng IS reproducible; only the static JS
-    # bundle is not. Tracking issue: https://github.com/joinmarket-webui/jam/issues
-    SKIP_VERIFY=("jam-ng")
-
     # Create OCI output directory
     OCI_DIR="$WORK_DIR/oci"
     mkdir -p "$OCI_DIR"
@@ -448,7 +444,7 @@ if [[ "$REPRODUCE" == true ]]; then
         # Compare layer digests
         # Check if this image is excluded from verification
         skip_verify=false
-        for skip in "${SKIP_VERIFY[@]}"; do
+        for skip in "${SKIP_VERIFY_IMAGES[@]}"; do
             if [[ "$image" == "$skip" ]]; then
                 skip_verify=true
                 break

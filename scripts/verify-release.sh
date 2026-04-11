@@ -36,6 +36,10 @@ log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
+# Images currently excluded from strict layer reproducibility checks.
+# jam-ng: frontend bundle build (CRA/webpack) is non-deterministic across environments.
+SKIP_VERIFY_IMAGES=("jam-ng")
+
 # Detect current architecture in Docker format
 detect_arch() {
     local arch
@@ -46,6 +50,28 @@ detect_arch() {
         armv7l)  echo "arm-v7" ;;
         *)       echo "$arch" ;;
     esac
+}
+
+section_image_name() {
+    local section="$1"
+    section="${section%-amd64-layers}"
+    section="${section%-arm64-layers}"
+    section="${section%-arm-v7-layers}"
+    echo "$section"
+}
+
+is_skipped_section() {
+    local section="$1"
+    local image
+    image=$(section_image_name "$section")
+
+    for skip in "${SKIP_VERIFY_IMAGES[@]}"; do
+        if [[ "$image" == "$skip" ]]; then
+            return 0
+        fi
+    done
+
+    return 1
 }
 
 usage() {
@@ -244,6 +270,11 @@ else
                     # Cross-check: verify local manifest layer digests match CI manifest
                     local_match=true
                     while IFS= read -r section; do
+                        if is_skipped_section "$section"; then
+                            log_warn "  Skipping local-vs-CI layer check for $section (currently non-deterministic)"
+                            continue
+                        fi
+
                         local_layers=$(sed -n "/^### ${section}\$/,/^###/{/^sha256:/p}" "$local_manifest" | sort)
                         ci_layers=$(sed -n "/^### ${section}\$/,/^###/{/^sha256:/p}" "$MANIFEST_FILE" | sort)
 
@@ -395,11 +426,6 @@ if [[ "$REPRODUCE" == true ]]; then
     DOCKERFILES=("./directory_server/Dockerfile" "./maker/Dockerfile" "./taker/Dockerfile" "./orderbook_watcher/Dockerfile" "./jmwalletd/Dockerfile" "./jmwalletd/Dockerfile")
     TARGETS=("production" "" "" "" "jmwalletd" "jam-ng")  # Empty string means no --target (uses default)
 
-    # Images excluded from layer-digest verification (still built).
-    # jam-ng: the jam-builder stage runs react-scripts (CRA/webpack) and the
-    # resulting static bundle is currently non-deterministic across environments.
-    SKIP_VERIFY=("jam-ng")
-
     # Create OCI output directory
     OCI_DIR="$WORK_DIR/oci"
     mkdir -p "$OCI_DIR"
@@ -457,7 +483,7 @@ if [[ "$REPRODUCE" == true ]]; then
 
         # Compare layer digests
         skip_verify=false
-        for skip in "${SKIP_VERIFY[@]}"; do
+        for skip in "${SKIP_VERIFY_IMAGES[@]}"; do
             if [[ "$image" == "$skip" ]]; then
                 skip_verify=true
                 break
