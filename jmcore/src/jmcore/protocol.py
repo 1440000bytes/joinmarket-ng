@@ -384,15 +384,13 @@ class MessageType(IntEnum):
     GETPEERLIST = 791
     HANDSHAKE = 793
     DN_HANDSHAKE = 795
-    PING = 797
+    PING = 798
     PONG = 799
     DISCONNECT = 801
 
-    # Local-only control message, never sent over the wire.
-    # Shares value 797 with PING intentionally -- the reference implementation
-    # has the same collision between CONTROL_MESSAGE_TYPES and
-    # LOCAL_CONTROL_MESSAGE_TYPES.  Python IntEnum allows duplicate values via
-    # aliasing; CONNECT_IN is an alias for PING.
+    # Local-only control messages, never sent over the wire.
+    # The reference implementation uses 797 for CONNECT_IN (a local-only
+    # control type).  PING was moved to 798 (JMP-0004) to avoid the collision.
     CONNECT = 785
     CONNECT_IN = 797
 

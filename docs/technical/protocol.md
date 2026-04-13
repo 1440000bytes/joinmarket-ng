@@ -18,7 +18,7 @@ All messages use JSON-line envelopes terminated with `\r\n`:
 | 791 | GETPEERLIST | Request peer list from directory |
 | 793 | HANDSHAKE | Peer handshake (sent by both sides) |
 | 795 | DN_HANDSHAKE | Directory-only handshake response |
-| 797 | PING | Keep-alive ping |
+| 798 | PING | Keep-alive ping |
 | 799 | PONG | Ping response |
 | 801 | DISCONNECT | Graceful disconnect |
 
@@ -297,7 +297,7 @@ Directory servers run an application-level heartbeat to detect stale Tor connect
 
 - Every peer message updates `last_seen`
 - On each heartbeat sweep, peers idle past `heartbeat_idle_threshold` are probed
-- Ping-capable peers receive `PING` (`type=797`) and must answer with `PONG` (`type=799`) within `heartbeat_pong_wait`
+- Ping-capable peers receive `PING` (`type=798`) and must answer with `PONG` (`type=799`) within `heartbeat_pong_wait`
 - Non-ping makers receive a unicast `!orderbook` probe as a compatibility fallback
 - Peers idle past `heartbeat_hard_evict` are evicted unconditionally
 

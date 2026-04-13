@@ -855,7 +855,7 @@ class TestPingFeature:
 
     def test_ping_and_pong_message_types_exist(self):
         """MessageType should have PING and PONG entries."""
-        assert MessageType.PING == 797
+        assert MessageType.PING == 798
         assert MessageType.PONG == 799
 
     def test_feature_set_to_dict_includes_ping(self):

@@ -8,7 +8,7 @@ Protocol flow (matching joinmarket-rs behavior):
 1. Every ``sweep_interval_sec`` seconds, run a heartbeat sweep.
 2. Hard-evict all peers whose ``last_seen`` exceeds ``hard_evict_sec``.
 3. Probe peers idle longer than ``idle_threshold_sec``:
-   - Ping-capable peers: send PING (type 797), mark ``pong_pending``.
+   - Ping-capable peers: send PING (type 798), mark ``pong_pending``.
    - Non-ping makers: send unicast ``!orderbook`` to elicit an offer
      re-announcement (which updates ``last_seen``).
    - Non-ping takers/watchers: no probe -- they will be hard-evicted
