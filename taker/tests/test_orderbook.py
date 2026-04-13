@@ -15,6 +15,7 @@ from taker.orderbook import (
     calculate_cj_fee,
     cheapest_order_choose,
     choose_orders,
+    choose_sweep_orders,
     dedupe_offers_by_bond,
     dedupe_offers_by_maker,
     fidelity_bond_weighted_choose,
@@ -1062,3 +1063,244 @@ class TestFilterOffersByNickVersion:
         )
         # Only 3 J5 makers available
         assert len(orders) == 3
+
+
+class TestRequiredFeaturesFiltering:
+    """Tests for required_features filtering in offer selection."""
+
+    @pytest.fixture
+    def max_cj_fee(self) -> MaxCjFee:
+        return MaxCjFee(abs_fee=50_000, rel_fee="0.1")
+
+    @pytest.fixture
+    def offers_with_features(self) -> list[Offer]:
+        """Offers with varying neutrino_compat feature status."""
+        return [
+            # Maker with neutrino_compat confirmed via peerlist_features
+            Offer(
+                counterparty="J5compatible1OOO",
+                oid=0,
+                ordertype=OfferType.SW0_RELATIVE,
+                minsize=10_000,
+                maxsize=1_000_000,
+                txfee=1000,
+                cjfee="0.001",
+                features={"neutrino_compat": True},
+            ),
+            # Maker confirmed as NOT supporting neutrino_compat
+            Offer(
+                counterparty="J5incompatible1O",
+                oid=0,
+                ordertype=OfferType.SW0_RELATIVE,
+                minsize=10_000,
+                maxsize=1_000_000,
+                txfee=1000,
+                cjfee="0.001",
+                features={"neutrino_compat": False},
+            ),
+            # Maker with unknown feature status (no peerlist_features directory)
+            Offer(
+                counterparty="J5unknown1OOOOOO",
+                oid=0,
+                ordertype=OfferType.SW0_RELATIVE,
+                minsize=10_000,
+                maxsize=1_000_000,
+                txfee=1000,
+                cjfee="0.001",
+                features={},
+            ),
+            # Another compatible maker
+            Offer(
+                counterparty="J5compatible2OOO",
+                oid=0,
+                ordertype=OfferType.SW0_RELATIVE,
+                minsize=10_000,
+                maxsize=1_000_000,
+                txfee=500,
+                cjfee="0.0005",
+                features={"neutrino_compat": True},
+            ),
+            # Maker with neutrino_compat via deprecated !neutrino flag (no features)
+            Offer(
+                counterparty="J5legacyneutrinoO",
+                oid=0,
+                ordertype=OfferType.SW0_RELATIVE,
+                minsize=10_000,
+                maxsize=1_000_000,
+                txfee=1000,
+                cjfee="0.001",
+                neutrino_compat=True,
+                features={},
+            ),
+        ]
+
+    def test_no_required_features_passes_all(
+        self, offers_with_features: list[Offer], max_cj_fee: MaxCjFee
+    ) -> None:
+        """Without required_features, all offers pass (feature filtering disabled)."""
+        eligible = filter_offers(
+            offers=offers_with_features,
+            cj_amount=100_000,
+            max_cj_fee=max_cj_fee,
+            required_features=None,
+        )
+        assert len(eligible) == 5
+
+    def test_required_features_filters_known_incompatible(
+        self, offers_with_features: list[Offer], max_cj_fee: MaxCjFee
+    ) -> None:
+        """Offers from makers known to lack required features are filtered out."""
+        eligible = filter_offers(
+            offers=offers_with_features,
+            cj_amount=100_000,
+            max_cj_fee=max_cj_fee,
+            required_features={"neutrino_compat"},
+        )
+        # Should include: compatible1, unknown1, compatible2, legacyneutrino
+        # Should exclude: incompatible1 (features dict says neutrino_compat=False)
+        assert len(eligible) == 4
+        nicks = {o.counterparty for o in eligible}
+        assert "J5compatible1OOO" in nicks
+        assert "J5compatible2OOO" in nicks
+        assert "J5unknown1OOOOOO" in nicks  # Unknown status passes through
+        assert "J5legacyneutrinoO" in nicks  # Empty features = unknown, passes
+        assert "J5incompatible1O" not in nicks  # Known incompatible
+
+    def test_unknown_features_pass_through(self, max_cj_fee: MaxCjFee) -> None:
+        """Offers with empty features dict (unknown) are NOT filtered out."""
+        offers = [
+            Offer(
+                counterparty="J5unknown1OOOOOO",
+                oid=0,
+                ordertype=OfferType.SW0_RELATIVE,
+                minsize=10_000,
+                maxsize=1_000_000,
+                txfee=1000,
+                cjfee="0.001",
+                features={},  # Unknown -- no directory supports peerlist_features
+            ),
+        ]
+        eligible = filter_offers(
+            offers=offers,
+            cj_amount=100_000,
+            max_cj_fee=max_cj_fee,
+            required_features={"neutrino_compat"},
+        )
+        assert len(eligible) == 1
+
+    def test_empty_required_features_passes_all(
+        self, offers_with_features: list[Offer], max_cj_fee: MaxCjFee
+    ) -> None:
+        """Empty required_features set doesn't filter anything."""
+        eligible = filter_offers(
+            offers=offers_with_features,
+            cj_amount=100_000,
+            max_cj_fee=max_cj_fee,
+            required_features=set(),
+        )
+        assert len(eligible) == 5
+
+    def test_choose_orders_with_required_features(
+        self, offers_with_features: list[Offer], max_cj_fee: MaxCjFee
+    ) -> None:
+        """choose_orders passes required_features to filter_offers."""
+        orders, fee = choose_orders(
+            offers=offers_with_features,
+            cj_amount=100_000,
+            n=2,
+            max_cj_fee=max_cj_fee,
+            required_features={"neutrino_compat"},
+        )
+        assert len(orders) == 2
+        # None of the selected should be the known-incompatible maker
+        assert "J5incompatible1O" not in orders
+
+    def test_orderbook_manager_with_required_features(
+        self, offers_with_features: list[Offer], max_cj_fee: MaxCjFee, tmp_path: Path
+    ) -> None:
+        """OrderbookManager.select_makers respects required_features."""
+        manager = OrderbookManager(max_cj_fee, data_dir=tmp_path)
+        manager.update_offers(offers_with_features)
+
+        orders, fee = manager.select_makers(
+            cj_amount=100_000, n=2, required_features={"neutrino_compat"}
+        )
+        assert len(orders) == 2
+        assert "J5incompatible1O" not in orders
+
+    def test_all_known_incompatible_returns_zero(self, max_cj_fee: MaxCjFee) -> None:
+        """When all offers are known-incompatible, zero are returned."""
+        offers = [
+            Offer(
+                counterparty=f"J5incompat{i}OOOO",
+                oid=0,
+                ordertype=OfferType.SW0_RELATIVE,
+                minsize=10_000,
+                maxsize=1_000_000,
+                txfee=1000,
+                cjfee="0.001",
+                features={"neutrino_compat": False},
+            )
+            for i in range(5)
+        ]
+        eligible = filter_offers(
+            offers=offers,
+            cj_amount=100_000,
+            max_cj_fee=max_cj_fee,
+            required_features={"neutrino_compat"},
+        )
+        assert len(eligible) == 0
+
+    def test_feature_with_true_in_dict_passes(self, max_cj_fee: MaxCjFee) -> None:
+        """Offer with the required feature set to True passes."""
+        offers = [
+            Offer(
+                counterparty="J5compat1OOOOOOO",
+                oid=0,
+                ordertype=OfferType.SW0_RELATIVE,
+                minsize=10_000,
+                maxsize=1_000_000,
+                txfee=1000,
+                cjfee="0.001",
+                features={"neutrino_compat": True, "peerlist_features": True},
+            ),
+        ]
+        eligible = filter_offers(
+            offers=offers,
+            cj_amount=100_000,
+            max_cj_fee=max_cj_fee,
+            required_features={"neutrino_compat"},
+        )
+        assert len(eligible) == 1
+
+    def test_choose_sweep_orders_with_required_features(
+        self, offers_with_features: list[Offer], max_cj_fee: MaxCjFee
+    ) -> None:
+        """choose_sweep_orders passes required_features to filter_offers."""
+        orders, cj_amount, fee = choose_sweep_orders(
+            offers=offers_with_features,
+            total_input_value=500_000,
+            my_txfee=1000,
+            n=2,
+            max_cj_fee=max_cj_fee,
+            required_features={"neutrino_compat"},
+        )
+        assert len(orders) == 2
+        # Known-incompatible maker should not be selected
+        assert "J5incompatible1O" not in orders
+
+    def test_orderbook_manager_sweep_with_required_features(
+        self, offers_with_features: list[Offer], max_cj_fee: MaxCjFee, tmp_path: Path
+    ) -> None:
+        """OrderbookManager.select_makers_for_sweep respects required_features."""
+        manager = OrderbookManager(max_cj_fee, data_dir=tmp_path)
+        manager.update_offers(offers_with_features)
+
+        orders, cj_amount, fee = manager.select_makers_for_sweep(
+            total_input_value=500_000,
+            my_txfee=1000,
+            n=2,
+            required_features={"neutrino_compat"},
+        )
+        assert len(orders) == 2
+        assert "J5incompatible1O" not in orders

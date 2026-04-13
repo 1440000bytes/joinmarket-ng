@@ -26,7 +26,7 @@ from jmcore.crypto import NickIdentity
 from jmcore.encryption import CryptoSession
 from jmcore.notifications import get_notifier
 from jmcore.paths import read_nick_state
-from jmcore.protocol import JM_VERSION, parse_utxo_list
+from jmcore.protocol import FEATURE_NEUTRINO_COMPAT, JM_VERSION, parse_utxo_list
 from jmwallet.backends.base import BlockchainBackend, BondVerificationRequest
 from jmwallet.history import (
     append_history_entry,
@@ -496,6 +496,66 @@ class Taker(TakerMonitoringMixin):
                 quiet_period=self.config.orderbook_quiet_period,
             )
 
+            # Determine required features for maker selection.
+            # Neutrino takers require makers that support extended UTXO metadata
+            # (scriptPubKey + blockheight) via the neutrino_compat feature.
+            required_features: set[str] | None = None
+            if self.backend.requires_neutrino_metadata():
+                required_features = {FEATURE_NEUTRINO_COMPAT}
+
+            # Early compatibility pre-check for neutrino takers: count how many offers
+            # are from makers known to support neutrino_compat (via peerlist_features or
+            # the deprecated !neutrino flag). This lets us fail fast before the expensive
+            # fidelity bond verification, which can take 20+ minutes on neutrino backends.
+            #
+            # Feature detection comes from two sources:
+            # 1. peerlist_features: directories that support it report per-peer features
+            # 2. !neutrino flag in offers (deprecated but still parsed)
+            #
+            # Offers with empty features dicts (unknown status) are NOT rejected here --
+            # they pass through and will be verified during _phase_auth(). Only offers
+            # where we KNOW the maker lacks the feature are filtered out.
+            if required_features:
+                known_compatible = sum(
+                    1
+                    for o in offers
+                    if o.features.get(FEATURE_NEUTRINO_COMPAT) or o.neutrino_compat
+                )
+                known_incompatible = sum(
+                    1
+                    for o in offers
+                    if o.features
+                    and not o.features.get(FEATURE_NEUTRINO_COMPAT)
+                    and not o.neutrino_compat
+                )
+                unknown = len(offers) - known_compatible - known_incompatible
+                logger.info(
+                    f"Neutrino compatibility pre-check: {known_compatible} compatible, "
+                    f"{known_incompatible} incompatible, {unknown} unknown "
+                    f"(from {len(offers)} total offers)"
+                )
+
+                # If even the most optimistic count (compatible + unknown) can't meet
+                # the requirement, fail immediately before bond verification.
+                if known_compatible + unknown < n_makers:
+                    logger.error(
+                        f"Not enough potentially compatible makers for neutrino taker: "
+                        f"need {n_makers}, but only {known_compatible} known compatible + "
+                        f"{unknown} unknown = {known_compatible + unknown} possible. "
+                        f"{known_incompatible} offers filtered as incompatible (no "
+                        f"neutrino_compat). Bond verification skipped."
+                    )
+                    self.state = TakerState.FAILED
+                    return None
+
+                if known_compatible < n_makers and unknown > 0:
+                    logger.warning(
+                        f"Only {known_compatible} offers confirmed neutrino_compat, "
+                        f"need {n_makers}. {unknown} offers have unknown feature status "
+                        f"and will be checked during handshake. Not all directory servers "
+                        f"support peerlist_features."
+                    )
+
             # Verify and calculate fidelity bond values
             await self._update_offers_with_bond_values(offers)
 
@@ -506,13 +566,11 @@ class Taker(TakerMonitoringMixin):
                 self.state = TakerState.FAILED
                 return None
 
-            # NOTE: Neutrino takers require makers that support extended UTXO metadata
-            # (scriptPubKey + blockheight). This is negotiated during the CoinJoin handshake
-            # via the neutrino_compat feature in the !pubkey response. All peers use v5
-            # protocol; feature support is advertised separately for smooth rollout.
-            # Incompatible makers (no neutrino_compat) are filtered during _phase_auth().
-            if self.backend.requires_neutrino_metadata():
-                logger.info("Neutrino backend: will negotiate neutrino_compat during handshake")
+            if required_features:
+                logger.info(
+                    "Neutrino backend: requiring neutrino_compat in offer filtering, "
+                    "will also negotiate during handshake"
+                )
 
             self.state = TakerState.SELECTING_MAKERS
 
@@ -581,6 +639,7 @@ class Taker(TakerMonitoringMixin):
                         total_input_value=total_input_value,
                         my_txfee=estimated_tx_fee,
                         n=n_makers,
+                        required_features=required_features,
                     )
                 )
 
@@ -599,6 +658,7 @@ class Taker(TakerMonitoringMixin):
                 selected_offers, total_fee = self.orderbook_manager.select_makers(
                     cj_amount=self.cj_amount,
                     n=n_makers,
+                    required_features=required_features,
                 )
 
                 if len(selected_offers) < self.config.minimum_makers:
@@ -844,6 +904,7 @@ class Taker(TakerMonitoringMixin):
                         cj_amount=self.cj_amount,
                         n=needed,
                         exclude_nicks=current_session_nicks,
+                        required_features=required_features,
                     )
 
                     if len(replacement_offers) < needed:
@@ -906,6 +967,7 @@ class Taker(TakerMonitoringMixin):
                         cj_amount=self.cj_amount,
                         n=needed,
                         exclude_nicks=current_session_nicks,
+                        required_features=required_features,
                     )
 
                     if len(replacement_offers) < needed:

@@ -80,6 +80,7 @@ def filter_offers(
     ignored_makers: set[str] | None = None,
     allowed_types: set[OfferType] | None = None,
     min_nick_version: int | None = None,
+    required_features: set[str] | None = None,
 ) -> list[Offer]:
     """
     Filter offers based on amount range, fee limits, and other criteria.
@@ -92,6 +93,10 @@ def filter_offers(
         allowed_types: Set of allowed offer types (default: all sw0* types)
         min_nick_version: Minimum nick version for reference compatibility (not used for
             neutrino detection - that uses handshake features instead)
+        required_features: Feature names that makers must support. Offers from makers
+            that are known NOT to support a required feature are filtered out. Offers
+            with unknown feature status (empty features dict) pass through, since
+            compatibility will be verified later during the handshake.
 
     Returns:
         List of eligible offers
@@ -123,6 +128,19 @@ def filter_offers(
                 logger.debug(
                     f"Ignoring offer from {offer.counterparty}: "
                     f"nick version {nick_version} < required {min_nick_version}"
+                )
+                continue
+
+        # Filter by required features (e.g., neutrino_compat).
+        # Only reject offers where we KNOW the maker lacks a required feature
+        # (features dict is populated but the feature is missing/false).
+        # Offers with empty features (unknown status) pass through -- they will
+        # be verified during the handshake in _phase_auth().
+        if required_features and offer.features:
+            missing = {f for f in required_features if not offer.features.get(f)}
+            if missing:
+                logger.debug(
+                    f"Ignoring offer from {offer.counterparty}: missing required features {missing}"
                 )
                 continue
 
@@ -492,6 +510,7 @@ def choose_orders(
     min_nick_version: int | None = None,
     bondless_makers_allowance: float = 0.125,
     bondless_require_zero_fee: bool = True,
+    required_features: set[str] | None = None,
 ) -> tuple[dict[str, Offer], int]:
     """
     Choose n orders from the orderbook for a CoinJoin.
@@ -506,6 +525,7 @@ def choose_orders(
         min_nick_version: Minimum required nick version (e.g., 6 for neutrino takers)
         bondless_makers_allowance: Probability of random selection vs fidelity bond weighting
         bondless_require_zero_fee: If True, bondless spots only select zero absolute fee offers
+        required_features: Feature names that makers must support (passed to filter_offers)
 
     Returns:
         (dict of counterparty -> offer, total_cj_fee)
@@ -528,6 +548,7 @@ def choose_orders(
         max_cj_fee=max_cj_fee,
         ignored_makers=ignored_makers,
         min_nick_version=min_nick_version,
+        required_features=required_features,
     )
 
     # Dedupe by maker (keep cheapest offer per counterparty)
@@ -570,6 +591,7 @@ def choose_sweep_orders(
     min_nick_version: int | None = None,
     bondless_makers_allowance: float = 0.125,
     bondless_require_zero_fee: bool = True,
+    required_features: set[str] | None = None,
 ) -> tuple[dict[str, Offer], int, int]:
     """
     Choose n orders for a sweep transaction (no change).
@@ -588,6 +610,7 @@ def choose_sweep_orders(
         min_nick_version: Minimum required nick version (e.g., 6 for neutrino takers)
         bondless_makers_allowance: Probability of random selection vs fidelity bond weighting
         bondless_require_zero_fee: If True, bondless spots only select zero absolute fee offers
+        required_features: Feature names that makers must support (passed to filter_offers)
 
     Returns:
         (dict of counterparty -> offer, cj_amount, total_cj_fee)
@@ -617,6 +640,7 @@ def choose_sweep_orders(
         max_cj_fee=max_cj_fee,
         ignored_makers=ignored_makers,
         min_nick_version=min_nick_version,
+        required_features=required_features,
     )
 
     # Dedupe by maker
@@ -790,6 +814,7 @@ class OrderbookManager:
         honest_only: bool = False,
         min_nick_version: int | None = None,
         exclude_nicks: set[str] | None = None,
+        required_features: set[str] | None = None,
     ) -> tuple[dict[str, Offer], int]:
         """
         Select makers for a CoinJoin.
@@ -800,6 +825,7 @@ class OrderbookManager:
             honest_only: Only select from honest makers
             min_nick_version: Minimum required nick version (e.g., 6 for neutrino takers)
             exclude_nicks: Additional nicks to exclude (e.g., current session makers)
+            required_features: Feature names that makers must support
 
         Returns:
             (selected offers dict, total fee)
@@ -824,6 +850,7 @@ class OrderbookManager:
             min_nick_version=min_nick_version,
             bondless_makers_allowance=self.bondless_makers_allowance,
             bondless_require_zero_fee=self.bondless_require_zero_fee,
+            required_features=required_features,
         )
 
     def select_makers_for_sweep(
@@ -834,6 +861,7 @@ class OrderbookManager:
         honest_only: bool = False,
         min_nick_version: int | None = None,
         exclude_nicks: set[str] | None = None,
+        required_features: set[str] | None = None,
     ) -> tuple[dict[str, Offer], int, int]:
         """
         Select makers for a sweep CoinJoin.
@@ -845,6 +873,7 @@ class OrderbookManager:
             honest_only: Only select from honest makers
             min_nick_version: Minimum required nick version (e.g., 6 for neutrino takers)
             exclude_nicks: Additional nicks to exclude (e.g., current session makers)
+            required_features: Feature names that makers must support
 
         Returns:
             (selected offers dict, cj_amount, total fee)
@@ -870,4 +899,5 @@ class OrderbookManager:
             min_nick_version=min_nick_version,
             bondless_makers_allowance=self.bondless_makers_allowance,
             bondless_require_zero_fee=self.bondless_require_zero_fee,
+            required_features=required_features,
         )
