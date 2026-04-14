@@ -47,6 +47,16 @@ curl -sSL https://raw.githubusercontent.com/joinmarket-ng/joinmarket-ng/main/ins
 curl -sSL https://raw.githubusercontent.com/joinmarket-ng/joinmarket-ng/main/install.sh | bash -s -- --update
 ```
 
+## Updating
+
+When you run `install.sh --update`, the installer:
+
+- Upgrades all installed Python packages to the specified (or latest) version
+- Migrates your config: appends new commented-out keys to existing sections, and appends entirely new `[sections]` from the latest template
+- Refreshes shell completions and Tor configuration
+
+Existing values in your config are never modified -- only new keys and sections from the template are added (commented out). The migration is idempotent: running it multiple times has no effect once all options are present.
+
 ## Configure Backend
 
 Edit `~/.joinmarket-ng/config.toml`.

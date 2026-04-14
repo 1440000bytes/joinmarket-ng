@@ -15,9 +15,25 @@ Main config path:
 
 Template/reference:
 
-- `config.toml.template`
+- `config.toml.template` (repo root)
+- Also bundled inside the `jmcore` package as `jmcore/data/config.toml.template`
 
-The installer creates a starter config automatically.
+The installer creates a starter config automatically from the bundled template.
+
+## Config Migration
+
+When updating via `install.sh --update`, the bundled template is compared against your existing `config.toml` and new options are merged in. The merge is additive-only and works in two phases:
+
+- **Key-level**: for sections that already exist in your config, any keys present in the template but absent from your file are appended (commented out) at the end of the section. Your existing values and commented-out keys are never touched.
+- **Section-level**: sections present in the template but entirely absent from your config are appended verbatim (with all keys commented out).
+
+Other properties:
+
+- The migration is idempotent: running it multiple times produces the same result
+- If `config.toml` is missing entirely, it is recreated from the template
+- Existing values, comments, and whitespace are preserved
+
+The same logic is available programmatically via `jmcore.settings.migrate_config()`.
 
 ## Section Names
 
