@@ -78,7 +78,7 @@ modules:
     buildsystem: autotools
     sources:
       - type: archive
-        url: https://download.libsodium.org/libsodium/releases/libsodium-1.0.22.tar.gz
+        url: https://github.com/jedisct1/libsodium/releases/download/1.0.22-RELEASE/libsodium-1.0.22.tar.gz
         sha256: adbdd8f16149e81ac6078a03aca6fc03b592b89ef7b5ed83841c086191be3349
 
   # =========================================================================
@@ -130,7 +130,7 @@ modules:
     sources:
       - type: git
         url: https://github.com/joinmarket-webui/jam.git
-        commit: 38cc2f1d82ee129f4395ecd35de9be29c17957e7
+        commit: 488c7a373d61a48fc0267ded8dd5571dc9d1d052
 
   # =========================================================================
   # Module 6: Python application
