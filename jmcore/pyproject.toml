@@ -33,6 +33,7 @@ dependencies = [
     "base58>=2.1.0",
     "python-bitcointx>=1.1.5",
     "apprise>=1.8.0",
+    "tomlkit>=0.13.0",
 ]
 
 [project.optional-dependencies]
@@ -54,7 +55,7 @@ jm-ng = "jmcore.tui:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-jmcore = ["data/*.sh"]
+jmcore = ["data/*.sh", "data/*.toml.template"]
 
 [tool.ruff]
 line-length = 100

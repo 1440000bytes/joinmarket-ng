@@ -1,0 +1,411 @@
+# JoinMarket-NG Configuration
+# Uncomment and modify settings as needed. Defaults are sensible for most users.
+# See documentation: https://joinmarket-ng.github.io/joinmarket-ng/
+
+# ============================================================================
+# Core Settings
+# ============================================================================
+
+# [core]
+# data_dir = "~/.joinmarket-ng"  # Default data directory
+
+# ============================================================================
+# Tor Settings
+# ============================================================================
+
+[tor]
+# SOCKS proxy settings
+# socks_host = "127.0.0.1"
+# socks_port = 9050
+
+# Stream isolation uses SOCKS5 auth credentials to place different connection
+# types (directory, peer, notification, update-check, etc.) on separate Tor
+# circuits.  This prevents an observer who controls both a directory server and
+# a notification endpoint from correlating the traffic.  Requires
+# IsolateSOCKSAuth on the Tor SocksPort (enabled by default).
+# stream_isolation = true
+
+# Connection timeout for Tor SOCKS5 connections (seconds).
+# Covers TCP handshake, SOCKS5 negotiation, Tor circuit building, and PoW solving.
+# Under PoW defense (DoS attack), Tor clients solve proof-of-work challenges that
+# can take significantly longer than normal circuit establishment (~5-15s).
+# Default 120s matches Tor's internal circuit timeout.
+# connection_timeout = 120.0
+
+# Control port settings (for hidden services)
+# control_enabled = true
+# control_host = "127.0.0.1"  # Defaults to socks_host if not set
+# control_port = 9051
+# cookie_path = "/run/tor/control.authcookie"  # Auto-detected if not set
+# password = ""  # Use cookie auth by default
+# target_host = "127.0.0.1"  # Target host for hidden service mapping
+
+# ============================================================================
+# Bitcoin Backend Settings
+# ============================================================================
+
+[bitcoin]
+# Backend type: "descriptor_wallet" (default), "scantxoutset", or "neutrino"
+# backend_type = "descriptor_wallet"
+
+# Bitcoin Core RPC settings (for all backend types)
+# rpc_url = "http://127.0.0.1:8332"
+# rpc_user = ""
+# rpc_password = ""
+
+# Neutrino backend settings (used by all components when backend_type = "neutrino")
+# neutrino_url = "http://127.0.0.1:8334"
+
+# Preferred neutrino peers (host:port) that should be tried first while still
+# allowing DNS/discovery peers.
+# NOTE: Only takes effect when JoinMarket manages the neutrino process (e.g.,
+# flatpak deployment). When neutrino-api runs as a standalone service,
+# configure peers directly via its ADD_PEERS env var or --addpeer flag.
+# neutrino_add_peers = [
+#   "your-filter-peer:38333",
+# ]
+
+# Sync block headers over clearnet before switching to Tor for ongoing
+# operations. Headers are public deterministic data identical for all nodes,
+# so downloading them over clearnet does not reveal watched addresses.
+# Typically around 2x faster than doing the full initial header sync via Tor.
+# Default: true.
+# neutrino_clearnet_initial_sync = true
+
+# Enable background prefetch of compact block filters.
+# Enabled by default because jm-wallet info scans these filters anyway, so
+# prefetching saves time on the initial scan. With the default lookback of
+# ~2 years, this takes ~3 hours on clearnet and ~3GB disk on mainnet.
+# Disable to fetch filters strictly on-demand.
+# When false, neutrino_prefetch_lookback_blocks is ignored.
+# neutrino_prefetch_filters = true
+
+# When prefetch is enabled, only prefetch filters for this many recent blocks.
+# Default: 105120 (~2 years). Set to 0 to prefetch from genesis (~15GB).
+# Ignored when neutrino_prefetch_filters = false.
+# neutrino_prefetch_lookback_blocks = 105120
+
+# Number of blocks to look back from tip for neutrino wallet rescans.
+# Default: 105120 (~2 years). Only used when scan_start_height is not set.
+# neutrino_scan_lookback_blocks = 105120
+
+# Neutrino-api security settings (auto-TLS + API token authentication).
+# When neutrino-api starts for the first time it generates a self-signed TLS
+# certificate (tls.cert + tls.key) and a random API token (auth_token) in its
+# data directory.  Set these to enable encrypted, authenticated communication.
+# In Flatpak deployments these are wired automatically from the neutrino data dir.
+#
+# Path to the neutrino-api TLS certificate (PEM).  Enables HTTPS with
+# certificate pinning (trust-on-first-use).
+# neutrino_tls_cert = "~/.joinmarket-ng/neutrino/tls.cert"
+#
+# API bearer token for neutrino-api authentication.
+# neutrino_auth_token = ""
+#
+# Path to a file containing the auth token (alternative to neutrino_auth_token).
+# Useful in Docker environments where the token is generated into a shared volume.
+# neutrino_auth_token_file = "~/.joinmarket-ng/neutrino/auth_token"
+
+# ============================================================================
+# Network Settings
+# ============================================================================
+
+[network_config]
+# Network: "mainnet", "testnet", "signet", or "regtest"
+# network = "mainnet"
+
+# Optional: Override Bitcoin network (usually same as network)
+# bitcoin_network = "mainnet"
+
+# Directory servers (leave empty to use network defaults)
+# Mainnet defaults (leave empty to use automatically):
+# directory_servers = [
+#   "satoshi2vcg5e2ept7tjkzlkpomkobqmgtsjzegg6wipnoajadissead.onion:5222",
+#   "coinjointovy3eq5fjygdwpkbcdx63d7vd4g32mw7y553uj3kjjzkiqd.onion:5222",
+#   "nakamotourflxwjnjpnrk7yc2nhkf6r62ed4gdfxmmn5f4saw5q5qoyd.onion:5222",
+#   "odpwaf67rs5226uabcamvypg3y4bngzmfk7255flcdodesqhsvkptaid.onion:5222",
+#   "jmarketxf5wc4aldf3slm5u6726zsky52bqnfv6qyxe5hnafgly6yuyd.onion:5222",
+#   "jmrust7bgdbdl6skkvuzhqost4jkikrluj6alemspeifm5hvgqz2qaad.onion:5222",
+# ]
+#
+# Signet defaults:
+# directory_servers = [
+#   "signetvaxgd3ivj4tml4g6ed3samaa2rscre2gyeyohncmwk4fbesiqd.onion:5222",
+#   "u5oj5etqex3vh7jagljf3e2lo4awmmtcw3klbrlt2fonzyozpn5txrqd.onion:5222",
+# ]
+
+# How long to keep retrying directory connections at startup (Tor may still be
+# bootstrapping when the maker starts).  After this timeout, the background
+# reconnect task takes over.  Defaults to 120 seconds.
+# directory_startup_timeout = 120
+
+# Background reconnect interval in seconds (default: 300)
+# directory_reconnect_interval = 300
+
+# Max reconnection attempts per directory (0 = unlimited, default: 0)
+# directory_reconnect_max_retries = 0
+
+# ============================================================================
+# Wallet Settings
+# ============================================================================
+
+[wallet]
+# Number of mixing depths (1-10)
+# mixdepth_count = 5
+
+# Address gap limit for wallet scanning (minimum: 6)
+# gap_limit = 20
+
+# Dust threshold in satoshis
+# dust_threshold = 27300
+
+# Smart wallet scanning optimizations
+# When importing an existing wallet, initial sync scans recent blocks for fast startup.
+# A full background rescan runs afterward to ensure no transactions are missed.
+# smart_scan = true                  # Enable smart scan for fast startup
+# background_full_rescan = true      # Run full rescan in background after smart scan
+
+# Blocks to look back during initial smart scan (~1 year default)
+# For faster initial sync of newer wallets, set lower (e.g., 12960 for ~3 months)
+# scan_lookback_blocks = 52560
+
+# Explicit start height for initial scan (overrides scan_lookback_blocks if set)
+# Useful when you know when the wallet was first used. Set to 0 for full scan.
+# Note: wallets created via the daemon automatically record a creation height,
+# which is used as the scan start when this setting is not explicitly set.
+# scan_start_height = 0
+
+# Default fee estimation settings
+# default_fee_block_target = 3  # Block target for wallet transactions
+
+# Mnemonic file settings (optional defaults)
+# mnemonic_file = ""            # Path to mnemonic file
+# mnemonic_password = ""        # Password for encrypted mnemonic
+
+# ============================================================================
+# Logging Settings
+# ============================================================================
+
+[logging]
+# Log level: "TRACE", "DEBUG", "INFO", "WARNING", "ERROR"
+# level = "INFO"
+
+# Log sensitive information (private keys, mnemonics, etc.)
+# sensitive = false
+
+# ============================================================================
+# Notification Settings (Apprise integration)
+# ============================================================================
+
+[notifications]
+# Enable notifications
+# enabled = false
+
+# Apprise notification URLs
+# Examples:
+#   Telegram: "tgram://bottoken/ChatID"
+#   Gotify: "gotify://hostname/token"
+# See: https://github.com/caronc/apprise
+# urls = []
+
+# Notification preferences
+# title_prefix = "JoinMarket NG"
+# component_name is set automatically by each component (Maker, Taker, etc.)
+# include_amounts = true
+# include_txids = false
+# include_nick = true
+# use_tor = true
+
+# Event notifications
+# notify_fill = true
+# notify_rejection = true
+# notify_signing = true
+# notify_mempool = true
+# notify_confirmed = true
+# notify_nick_change = true
+# notify_disconnect = false  # Individual directory disconnect/reconnect (noisy)
+# notify_all_disconnect = true  # All directories disconnected (critical)
+# notify_coinjoin_start = true
+# notify_coinjoin_complete = true
+# notify_coinjoin_failed = true
+# notify_peer_events = false
+# notify_rate_limit = true
+# notify_startup = true
+
+# Periodic summary notifications (enabled by default)
+# notify_summary = true  # Send periodic CoinJoin stats summary (set to false to disable)
+# notify_summary_balance = false  # Include total balance and UTXO count in summary (privacy risk)
+# summary_interval_hours = 24  # Interval: 24 (daily), 168 (weekly), or custom (1-168)
+
+# Update checks (opt-in, disabled by default)
+# PRIVACY WARNING: When enabled, this polls api.github.com each summary interval
+# to check for new releases. The request is routed through Tor when use_tor = true,
+# but GitHub will still see the Tor exit node IP.
+# check_for_updates = false
+
+# Retry failed notifications in the background (recommended for Tor)
+# retry_enabled = true       # Retry with exponential backoff (default: true)
+# retry_max_attempts = 3     # Max retries per notification (1-10)
+# retry_base_delay = 5.0     # Base delay in seconds, doubles each retry (1-60)
+
+# ============================================================================
+# Maker Settings (Yield Generator)
+# ============================================================================
+
+[maker]
+# Minimum CoinJoin amount in satoshis
+# min_size = 100000
+
+# IMPORTANT: offer_type determines which fee setting is used.
+# Simply changing cj_fee_absolute will NOT switch to absolute fees - you must set offer_type.
+#
+# Offer type options:
+#   "sw0reloffer" - relative fee (uses cj_fee_relative) [DEFAULT]
+#   "sw0absoffer" - absolute fee (uses cj_fee_absolute)
+#
+# Example: To use absolute fees, set BOTH:
+#   offer_type = "sw0absoffer"
+#   cj_fee_absolute = 500
+#
+# To run BOTH offer types simultaneously, use the CLI flag --dual-offers
+# offer_type = "sw0reloffer"
+
+# Fee settings (only one is used based on offer_type above)
+# cj_fee_relative = "0.001"  # 0.001 = 0.1% relative fee (for sw0reloffer)
+# cj_fee_absolute = 500      # Absolute fee in satoshis (for sw0absoffer)
+# tx_fee_contribution = 0    # Mining fee contribution in satoshis
+
+# Minimum confirmations for UTXOs
+# min_confirmations = 1
+
+# UTXO merge algorithm: "default", "gradual", "greedy", "random"
+# merge_algorithm = "default"
+
+# Mixdepth 0 privacy restriction.
+# By default, UTXOs in mixdepth 0 are restricted to a single UTXO per CoinJoin
+# to prevent linking deposits and fidelity bonds.  CoinJoin outputs (cj-out)
+# are always exempt from this restriction because they already have CoinJoin
+# privacy.  Set to true to disable the restriction entirely and allow merging
+# all md0 UTXOs (experienced makers only -- reduces privacy).
+# allow_mixdepth_zero_merge = false
+
+# Fidelity bond settings
+# Set to true to run without a fidelity bond even if bonds exist in the registry.
+# This can be useful for privacy - bonds are public and linkable to your offers.
+# no_fidelity_bond = false
+
+# Timeouts and intervals
+# session_timeout_sec = 300
+# rescan_interval_sec = 600
+# pending_tx_timeout_min = 60  # Minutes before marking unbroadcast CoinJoins as failed
+
+# Privacy: random delay (seconds) before re-announcing offers after a balance change.
+# Prevents observers from correlating block confirmations with offer updates.
+# Set to 0 to disable the delay. Default: 600 (10 minutes).
+# offer_reannounce_delay_max = 600
+
+# Onion service settings
+# onion_serving_host = "127.0.0.1"
+# onion_serving_port = 5222
+# tor_target_host = "127.0.0.1"
+
+# Rate limiting
+# message_rate_limit = 10   # Messages per second
+# message_burst_limit = 100
+
+# ============================================================================
+# Taker Settings (CoinJoin Client)
+# ============================================================================
+
+[taker]
+# Number of counterparty makers to use (1-20)
+# counterparty_count = 10
+
+# Maximum acceptable coinjoin fees (paid to makers, not network/miner fees)
+# max_cj_fee_abs = 500        # Absolute fee in satoshis per maker
+# max_cj_fee_rel = "0.001"    # Relative fee (0.001 = 0.1%)
+
+# Network/miner transaction fee settings
+# fee_rate takes precedence over fee_block_target when set
+# fee_rate = 10.0             # Manual fee rate in sat/vB (omit to use estimation)
+# tx_fee_factor = 3.0         # Fee estimation multiplier (minimum: 1.0)
+# fee_block_target = 6        # Target blocks for fee estimation (1-1008, omit to use default)
+
+# Fidelity bond settings
+# bondless_makers_allowance = 0.0  # 0.0-1.0 (0 = require bonds, 1 = allow all)
+# bond_value_exponent = 1.3
+# bondless_require_zero_fee = true
+
+# Timeouts and intervals
+# maker_timeout_sec = 60
+# order_wait_time = 120.0        # Max seconds to wait (hard ceiling)
+# orderbook_min_wait = 30.0      # Min seconds before early exit is allowed
+# orderbook_quiet_period = 15.0  # Seconds of silence to trigger early exit
+# rescan_interval_sec = 600
+
+# Transaction broadcast settings
+# Options: "self", "random-peer", "multiple-peers", "not-self"
+# tx_broadcast = "random-peer"
+# broadcast_peer_count = 3
+
+# Minimum number of makers required
+# minimum_makers = 1
+
+# ============================================================================
+# Directory Server Settings
+# ============================================================================
+
+[directory_server]
+# Server listening address
+# host = "127.0.0.1"
+# port = 5222
+
+# Limits
+# max_peers = 10000
+# max_message_size = 2097152  # 2MB
+# max_line_length = 65536      # 64KB max JSON-line length
+# max_json_nesting_depth = 10
+
+# Rate limiting
+# message_rate_limit = 500     # Messages per second
+# message_burst_limit = 1000
+# rate_limit_disconnect_threshold = 0  # 0 = never disconnect
+
+# Broadcast settings
+# broadcast_batch_size = 50
+
+# Health check endpoint
+# health_check_host = "127.0.0.1"
+# health_check_port = 8080
+
+# Message of the day
+# motd = "JoinMarket NG Directory Server https://github.com/joinmarket-ng/joinmarket-ng/"
+
+# Heartbeat liveness detection (PING/PONG protocol, compatible with joinmarket-rs)
+# heartbeat_sweep_interval = 60.0    # Seconds between heartbeat sweeps
+# heartbeat_idle_threshold = 600.0   # Seconds idle before probing (10 min)
+# heartbeat_hard_evict = 1500.0      # Seconds idle before unconditional eviction (25 min)
+# heartbeat_pong_wait = 30.0         # Seconds to wait for PONG after PING
+
+# ============================================================================
+# Orderbook Watcher Settings
+# ============================================================================
+
+[orderbook_watcher]
+# HTTP API settings
+# http_host = "0.0.0.0"
+# http_port = 8000
+
+# Update interval in seconds
+# update_interval = 60
+
+# Mempool API settings
+# mempool_api_url = ""  # Disabled by default for privacy (no external API calls)
+# mempool_web_url = ""  # Optional explorer URL for UI links
+
+# Connection settings
+# max_message_size = 2097152   # 2MB
+# connection_timeout = 120.0   # Seconds (covers Tor circuit + PoW solving)
+
+# Uptime tracking
+# uptime_grace_period = 60     # Seconds
