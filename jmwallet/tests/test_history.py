@@ -152,7 +152,8 @@ class TestAppendAndReadHistory:
             cj_amount=1_000_000,
         )
 
-        append_history_entry(entry, temp_data_dir)
+        res = append_history_entry(entry, temp_data_dir)
+        assert res is True
         entries = read_history(temp_data_dir)
 
         assert len(entries) == 1
@@ -168,10 +169,24 @@ class TestAppendAndReadHistory:
                 txid=f"txid{i}" * 16,
                 cj_amount=(i + 1) * 100_000,
             )
-            append_history_entry(entry, temp_data_dir)
+            res = append_history_entry(entry, temp_data_dir)
+            assert res is True
 
         entries = read_history(temp_data_dir)
         assert len(entries) == 3
+
+    def test_append_history_failure_returns_false(self, temp_data_dir: Path) -> None:
+        """Test that append_history_entry returns False on failure."""
+        entry = TransactionHistoryEntry(
+            timestamp="2024-01-01T00:00:00",
+            role="taker",
+            txid="fail_txid" * 16,
+            cj_amount=1_000_000,
+        )
+
+        with patch("jmwallet.history.open", side_effect=OSError("simulated write error")):
+            res = append_history_entry(entry, temp_data_dir)
+            assert res is False
 
     def test_read_with_role_filter(self, temp_data_dir: Path) -> None:
         """Test reading with role filter."""

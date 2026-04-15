@@ -12,7 +12,7 @@ Tests:
 from __future__ import annotations
 
 import base64
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 from _taker_test_helpers import (
@@ -1327,3 +1327,37 @@ class TestHistoryMiningFeeRecording:
         history = read_history(data_dir=tmp_path)
         assert history[0].mining_fee_paid == actual_mining_fee
         assert history[0].net_fee == -(maker_fees + actual_mining_fee)  # -(500 + 750) = -1250
+
+
+class TestTakerHistoryHardening:
+    """Tests for taker against history recording failures."""
+
+    @pytest.mark.asyncio
+    async def test_collect_signatures_aborts_on_history_failure(
+        self, mock_wallet, mock_backend, mock_config, sample_offer
+    ):
+        """Verify that _phase_collect_signatures aborts if history recording fails."""
+        taker = Taker(mock_wallet, mock_backend, mock_config)
+
+        nick = "J5maker1"
+        session = MakerSession(nick=nick, offer=sample_offer)
+        session.crypto = AsyncMock()
+        session.utxos = [{"txid": "a", "vout": 0, "value": 1_000_000}]
+        taker.maker_sessions = {nick: session}
+
+        taker.unsigned_tx = b"dummy_tx_bytes"
+        taker.cj_amount = 500_000
+        taker.cj_destination = "bcrt1qdest"
+        taker.selected_utxos = [MagicMock(txid="b", vout=0)]
+        taker.tx_metadata = {"source_mixdepth": 0}
+
+        taker.directory_client = AsyncMock()
+
+        with patch("taker.taker.append_history_entry", return_value=False) as mock_append:
+            result = await taker._phase_collect_signatures()
+
+            assert result is False
+            mock_append.assert_called_once()
+
+            for call in taker.directory_client.send_privmsg.call_args_list:
+                assert call.args[1] != "tx"
