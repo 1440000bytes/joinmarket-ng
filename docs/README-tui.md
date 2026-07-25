@@ -45,11 +45,16 @@ Configure your Bitcoin send parameters. Set the number of counterparties to **0*
 
 | Parameter | Description |
 |-----------|-------------|
-| **Mixdepth** | Source account (mixdepth) to send from |
-| **Amount** | Satoshis to send (0 = sweep entire mixdepth) |
+| **Coin Control** | Automatic coin selection, or pick the UTXOs by hand |
+| **Mixdepth** | Source account (mixdepth) to send from (skipped with manual coin control) |
+| **Amount** | Satoshis to send (0 = sweep entire mixdepth or the picked UTXOs) |
 | **Counterparties** | Number of makers (0 = normal, >0 = CoinJoin) |
 | **Fee Rate** | Fee Rate in sats/vB (leave blank for auto-estimate) |
 | **Destination** | Bitcoin address or "INTERNAL" for CoinJoin sweep |
+
+With manual coin control a full-wallet UTXO selector opens before the
+transaction runs. It lists every UTXO grouped by mixdepth; the first UTXO you
+toggle pins the source mixdepth (a spend always draws from one mixdepth).
 
 ## Wallet Management
 

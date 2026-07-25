@@ -433,10 +433,18 @@ display_send_status() {
         fee_display="(default: auto)"
     fi
 
+    # With manual UTXO selection the mixdepth is derived from the selection
+    local mixdepth_display
+    if [ -n "$SEND_SELECT" ]; then
+        mixdepth_display="manual UTXO selection"
+    else
+        mixdepth_display="${SEND_MIXDEPTH:-(default: ${DEFAULT_MIXDEPTH})}"
+    fi
+
     cat <<EOF
 
 From wallet:     $(basename "$CURRENT_WALLET")
-Source Mixdepth: ${SEND_MIXDEPTH:-(default: ${DEFAULT_MIXDEPTH})}
+Source Mixdepth: ${mixdepth_display}
 Amount:          ${SEND_AMOUNT:-(default: ${DEFAULT_AMOUNT})} sats
 Counterparties:  ${SEND_CP:-(default: ${DEFAULT_COUNTERPARTIES})} makers
 Fee Rate         ${fee_display} sats/vB
@@ -1101,28 +1109,47 @@ if [ "${RASPIBLITZ}" -eq 1 ]; then
       SEND_FEE=""
       SEND_FEE_ENTERED=""
       SEND_DEST=""
+      SEND_SELECT=""
 
-      # 1. Source mixdepth
-      while true; do
-        SEND_MIXDEPTH=$(prompt_param "Choose a mixdepth to send from" \
-          "$(display_send_status "Source mixdepth (account) to send from.")" \
-          "") || continue 2
-        if [ -z "$SEND_MIXDEPTH" ]; then
-          SEND_MIXDEPTH=$DEFAULT_MIXDEPTH
+      # 1. Coin control: automatic selection from one mixdepth, or manual
+      #    UTXO selection (full-wallet selector TUI; the first toggled UTXO
+      #    pins the source mixdepth)
+      whiptail --title " Coin Control " --defaultno --yesno \
+"Select the UTXOs to spend manually?
+
+Yes: a full-wallet UTXO selector opens after these prompts.
+     The first UTXO you toggle pins the source mixdepth.
+No:  automatic coin selection from one mixdepth." 12 64
+      case $? in
+        0) SEND_SELECT="1" ;;
+        1) SEND_SELECT="" ;;
+        *) continue ;;
+      esac
+
+      # 2. Source mixdepth (skipped with manual UTXO selection: the mixdepth
+      #    is derived from the selected UTXOs)
+      if [ -z "$SEND_SELECT" ]; then
+        while true; do
+          SEND_MIXDEPTH=$(prompt_param "Choose a mixdepth to send from" \
+            "$(display_send_status "Source mixdepth (account) to send from.")" \
+            "") || continue 2
+          if [ -z "$SEND_MIXDEPTH" ]; then
+            SEND_MIXDEPTH=$DEFAULT_MIXDEPTH
+            break
+          fi
+          if ! [[ "$SEND_MIXDEPTH" =~ ^[0-9]+$ ]]; then
+            whiptail --title " Error " --msgbox "Mixdepth must be a non-negative integer." 8 50
+            continue
+          fi
           break
-        fi
-        if ! [[ "$SEND_MIXDEPTH" =~ ^[0-9]+$ ]]; then
-          whiptail --title " Error " --msgbox "Mixdepth must be a non-negative integer." 8 50
-          continue
-        fi
-        break
-      done
-      SEND_MIXDEPTH=$(to_int "$SEND_MIXDEPTH" "$DEFAULT_MIXDEPTH")
+        done
+        SEND_MIXDEPTH=$(to_int "$SEND_MIXDEPTH" "$DEFAULT_MIXDEPTH")
+      fi
 
-      # 2. Amount in satoshis
+      # 3. Amount in satoshis
       while true; do
         SEND_AMOUNT=$(prompt_param "Send Amount" \
-          "$(display_send_status "Amount in satoshis to send.\n0 = sweep entire mixdepth (best privacy for coinjoin).")" \
+          "$(display_send_status "Amount in satoshis to send.\n0 = sweep (entire mixdepth, or your picked UTXOs with manual coin control; best privacy for coinjoin).")" \
           "") || continue 2
         if [ -z "$SEND_AMOUNT" ]; then
           SEND_AMOUNT=$DEFAULT_AMOUNT
@@ -1136,7 +1163,7 @@ if [ "${RASPIBLITZ}" -eq 1 ]; then
       done
       SEND_AMOUNT=$(to_int "$SEND_AMOUNT" "$DEFAULT_AMOUNT")
 
-      # 3. Counterparties (0 = normal transaction, >0 = coinjoin)
+      # 4. Counterparties (0 = normal transaction, >0 = coinjoin)
       while true; do
         SEND_CP=$(prompt_param "Counterparties" \
           "$(display_send_status "Number of counterparties (makers) for CoinJoin.\n0 = normal transaction (no CoinJoin).\nRecommended for CoinJoin: 4-10.")" \
@@ -1153,7 +1180,7 @@ if [ "${RASPIBLITZ}" -eq 1 ]; then
       done
       SEND_CP=$(to_int "$SEND_CP" "$DEFAULT_COUNTERPARTIES")
 
-      # 4. Fee rate
+      # 5. Fee rate
       while true; do
         SEND_FEE=$(prompt_param "Fee Rate" \
           "$(display_send_status "Fee rate in sats/vB.\nLeave blank for auto (block target in config).")" \
@@ -1171,7 +1198,7 @@ if [ "${RASPIBLITZ}" -eq 1 ]; then
       # Set flag to show "auto" instead of "(default: auto)" in next prompts
       SEND_FEE_ENTERED="1"
 
-      # 5. Destination address (if empty: INTERNAL coinjoin to next mixdepth)
+      # 6. Destination address (if empty: INTERNAL coinjoin to next mixdepth)
       while true; do
         SEND_DEST=$(prompt_param "Destination Address" \
           "$(display_send_status "Enter destination bitcoin address.\nLeave empty for INTERNAL (next mixdepth, coinjoin only).")" \
@@ -1218,11 +1245,18 @@ if [ "${RASPIBLITZ}" -eq 1 ]; then
           AMOUNT_DISPLAY="${SEND_AMOUNT} sats"
       fi
 
+      # Mixdepth display (manual selection derives it from the chosen UTXOs)
+      if [ -n "$SEND_SELECT" ]; then
+          MIXDEPTH_DISPLAY="manual UTXO selection"
+      else
+          MIXDEPTH_DISPLAY="$SEND_MIXDEPTH"
+      fi
+
       # Show confirmation summary
       whiptail --title " Confirm Send " --yesno \
 "  From wallet:     $(basename "$CURRENT_WALLET")
   Type:            ${TX_TYPE}
-  Source Mixdepth: ${SEND_MIXDEPTH}
+  Source Mixdepth: ${MIXDEPTH_DISPLAY}
   Amount:          ${AMOUNT_DISPLAY}
   Fee Rate:        ${FEE_DISPLAY:-auto}
   Destination:     ${SEND_DEST}
@@ -1249,8 +1283,20 @@ if [ "${RASPIBLITZ}" -eq 1 ]; then
               echo "  1. After makers are selected (fee estimate, confirm the plan)"
               echo "  2. Before broadcast (final on-chain fees, last chance to cancel)"
               echo ""
+              if [ -n "$SEND_SELECT" ]; then
+                  echo "The UTXO selector opens first: pick the inputs to spend"
+                  echo "(the first toggled UTXO pins the source mixdepth)."
+                  echo ""
+              fi
 
-              TAKER_ARGS=(coinjoin -a "$SEND_AMOUNT" -m "$SEND_MIXDEPTH" -d "$SEND_DEST")
+              TAKER_ARGS=(coinjoin -a "$SEND_AMOUNT" -d "$SEND_DEST")
+              if [ -n "$SEND_SELECT" ]; then
+                  # Manual coin control: full-wallet selector TUI; the first
+                  # toggled UTXO pins the source mixdepth
+                  TAKER_ARGS+=(-s)
+              else
+                  TAKER_ARGS+=(-m "$SEND_MIXDEPTH")
+              fi
               TAKER_ARGS+=(-n "$SEND_CP")
               [ -n "$SEND_FEE" ] && TAKER_ARGS+=(--fee-rate "$SEND_FEE")
 
@@ -1274,7 +1320,14 @@ if [ "${RASPIBLITZ}" -eq 1 ]; then
               echo "Wallet: $(basename "$CURRENT_WALLET")"
               echo ""
 
-              SEND_ARGS=(send -a "$SEND_AMOUNT" -m "$SEND_MIXDEPTH")
+              SEND_ARGS=(send -a "$SEND_AMOUNT")
+              if [ -n "$SEND_SELECT" ]; then
+                  # Manual coin control: full-wallet selector TUI; the first
+                  # toggled UTXO pins the source mixdepth
+                  SEND_ARGS+=(-s)
+              else
+                  SEND_ARGS+=(-m "$SEND_MIXDEPTH")
+              fi
               [ -n "$SEND_FEE" ] && SEND_ARGS+=(--fee-rate "$SEND_FEE")
               SEND_ARGS+=("$SEND_DEST")
 

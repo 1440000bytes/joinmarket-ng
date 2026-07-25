@@ -53,6 +53,25 @@ def test_tui_script_has_display_send_status() -> None:
     assert "display_send_status()" in content
 
 
+def test_tui_script_send_offers_manual_utxo_selection() -> None:
+    """The SEND flow must offer manual coin control via the UTXO selector.
+
+    When the user picks manual selection, the mixdepth prompt is skipped
+    (the source mixdepth is derived from the selected UTXOs) and ``-s`` is
+    passed instead of ``-m`` to both jm-taker coinjoin and jm-wallet send.
+    """
+    content = SCRIPT_PATH.read_text()
+    assert "Select the UTXOs to spend manually?" in content
+    # Both command builders branch on the manual-selection flag.
+    assert content.count('if [ -n "$SEND_SELECT" ]; then') >= 4
+    assert "TAKER_ARGS+=(-s)" in content
+    assert "SEND_ARGS+=(-s)" in content
+    # The mixdepth prompt only runs for automatic selection, and the
+    # summary shows that the mixdepth comes from the manual selection.
+    assert 'if [ -z "$SEND_SELECT" ]; then' in content
+    assert "manual UTXO selection" in content
+
+
 def test_tui_script_has_wallet_name_validation() -> None:
     """Wallet name inputs must be validated against directory traversal."""
     content = SCRIPT_PATH.read_text()
