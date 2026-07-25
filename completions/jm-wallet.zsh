@@ -278,7 +278,7 @@ _jm_wallet() {
             '--amount=[Amount in sats (0 for sweep)]: :' \
             '--mnemonic-file=[]:file:_files' \
             '--prompt-bip39-passphrase[Prompt for BIP39 passphrase]' \
-            '--mixdepth=[Source mixdepth]: :' \
+            '--mixdepth=[Source mixdepth (default 0; with --select-utxos, derived from the selection unless set explicitly)]: :' \
             '--fee-rate=[Manual fee rate in sat/vB (e.g. 1.5). Mutually exclusive with --block-target. Defaults to 3-block estimation.]: :' \
             '--block-target=[Target blocks for fee estimation (1-1008). Defaults to 3.]: :' \
             '--network=[Bitcoin network]: :' \

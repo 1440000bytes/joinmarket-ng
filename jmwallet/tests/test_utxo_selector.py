@@ -6,13 +6,18 @@ Tests cover:
 - select_utxos_interactive() behavior in non-TTY environments
 - Single UTXO auto-selection
 - Frozen/locked UTXO unselectability
+- Mixdepth pinning (allowed_mixdepth) and min-confirmation gating
 """
 
 from __future__ import annotations
 
 import pytest
 
-from jmwallet.utxo_selector import format_utxo_line, select_utxos_interactive
+from jmwallet.utxo_selector import (
+    _is_base_selectable,
+    format_utxo_line,
+    select_utxos_interactive,
+)
 from jmwallet.wallet.models import UTXOInfo
 
 
@@ -280,3 +285,68 @@ class TestFrozenUtxoUnselectability:
         )
         result = select_utxos_interactive([normal])
         assert result == [normal]
+
+
+def _make_utxo(
+    mixdepth: int,
+    *,
+    value: int = 100_000,
+    confirmations: int = 10,
+    frozen: bool = False,
+    locktime: int | None = None,
+) -> UTXOInfo:
+    return UTXOInfo(
+        txid="f" * 64,
+        vout=0,
+        value=value,
+        address=f"bcrt1qmd{mixdepth}",
+        confirmations=confirmations,
+        scriptpubkey="0014" + "ff" * 20,
+        path=f"m/84'/0'/{mixdepth}'/0/0",
+        mixdepth=mixdepth,
+        frozen=frozen,
+        locktime=locktime,
+    )
+
+
+class TestBaseSelectability:
+    """Tests for the session-wide selectability rules."""
+
+    def test_normal_utxo_selectable(self) -> None:
+        assert _is_base_selectable(_make_utxo(0), None, 0) is True
+
+    def test_frozen_never_selectable(self) -> None:
+        assert _is_base_selectable(_make_utxo(0, frozen=True), None, 0) is False
+
+    def test_locked_fb_never_selectable(self) -> None:
+        locked = _make_utxo(0, locktime=4_000_000_000)  # far future
+        locked.scriptpubkey = "0020" + "ff" * 32
+        assert _is_base_selectable(locked, None, 0) is False
+
+    def test_expired_fb_selectable(self) -> None:
+        expired = _make_utxo(0, locktime=1)  # 1970, expired
+        expired.scriptpubkey = "0020" + "ff" * 32
+        assert _is_base_selectable(expired, None, 0) is True
+
+    def test_immature_not_selectable(self) -> None:
+        assert _is_base_selectable(_make_utxo(0, confirmations=2), None, 5) is False
+
+    def test_other_mixdepth_not_selectable_when_pinned(self) -> None:
+        assert _is_base_selectable(_make_utxo(1), 0, 0) is False
+        assert _is_base_selectable(_make_utxo(1), 1, 0) is True
+
+
+class TestMixdepthPinningNonTTY:
+    """Non-TTY fallback honors allowed_mixdepth and min_confirmations."""
+
+    def test_single_utxo_outside_allowed_mixdepth_not_selected(self) -> None:
+        utxo = _make_utxo(2)
+        assert select_utxos_interactive([utxo], allowed_mixdepth=0) == []
+
+    def test_single_utxo_in_allowed_mixdepth_selected(self) -> None:
+        utxo = _make_utxo(2)
+        assert select_utxos_interactive([utxo], allowed_mixdepth=2) == [utxo]
+
+    def test_single_immature_utxo_not_selected(self) -> None:
+        utxo = _make_utxo(0, confirmations=2)
+        assert select_utxos_interactive([utxo], min_confirmations=5) == []

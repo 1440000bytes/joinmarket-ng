@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import math
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 import typer
 from jmcore.cli_common import (
@@ -29,6 +29,87 @@ from jmwallet.wallet.spend import (
     estimate_fee,
 )
 
+if TYPE_CHECKING:
+    from jmwallet.wallet.models import UTXOInfo
+    from jmwallet.wallet.service import WalletService
+
+
+async def _select_input_utxos(
+    wallet: WalletService,
+    backend_settings: ResolvedBackendSettings,
+    amount: int,
+    mixdepth: int | None,
+    interactive: bool,
+) -> tuple[list[UTXOInfo], int] | None:
+    """Pick the transaction inputs, interactively or automatically.
+
+    Interactive mode shows the whole wallet in the selector for a full
+    overview; the source mixdepth is pinned by ``mixdepth`` when given
+    explicitly, otherwise derived from the selection (a spend always draws
+    from a single mixdepth; the TUI enforces this).
+
+    Returns:
+        ``(utxos, source_mixdepth)``, or ``None`` when the user cancelled
+        the interactive selection.
+
+    Raises:
+        typer.Exit: When no (spendable) UTXOs are available or the selector
+            cannot run.
+    """
+    if interactive:
+        from jmwallet.history import get_utxo_label
+        from jmwallet.utxo_selector import select_utxos_interactive
+
+        utxos: list[UTXOInfo] = []
+        for md in range(wallet.mixdepth_count):
+            utxos.extend(await wallet.get_utxos(md))
+        if not utxos:
+            logger.error("No UTXOs available")
+            raise typer.Exit(1)
+
+        # Populate labels for each UTXO based on history
+        for utxo in utxos:
+            utxo.label = get_utxo_label(
+                utxo.address,
+                backend_settings.data_dir,
+                wallet_fingerprint=wallet.wallet_fingerprint,
+            )
+
+        try:
+            selected_utxos = select_utxos_interactive(utxos, amount, allowed_mixdepth=mixdepth)
+        except RuntimeError as e:
+            logger.error(f"Cannot use interactive UTXO selection: {e}")
+            raise typer.Exit(1)
+        if not selected_utxos:
+            logger.info("UTXO selection cancelled")
+            return None
+        mixdepth = selected_utxos[0].mixdepth
+        logger.info(f"Selected {len(selected_utxos)} UTXOs from mixdepth {mixdepth}")
+        return selected_utxos, mixdepth
+
+    if mixdepth is None:
+        mixdepth = 0
+
+    balance = await wallet.get_balance(mixdepth)
+    logger.info(f"Mixdepth {mixdepth} balance: {balance:,} sats")
+
+    utxos = await wallet.get_utxos(mixdepth)
+    if not utxos:
+        logger.error("No UTXOs available")
+        raise typer.Exit(1)
+
+    # Auto-selection: filter out frozen and fidelity bond UTXOs
+    # (frozen UTXOs must never be auto-spent; fidelity bonds must be
+    # explicitly selected via interactive mode)
+    spendable = [u for u in utxos if not u.frozen and not u.is_fidelity_bond]
+    frozen_count = len(utxos) - len(spendable)
+    if frozen_count > 0:
+        logger.info(f"Excluding {frozen_count} frozen/fidelity-bond UTXO(s) from auto-selection")
+    if not spendable:
+        logger.error("No spendable UTXOs available (all UTXOs are frozen or fidelity bonds)")
+        raise typer.Exit(1)
+    return spendable, mixdepth
+
 
 @app.command(no_args_is_help=True)
 def send(
@@ -40,7 +121,15 @@ def send(
     prompt_bip39_passphrase: Annotated[
         bool, typer.Option("--prompt-bip39-passphrase", help="Prompt for BIP39 passphrase")
     ] = False,
-    mixdepth: Annotated[int, typer.Option("--mixdepth", "-m", help="Source mixdepth")] = 0,
+    mixdepth: Annotated[
+        int | None,
+        typer.Option(
+            "--mixdepth",
+            "-m",
+            help="Source mixdepth (default 0; with --select-utxos, derived from "
+            "the selection unless set explicitly)",
+        ),
+    ] = None,
     fee_rate: Annotated[
         float | None,
         typer.Option(
@@ -183,7 +272,7 @@ async def _send_transaction(
     mnemonic: str,
     destination: str,
     amount: int,
-    mixdepth: int,
+    mixdepth: int | None,
     fee_rate: float | None,
     block_target: int | None,
     backend_settings: ResolvedBackendSettings,
@@ -311,54 +400,13 @@ async def _send_transaction(
         # backends (neutrino) scan the bond addresses directly inside this call.
         await wallet.sync_with_registered_bonds()
 
-        balance = await wallet.get_balance(mixdepth)
-        logger.info(f"Mixdepth {mixdepth} balance: {balance:,} sats")
-
-        # Fetch UTXOs early for interactive selection
-        utxos = await wallet.get_utxos(mixdepth)
-        if not utxos:
-            logger.error("No UTXOs available")
-            raise typer.Exit(1)
-
-        # Interactive UTXO selection if requested
-        if interactive_utxo_selection:
-            from jmwallet.history import get_utxo_label
-            from jmwallet.utxo_selector import select_utxos_interactive
-
-            # Populate labels for each UTXO based on history
-            for utxo in utxos:
-                utxo.label = get_utxo_label(
-                    utxo.address,
-                    backend_settings.data_dir,
-                    wallet_fingerprint=wallet.wallet_fingerprint,
-                )
-
-            try:
-                selected_utxos = select_utxos_interactive(utxos, amount)
-                if not selected_utxos:
-                    logger.info("UTXO selection cancelled")
-                    return
-                utxos = selected_utxos
-                logger.info(f"Selected {len(utxos)} UTXOs")
-            except RuntimeError as e:
-                logger.error(f"Cannot use interactive UTXO selection: {e}")
-                raise typer.Exit(1)
-        else:
-            # Auto-selection: filter out frozen and fidelity bond UTXOs
-            # (frozen UTXOs must never be auto-spent; fidelity bonds must be
-            # explicitly selected via interactive mode)
-            spendable = [u for u in utxos if not u.frozen and not u.is_fidelity_bond]
-            frozen_count = len(utxos) - len(spendable)
-            if frozen_count > 0:
-                logger.info(
-                    f"Excluding {frozen_count} frozen/fidelity-bond UTXO(s) from auto-selection"
-                )
-            utxos = spendable
-            if not utxos:
-                logger.error(
-                    "No spendable UTXOs available (all UTXOs are frozen or fidelity bonds)"
-                )
-                raise typer.Exit(1)
+        # Pick the inputs (interactive or automatic; may derive the mixdepth)
+        selection = await _select_input_utxos(
+            wallet, backend_settings, amount, mixdepth, interactive_utxo_selection
+        )
+        if selection is None:
+            return
+        utxos, mixdepth = selection
 
         # Calculate totals based on selected UTXOs
         total_input = sum(u.value for u in utxos)

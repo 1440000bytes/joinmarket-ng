@@ -1106,7 +1106,11 @@ For full documentation, see [jmwallet Documentation](https://joinmarket-ng.githu
 │                                                       exit.                  │
 │ --log-level            -l                    TEXT     Log level              │
 │ --mixdepth             -m                    INTEGER  Source mixdepth        │
-│                                                       [default: 0]           │
+│                                                       (default 0; with       │
+│                                                       --select-utxos,        │
+│                                                       derived from the       │
+│                                                       selection unless set   │
+│                                                       explicitly)            │
 │ --mnemonic-file        -f                    PATH     [env var:              │
 │                                                       MNEMONIC_FILE]         │
 │ --network              -n                    TEXT     Bitcoin network        │

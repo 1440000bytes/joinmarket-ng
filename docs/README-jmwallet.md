@@ -35,7 +35,13 @@ JoinMarket uses 5 mixdepths. Keep mixdepths isolated and avoid merging across mi
 jm-wallet send <destination_address> --amount 100000
 ```
 
-Use `--select-utxos` on `jm-wallet send` for manual coin control.
+Use `--select-utxos` on `jm-wallet send` for manual coin control. The selector
+shows every UTXO in the wallet grouped by mixdepth (same layout as
+`jm-wallet freeze`) so you can compare coins across the whole wallet. A
+transaction spends from a single mixdepth, so the first UTXO you toggle pins
+the source mixdepth (deselect everything to unpin); pass `--mixdepth` to pin
+it up front. Frozen, still-locked, and other-mixdepth UTXOs are shown for
+context but rendered unselectable.
 
 ## Reserving deposit addresses
 
@@ -1166,7 +1172,11 @@ The full CLI reference below is auto-generated from command `--help` output.
 │                                                       exit.                  │
 │ --log-level            -l                    TEXT     Log level              │
 │ --mixdepth             -m                    INTEGER  Source mixdepth        │
-│                                                       [default: 0]           │
+│                                                       (default 0; with       │
+│                                                       --select-utxos,        │
+│                                                       derived from the       │
+│                                                       selection unless set   │
+│                                                       explicitly)            │
 │ --mnemonic-file        -f                    PATH     [env var:              │
 │                                                       MNEMONIC_FILE]         │
 │ --network              -n                    TEXT     Bitcoin network        │
