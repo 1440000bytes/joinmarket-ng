@@ -20,6 +20,15 @@ from jmcore.cli_common import (
 from loguru import logger
 
 from jmwallet.cli import app
+from jmwallet.utxo_tui import (
+    ADDRESS_COL_WIDTH as _FREEZE_ADDR_WIDTH,
+)
+from jmwallet.utxo_tui import (
+    adjust_scroll,
+    build_display_items,
+    format_address_column,
+    seek_selectable,
+)
 
 if TYPE_CHECKING:
     import curses
@@ -305,23 +314,9 @@ def _unfreeze_regular_utxos(wallet: WalletService, utxos: list[UTXOInfo]) -> tup
     return unfrozen_count, skipped_bonds
 
 
-def _build_display_items(utxos: list[UTXOInfo]) -> list[UTXOInfo | None]:
-    """Insert ``None`` separators between mixdepths for the freeze TUI.
-
-    ``utxos`` must already be sorted so that all UTXOs of a mixdepth are
-    contiguous (the caller sorts by derivation path). A ``None`` entry is
-    inserted between consecutive mixdepth groups; it renders as a separator
-    line and is skipped during navigation.
-    """
-    display_items: list[UTXOInfo | None] = []
-    current_md = -1
-    for utxo in utxos:
-        if utxo.mixdepth != current_md:
-            current_md = utxo.mixdepth
-            if display_items:
-                display_items.append(None)
-        display_items.append(utxo)
-    return display_items
+# Building the display list (with mixdepth separators) is shared with the
+# interactive UTXO selector; kept under the old name for local callers/tests.
+_build_display_items = build_display_items
 
 
 # Column header for the freeze TUI; shared between the renderer and the
@@ -331,34 +326,13 @@ _FREEZE_COL_HEADER = (
     "|      Amount     | Confirmations | Outpoint"
 )
 
-# Address column width used to pad/collapse addresses for alignment.
-_FREEZE_ADDR_WIDTH = 42
-
 
 def _seek_selectable(display_items: list[UTXOInfo | None], start: int, direction: int) -> int:
     """Return the nearest selectable index from ``start``.
 
     Skips ``None`` separators and non-toggleable UTXOs (fidelity bonds).
     """
-    pos = start
-
-    # Search in the requested direction
-    while 0 <= pos < len(display_items):
-        item = display_items[pos]
-        if item is not None and _is_freeze_toggleable(item):
-            return pos
-        pos += direction
-
-    # If not found, search in the opposite direction from start
-    opposite = -direction
-    pos = start + opposite
-    while 0 <= pos < len(display_items):
-        item = display_items[pos]
-        if item is not None and _is_freeze_toggleable(item):
-            return pos
-        pos += opposite
-
-    return start
+    return seek_selectable(display_items, start, direction, _is_freeze_toggleable)
 
 
 def _format_freeze_address(address: str, prev_address: str) -> str:
@@ -368,11 +342,7 @@ def _format_freeze_address(address: str, prev_address: str) -> str:
     subsequent rows show blanks so the column stays visually grouped. Long
     fidelity-bond addresses are truncated in the middle to fit the column.
     """
-    if address == prev_address:
-        return " " * _FREEZE_ADDR_WIDTH
-    if len(address) > _FREEZE_ADDR_WIDTH:
-        return address[:20] + "..." + address[-19:]
-    return address
+    return format_address_column(address, prev_address)
 
 
 def _build_utxo_line(utxo: UTXOInfo, prev_address: str) -> str:
@@ -544,10 +514,7 @@ def _render_freeze_screen(
     list_height = height - 6
 
     # Keep the cursor on screen.
-    if cursor_pos < scroll_offset:
-        scroll_offset = cursor_pos
-    elif cursor_pos >= scroll_offset + list_height:
-        scroll_offset = cursor_pos - list_height + 1
+    scroll_offset = adjust_scroll(cursor_pos, scroll_offset, list_height)
 
     _draw_utxo_rows(
         stdscr, display_items, cursor_pos, scroll_offset, list_start, list_height, height, width
