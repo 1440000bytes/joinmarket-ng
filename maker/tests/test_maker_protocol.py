@@ -536,6 +536,7 @@ async def test_select_our_utxos_forwards_exclude_to_wallet():
     """
     from unittest.mock import AsyncMock, MagicMock
 
+    from jmcore.constants import DUST_THRESHOLD
     from jmcore.models import Offer, OfferType
     from jmwallet.wallet.models import UTXOInfo
 
@@ -588,6 +589,11 @@ async def test_select_our_utxos_forwards_exclude_to_wallet():
     assert (("ab" * 32), 1) in utxos_dict
     # The committed-elsewhere outpoints were passed straight to the selector.
     assert mock_wallet.select_utxos_with_merge.call_args.kwargs["exclude"] == (committed_elsewhere)
+    # Selection must reserve enough value for a non-dust change output.
+    # real_cjfee = 1_000_000 * 0.0003 = 300 sats.
+    assert mock_wallet.select_utxos_with_merge.call_args.args[1] == (
+        1_000_000 + 1000 + DUST_THRESHOLD + 1 - 300
+    )
 
 
 @pytest.mark.asyncio

@@ -408,6 +408,44 @@ def test_verify_transaction_change_address_missing():
     assert "Change address appears 0 times" in error
 
 
+def test_verify_transaction_sub_dust_change_cannot_be_omitted():
+    """A maker never signs away expected change, even when it is sub-dust."""
+    our_utxos = {
+        ("abc123", 0): UTXOInfo(
+            txid="abc123",
+            vout=0,
+            value=59_600,
+            address="bcrt1qtest1",
+            confirmations=10,
+            scriptpubkey="",
+            path="m/84'/0'/0'/0/0",
+            mixdepth=0,
+        )
+    }
+
+    # Expected change is 59_600 - 50_000 - 100 + 500 = 10_000 sats.
+    # Omitting it would transfer those sats to miners, so verification must fail.
+    mock_parsed_tx = {
+        "inputs": [{"txid": "abc123", "vout": 0}],
+        "outputs": [{"value": 50_000, "address": "bcrt1qcj"}],
+    }
+
+    with patch("maker.tx_verification.parse_transaction", return_value=mock_parsed_tx):
+        is_valid, error = verify_unsigned_transaction(
+            tx_hex="dummy_tx_hex",
+            our_utxos=our_utxos,
+            cj_address="bcrt1qcj",
+            change_address="bcrt1qchange",
+            amount=50_000,
+            cjfee=500,
+            txfee=100,
+            offer_type=OfferType.SW0_ABSOLUTE,
+        )
+
+    assert not is_valid
+    assert "Change address appears 0 times" in error
+
+
 def test_verify_transaction_duplicate_cj_address():
     """
     CRITICAL TEST: Ensure duplicate CJ address is rejected.

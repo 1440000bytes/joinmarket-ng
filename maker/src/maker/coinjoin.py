@@ -16,6 +16,7 @@ import time
 from enum import StrEnum
 from typing import Any
 
+from jmcore.constants import DUST_THRESHOLD
 from jmcore.encryption import CryptoSession
 from jmcore.models import NetworkType, Offer
 from jmcore.podle import parse_podle_revelation, verify_podle, verify_podle_binding
@@ -592,7 +593,12 @@ class CoinJoinSession:
                 real_cjfee = calculate_relative_fee(self.amount, str(self.offer.cjfee))
 
             total_amount = self.amount + self.offer.txfee
-            required_amount = total_amount + 10000 - real_cjfee
+            # Always select enough value to leave a spendable maker change
+            # output. The taker and our signing policy both require that output;
+            # using a smaller arbitrary reserve can make an honest maker reveal
+            # inputs that the taker must later reject. This mirrors the reference
+            # yield generator's ``DUST_THRESHOLD + 1`` requirement.
+            required_amount = total_amount + DUST_THRESHOLD + 1 - real_cjfee
 
             balances = {}
             for md in range(self.wallet.mixdepth_count):
