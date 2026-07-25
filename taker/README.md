@@ -152,7 +152,11 @@ For full documentation, see [taker Documentation](https://joinmarket-ng.github.i
 │    --max-rel-fee                           TEXT             Max relative fee │
 │                                                             (0.001=0.1%)     │
 │    --mixdepth       -m                     INTEGER          Source mixdepth  │
-│                                                             [default: 0]     │
+│                                                             (default 0; with │
+│                                                             --select-utxos,  │
+│                                                             derived from the │
+│                                                             selection unless │
+│                                                             set explicitly)  │
 │    --mnemonic-file  -f                     PATH             Path to mnemonic │
 │                                                             file             │
 │    --network                               [mainnet|testne  Protocol network │

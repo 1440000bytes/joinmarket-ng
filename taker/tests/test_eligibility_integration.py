@@ -124,6 +124,42 @@ async def test_reserved_inputs_excluded() -> None:
 
 
 @pytest.mark.asyncio
+async def test_interactive_any_mixdepth_passes() -> None:
+    """With --select-utxos and no pinned mixdepth, any selectable UTXO suffices."""
+    utxos = [make_utxo(txid_char="a", value=25_000_000, confirmations=10, mixdepth=3)]
+    taker = Taker(_make_wallet(utxos), _backend(), _make_config(select_utxos=True))
+    assert await taker.check_utxo_eligibility(5_000_000, None) is None
+
+
+@pytest.mark.asyncio
+async def test_interactive_any_mixdepth_nothing_selectable() -> None:
+    """With --select-utxos and no pinned mixdepth, an all-immature wallet fails."""
+    utxos = [make_utxo(txid_char="a", value=25_000_000, confirmations=1, mixdepth=3)]
+    taker = Taker(_make_wallet(utxos), _backend(), _make_config(select_utxos=True))
+    reason = await taker.check_utxo_eligibility(5_000_000, None)
+    assert reason is not None
+    assert "any mixdepth" in reason
+
+
+@pytest.mark.asyncio
+async def test_interactive_pinned_mixdepth_reason() -> None:
+    """With --select-utxos and a pinned mixdepth, the reason names the mixdepth."""
+    utxos = [make_utxo(txid_char="a", value=25_000_000, confirmations=1)]
+    taker = Taker(_make_wallet(utxos), _backend(), _make_config(select_utxos=True))
+    reason = await taker.check_utxo_eligibility(5_000_000, 0)
+    assert reason is not None
+    assert "No eligible UTXOs in mixdepth 0" in reason
+
+
+@pytest.mark.asyncio
+async def test_non_interactive_none_mixdepth_defaults_to_zero() -> None:
+    """Without --select-utxos, mixdepth=None falls back to mixdepth 0."""
+    utxos = [make_utxo(txid_char="a", value=25_000_000, confirmations=10)]
+    taker = Taker(_make_wallet(utxos), _backend(), _make_config())
+    assert await taker.check_utxo_eligibility(5_000_000, None) is None
+
+
+@pytest.mark.asyncio
 async def test_do_coinjoin_fails_before_orderbook_fetch() -> None:
     """Ineligible UTXOs must fail before any directory/orderbook network call."""
     utxos = [make_utxo(txid_char="a", value=25_000_000, confirmations=1)]

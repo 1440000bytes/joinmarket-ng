@@ -51,9 +51,19 @@ jm-taker coinjoin --mnemonic-file ~/.joinmarket-ng/wallets/default.mnemonic \
 # Sweep one mixdepth
 jm-taker coinjoin --mnemonic-file ~/.joinmarket-ng/wallets/default.mnemonic \
   --amount 0 --mixdepth 2
+
+# Pick the inputs by hand (interactive TUI)
+jm-taker coinjoin --mnemonic-file ~/.joinmarket-ng/wallets/default.mnemonic \
+  --amount 500000 --select-utxos
 ```
 
 Increase counterparties (for larger anonymity sets) with `--counterparties`.
+
+With `--select-utxos` the selector shows every UTXO in the wallet grouped by
+mixdepth. A CoinJoin spends from a single mixdepth, so the first UTXO you
+toggle pins the source mixdepth (deselect everything to unpin); pass
+`--mixdepth` to pin it up front. The `INTERNAL` destination then targets the
+mixdepth after the derived one.
 
 ## Tumbler
 
@@ -242,7 +252,11 @@ Takers only require Tor SOCKS; no Tor control port is needed.
 │    --max-rel-fee                           TEXT             Max relative fee │
 │                                                             (0.001=0.1%)     │
 │    --mixdepth       -m                     INTEGER          Source mixdepth  │
-│                                                             [default: 0]     │
+│                                                             (default 0; with │
+│                                                             --select-utxos,  │
+│                                                             derived from the │
+│                                                             selection unless │
+│                                                             set explicitly)  │
 │    --mnemonic-file  -f                     PATH             Path to mnemonic │
 │                                                             file             │
 │    --network                               [mainnet|testne  Protocol network │

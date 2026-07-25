@@ -136,6 +136,10 @@ class Taker(TakerMonitoringMixin):
         self.nick_identity = NickIdentity(JM_VERSION)
         self.nick = self.nick_identity.nick
         self.state = TakerState.IDLE
+        # Source mixdepth of the most recent ``do_coinjoin`` call. With
+        # interactive selection this is derived from the selected UTXOs, so
+        # callers (e.g. the CLI confirmation prompt) can display it.
+        self.last_source_mixdepth: int | None = None
 
         # Advertise neutrino_compat if our backend can provide extended UTXO metadata.
         # This tells other peers that we can provide scriptpubkey and blockheight.
@@ -301,7 +305,7 @@ class Taker(TakerMonitoringMixin):
         """Maker nicks used by the most recent ``do_coinjoin`` call."""
         return self._session.last_used_nicks
 
-    async def check_utxo_eligibility(self, amount: int, mixdepth: int) -> str | None:
+    async def check_utxo_eligibility(self, amount: int, mixdepth: int | None) -> str | None:
         """Validate that ``mixdepth`` can fund a CoinJoin of ``amount``.
 
         Runs the same eligibility filters used later in :meth:`do_coinjoin`
@@ -312,23 +316,39 @@ class Taker(TakerMonitoringMixin):
 
         Args:
             amount: Target amount in satoshis (``0`` for sweep).
-            mixdepth: Source mixdepth.
+            mixdepth: Source mixdepth. ``None`` is only meaningful with
+                interactive selection (``select_utxos``), where it means "any
+                mixdepth" (the source is derived from the selection later);
+                otherwise it falls back to mixdepth 0.
 
         Returns:
             ``None`` when a CoinJoin can proceed, otherwise a human-readable
             reason describing why it cannot.
         """
-        utxos = await self.wallet.get_utxos(mixdepth)
         min_conf = self.config.taker_utxo_age
 
         # Interactive selection follows different rules (the user may pick
         # unlocked fidelity bonds and is not bound to auto-selection), so only
         # require that *something* is selectable here.
         if self.config.select_utxos:
+            mixdepths = (
+                [mixdepth] if mixdepth is not None else list(range(self.wallet.mixdepth_count))
+            )
+            utxos = []
+            for md in mixdepths:
+                utxos.extend(await self.wallet.get_utxos(md))
             if not selectable_for_interactive(utxos, min_conf):
-                breakdown = classify_utxos(utxos, mixdepth, min_conf)
-                return breakdown.no_eligible_reason()
+                if mixdepth is not None:
+                    return classify_utxos(utxos, mixdepth, min_conf).no_eligible_reason()
+                return (
+                    "No selectable UTXOs in any mixdepth (all UTXOs are "
+                    "frozen, immature, or locked fidelity bonds)"
+                )
             return None
+
+        if mixdepth is None:
+            mixdepth = 0
+        utxos = await self.wallet.get_utxos(mixdepth)
 
         reserved = self.wallet.get_locked_input_outpoints()
         breakdown = classify_utxos(utxos, mixdepth, min_conf, reserved_outpoints=reserved)
@@ -502,7 +522,7 @@ class Taker(TakerMonitoringMixin):
         self,
         amount: int,
         destination: str,
-        mixdepth: int = 0,
+        mixdepth: int | None = None,
         counterparty_count: int | None = None,
         exclude_nicks: set[str] | None = None,
     ) -> str | None:
@@ -512,7 +532,10 @@ class Taker(TakerMonitoringMixin):
         Args:
             amount: Amount in satoshis (0 for sweep)
             destination: Destination address ("INTERNAL" for next mixdepth)
-            mixdepth: Source mixdepth
+            mixdepth: Source mixdepth. ``None`` means: derive it from the
+                interactive UTXO selection when ``select_utxos`` is enabled
+                (the first selected UTXO pins the mixdepth), otherwise fall
+                back to mixdepth 0.
             counterparty_count: Number of makers (default from config)
             exclude_nicks: Additional maker nicks to exclude from selection
                 (on top of ``orderbook_manager.ignored_makers`` and
@@ -552,6 +575,25 @@ class Taker(TakerMonitoringMixin):
             )
             n_makers = resolve_counterparty_count(requested)
 
+            # Interactive UTXO selection happens first (before any network
+            # work): the selector shows the whole wallet and, unless the
+            # caller pinned a mixdepth, the source mixdepth is derived from
+            # the user's selection.
+            manually_selected_utxos: list[UTXOInfo] | None = None
+            if self.config.select_utxos:
+                logger.info("Launching interactive UTXO selection...")
+                manually_selected_utxos = await self._maybe_select_utxos_interactively(
+                    amount=amount,
+                    mixdepth=mixdepth,
+                )
+                if not manually_selected_utxos:
+                    return None
+                mixdepth = manually_selected_utxos[0].mixdepth
+                logger.info(f"Source mixdepth: {mixdepth} (from selection)")
+            elif mixdepth is None:
+                mixdepth = 0
+            self.last_source_mixdepth = mixdepth
+
             # Pre-flight: reject ineligible UTXOs before any orderbook/bond work
             # so the user is not kept waiting on a doomed round (issue #528).
             # Callers that already validate (the CLI) will simply re-confirm a
@@ -590,16 +632,8 @@ class Taker(TakerMonitoringMixin):
             # Track if this is a sweep (no change) transaction
             self._session.is_sweep = amount == 0
 
-            # Select UTXOs from wallet BEFORE fetching orderbook to avoid wasting user's time
-            logger.info(f"Selecting UTXOs from mixdepth {mixdepth}...")
-
-            manually_selected_utxos = await self._maybe_select_utxos_interactively(
-                amount=amount,
-                mixdepth=mixdepth,
-            )
-            if self.config.select_utxos and self.state in (TakerState.CANCELLED, TakerState.FAILED):
-                return None
-
+            # UTXO selection (interactive or automatic) is done before fetching
+            # the orderbook to avoid wasting the user's time on a doomed round.
             # Now fetch orderbook after UTXO selection is done
             self.state = TakerState.FETCHING_ORDERBOOK
             logger.info("Fetching orderbook...")
@@ -1016,8 +1050,15 @@ class Taker(TakerMonitoringMixin):
                 self.release_input_locks()
 
     async def _maybe_select_utxos_interactively(
-        self, amount: int, mixdepth: int
+        self, amount: int, mixdepth: int | None
     ) -> list[UTXOInfo] | None:
+        """Run the interactive UTXO selector across the whole wallet.
+
+        All mixdepths are displayed for a full-wallet overview. When
+        ``mixdepth`` is ``None`` the user may select from any mixdepth (the
+        TUI pins the source mixdepth to the first selected UTXO); when set,
+        only that mixdepth is selectable and the rest is context.
+        """
         if not self.config.select_utxos:
             logger.debug("Interactive UTXO selection not requested (--select-utxos not set)")
             return None
@@ -1026,32 +1067,33 @@ class Taker(TakerMonitoringMixin):
         from jmwallet.utxo_selector import select_utxos_interactive
 
         try:
-            # Get ALL UTXOs including frozen ones for display in the
-            # interactive selector. Frozen/locked UTXOs are shown but
-            # rendered as unselectable ([-]) so the user sees the full
-            # picture of their wallet.
-            available_utxos = await self.wallet.get_utxos(mixdepth)
-            # Also filter by minimum age (confirmations) -- but keep
-            # frozen ones regardless so they're visible in the TUI.
+            # Get ALL UTXOs (all mixdepths, including frozen/immature ones)
+            # for display in the interactive selector. Ineligible UTXOs are
+            # shown but rendered as unselectable ([-]) so the user sees the
+            # full picture of their wallet.
             min_age = self.config.taker_utxo_age
-            available_utxos = [u for u in available_utxos if u.confirmations >= min_age or u.frozen]
+            available_utxos: list[UTXOInfo] = []
+            for md in range(self.wallet.mixdepth_count):
+                available_utxos.extend(await self.wallet.get_utxos(md))
             if not available_utxos:
-                reason = f"No UTXOs in mixdepth {mixdepth}"
+                reason = "No UTXOs in wallet"
                 logger.error(reason)
                 self._session.last_failure_reason = reason
                 self.state = TakerState.FAILED
                 return None
 
-            # Check that at least some UTXOs are selectable (not frozen/locked)
-            selectable = [
-                u
-                for u in available_utxos
-                if not u.frozen and not (u.is_fidelity_bond and u.is_locked)
-            ]
-            if not selectable:
+            # Check that at least some UTXOs are selectable (confirmed
+            # enough, not frozen/locked, and in the pinned mixdepth if any).
+            candidates = (
+                available_utxos
+                if mixdepth is None
+                else [u for u in available_utxos if u.mixdepth == mixdepth]
+            )
+            if not selectable_for_interactive(candidates, min_age):
+                where = "wallet" if mixdepth is None else f"mixdepth {mixdepth}"
                 reason = (
-                    f"No eligible UTXOs in mixdepth {mixdepth} "
-                    f"(all {len(available_utxos)} UTXOs are frozen or locked)"
+                    f"No eligible UTXOs in {where} "
+                    f"(all {len(candidates)} UTXOs are frozen, immature, or locked)"
                 )
                 logger.error(reason)
                 self._session.last_failure_reason = reason
@@ -1070,7 +1112,12 @@ class Taker(TakerMonitoringMixin):
                 f"Launching interactive UTXO selector ({len(available_utxos)} available, "
                 f"target amount: {amount} sats, sweep: {amount == 0})..."
             )
-            manually_selected_utxos = select_utxos_interactive(available_utxos, amount)
+            manually_selected_utxos = select_utxos_interactive(
+                available_utxos,
+                amount,
+                allowed_mixdepth=mixdepth,
+                min_confirmations=min_age,
+            )
 
             if not manually_selected_utxos:
                 logger.info("UTXO selection cancelled by user")

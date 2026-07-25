@@ -32,7 +32,7 @@ _jm_taker() {
           _arguments \
             '--amount=[Amount in sats (0 for sweep)]: :' \
             '--destination=[Destination address (or '\''INTERNAL'\'' for next mixdepth)]: :' \
-            '--mixdepth=[Source mixdepth]: :' \
+            '--mixdepth=[Source mixdepth (default 0; with --select-utxos, derived from the selection unless set explicitly)]: :' \
             '--counterparties=[Number of makers]: :' \
             '--mnemonic-file=[Path to mnemonic file]:file:_files' \
             '--prompt-bip39-passphrase[Prompt for BIP39 passphrase interactively]' \

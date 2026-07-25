@@ -91,7 +91,15 @@ def coinjoin(
             help="Destination address (or 'INTERNAL' for next mixdepth)",
         ),
     ] = "INTERNAL",
-    mixdepth: Annotated[int, typer.Option("--mixdepth", "-m", help="Source mixdepth")] = 0,
+    mixdepth: Annotated[
+        int | None,
+        typer.Option(
+            "--mixdepth",
+            "-m",
+            help="Source mixdepth (default 0; with --select-utxos, derived from "
+            "the selection unless set explicitly)",
+        ),
+    ] = None,
     counterparties: Annotated[
         int | None, typer.Option("--counterparties", "-n", help="Number of makers")
     ] = None,
@@ -260,7 +268,7 @@ def coinjoin(
             passphrase=resolved_passphrase,
             amount=amount,
             destination=destination,
-            mixdepth=mixdepth,
+            mixdepth=mixdepth if mixdepth is not None else 0,
             counterparties=counterparties,
             select_utxos=select_utxos,
             network=network,
@@ -315,7 +323,7 @@ async def _run_coinjoin(
     config: TakerConfig,
     amount: int,
     destination: str,
-    mixdepth: int,
+    mixdepth: int | None,
     counterparties: int | None,
     skip_confirmation: bool,
 ) -> None:
@@ -376,7 +384,13 @@ async def _run_coinjoin(
         from jmcore.confirmation import confirm_transaction, format_maker_summary
 
         additional_info = format_maker_summary(maker_details, fee_rate=fee_rate)
-        additional_info["Source Mixdepth"] = mixdepth
+        # ``taker`` is assigned below in this scope, before the callback can
+        # fire. With --select-utxos the source mixdepth is derived from the
+        # user's selection, so read it back from the taker.
+        source_mixdepth = taker.last_source_mixdepth
+        if source_mixdepth is None:
+            source_mixdepth = mixdepth if mixdepth is not None else 0
+        additional_info["Source Mixdepth"] = source_mixdepth
 
         return confirm_transaction(
             operation="coinjoin",
