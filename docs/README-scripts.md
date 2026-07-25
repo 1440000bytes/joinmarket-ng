@@ -10,8 +10,7 @@ This docs page intentionally stays minimal to avoid duplication.
 
 ## Most Common Scripts
 
-- `scripts/run_all_tests.sh`: run unit + Docker-backed test phases (sequential)
-- `scripts/run_parallel_tests.sh`: same suites in parallel via Docker Compose project isolation
+- `scripts/run_parallel_tests.sh`: run unit + Docker-backed test suites in parallel via Docker Compose project isolation
 - `scripts/generate_changelog.py`: generate release changelog entries
 - `scripts/update_readme_help.py`: refresh CLI help blocks in READMEs and docs pages
 

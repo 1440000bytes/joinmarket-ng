@@ -76,10 +76,10 @@ The two invocations are required because each component ships its own
 `tests` package and pytest's collector cannot reconcile the duplicated
 top-level module name in a single run.
 
-Full orchestrated suite (unit + Docker-backed phases):
+Full orchestrated suite (unit + Docker-backed suites, in parallel):
 
 ```bash
-./scripts/run_all_tests.sh
+./scripts/run_parallel_tests.sh
 ```
 
 When selecting Docker-marked tests manually, use `--fail-on-skip`.

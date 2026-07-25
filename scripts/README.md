@@ -18,8 +18,7 @@ Utility scripts for JoinMarket NG development and operations.
 - **generate_tor_keys.py** - Generate Tor hidden service keys
 - **regtest-miner-jam.sh** - Run Bitcoin Core regtest miner for JAM compatibility testing
 - **regtest-miner.sh** - Run Bitcoin Core regtest miner
-- **run_all_tests.sh** - Execute complete test suite including Docker-based e2e tests (sequential)
-- **run_parallel_tests.sh** - Execute all test suites in parallel using Docker Compose project isolation
+- **run_parallel_tests.sh** - Execute all test suites (including Docker-based e2e tests) in parallel using Docker Compose project isolation
 - **sign-release.sh** - Sign a release manifest (supports local-first and CI-first workflows)
 - **update_readme_help.py** - Update module READMEs and `docs/README-*.md` pages with CLI command help sections (run manually when CLI changes)
 - **update-base-images.sh** - Update Docker base image digests

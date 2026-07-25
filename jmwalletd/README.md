@@ -94,5 +94,5 @@ pytest jmwalletd
 For Docker-backed integration/e2e coverage, use the root test workflow:
 
 ```bash
-./scripts/run_all_tests.sh
+./scripts/run_parallel_tests.sh
 ```

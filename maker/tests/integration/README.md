@@ -8,10 +8,10 @@ real Bitcoin Core regtest backend.
 From repository root, use the orchestrated suite:
 
 ```bash
-./scripts/run_all_tests.sh
+./scripts/run_parallel_tests.sh
 ```
 
-It already runs `maker/tests/integration/` in the Docker integration phase.
+It already runs `maker/tests/integration/` in the Docker integration suite.
 
 ## Run Only These Tests
 

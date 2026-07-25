@@ -7,11 +7,11 @@ Docker-backed end-to-end tests live in `tests/e2e/` and are controlled by pytest
 Use the orchestrated runner from repository root:
 
 ```bash
-./scripts/run_all_tests.sh        # sequential (one profile at a time)
-./scripts/run_parallel_tests.sh   # parallel   (all profiles at once)
+./scripts/run_parallel_tests.sh                 # all suites in parallel
+./scripts/run_parallel_tests.sh --suite e2e     # a single suite
 ```
 
-Both scripts handle startup order, waits, profile transitions, and `--fail-on-skip`.
+The script handles startup order, waits, profile transitions, and `--fail-on-skip`.
 The parallel runner uses Docker Compose project isolation (unique project names and port
 offsets) so every suite gets its own containers and network.
 
@@ -87,7 +87,7 @@ Some `reference` tests import the upstream reference implementation. Clone it at
 git clone --depth 1 https://github.com/JoinMarket-Org/joinmarket-clientserver.git
 ```
 
-`scripts/run_all_tests.sh` and `scripts/run_parallel_tests.sh` will also set this up automatically.
+`scripts/run_parallel_tests.sh` will also set this up automatically.
 
 ## Practical Troubleshooting
 

@@ -87,7 +87,7 @@ npm run test:obwatcher
 ```
 
 They also run in CI (`test-playwright` job) and as part of
-`scripts/run_all_tests.sh` and `scripts/run_parallel_tests.sh`.
+`scripts/run_parallel_tests.sh`.
 
 ## Related Docs
 

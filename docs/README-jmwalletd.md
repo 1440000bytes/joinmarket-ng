@@ -120,5 +120,5 @@ For Docker-backed integration and JAM-compatibility (reference) coverage, use
 the root test workflow:
 
 ```bash
-./scripts/run_all_tests.sh
+./scripts/run_parallel_tests.sh
 ```
