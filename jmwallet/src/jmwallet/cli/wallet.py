@@ -1593,10 +1593,10 @@ def rescan(
       `--scan-depth` can be combined with `--start-height H` to widen the
       range and only rescan from height H (defaults to genesis).
 
-    Rescans are slow (20+ minutes on mainnet from genesis) but read-only. The
-    scan runs server-side in Bitcoin Core, so Ctrl-C only stops the progress
-    polling, not the scan; re-attach later with `jm-wallet info --scan-status`.
-    See docs/technical/wallet-scanning.md.
+    Rescans can take a long time on mainnet. Duration varies substantially with
+    the Bitcoin node and its storage performance. Rescans are read-only and run
+    server-side, so Ctrl-C only stops progress polling, not the scan; re-attach
+    later with `jm-wallet info --scan-status`. See docs/technical/wallet-scanning.md.
     """
     settings = setup_cli(log_level, data_dir=data_dir, config_file=config_file)
 
@@ -1738,8 +1738,9 @@ async def _run_rescan(
             start_desc = "genesis" if effective_start == 0 else f"height {effective_start}"
             print(
                 f"\nWidening descriptor range to [0, {scan_depth - 1}] per branch "
-                f"and rescanning from {start_desc}. This may take 20+ minutes "
-                "on mainnet when scanning from genesis."
+                f"and rescanning from {start_desc}. This can take a long time on "
+                "mainnet. Duration varies substantially with the Bitcoin node and its "
+                "storage performance."
             )
             wallet = WalletService(
                 mnemonic=mnemonic,

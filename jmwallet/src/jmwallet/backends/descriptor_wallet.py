@@ -60,15 +60,15 @@ DEFAULT_RPC_TIMEOUT = httpx.Timeout(
 
 # Timeout for descriptor import - first-time imports trigger a partial rescan
 # that runs synchronously inside the importdescriptors RPC. On slow hosts
-# (e.g. a Raspberry Pi) the smart-scan window (~1 year) can easily exceed
-# ten minutes, so we use a much larger budget here. If the HTTP read still
+# (e.g. a Raspberry Pi) the smart-scan window (~1 year) can take a long time,
+# so we use a much larger budget here. If the HTTP read still
 # times out we fall back to polling getwalletinfo for ``scanning`` instead
 # of bubbling up a confusing ReadTimeout (issue #472).
 IMPORT_RPC_TIMEOUT = 1800.0
 
 # How often the concurrent progress monitor polls ``getwalletinfo`` while a
 # blocking ``importdescriptors`` rescan runs. The first import used to appear
-# frozen for 15+ minutes with no feedback at all (issue #472).
+# frozen for a long time with no feedback at all (issue #472).
 IMPORT_SCAN_PROGRESS_INTERVAL = 10.0
 
 # Import-time rescans whose descriptor timestamp is older than this are
@@ -771,7 +771,7 @@ class DescriptorWalletBackend(BlockchainBackend):
         Bitcoin Core will automatically track all addresses derived from these descriptors.
 
         Smart Scan Behavior (smart_scan=True):
-            Instead of scanning from genesis (which can take 20+ minutes on mainnet),
+            Instead of scanning from genesis (which can take a long time on mainnet),
             the smart scan imports descriptors with a timestamp ~1 year in the past.
             This allows quick startup while still catching most wallet activity.
 
@@ -963,8 +963,9 @@ class DescriptorWalletBackend(BlockchainBackend):
                 logger.info(
                     "Bitcoin Core is now scanning the blockchain for this "
                     "wallet's history as part of the descriptor import. This "
-                    "happens once per wallet and can take a long time (15+ "
-                    "minutes on slow hardware); progress is reported below. "
+                    "happens once per wallet and can take a long time. Duration varies "
+                    "substantially with the Bitcoin node and its storage performance; "
+                    "progress is reported below. "
                     "It is safe to interrupt (Ctrl+C): the scan keeps running "
                     "inside Bitcoin Core and the next command picks up the "
                     "result."

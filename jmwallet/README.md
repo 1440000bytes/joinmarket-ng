@@ -1012,10 +1012,11 @@ For full documentation, see [jmwallet Documentation](https://joinmarket-ng.githu
    `--scan-depth` can be combined with `--start-height H` to widen the
    range and only rescan from height H (defaults to genesis).
 
- Rescans are slow (20+ minutes on mainnet from genesis) but read-only. The
- scan runs server-side in Bitcoin Core, so Ctrl-C only stops the progress
- polling, not the scan; re-attach later with `jm-wallet info --scan-status`.
- See docs/technical/wallet-scanning.md.
+ Rescans can take a long time on mainnet. Duration varies substantially with
+ the Bitcoin node and its storage performance. Rescans are read-only and run
+ server-side, so Ctrl-C only stops progress polling, not the scan; re-attach
+ later with `jm-wallet info --scan-status`. See
+ docs/technical/wallet-scanning.md.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --config-file                      PATH     Config file path (decoupled from │

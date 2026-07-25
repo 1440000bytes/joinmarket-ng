@@ -756,7 +756,8 @@ class WalletSyncMixin:
             logger.info(
                 "All fidelity bond addresses imported, starting blockchain rescan "
                 "(from the wallet creation height when configured, otherwise genesis). "
-                "This may take a long time on mainnet (1-2+ hours with HDD)..."
+                "This can take a long time on mainnet. Duration varies substantially "
+                "with the Bitcoin node and its storage performance."
             )
             await descriptor_backend.start_background_rescan(0)
             await descriptor_backend.wait_for_rescan_complete(
@@ -1550,8 +1551,8 @@ class WalletSyncMixin:
         This imports wallet descriptors into Bitcoin Core's descriptor wallet,
         enabling fast UTXO queries via listunspent instead of slow scantxoutset.
 
-        By default, uses smart scan for fast startup (~1 minute instead of 20+ minutes)
-        with a background full rescan to catch any older transactions.
+        By default, uses a bounded smart scan for faster startup, with a background
+        full rescan to catch any older transactions.
 
         Should be called once on first use or when restoring a wallet.
         Subsequent operations will be much faster.

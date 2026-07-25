@@ -87,25 +87,27 @@ jm-wallet rescan --scan-depth 10000 --start-height H
 
 Rescans are read-only and run server-side in Bitcoin Core, so they are
 safe to interrupt: pressing Ctrl-C stops only the progress polling, not the
-scan. Re-attach later with `jm-wallet info --scan-status`. A full rescan
-from genesis can take 20+ minutes on mainnet.
+scan. Re-attach later with `jm-wallet info --scan-status`. A full rescan can
+take a long time on mainnet. Duration varies substantially with the Bitcoin
+node and its storage performance.
 
 ### Wallet creation height
 
 When the wallet's creation height is known (recorded in the mnemonic file),
 every rescan, including the background full rescan, fidelity-bond recovery,
 and `jm-wallet rescan`, is floored to that height. Coins cannot predate the
-wallet, so blocks before the creation height are skipped, which can save
-hours on mainnet. `--start-height` values below the creation height are
-clamped up to it. To deliberately scan earlier blocks (for example, if the
-recorded height is wrong), lower the wallet creation height first.
+wallet, so blocks before the creation height are skipped, reducing the amount
+of blockchain history Bitcoin Core must scan. `--start-height` values below
+the creation height are clamped up to it. To deliberately scan earlier blocks
+(for example, if the recorded height is wrong), lower the wallet creation
+height first.
 
 `jm-wallet generate` records the current chain tip as the creation height in
 the `.mnemonic.meta` sidecar file (best-effort: the configured backend must
-be reachable). This makes the first sync of a freshly generated wallet
-near-instant: the descriptor import scans from the wallet's birthday instead
-of the ~1 year smart-scan lookback. Wallets created via the daemon record
-the creation height inside the wallet file. Imported/recovered mnemonics
-have an unknown birthday, so their first sync scans the full smart-scan
-window; progress is reported while Bitcoin Core runs that scan, and it is
-safe to interrupt (the scan continues server-side).
+be reachable). This reduces the first-sync scan window for a freshly generated
+wallet: the descriptor import scans from the wallet's birthday instead of the
+~1 year smart-scan lookback. Wallets created via the daemon record the creation
+height inside the wallet file. Imported/recovered mnemonics have an unknown
+birthday, so their first sync scans the full smart-scan window; progress is
+reported while Bitcoin Core runs that scan, and it is safe to interrupt (the
+scan continues server-side).
