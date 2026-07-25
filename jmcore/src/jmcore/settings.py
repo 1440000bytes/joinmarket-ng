@@ -908,6 +908,17 @@ class TakerSettings(BaseModel):
         ge=0,
         description="Maximum absolute CoinJoin fee in satoshis",
     )
+    max_maker_utxos: int = Field(
+        default=15,
+        ge=0,
+        description=(
+            "Maximum number of inputs a single maker may contribute to the "
+            "CoinJoin. The taker pays the mining fee for every input, so an "
+            "unbounded count lets a counterparty consolidate its UTXOs at the "
+            "taker's expense. Makers exceeding the cap are dropped (and replaced "
+            "when possible). 0 disables the cap (not recommended)."
+        ),
+    )
     taker_utxo_age: int = Field(
         default=5,
         ge=1,

@@ -83,6 +83,14 @@ Before connecting to any directory server, the taker syncs the wallet and verifi
 3. Maker sends `!ioauth`: their UTXOs + CoinJoin/change destinations
 4. Maker broadcasts `!hp2` to blacklist commitment network-wide (via ephemeral identity)
 
+The taker verifies each declared maker UTXO on-chain, binds the maker's auth key to one of them, and rejects makers declaring more than `max_maker_utxos` inputs. The last check is a spending limit, not a validity check: the taker pays the mining fee for every input in the CoinJoin, so an uncapped input count would let a counterparty consolidate its UTXOs at the taker's expense. Rejected makers are dropped and replaced when enough candidates remain.
+
+Additional per-maker checks at this stage (all cause the offending maker to be dropped, never the whole round):
+
+- Every declared outpoint must exist in the UTXO set and be confirmed (matching the reference taker); spent, missing, or unconfirmed inputs would make the final transaction invalid or unconfirmable.
+- No outpoint may appear twice: neither within one maker's list, nor across makers, nor equal to one of the taker's own preselected inputs (which makers learn from the `!auth` PoDLE revelation). Duplicate inputs are consensus-invalid.
+- The maker's inputs must cover its CoinJoin output and leave a non-dust change output. Otherwise the maker's change would be omitted and the maker would refuse to sign, killing the round after commitments were burned.
+
 **Commitment Broadcast (`!hp2`) Timing and Privacy:**
 
 The `!hp2` broadcast is sent *after* `!ioauth`, not before. This is intentional: broadcasting early would risk other makers in the same transaction seeing the commitment and blacklisting it before they have processed the same taker's `!auth`, causing spurious rejections.

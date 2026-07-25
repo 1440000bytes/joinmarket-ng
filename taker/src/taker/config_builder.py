@@ -266,6 +266,7 @@ def build_taker_config_kwargs(
         "taker_utxo_age": settings.taker.taker_utxo_age,
         "taker_utxo_retries": settings.taker.taker_utxo_retries,
         "taker_utxo_amtpercent": settings.taker.taker_utxo_amtpercent,
+        "max_maker_utxos": settings.taker.max_maker_utxos,
     }
 
 

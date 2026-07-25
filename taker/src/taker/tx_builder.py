@@ -316,11 +316,11 @@ def build_coinjoin_tx(
         logger.warning(
             f"Taker change {taker_change} sats "
             + (
-                "has no address (sweep mode)"
+                "has no change address"
                 if not taker_change_address
                 else f"is below dust threshold ({dust_threshold})"
             )
-            + ", no change output will be created"
+            + ", no change output will be created (added to the mining fee)"
         )
 
     # Build maker data

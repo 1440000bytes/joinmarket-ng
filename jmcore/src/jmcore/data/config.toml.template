@@ -468,6 +468,15 @@
 # max_cj_fee_abs = 500        # Absolute fee in satoshis per maker
 # max_cj_fee_rel = "0.001"    # Relative fee (0.001 = 0.1%)
 
+# Maximum inputs a single maker may contribute to the CoinJoin.
+# The taker pays the mining fee for EVERY input, so a maker with many inputs
+# consolidates its UTXOs at your expense: each extra input costs you about
+# 68 vbytes times the fee rate. Makers above the cap are dropped and replaced.
+# Worst-case mining fee added by counterparties is roughly
+# counterparty_count * max_maker_utxos * 68 * fee_rate satoshis.
+# Set to 0 to disable the cap (not recommended).
+# max_maker_utxos = 15
+
 # PoDLE commitment requirements (control which UTXOs can be used as PoDLE inputs).
 # These match the reference JoinMarket defaults; loosening them weakens the
 # anti-DoS commitment scheme.

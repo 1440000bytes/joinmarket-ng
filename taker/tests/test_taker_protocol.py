@@ -693,6 +693,7 @@ class TestSweepCjAmountPreservation:
         wallet.get_change_address = Mock(return_value="bcrt1qchange")
         wallet.get_key_for_address = Mock()
         wallet.select_utxos = Mock(return_value=sweep_utxos)
+        wallet.reserve_coinjoin_inputs = Mock(return_value=True)
         wallet.close = AsyncMock()
         return wallet
 
@@ -987,6 +988,105 @@ class TestSweepCjAmountPreservation:
         # actual vsize: 8 inputs * 68 + 3 outputs * 31 + 11 = 648 vbytes
         # effective rate: 716 / 648 = 1.10 sat/vB (higher than requested 1.0)
         # This is the expected behavior: fee amount is stable, rate may vary
+
+    @pytest.mark.asyncio
+    async def test_sweep_aborts_when_effective_fee_rate_below_relay_floor(
+        self, mock_wallet_for_sweep, mock_backend_for_sweep, taker_config_for_sweep
+    ):
+        """A sweep whose fixed budget cannot cover the relay minimum must fail.
+
+        The budget is estimated from an assumed maker input count. If makers
+        contribute far more inputs, the fixed budget spread over the larger
+        transaction drops below 1 sat/vB and the sweep would never relay;
+        failing the round beats broadcasting a doomed transaction.
+        """
+        taker = Taker(mock_wallet_for_sweep, mock_backend_for_sweep, taker_config_for_sweep)
+
+        taker._session.is_sweep = True
+        taker._session.preselected_utxos = mock_wallet_for_sweep.get_all_utxos()
+        taker._session._fee_rate = 1.0
+
+        total_input = sum(u.value for u in taker._session.preselected_utxos)
+        budget = 716
+        taker._session.cj_amount = total_input - budget
+        taker._session._sweep_tx_fee_budget = budget
+
+        # Maker with 15 inputs (the per-maker cap): vsize = 17*68 + 3*31 + 11
+        # = 1260 vB. Including the maker's 500-sat contribution, the total
+        # 1216-sat mining fee implies ~0.97 sat/vB, below the 1.0 fallback floor.
+        maker_offer = Offer(
+            ordertype=OfferType.SW0_ABSOLUTE,
+            oid=0,
+            minsize=10000,
+            maxsize=1_000_000_000,
+            txfee=500,
+            cjfee=0,
+            counterparty="J597qgx3bTJBCAP7",
+        )
+        maker_session = MakerSession(nick="J597qgx3bTJBCAP7", offer=maker_offer)
+        maker_session.pubkey = "c143f23bdecb05a9" + "00" * 24
+        maker_session.responded_fill = True
+        maker_session.responded_auth = True
+        maker_session.utxos = [
+            {
+                "txid": f"{i:064x}",
+                "vout": 0,
+                "value": 30_000,
+                "address": "bcrt1qmaker",
+            }
+            for i in range(10, 25)
+        ]
+        maker_session.cj_address = "bcrt1qqyqszqgpqyqszqgpqyqszqgpqyqszqgpvxat9t"
+        maker_session.change_address = "bcrt1qqgpqyqszqgpqyqszqgpqyqszqgpqyqszazmwwa"
+        maker_session.crypto = CryptoSession()
+
+        taker._session.maker_sessions = {"J597qgx3bTJBCAP7": maker_session}
+
+        result = await taker._session._phase_build_tx(
+            destination="bcrt1qqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcruj60yu",
+            mixdepth=3,
+        )
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_sweep_uses_maker_contribution_and_reported_relay_floor(
+        self, mock_wallet_for_sweep, mock_backend_for_sweep, taker_config_for_sweep
+    ):
+        """The sweep guard must use the complete fee and the backend's floor."""
+        taker = Taker(mock_wallet_for_sweep, mock_backend_for_sweep, taker_config_for_sweep)
+
+        taker._session.is_sweep = True
+        taker._session.preselected_utxos = mock_wallet_for_sweep.get_all_utxos()
+        taker._session._fee_rate = 1.0
+        taker._session._mempool_min_fee = 0.9
+
+        total_input = sum(u.value for u in taker._session.preselected_utxos)
+        budget = 716
+        taker._session.cj_amount = total_input - budget
+        taker._session._sweep_tx_fee_budget = budget
+
+        nick, maker_session = self._make_single_utxo_maker_session()
+        maker_session.utxos = [
+            {
+                "txid": f"{i:064x}",
+                "vout": 0,
+                "value": 30_000,
+                "address": "bcrt1qmaker",
+            }
+            for i in range(10, 25)
+        ]
+        taker._session.maker_sessions = {nick: maker_session}
+
+        # Complete fee is 716 taker + 500 maker = 1216 sats over ~1260 vB,
+        # or ~0.97 sat/vB. This clears the reported 0.9 sat/vB floor even
+        # though the taker's budget alone does not.
+        result = await taker._session._phase_build_tx(
+            destination="bcrt1qqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcruj60yu",
+            mixdepth=3,
+        )
+
+        assert result is True
 
 
 @pytest.mark.asyncio
@@ -1853,7 +1953,16 @@ class TestPhaseAuthMakerAuthentication:
 
     @staticmethod
     async def _drive_phase_auth(
-        *, auth_owns_utxo: bool, valid_btc_sig: bool, spk_upper: bool = False
+        *,
+        auth_owns_utxo: bool,
+        valid_btc_sig: bool,
+        spk_upper: bool = False,
+        declared_utxos: int = 1,
+        max_maker_utxos: int = 15,
+        backend_utxo: str = "ok",
+        cj_amount: int = 0,
+        utxo_value: int = 1_500_000,
+        utxo_list_override: str | None = None,
     ):
         from coincurve import PrivateKey
         from jmcore.bitcoin import pubkey_to_p2wpkh_script
@@ -1892,7 +2001,12 @@ class TestPhaseAuthMakerAuthentication:
         signer = auth_key if valid_btc_sig else PrivateKey()
         btc_sig = ecdsa_sign(maker_nacl_pk_hex, signer.secret)
 
-        ioauth = f"{txid}:{vout} {auth_pub.hex()} bcrt1qcj bcrt1qchange {btc_sig}"
+        if utxo_list_override is not None:
+            utxo_list = utxo_list_override
+        else:
+            extra = ",".join(f"{i:064x}:{vout}" for i in range(declared_utxos - 1))
+            utxo_list = f"{txid}:{vout}" + (f",{extra}" if extra else "")
+        ioauth = f"{utxo_list} {auth_pub.hex()} bcrt1qcj bcrt1qchange {btc_sig}"
         encrypted = maker_crypto.encrypt(ioauth)
 
         nick = "J5maker"
@@ -1906,19 +2020,38 @@ class TestPhaseAuthMakerAuthentication:
             taker.wallet = MagicMock()
             taker.backend = AsyncMock()
             taker.backend.requires_neutrino_metadata = MagicMock(return_value=False)
-            taker.backend.get_utxo = AsyncMock(
-                return_value=UTXO(
-                    txid=txid,
-                    vout=vout,
-                    value=value,
-                    address="bcrt1qtest",
-                    confirmations=3,
-                    scriptpubkey=stored_spk,
+            if backend_utxo == "spent":
+                taker.backend.get_utxo = AsyncMock(return_value=None)
+            elif backend_utxo == "unconfirmed":
+                taker.backend.get_utxo = AsyncMock(
+                    return_value=UTXO(
+                        txid=txid,
+                        vout=vout,
+                        value=value,
+                        address="bcrt1qtest",
+                        confirmations=0,
+                        scriptpubkey=stored_spk,
+                    )
                 )
-            )
+            elif backend_utxo == "error":
+                taker.backend.get_utxo = AsyncMock(side_effect=RuntimeError("backend down"))
+            else:
+                taker.backend.get_utxo = AsyncMock(
+                    return_value=UTXO(
+                        txid=txid,
+                        vout=vout,
+                        value=utxo_value,
+                        address="bcrt1qtest",
+                        confirmations=3,
+                        scriptpubkey=stored_spk,
+                    )
+                )
             taker.config = MagicMock()
             taker.config.minimum_makers = 1
             taker.config.maker_timeout_sec = 5
+            taker.config.max_maker_utxos = max_maker_utxos
+            taker.config.dust_threshold = 27300
+            taker._session.cj_amount = cj_amount
 
             dc = MagicMock()
             dc.send_privmsg = AsyncMock()
@@ -1979,3 +2112,131 @@ class TestPhaseAuthMakerAuthentication:
         assert result.success is True
         assert nick in session_state.maker_sessions
         assert session_state.maker_sessions[nick].responded_auth is True
+
+    @pytest.mark.asyncio
+    async def test_rejects_maker_declaring_more_inputs_than_cap(self):
+        """A maker must not be able to inflate our mining fee without bound.
+
+        The taker pays the mining fee for every input in the CoinJoin, so a
+        counterparty that declares hundreds of inputs consolidates its own UTXOs
+        at our expense. Such makers are dropped (and can be replaced).
+        """
+        result, session_state, nick = await self._drive_phase_auth(
+            auth_owns_utxo=True,
+            valid_btc_sig=True,
+            declared_utxos=16,
+            max_maker_utxos=15,
+        )
+        assert result.success is False
+        assert nick not in session_state.maker_sessions
+        assert nick in result.failed_makers
+        session_state.backend.get_utxo.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_accepts_maker_at_input_cap(self):
+        """A maker contributing exactly the allowed number of inputs is fine.
+
+        Honest makers running a consolidating merge algorithm legitimately add
+        extra inputs, so the cap must not reject them one input early.
+        """
+        result, session_state, nick = await self._drive_phase_auth(
+            auth_owns_utxo=True,
+            valid_btc_sig=True,
+            declared_utxos=15,
+            max_maker_utxos=15,
+        )
+        assert result.success is True
+        assert len(session_state.maker_sessions[nick].utxos) == 15
+
+    @pytest.mark.asyncio
+    async def test_cap_can_be_disabled(self):
+        """max_maker_utxos = 0 restores the unbounded (pre-cap) behaviour."""
+        result, session_state, nick = await self._drive_phase_auth(
+            auth_owns_utxo=True,
+            valid_btc_sig=True,
+            declared_utxos=40,
+            max_maker_utxos=0,
+        )
+        assert result.success is True
+        assert len(session_state.maker_sessions[nick].utxos) == 40
+
+    @pytest.mark.asyncio
+    async def test_rejects_maker_with_spent_utxo(self):
+        """A spent (or nonexistent) maker input makes the final tx invalid.
+
+        Crediting the historical value (as the old fallback did) would build a
+        consensus-invalid transaction and burn the round after PoDLE
+        commitments were revealed; the maker must be dropped instead.
+        """
+        result, session_state, nick = await self._drive_phase_auth(
+            auth_owns_utxo=True, valid_btc_sig=True, backend_utxo="spent"
+        )
+        assert result.success is False
+        assert nick not in session_state.maker_sessions
+        assert nick in result.failed_makers
+
+    @pytest.mark.asyncio
+    async def test_rejects_maker_with_unconfirmed_utxo(self):
+        """The reference taker requires confirmed maker inputs; so do we."""
+        result, session_state, nick = await self._drive_phase_auth(
+            auth_owns_utxo=True, valid_btc_sig=True, backend_utxo="unconfirmed"
+        )
+        assert result.success is False
+        assert nick not in session_state.maker_sessions
+        assert nick in result.failed_makers
+
+    @pytest.mark.asyncio
+    async def test_rejects_maker_when_backend_lookup_fails(self):
+        """A backend error must not be treated as a zero-value UTXO.
+
+        Zero-crediting used to push the failure to tx-build time, where one
+        bad maker aborted the whole round instead of being dropped.
+        """
+        result, session_state, nick = await self._drive_phase_auth(
+            auth_owns_utxo=True, valid_btc_sig=True, backend_utxo="error"
+        )
+        assert result.success is False
+        assert nick not in session_state.maker_sessions
+        assert nick in result.failed_makers
+
+    @pytest.mark.asyncio
+    async def test_rejects_maker_declaring_same_outpoint_twice(self):
+        """Duplicate inputs make the transaction consensus-invalid."""
+        txid, vout = "b" * 64, 0
+        result, session_state, nick = await self._drive_phase_auth(
+            auth_owns_utxo=True,
+            valid_btc_sig=True,
+            utxo_list_override=f"{txid}:{vout},{txid}:{vout}",
+        )
+        assert result.success is False
+        assert nick not in session_state.maker_sessions
+        assert nick in result.failed_makers
+
+    @pytest.mark.asyncio
+    async def test_rejects_maker_with_insufficient_funds(self):
+        """A maker whose change would be dust cannot complete the round.
+
+        The tx builder would omit its change output and the maker would refuse
+        to sign (or its change would go negative and abort the build), so the
+        maker is dropped up front and can be replaced.
+        """
+        # inputs total 1_500_000; change = 1_500_000 - 1_500_000 + cjfee(1500) <= dust
+        result, session_state, nick = await self._drive_phase_auth(
+            auth_owns_utxo=True,
+            valid_btc_sig=True,
+            cj_amount=1_500_000,
+        )
+        assert result.success is False
+        assert nick not in session_state.maker_sessions
+        assert nick in result.failed_makers
+
+    @pytest.mark.asyncio
+    async def test_accepts_maker_with_non_dust_change(self):
+        """A maker covering the CJ amount with non-dust change is accepted."""
+        result, session_state, nick = await self._drive_phase_auth(
+            auth_owns_utxo=True,
+            valid_btc_sig=True,
+            cj_amount=1_000_000,
+        )
+        assert result.success is True
+        assert nick in session_state.maker_sessions

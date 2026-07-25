@@ -21,9 +21,9 @@ import asyncio
 import time
 from typing import TYPE_CHECKING, Any
 
-from jmcore.bitcoin import get_txid, parse_transaction, pubkey_to_p2wpkh_script
+from jmcore.bitcoin import get_txid, pubkey_to_p2wpkh_script
 from jmcore.encryption import CryptoSession
-from jmcore.protocol import FEATURE_NEUTRINO_COMPAT, parse_utxo_list
+from jmcore.protocol import FEATURE_NEUTRINO_COMPAT, UTXOMetadata, parse_utxo_list
 from jmwallet.history import (
     HistoryWriteError,
     append_history_entry,
@@ -145,6 +145,9 @@ class CoinJoinSession:
         # jitter and is the value used for all subsequent fee calculations.
         self._fee_rate: float | None = None
         self._randomized_fee_rate: float | None = None
+        # Mempool minimum relay fee (sat/vB) seen at fee-resolution time, used
+        # as a floor for the effective fee rate of sweep transactions.
+        self._mempool_min_fee: float | None = None
 
     def attach(self, taker: Taker) -> None:
         """Wire the owning ``Taker`` so the session can read persistent deps.
@@ -185,6 +188,7 @@ class CoinJoinSession:
         self.crypto_session = None
         self._fee_rate = None
         self._randomized_fee_rate = None
+        self._mempool_min_fee = None
 
     def _expand_preselected_utxos_same_mixdepth(self, mixdepth: int) -> int:
         """Add another eligible UTXO from the same mixdepth to ``preselected_utxos``.
@@ -660,96 +664,77 @@ class CoinJoinSession:
                     session.utxos = []
                     utxo_metadata_list = parse_utxo_list(utxo_list_str)
 
+                    # We pay the mining fee for every input in the CoinJoin, so a
+                    # maker that declares an unbounded number of inputs bills its
+                    # own UTXO consolidation to us. Cap the count before touching
+                    # the backend (verifying hundreds of outpoints is itself
+                    # expensive) and drop the maker so it can be replaced.
+                    max_maker_utxos = self.config.max_maker_utxos
+                    if max_maker_utxos and len(utxo_metadata_list) > max_maker_utxos:
+                        logger.warning(
+                            f"Dropping maker {nick}: declared {len(utxo_metadata_list)} inputs, "
+                            f"more than max_maker_utxos={max_maker_utxos}. The taker pays the "
+                            "mining fee for every input, so this would inflate our fee."
+                        )
+                        failed_makers.append(nick)
+                        del self.maker_sessions[nick]
+                        continue
+
                     # Track if maker sent extended format
                     has_extended = any(u.has_neutrino_metadata() for u in utxo_metadata_list)
                     if has_extended:
                         session.supports_neutrino_compat = True
                         logger.debug(f"Maker {nick} sent extended UTXO format (neutrino_compat)")
 
-                    utxo_verification_failed = False
-                    for utxo_meta in utxo_metadata_list:
-                        txid = utxo_meta.txid
-                        vout = utxo_meta.vout
-                        scriptpubkey = ""
+                    failure_reason = await self._verify_maker_utxos(
+                        nick, session, utxo_metadata_list
+                    )
+                    if failure_reason is not None:
+                        logger.warning(f"Dropping maker {nick}: {failure_reason}")
+                        failed_makers.append(nick)
+                        del self.maker_sessions[nick]
+                        continue
 
-                        # Verify UTXO and get value/address
-                        try:
-                            if (
-                                self.backend.requires_neutrino_metadata()
-                                and utxo_meta.has_neutrino_metadata()
-                            ):
-                                # Use Neutrino-compatible verification with metadata
-                                result = await self.backend.verify_utxo_with_metadata(
-                                    txid=txid,
-                                    vout=vout,
-                                    scriptpubkey=utxo_meta.scriptpubkey,  # type: ignore
-                                    blockheight=utxo_meta.blockheight,  # type: ignore
-                                )
-                                if result.valid:
-                                    value = result.value
-                                    address = ""  # Not available from verification
-                                    scriptpubkey = utxo_meta.scriptpubkey or ""
-                                    logger.debug(
-                                        f"Neutrino-verified UTXO {txid}:{vout} = {value} sats"
-                                    )
-                                else:
-                                    logger.warning(
-                                        f"Neutrino UTXO verification failed for "
-                                        f"{txid}:{vout}: {result.error}"
-                                    )
-                                    utxo_verification_failed = True
-                                    break
-                            else:
-                                # Full node: direct UTXO lookup
-                                utxo_info = await self.backend.get_utxo(txid, vout)
-                                if utxo_info:
-                                    value = utxo_info.value
-                                    address = utxo_info.address
-                                    scriptpubkey = utxo_info.scriptpubkey or ""
-                                else:
-                                    # Fallback: get raw transaction and parse it
-                                    tx_info = await self.backend.get_transaction(txid)
-                                    if tx_info and tx_info.raw:
-                                        parsed_tx = parse_transaction(tx_info.raw)
-                                        if parsed_tx and len(parsed_tx.outputs) > vout:
-                                            value = parsed_tx.outputs[vout].value
-                                            scriptpubkey = parsed_tx.outputs[vout].script.hex()
-                                            try:
-                                                address = parsed_tx.outputs[vout].address(
-                                                    self.config.network
-                                                )
-                                            except (ValueError, Exception):
-                                                address = ""
-                                        else:
-                                            logger.warning(
-                                                f"Could not parse output {vout} from tx {txid}"
-                                            )
-                                            value = 0
-                                            address = ""
-                                    else:
-                                        logger.warning(f"Could not fetch transaction {txid}")
-                                        value = 0
-                                        address = ""
-                        except Exception as e:
-                            logger.warning(f"Error verifying UTXO {txid}:{vout}: {e}")
-                            value = 0
-                            address = ""
-
-                        session.utxos.append(
-                            {
-                                "txid": txid,
-                                "vout": vout,
-                                "value": value,
-                                "address": address,
-                                "scriptpubkey": scriptpubkey,
-                            }
-                        )
-                        logger.debug(f"Added UTXO from {nick}: {txid}:{vout} = {value} sats")
-
-                    if utxo_verification_failed:
+                    # Every outpoint in the transaction must be unique across ALL
+                    # participants. A maker learns our PoDLE input from !auth and
+                    # sees nothing of other makers, but colluding makers (or one
+                    # maker with several nicks) could still declare the same
+                    # outpoint; any duplicate makes the tx consensus-invalid and
+                    # burns the round after PoDLE commitments were revealed.
+                    maker_outpoints = {(u["txid"], u["vout"]) for u in session.utxos}
+                    taken_outpoints = {(u.txid, u.vout) for u in self.preselected_utxos}
+                    for other_nick, other_session in self.maker_sessions.items():
+                        if other_nick == nick:
+                            continue
+                        taken_outpoints.update((u["txid"], u["vout"]) for u in other_session.utxos)
+                    overlapping = maker_outpoints & taken_outpoints
+                    if overlapping:
+                        sample = next(iter(overlapping))
                         logger.warning(
-                            f"Dropping maker {nick}: one or more UTXOs failed "
-                            "Neutrino verification (likely already spent)"
+                            f"Dropping maker {nick}: input {sample[0]}:{sample[1]} is "
+                            "already used by another participant in this round"
+                        )
+                        failed_makers.append(nick)
+                        del self.maker_sessions[nick]
+                        continue
+
+                    # Reference-taker parity: the maker must fund its CoinJoin
+                    # output and still leave a non-dust change output. Otherwise
+                    # the tx build fails (negative change) or the maker's change
+                    # output is omitted, in which case the maker refuses to sign;
+                    # either way the whole round dies after PoDLE commitments were
+                    # burned. Drop such makers here so they can be replaced.
+                    maker_total_input = sum(u["value"] for u in session.utxos)
+                    maker_cjfee = calculate_cj_fee(session.offer, self.cj_amount)
+                    maker_change = (
+                        maker_total_input - self.cj_amount - session.offer.txfee + maker_cjfee
+                    )
+                    if maker_change <= self.config.dust_threshold:
+                        logger.warning(
+                            f"Dropping maker {nick}: inputs total {maker_total_input} sats "
+                            f"leaves change of {maker_change} sats (cj_amount={self.cj_amount}, "
+                            f"txfee={session.offer.txfee}, cjfee={maker_cjfee}), at or below "
+                            f"the dust threshold ({self.config.dust_threshold})"
                         )
                         failed_makers.append(nick)
                         del self.maker_sessions[nick]
@@ -791,6 +776,80 @@ class CoinJoinSession:
             return PhaseResult(success=False, failed_makers=failed_makers)
 
         return PhaseResult(success=True, failed_makers=failed_makers)
+
+    async def _verify_maker_utxos(
+        self,
+        nick: str,
+        session: MakerSession,
+        utxo_metadata_list: list[UTXOMetadata],
+    ) -> str | None:
+        """Verify a maker's declared UTXOs on-chain, populating ``session.utxos``.
+
+        Every outpoint must be unique within the maker's own list (duplicates
+        would put a duplicate input in the transaction, which is
+        consensus-invalid), exist in the UTXO set, and be confirmed (matching
+        the reference taker). A spent or missing output makes the final
+        transaction consensus-invalid, and an unconfirmed one makes it
+        unconfirmable until the parent confirms. Crediting a historical or zero
+        value instead would let a single bad maker abort the whole round at
+        tx-build time.
+
+        Returns None on success, or a human-readable failure reason.
+        """
+        declared_outpoints: set[tuple[str, int]] = set()
+        for utxo_meta in utxo_metadata_list:
+            txid = utxo_meta.txid
+            vout = utxo_meta.vout
+            scriptpubkey = ""
+
+            # An outpoint listed twice would put a duplicate input in
+            # the transaction, which is consensus-invalid.
+            if (txid, vout) in declared_outpoints:
+                return f"declared duplicate input {txid}:{vout}"
+            declared_outpoints.add((txid, vout))
+
+            try:
+                if self.backend.requires_neutrino_metadata() and utxo_meta.has_neutrino_metadata():
+                    # Use Neutrino-compatible verification with metadata
+                    result = await self.backend.verify_utxo_with_metadata(
+                        txid=txid,
+                        vout=vout,
+                        scriptpubkey=utxo_meta.scriptpubkey,  # type: ignore
+                        blockheight=utxo_meta.blockheight,  # type: ignore
+                    )
+                    if not result.valid:
+                        return (
+                            f"Neutrino UTXO verification failed for {txid}:{vout}: {result.error}"
+                        )
+                    value = result.value
+                    address = ""  # Not available from verification
+                    scriptpubkey = utxo_meta.scriptpubkey or ""
+                    logger.debug(f"Neutrino-verified UTXO {txid}:{vout} = {value} sats")
+                else:
+                    # Full node: direct UTXO lookup.
+                    utxo_info = await self.backend.get_utxo(txid, vout)
+                    if utxo_info is None:
+                        return f"UTXO {txid}:{vout} is spent or does not exist"
+                    if utxo_info.confirmations <= 0:
+                        return f"UTXO {txid}:{vout} is unconfirmed"
+                    value = utxo_info.value
+                    address = utxo_info.address
+                    scriptpubkey = utxo_info.scriptpubkey or ""
+            except Exception as e:
+                return f"error verifying UTXO {txid}:{vout}: {e}"
+
+            session.utxos.append(
+                {
+                    "txid": txid,
+                    "vout": vout,
+                    "value": value,
+                    "address": address,
+                    "scriptpubkey": scriptpubkey,
+                }
+            )
+            logger.debug(f"Added UTXO from {nick}: {txid}:{vout} = {value} sats")
+
+        return None
 
     def _parse_utxos(self, utxos_dict: dict[str, Any]) -> list[dict[str, Any]]:
         """Parse UTXO data from !ioauth response."""
@@ -873,17 +932,6 @@ class CoinJoinSession:
 
                 # Calculate residual (should be minimal - just from integer division)
                 residual = preselected_total - self.cj_amount - total_maker_fee - tx_fee
-                actual_fee_rate = tx_fee / actual_tx_vsize if actual_tx_vsize > 0 else 0
-
-                logger.info(
-                    f"Sweep: cj_amount={self.cj_amount:,} (from !fill), "
-                    f"maker_fees={total_maker_fee:,}, "
-                    f"tx_fee={tx_fee:,} (budget), "
-                    f"residual={residual} sats, "
-                    f"actual_vsize={actual_tx_vsize}, "
-                    f"effective_rate={actual_fee_rate:.2f} sat/vB"
-                )
-
                 if residual < 0:
                     # Negative residual means the budget was insufficient
                     # This should only happen if there's a bug in the calculation
@@ -894,6 +942,24 @@ class CoinJoinSession:
                         f"maker_fees={total_maker_fee}, tx_fee_budget={tx_fee}"
                     )
                     return False
+
+                # The transaction's mining fee also includes the contribution
+                # deducted from each maker's change and any taker residual that
+                # has no output. Use the complete fee when checking relayability.
+                maker_txfee = sum(session.offer.txfee for session in self.maker_sessions.values())
+                actual_mining_fee = tx_fee + maker_txfee + residual
+                actual_fee_rate = actual_mining_fee / actual_tx_vsize if actual_tx_vsize > 0 else 0
+
+                logger.info(
+                    f"Sweep: cj_amount={self.cj_amount:,} (from !fill), "
+                    f"maker_fees={total_maker_fee:,}, "
+                    f"tx_fee={tx_fee:,} (budget), "
+                    f"maker_txfee={maker_txfee:,}, "
+                    f"residual={residual} sats, "
+                    f"actual_mining_fee={actual_mining_fee:,}, "
+                    f"actual_vsize={actual_tx_vsize}, "
+                    f"effective_rate={actual_fee_rate:.2f} sat/vB"
+                )
 
                 # Small positive residual (typically < 100 sats) is expected from integer
                 # division in calculate_sweep_amount. This goes to miners.
@@ -906,6 +972,21 @@ class CoinJoinSession:
                     )
 
                 # The residual becomes additional miner fee (no taker change in sweep)
+
+                # The budget was estimated from an assumed maker input count. If
+                # counterparties contributed far more inputs than assumed, the
+                # fixed budget spread over the larger transaction can fall below
+                # the relay minimum, making the sweep unbroadcastable. Fail here
+                # (before signing) instead of broadcasting a doomed transaction.
+                fee_rate_floor = self._mempool_min_fee if self._mempool_min_fee is not None else 1.0
+                if actual_fee_rate < fee_rate_floor:
+                    logger.error(
+                        f"Sweep failed: effective fee rate {actual_fee_rate:.2f} sat/vB "
+                        f"is below the relay floor of {fee_rate_floor:.2f} sat/vB "
+                        f"({actual_mining_fee:,} sats over ~{actual_tx_vsize} vB). Makers "
+                        "contributed more inputs than the fee budget anticipated."
+                    )
+                    return False
 
             else:
                 # NORMAL MODE: Use pre-selected UTXOs, add more if needed
@@ -1111,6 +1192,7 @@ class CoinJoinSession:
         except Exception:
             # Backend may not support this method
             pass
+        self._mempool_min_fee = mempool_min_fee
 
         # 1. Manual fee rate takes priority
         if self.config.fee_rate is not None:

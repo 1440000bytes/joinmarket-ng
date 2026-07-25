@@ -83,6 +83,7 @@ class TestBuildTakerConfig:
         settings.taker.taker_utxo_age = 5
         settings.taker.taker_utxo_retries = 3
         settings.taker.taker_utxo_amtpercent = 20
+        settings.taker.max_maker_utxos = 15
 
         # Wallet config
         settings.wallet.mixdepth_count = 5
@@ -255,6 +256,28 @@ class TestBuildTakerConfig:
 
         assert config.orderbook_min_wait == 45.0
         assert config.orderbook_quiet_period == 20.0
+
+    def test_max_maker_utxos_forwarded(
+        self, sample_mnemonic: str, mock_settings: MagicMock
+    ) -> None:
+        """``taker.max_maker_utxos`` must reach the TakerConfig.
+
+        The cap bounds the mining fee a counterparty can force us to pay, so a
+        setting that silently falls back to the default would be a security
+        regression for anyone who tightened it.
+        """
+        mock_settings.taker.max_maker_utxos = 4
+
+        config = build_taker_config(
+            settings=mock_settings,
+            mnemonic=sample_mnemonic,
+            passphrase="",
+            destination="bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
+            amount=100000,
+            mixdepth=0,
+        )
+
+        assert config.max_maker_utxos == 4
 
     def test_taker_fee_rate_setting_honored_without_cli_flag(
         self, sample_mnemonic: str, mock_settings: MagicMock

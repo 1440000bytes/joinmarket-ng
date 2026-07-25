@@ -151,6 +151,17 @@ class TakerConfig(WalletConfig):
         default=True,
         description="For bondless maker spots, require zero absolute fee (percentage fee OK)",
     )
+    max_maker_utxos: int = Field(
+        default=15,
+        ge=0,
+        description=(
+            "Maximum number of inputs a single maker may contribute. The taker "
+            "pays the mining fee for every input in the CoinJoin, so an "
+            "unbounded input count lets a counterparty consolidate its UTXOs at "
+            "the taker's expense. Makers exceeding the cap are dropped (and "
+            "replaced when possible). 0 disables the cap (not recommended)."
+        ),
+    )
 
     # PoDLE settings
     taker_utxo_retries: int = Field(
