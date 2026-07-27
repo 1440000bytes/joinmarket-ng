@@ -2505,3 +2505,132 @@ class TestNeutrinoIncompatibleMakerReplacement:
         assert new_session.supports_neutrino_compat is True
         assert new_session.responded_fill is True
         assert new_session.crypto is not None
+
+    @pytest.mark.asyncio
+    async def test_auth_replacement_retries_when_replacement_does_not_respond(self):
+        """A replacement candidate that never answers the mini-fill must not
+        hard-fail the round while replacement attempts remain; the taker picks
+        another candidate and hard-excludes the silent one."""
+        taker = self._make_neutrino_taker(minimum_makers=2)
+        taker._session.cj_amount = 1_000_000
+        taker._session.crypto_session = CryptoSession()
+        taker._session.podle_commitment.to_commitment_str = MagicMock(return_value="ab" * 32)
+
+        compatible = MakerSession(
+            nick="J5good", offer=_simple_offer("J5good"), supports_neutrino_compat=True
+        )
+        taker_crypto, _ = make_crypto_pair()
+        compatible.crypto = taker_crypto
+        taker._session.maker_sessions = {"J5good": compatible}
+
+        taker._session._phase_auth = AsyncMock(
+            side_effect=[
+                PhaseResult(success=False, failed_makers=["J5legacy"]),
+                PhaseResult(success=True),
+            ]
+        )
+
+        taker.orderbook_manager = MagicMock()
+        taker.orderbook_manager.select_makers = MagicMock(
+            side_effect=[
+                ({"J5silent": _simple_offer("J5silent")}, 50),
+                ({"J5new": _simple_offer("J5new")}, 100),
+            ]
+        )
+
+        binding = MagicMock()
+        binding.channel_id = "direct"
+        binding.is_direct = True
+        taker.directory_client.bind_session = MagicMock(return_value=binding)
+
+        maker_crypto = CryptoSession()
+        taker.directory_client.wait_for_responses = AsyncMock(
+            side_effect=[
+                {},  # J5silent never answers the mini-fill
+                {
+                    "J5new": {
+                        "data": (
+                            f"{maker_crypto.get_pubkey_hex()} features=neutrino_compat signpk sig"
+                        )
+                    }
+                },
+            ]
+        )
+
+        ok = await taker._run_auth_with_replacements(
+            required_features={"neutrino_compat"}, max_replacement_attempts=3
+        )
+
+        assert ok is True
+        # The silent replacement was ignored and hard-excluded from the retry.
+        taker.orderbook_manager.add_ignored_maker.assert_any_call("J5silent")
+        _, kwargs = taker.orderbook_manager.select_makers.call_args
+        assert "J5silent" in kwargs["hard_exclude_nicks"]
+        assert "J5silent" not in taker._session.maker_sessions
+        assert set(taker._session.maker_sessions.keys()) == {"J5good", "J5new"}
+
+    @pytest.mark.asyncio
+    async def test_auth_replacement_fails_after_exhausting_attempts(self):
+        """When every replacement candidate stays silent, the round fails only
+        after the replacement budget is exhausted."""
+        taker = self._make_neutrino_taker(minimum_makers=2)
+        taker._session.cj_amount = 1_000_000
+        taker._session.crypto_session = CryptoSession()
+        taker._session.podle_commitment.to_commitment_str = MagicMock(return_value="ab" * 32)
+
+        compatible = MakerSession(
+            nick="J5good", offer=_simple_offer("J5good"), supports_neutrino_compat=True
+        )
+        taker_crypto, _ = make_crypto_pair()
+        compatible.crypto = taker_crypto
+        taker._session.maker_sessions = {"J5good": compatible}
+
+        taker._session._phase_auth = AsyncMock(
+            return_value=PhaseResult(success=False, failed_makers=["J5legacy"])
+        )
+
+        taker.orderbook_manager = MagicMock()
+        taker.orderbook_manager.select_makers = MagicMock(
+            side_effect=[
+                ({"J5silent1OOOOOOO": _simple_offer("J5silent1OOOOOOO")}, 50),
+                ({"J5silent2OOOOOOO": _simple_offer("J5silent2OOOOOOO")}, 50),
+            ]
+        )
+
+        binding = MagicMock()
+        binding.channel_id = "direct"
+        binding.is_direct = True
+        taker.directory_client.bind_session = MagicMock(return_value=binding)
+        taker.directory_client.wait_for_responses = AsyncMock(return_value={})
+
+        ok = await taker._run_auth_with_replacements(
+            required_features={"neutrino_compat"}, max_replacement_attempts=2
+        )
+
+        assert ok is False
+        assert taker.state == TakerState.FAILED
+        assert taker.orderbook_manager.select_makers.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_phase_auth_handles_error_response_without_decrypting(self):
+        """A plaintext !error reply to !auth (e.g. 'Failed to select UTXOs')
+        must be handled as a failed maker, not fed into decryption."""
+        taker = self._make_neutrino_taker(minimum_makers=1)
+        taker.backend.requires_neutrino_metadata = MagicMock(return_value=False)
+        taker._session.podle_commitment.has_neutrino_metadata.return_value = False
+
+        taker_crypto, _ = make_crypto_pair()
+        maker = MakerSession(nick="J5err", offer=_simple_offer("J5err"))
+        maker.crypto = taker_crypto
+        taker._session.maker_sessions = {"J5err": maker}
+
+        taker.directory_client.wait_for_responses = AsyncMock(
+            return_value={"J5err": {"error": True, "data": "Failed to select UTXOs"}}
+        )
+
+        result = await taker._session._phase_auth()
+
+        assert result.success is False
+        assert result.failed_makers == ["J5err"]
+        assert result.needs_replacement is True
+        assert "J5err" not in taker._session.maker_sessions

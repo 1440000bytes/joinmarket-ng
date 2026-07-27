@@ -648,6 +648,16 @@ class CoinJoinSession:
         # Response format from directory: "<encrypted_data> <signing_pubkey> <signature>"
         for nick in list(self.maker_sessions.keys()):
             if nick in responses:
+                # Explicit protocol error from the maker (e.g. "Failed to
+                # select UTXOs"). Error payloads are plaintext, so handle them
+                # before attempting decryption.
+                if responses[nick].get("error"):
+                    error_msg = responses[nick].get("data", "Unknown error")
+                    logger.error(f"Maker {nick} rejected !auth: {error_msg}")
+                    failed_makers.append(nick)
+                    del self.maker_sessions[nick]
+                    continue
+
                 try:
                     session = self.maker_sessions[nick]
                     if session.crypto is None:

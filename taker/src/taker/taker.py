@@ -1151,6 +1151,10 @@ class Taker(TakerMonitoringMixin):
         logger.info("Phase 2: Sending !auth and receiving !ioauth...")
 
         auth_replacement_attempt = 0
+        # Nicks that failed at any point during this auth stage (incompatible,
+        # no/invalid !ioauth, failed replacement mini-fill). Hard-excluded from
+        # re-selection so the same maker is never retried within this round.
+        failed_nicks: set[str] = set()
         while True:
             auth_result = await self._session._phase_auth()
 
@@ -1159,12 +1163,19 @@ class Taker(TakerMonitoringMixin):
 
             for failed_nick in auth_result.failed_makers:
                 self.orderbook_manager.add_ignored_maker(failed_nick)
+                failed_nicks.add(failed_nick)
                 logger.debug(f"Added {failed_nick} to ignored makers (failed auth)")
 
-            if (
-                auth_result.needs_replacement
-                and auth_replacement_attempt < max_replacement_attempts
-            ):
+            if not auth_result.needs_replacement:
+                logger.error("Auth phase failed")
+                self.state = TakerState.FAILED
+                return False
+
+            # Top up the session back to minimum_makers. Replacement candidates
+            # can themselves fail the mini-fill (offline maker, timeout), so
+            # keep selecting substitutes until the session is whole again or
+            # the replacement budget runs out.
+            while auth_replacement_attempt < max_replacement_attempts:
                 auth_replacement_attempt += 1
                 needed = self.config.minimum_makers - len(self._session.maker_sessions)
                 logger.info(
@@ -1174,11 +1185,10 @@ class Taker(TakerMonitoringMixin):
                 )
 
                 current_session_nicks = set(self._session.maker_sessions.keys())
-                hard_excludes = current_session_nicks | set(auth_result.failed_makers)
                 replacement_offers, _ = self.orderbook_manager.select_makers(
                     cj_amount=self._session.cj_amount,
                     n=needed,
-                    hard_exclude_nicks=hard_excludes,
+                    hard_exclude_nicks=current_session_nicks | failed_nicks,
                     required_features=required_features,
                 )
 
@@ -1190,89 +1200,105 @@ class Taker(TakerMonitoringMixin):
                     self.state = TakerState.FAILED
                     return False
 
-                for nick, offer in replacement_offers.items():
-                    self._session.maker_sessions[nick] = MakerSession(
-                        nick=nick, offer=offer, supports_neutrino_compat=False
-                    )
-                    logger.info(f"Added replacement maker for auth: {nick}")
-
-                logger.info("Running fill phase for replacement makers...")
-                new_maker_nicks = list(replacement_offers.keys())
-
-                if not self._session.podle_commitment or not self._session.crypto_session:
-                    logger.error("Missing commitment or crypto session for replacement")
+                if not await self._fill_replacement_makers(replacement_offers, failed_nicks):
                     self.state = TakerState.FAILED
                     return False
 
-                commitment_hex = self._session.podle_commitment.to_commitment_str()
-                taker_pubkey = self._session.crypto_session.get_pubkey_hex()
-
-                for nick in new_maker_nicks:
-                    binding = self.directory_client.bind_session(nick)
-                    session = self._session.maker_sessions[nick]
-                    if binding is None:
-                        logger.warning(
-                            f"No communication channel available for replacement maker {nick}"
-                        )
-                        continue
-                    session.comm_channel = binding.channel_id
-                    if binding.is_direct:
-                        logger.debug(f"Will use DIRECT connection for replacement maker {nick}")
-                    else:
-                        logger.debug(f"Will use {binding.channel_id} for replacement maker {nick}")
-
-                for nick in new_maker_nicks:
-                    session = self._session.maker_sessions[nick]
-                    fill_data = (
-                        f"{session.offer.oid} {self._session.cj_amount} "
-                        f"{taker_pubkey} {commitment_hex}"
-                    )
-                    await self.directory_client.send_privmsg(
-                        nick,
-                        "fill",
-                        fill_data,
-                        log_routing=True,
-                        force_channel=session.comm_channel,
-                    )
-
-                responses = await self.directory_client.wait_for_responses(
-                    expected_nicks=new_maker_nicks,
-                    expected_command="!pubkey",
-                    timeout=self.config.maker_timeout_sec,
+                if len(self._session.maker_sessions) >= self.config.minimum_makers:
+                    break
+                logger.warning(
+                    f"Still short of makers after replacement fill: "
+                    f"{len(self._session.maker_sessions)} < {self.config.minimum_makers}"
                 )
+            else:
+                logger.error(
+                    f"Auth phase failed: could not assemble {self.config.minimum_makers} "
+                    f"makers within {max_replacement_attempts} replacement attempts"
+                )
+                self.state = TakerState.FAILED
+                return False
 
-                new_makers_ready = 0
-                for nick in new_maker_nicks:
-                    if nick in responses and not responses[nick].get("error"):
-                        try:
-                            response_data = responses[nick]["data"].strip()
-                            # Shared with _phase_fill: also parses the features
-                            # field so replacement makers advertising
-                            # neutrino_compat are not dropped again in the next
-                            # auth pass.
-                            if self._session.process_pubkey_response(nick, response_data):
-                                new_makers_ready += 1
-                                logger.debug(f"Replacement maker {nick} ready")
-                            else:
-                                del self._session.maker_sessions[nick]
-                        except Exception as e:
-                            logger.warning(f"Failed to process {nick}: {e}")
-                            del self._session.maker_sessions[nick]
-                    else:
-                        logger.warning(f"Replacement maker {nick} didn't respond")
-                        if nick in self._session.maker_sessions:
-                            del self._session.maker_sessions[nick]
+    async def _fill_replacement_makers(
+        self, replacement_offers: dict[str, Any], failed_nicks: set[str]
+    ) -> bool:
+        """Run a mini fill phase for auth-stage replacement makers.
 
-                if new_makers_ready == 0:
-                    logger.error("No replacement makers responded to fill")
-                    self.state = TakerState.FAILED
-                    return False
+        Creates sessions, binds channels, sends !fill and processes the
+        !pubkey responses via the shared helper (which also parses the
+        features field, so replacement makers advertising neutrino_compat are
+        not re-dropped in the next auth pass). Makers that do not produce a
+        usable !pubkey are removed, ignored and added to ``failed_nicks`` so
+        they are not re-selected within this round.
 
-                continue
-
-            logger.error("Auth phase failed")
-            self.state = TakerState.FAILED
+        Returns False only on unrecoverable state (missing PoDLE commitment or
+        crypto session); "no maker responded" is left to the caller's
+        replacement budget.
+        """
+        if not self._session.podle_commitment or not self._session.crypto_session:
+            logger.error("Missing commitment or crypto session for replacement")
             return False
+
+        for nick, offer in replacement_offers.items():
+            self._session.maker_sessions[nick] = MakerSession(
+                nick=nick, offer=offer, supports_neutrino_compat=False
+            )
+            logger.info(f"Added replacement maker for auth: {nick}")
+        self._session.last_used_nicks.update(replacement_offers.keys())
+
+        logger.info("Running fill phase for replacement makers...")
+        new_maker_nicks = list(replacement_offers.keys())
+
+        commitment_hex = self._session.podle_commitment.to_commitment_str()
+        taker_pubkey = self._session.crypto_session.get_pubkey_hex()
+
+        for nick in new_maker_nicks:
+            binding = self.directory_client.bind_session(nick)
+            session = self._session.maker_sessions[nick]
+            if binding is None:
+                logger.warning(f"No communication channel available for replacement maker {nick}")
+                continue
+            session.comm_channel = binding.channel_id
+            if binding.is_direct:
+                logger.debug(f"Will use DIRECT connection for replacement maker {nick}")
+            else:
+                logger.debug(f"Will use {binding.channel_id} for replacement maker {nick}")
+
+        for nick in new_maker_nicks:
+            session = self._session.maker_sessions[nick]
+            fill_data = (
+                f"{session.offer.oid} {self._session.cj_amount} {taker_pubkey} {commitment_hex}"
+            )
+            await self.directory_client.send_privmsg(
+                nick,
+                "fill",
+                fill_data,
+                log_routing=True,
+                force_channel=session.comm_channel,
+            )
+
+        responses = await self.directory_client.wait_for_responses(
+            expected_nicks=new_maker_nicks,
+            expected_command="!pubkey",
+            timeout=self.config.maker_timeout_sec,
+        )
+
+        for nick in new_maker_nicks:
+            ready = False
+            if nick in responses and not responses[nick].get("error"):
+                try:
+                    response_data = responses[nick]["data"].strip()
+                    ready = self._session.process_pubkey_response(nick, response_data)
+                    if ready:
+                        logger.debug(f"Replacement maker {nick} ready")
+                except Exception as e:
+                    logger.warning(f"Failed to process {nick}: {e}")
+            else:
+                logger.warning(f"Replacement maker {nick} didn't respond to !fill")
+            if not ready:
+                self._session.maker_sessions.pop(nick, None)
+                failed_nicks.add(nick)
+                self.orderbook_manager.add_ignored_maker(nick)
+        return True
 
     async def _run_fill_with_replacements(
         self,
