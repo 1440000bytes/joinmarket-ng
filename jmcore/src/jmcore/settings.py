@@ -45,7 +45,7 @@ from pathlib import Path
 from typing import Any, ClassVar, Self
 
 from loguru import logger
-from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
     EnvSettingsSource,
@@ -447,6 +447,7 @@ class WalletSettings(BaseModel):
     )
     background_full_rescan: bool = Field(
         default=True,
+        validation_alias=AliasChoices("background_full_rescan", "background_full_scan"),
         description="Run full blockchain rescan in background",
     )
     scan_lookback_blocks: int = Field(
@@ -1258,6 +1259,18 @@ class _CommaListEnvSettingsSource(EnvSettingsSource):
     "a,b" or a bare single value "a" for list[str] fields, making container
     environment variable configuration more ergonomic.
     """
+
+    def __call__(self) -> dict[str, Any]:
+        data = super().__call__()
+
+        # AliasChoices is resolved after settings sources are merged. Normalize
+        # the legacy env spelling here so it still overrides the canonical TOML
+        # key, while retaining AliasChoices support for direct model input.
+        wallet = data.get("wallet")
+        if isinstance(wallet, dict) and "background_full_scan" in wallet:
+            wallet.setdefault("background_full_rescan", wallet["background_full_scan"])
+
+        return data
 
     def decode_complex_value(self, field_name: str, field_info: Any, value: Any) -> Any:
         if isinstance(value, str) and self._is_list_of_str(field_info):

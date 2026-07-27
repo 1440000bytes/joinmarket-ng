@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -34,6 +35,19 @@ def _make_neutrino_backend(block_height: int = 800000) -> MagicMock:
     mock = MagicMock(spec=NeutrinoBackend)
     mock.get_block_height = AsyncMock(return_value=block_height)
     return mock
+
+
+def _make_wallet_settings() -> SimpleNamespace:
+    """Return non-default values so forwarding tests detect hard-coded defaults."""
+    return SimpleNamespace(
+        mixdepth_count=3,
+        gap_limit=9,
+        scan_range=400,
+        max_sats_freeze_reuse=12_345,
+        reconstruct_history=False,
+        smart_scan=False,
+        background_full_rescan=False,
+    )
 
 
 class TestWalletFileIO:
@@ -208,13 +222,15 @@ class TestCreateWallet:
         mock_ws.setup_descriptor_wallet = AsyncMock()
         mock_ws_cls.return_value = mock_ws
         mock_get_backend.return_value = _make_descriptor_backend()
+        wallet_settings = _make_wallet_settings()
 
-        ws, seedphrase = await create_wallet(
-            wallet_path=wallet_path,
-            password="password",
-            wallet_type="sw-fb",
-            data_dir=tmp_path,
-        )
+        with patch("jmwalletd.wallet_ops._get_wallet_settings", return_value=wallet_settings):
+            ws, seedphrase = await create_wallet(
+                wallet_path=wallet_path,
+                password="password",
+                wallet_type="sw-fb",
+                data_dir=tmp_path,
+            )
         assert ws is mock_ws
         assert isinstance(seedphrase, str)
         assert len(seedphrase.split()) >= 12
@@ -222,7 +238,14 @@ class TestCreateWallet:
 
         # Verify network was passed through.
         mock_ws_cls.assert_called_once()
-        assert mock_ws_cls.call_args.kwargs["network"] == "mainnet"
+        wallet_kwargs = mock_ws_cls.call_args.kwargs
+        assert wallet_kwargs["network"] == "mainnet"
+
+        assert wallet_kwargs["mixdepth_count"] == wallet_settings.mixdepth_count
+        assert wallet_kwargs["gap_limit"] == wallet_settings.gap_limit
+        assert wallet_kwargs["scan_range"] == wallet_settings.scan_range
+        assert wallet_kwargs["max_sats_freeze_reuse"] == wallet_settings.max_sats_freeze_reuse
+        assert wallet_kwargs["reconstruct_history"] == wallet_settings.reconstruct_history
 
         # Descriptor backend: setup_descriptor_wallet called with no rescan.
         mock_ws.setup_descriptor_wallet.assert_awaited_once_with(rescan=False)
@@ -340,21 +363,25 @@ class TestRecoverWallet:
         mock_ws.setup_descriptor_wallet = AsyncMock()
         mock_ws_cls.return_value = mock_ws
         mock_get_backend.return_value = _make_descriptor_backend()
+        wallet_settings = _make_wallet_settings()
 
-        ws = await recover_wallet(
-            wallet_path=wallet_path,
-            password="password",
-            wallet_type="sw",
-            seedphrase=seedphrase,
-            data_dir=tmp_path,
-        )
+        with patch("jmwalletd.wallet_ops._get_wallet_settings", return_value=wallet_settings):
+            ws = await recover_wallet(
+                wallet_path=wallet_path,
+                password="password",
+                wallet_type="sw",
+                seedphrase=seedphrase,
+                data_dir=tmp_path,
+            )
         assert ws is mock_ws
         assert wallet_path.exists()
         mock_ws_cls.assert_called_once()
         assert mock_ws_cls.call_args.kwargs["network"] == "mainnet"
 
-        # Recovery with descriptor backend: needs full rescan (default rescan=True).
-        mock_ws.setup_descriptor_wallet.assert_awaited_once_with()
+        mock_ws.setup_descriptor_wallet.assert_awaited_once_with(
+            smart_scan=wallet_settings.smart_scan,
+            background_full_rescan=wallet_settings.background_full_rescan,
+        )
         # Bond-aware sync so recovered fidelity bonds are scanned and surfaced.
         mock_ws.sync_with_registered_bonds.assert_awaited_once()
 
@@ -421,18 +448,22 @@ class TestOpenWallet:
         mock_ws.setup_descriptor_wallet = AsyncMock()
         mock_ws_cls.return_value = mock_ws
         mock_get_backend.return_value = _make_descriptor_backend()
+        wallet_settings = _make_wallet_settings()
 
-        ws = await open_wallet(
-            wallet_path=wallet_path,
-            password="password",
-            data_dir=tmp_path,
-        )
+        with patch("jmwalletd.wallet_ops._get_wallet_settings", return_value=wallet_settings):
+            ws = await open_wallet(
+                wallet_path=wallet_path,
+                password="password",
+                data_dir=tmp_path,
+            )
         assert ws is mock_ws
         mock_ws_cls.assert_called_once()
         assert mock_ws_cls.call_args.kwargs["network"] == "mainnet"
 
-        # Descriptor backend: setup_descriptor_wallet called with default rescan.
-        mock_ws.setup_descriptor_wallet.assert_awaited_once_with()
+        mock_ws.setup_descriptor_wallet.assert_awaited_once_with(
+            smart_scan=wallet_settings.smart_scan,
+            background_full_rescan=wallet_settings.background_full_rescan,
+        )
         # Bond-aware sync so funded fidelity bonds are surfaced in /utxos.
         mock_ws.sync_with_registered_bonds.assert_awaited_once()
 

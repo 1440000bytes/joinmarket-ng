@@ -159,6 +159,8 @@ class DescriptorWalletBackend(BlockchainBackend):
         rpc_password: str = "rpcpassword",
         wallet_name: str = "jm_descriptor_wallet",
         import_timeout: float = IMPORT_RPC_TIMEOUT,
+        scan_start_height: int | None = None,
+        scan_lookback_blocks: int = DEFAULT_SCAN_LOOKBACK_BLOCKS,
     ):
         """
         Initialize descriptor wallet backend.
@@ -169,12 +171,16 @@ class DescriptorWalletBackend(BlockchainBackend):
             rpc_password: RPC password
             wallet_name: Name for the descriptor wallet in Bitcoin Core
             import_timeout: Timeout for descriptor import operations
+            scan_start_height: Explicit initial scan height, overriding lookback
+            scan_lookback_blocks: Blocks to look back when no explicit start is set
         """
         self.rpc_url = rpc_url.rstrip("/")
         self.rpc_user = rpc_user
         self.rpc_password = rpc_password
         self.wallet_name = wallet_name
         self.import_timeout = import_timeout
+        self._scan_start_height = scan_start_height
+        self._scan_lookback_blocks = scan_lookback_blocks
 
         logger.info(f"Initialized DescriptorWalletBackend with wallet: {wallet_name}")
 
@@ -709,22 +715,21 @@ class DescriptorWalletBackend(BlockchainBackend):
             logger.error(f"Failed to create/load wallet: {e}")
             raise
 
-    async def _get_smart_scan_timestamp(
-        self, lookback_blocks: int = DEFAULT_SCAN_LOOKBACK_BLOCKS
-    ) -> int:
+    async def _get_smart_scan_timestamp(self, lookback_blocks: int | None = None) -> int:
         """
         Calculate a smart scan timestamp based on current block height.
 
-        If a wallet creation height is set (via ``set_wallet_creation_height``),
-        uses that block's timestamp instead of the generic lookback window,
-        since the wallet cannot have received funds before it was created.
+        An explicit configured scan height takes precedence. Otherwise, if a
+        wallet creation height is set (via ``set_wallet_creation_height``), that
+        block is used because the wallet cannot have received funds before it
+        was created. The configured lookback window is the final fallback.
 
         Otherwise returns a Unix timestamp corresponding to approximately
         ``lookback_blocks`` ago. This allows scanning recent history quickly
         without waiting for a full genesis-to-tip rescan.
 
         Args:
-            lookback_blocks: Number of blocks to look back (default: ~1 year)
+            lookback_blocks: Optional per-call lookback override
 
         Returns:
             Unix timestamp for the target block
@@ -732,14 +737,23 @@ class DescriptorWalletBackend(BlockchainBackend):
         try:
             current_height = await self.get_block_height()
 
-            if self._wallet_creation_height is not None:
+            if self._scan_start_height is not None:
+                target_height = min(current_height, max(0, self._scan_start_height))
+                logger.info(
+                    f"Smart scan using configured start height: {target_height} "
+                    f"(current={current_height})"
+                )
+            elif self._wallet_creation_height is not None:
                 target_height = max(0, self._wallet_creation_height)
                 logger.info(
                     f"Smart scan using wallet creation height: {target_height} "
                     f"(current={current_height})"
                 )
             else:
-                target_height = max(0, current_height - lookback_blocks)
+                effective_lookback = (
+                    self._scan_lookback_blocks if lookback_blocks is None else lookback_blocks
+                )
+                target_height = max(0, current_height - effective_lookback)
 
             # Get block time at target height
             block_hash = await self.get_block_hash(target_height)

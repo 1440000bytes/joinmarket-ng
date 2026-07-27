@@ -8,6 +8,7 @@ from collections.abc import Generator
 from pathlib import Path
 
 import pytest
+from pydantic import BaseModel
 
 from jmcore.models import NetworkType
 from jmcore.settings import (
@@ -16,6 +17,8 @@ from jmcore.settings import (
     MakerSettings,
     NetworkSettings,
     TakerSettings,
+    _get_bundled_template,
+    _get_template_section_keys,
     _get_user_sections,
     config_diff,
     ensure_config_file,
@@ -84,6 +87,41 @@ class TestConfigTemplate:
         assert "# socks_host = " in template
         assert "# socks_port = " in template
         assert "# rpc_url = " in template
+
+    def test_nested_template_keys_define_environment_variables(self) -> None:
+        """Every canonical nested template key maps to SECTION__KEY."""
+        template = _get_bundled_template()
+        assert template is not None
+        template_keys = _get_template_section_keys(template)
+        settings = JoinMarketSettings()
+
+        # These fields intentionally are not config.toml settings: the BIP39
+        # passphrase is environment-only, and component_name is assigned by
+        # each process when constructing its notifier.
+        excluded_fields = {
+            "wallet": {"bip39_passphrase"},
+            "notifications": {"component_name"},
+        }
+        derived_env_names: set[str] = set()
+        expected_env_names: set[str] = set()
+
+        for section in JoinMarketSettings.model_fields:
+            nested_settings = getattr(settings, section, None)
+            if not isinstance(nested_settings, BaseModel):
+                continue
+
+            canonical_keys = template_keys.get(section)
+            assert canonical_keys is not None, f"Missing [{section}] in config.toml.template"
+            expected_keys = set(type(nested_settings).model_fields) - excluded_fields.get(
+                section, set()
+            )
+            assert canonical_keys == expected_keys
+
+            derived_env_names.update(f"{section}__{key}".upper() for key in canonical_keys)
+            expected_env_names.update(f"{section}__{key}".upper() for key in expected_keys)
+
+        assert JoinMarketSettings.model_config["env_nested_delimiter"] == "__"
+        assert derived_env_names == expected_env_names
 
     def test_ensure_config_file_creates_template(self, temp_data_dir: Path) -> None:
         """Test that ensure_config_file creates the config file."""
@@ -230,6 +268,50 @@ class TestSettingsFromEnv:
         settings = JoinMarketSettings()
 
         assert settings.network_config.network == NetworkType.SIGNET
+
+    def test_env_override_wallet_scan_settings(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Canonical wallet scan environment names map to the template keys."""
+        monkeypatch.setenv("WALLET__MIXDEPTH_COUNT", "3")
+        monkeypatch.setenv("WALLET__GAP_LIMIT", "10")
+        monkeypatch.setenv("WALLET__SCAN_RANGE", "100")
+        monkeypatch.setenv("WALLET__SMART_SCAN", "false")
+        monkeypatch.setenv("WALLET__BACKGROUND_FULL_RESCAN", "false")
+        monkeypatch.setenv("WALLET__SCAN_LOOKBACK_BLOCKS", "10")
+
+        wallet = JoinMarketSettings().wallet
+
+        assert wallet.mixdepth_count == 3
+        assert wallet.gap_limit == 10
+        assert wallet.scan_range == 100
+        assert wallet.smart_scan is False
+        assert wallet.background_full_rescan is False
+        assert wallet.scan_lookback_blocks == 10
+
+    def test_legacy_background_full_scan_env_alias(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Keep accepting the environment name shipped by older JAM images."""
+        monkeypatch.setenv("WALLET__BACKGROUND_FULL_SCAN", "false")
+
+        assert JoinMarketSettings().wallet.background_full_rescan is False
+
+    def test_legacy_background_full_scan_env_overrides_toml(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The legacy environment alias retains environment-source priority."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[wallet]\nbackground_full_rescan = true\n")
+        monkeypatch.setenv("JOINMARKET_CONFIG_FILE", str(config_path))
+        monkeypatch.setenv("WALLET__BACKGROUND_FULL_SCAN", "false")
+
+        assert JoinMarketSettings().wallet.background_full_rescan is False
+
+    def test_canonical_background_full_rescan_env_precedes_legacy_alias(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The canonical name wins when both environment spellings are set."""
+        monkeypatch.setenv("WALLET__BACKGROUND_FULL_RESCAN", "true")
+        monkeypatch.setenv("WALLET__BACKGROUND_FULL_SCAN", "false")
+
+        assert JoinMarketSettings().wallet.background_full_rescan is True
 
     def test_env_override_maker_settings(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test that environment variables override maker settings."""

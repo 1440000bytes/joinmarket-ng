@@ -50,7 +50,9 @@ def _make_settings_stub(
         def __init__(self) -> None:
             self.bitcoin = _Bitcoin()
             self.network_config = _NetworkConfig()
-            self.wallet = type("_W", (), {"scan_start_height": 0, "scan_lookback_blocks": 0})()
+            self.wallet = type(
+                "_W", (), {"scan_start_height": 123_456, "scan_lookback_blocks": 789}
+            )()
 
         def get_neutrino_add_peers(self) -> list[str]:
             return []
@@ -79,6 +81,8 @@ class TestPerWalletDescriptorBackend:
 
         assert backend_a is not backend_b
         assert backend_a.wallet_name != backend_b.wallet_name
+        assert backend_a._scan_start_height == 123_456
+        assert backend_a._scan_lookback_blocks == 789
 
     @pytest.mark.asyncio
     async def test_same_mnemonic_reuses_cached_backend(self, tmp_path: Path) -> None:

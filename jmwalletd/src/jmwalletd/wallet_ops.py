@@ -13,9 +13,12 @@ from __future__ import annotations
 import base64
 import os
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
+
+if TYPE_CHECKING:
+    from jmcore.settings import WalletSettings
 
 
 def _is_descriptor_backend(backend: Any) -> bool:
@@ -41,28 +44,11 @@ def _get_network() -> str:
     return network_config.network.value
 
 
-def _get_max_sats_freeze_reuse() -> int:
-    """Return the configured forced-address-reuse auto-freeze threshold.
-
-    See ``WalletSettings.max_sats_freeze_reuse`` (issue #529): -1 freezes all
-    reuse UTXOs (default), a positive N freezes only those <= N sats, 0
-    disables the behavior.
-    """
+def _get_wallet_settings() -> WalletSettings:
+    """Return the settings used to construct and initialize wallet services."""
     from jmcore.settings import get_settings
 
-    return get_settings().wallet.max_sats_freeze_reuse
-
-
-def _get_reconstruct_history() -> bool:
-    """Return the configured on-chain history reconstruction toggle.
-
-    See ``WalletSettings.reconstruct_history``: when True (default), a wallet
-    with no recorded history has its CoinJoin/send/deposit history
-    reconstructed from chain data after sync (seed-import backfill).
-    """
-    from jmcore.settings import get_settings
-
-    return get_settings().wallet.reconstruct_history
+    return get_settings().wallet
 
 
 async def create_wallet(
@@ -119,13 +105,17 @@ async def create_wallet(
     except Exception as exc:
         logger.warning(f"Could not fetch block height for wallet birthday: {exc}")
 
+    wallet_settings = _get_wallet_settings()
     ws = WalletService(
         mnemonic=seedphrase,
         backend=backend,
         data_dir=data_dir,
         network=_get_network(),
-        max_sats_freeze_reuse=_get_max_sats_freeze_reuse(),
-        reconstruct_history=_get_reconstruct_history(),
+        mixdepth_count=wallet_settings.mixdepth_count,
+        gap_limit=wallet_settings.gap_limit,
+        scan_range=wallet_settings.scan_range,
+        max_sats_freeze_reuse=wallet_settings.max_sats_freeze_reuse,
+        reconstruct_history=wallet_settings.reconstruct_history,
     )
 
     # Persist the wallet file (encrypted with the password).
@@ -191,13 +181,17 @@ async def recover_wallet(
         network=_get_network(),
     )
 
+    wallet_settings = _get_wallet_settings()
     ws = WalletService(
         mnemonic=seedphrase,
         backend=backend,
         data_dir=data_dir,
         network=_get_network(),
-        max_sats_freeze_reuse=_get_max_sats_freeze_reuse(),
-        reconstruct_history=_get_reconstruct_history(),
+        mixdepth_count=wallet_settings.mixdepth_count,
+        gap_limit=wallet_settings.gap_limit,
+        scan_range=wallet_settings.scan_range,
+        max_sats_freeze_reuse=wallet_settings.max_sats_freeze_reuse,
+        reconstruct_history=wallet_settings.reconstruct_history,
     )
 
     _save_wallet_file(
@@ -211,7 +205,10 @@ async def recover_wallet(
     # and import HD descriptors so sync can find existing UTXOs.
     # Skipped for non-descriptor backends (e.g. neutrino).
     if _is_descriptor_backend(backend):
-        await ws.setup_descriptor_wallet()
+        await ws.setup_descriptor_wallet(
+            smart_scan=wallet_settings.smart_scan,
+            background_full_rescan=wallet_settings.background_full_rescan,
+        )
 
     # Bond-aware sync so any fidelity bonds recorded in the per-wallet
     # registry are imported and their UTXOs scanned (otherwise recovered
@@ -257,20 +254,27 @@ async def open_wallet_with_mnemonic(
     # instances are reused.
     backend.set_wallet_creation_height(creation_height)
 
+    wallet_settings = _get_wallet_settings()
     ws = WalletService(
         mnemonic=seedphrase,
         backend=backend,
         data_dir=data_dir,
         network=_get_network(),
-        max_sats_freeze_reuse=_get_max_sats_freeze_reuse(),
-        reconstruct_history=_get_reconstruct_history(),
+        mixdepth_count=wallet_settings.mixdepth_count,
+        gap_limit=wallet_settings.gap_limit,
+        scan_range=wallet_settings.scan_range,
+        max_sats_freeze_reuse=wallet_settings.max_sats_freeze_reuse,
+        reconstruct_history=wallet_settings.reconstruct_history,
     )
 
     # Ensure the watch-only descriptor wallet is loaded in Bitcoin Core
     # and import HD descriptors.  Idempotent — skips if already set up.
     # Skipped for non-descriptor backends (e.g. neutrino).
     if _is_descriptor_backend(backend):
-        await ws.setup_descriptor_wallet()
+        await ws.setup_descriptor_wallet(
+            smart_scan=wallet_settings.smart_scan,
+            background_full_rescan=wallet_settings.background_full_rescan,
+        )
 
     if sync_on_open:
         # Bond-aware sync so funded fidelity bonds from the registry are

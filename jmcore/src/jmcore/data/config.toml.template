@@ -1,6 +1,11 @@
 # JoinMarket-NG Configuration
 # Uncomment and modify settings as needed. Defaults are sensible for most users.
 # See documentation: https://joinmarket-ng.github.io/joinmarket-ng/
+#
+# Every nested setting has an equivalent environment variable. Uppercase the
+# section and key, then join them with a double underscore. For example:
+# [wallet] background_full_rescan -> WALLET__BACKGROUND_FULL_RESCAN
+# Environment variables take precedence over values in this file.
 
 # ============================================================================
 # Core Settings
@@ -404,11 +409,6 @@
 # all md0 UTXOs (experienced makers only -- reduces privacy).
 # allow_mixdepth_zero_merge = false
 
-# Fidelity bond settings
-# Set to true to run without a fidelity bond even if bonds exist in the registry.
-# This can be useful for privacy - bonds are public and linkable to your offers.
-# no_fidelity_bond = false
-
 # Timeouts and intervals
 # session_timeout_sec = 300
 # rescan_interval_sec = 600
@@ -424,7 +424,7 @@
 # onion_host = ""  # Static hidden service address (e.g., 'mymaker...onion'). When not set, Tor control auto-generates one.
 # onion_serving_host = "127.0.0.1"
 # onion_serving_port = 5222
-# tor_target_host = "127.0.0.1"
+# The hidden-service target is configured as [tor] target_host above.
 
 # Message rate limiting (protects against spam/DoS from peers)
 # message_rate_limit = 10   # Messages per second per peer (sustained)

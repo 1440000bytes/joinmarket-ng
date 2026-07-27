@@ -1421,6 +1421,67 @@ class TestSmartScan:
         assert timestamp == 1700000000
 
     @pytest.mark.asyncio
+    async def test_smart_scan_uses_configured_lookback(self) -> None:
+        """The backend-level lookback setting replaces the hardcoded default."""
+        backend = DescriptorWalletBackend(
+            wallet_name="test_configured_lookback", scan_lookback_blocks=10
+        )
+        rpc_calls: list[tuple[str, list[Any] | None]] = []
+
+        async def mock_rpc(
+            method: str,
+            params: list[Any] | None = None,
+            client: Any = None,
+            use_wallet: bool = True,
+        ) -> Any:
+            rpc_calls.append((method, params))
+            if method == "getblockchaininfo":
+                return {"blocks": 100_000, "headers": 100_000}
+            if method == "getblockhash":
+                return "000000000000abcd1234"
+            if method == "getblockheader":
+                return {"time": 1700000000}
+            return {}
+
+        backend._rpc_call = mock_rpc  # type: ignore[method-assign]
+
+        assert await backend._get_smart_scan_timestamp() == 1700000000
+        getblockhash_calls = [call for call in rpc_calls if call[0] == "getblockhash"]
+        assert getblockhash_calls[0][1] == [99_990]
+
+    @pytest.mark.asyncio
+    async def test_configured_start_height_precedes_creation_height(self) -> None:
+        """An explicit start height overrides both birthday and lookback hints."""
+        backend = DescriptorWalletBackend(
+            wallet_name="test_configured_start",
+            scan_start_height=700_000,
+            scan_lookback_blocks=10,
+        )
+        backend.set_wallet_creation_height(800_000)
+        rpc_calls: list[tuple[str, list[Any] | None]] = []
+
+        async def mock_rpc(
+            method: str,
+            params: list[Any] | None = None,
+            client: Any = None,
+            use_wallet: bool = True,
+        ) -> Any:
+            rpc_calls.append((method, params))
+            if method == "getblockchaininfo":
+                return {"blocks": 900_000, "headers": 900_000}
+            if method == "getblockhash":
+                return "000000000000abcd1234"
+            if method == "getblockheader":
+                return {"time": 1700000000}
+            return {}
+
+        backend._rpc_call = mock_rpc  # type: ignore[method-assign]
+
+        assert await backend._get_smart_scan_timestamp() == 1700000000
+        getblockhash_calls = [call for call in rpc_calls if call[0] == "getblockhash"]
+        assert getblockhash_calls[0][1] == [700_000]
+
+    @pytest.mark.asyncio
     async def test_smart_scan_clamps_to_zero(self) -> None:
         """Test that smart scan clamps to block 0 for short chains."""
         backend = DescriptorWalletBackend(wallet_name="test_clamp")

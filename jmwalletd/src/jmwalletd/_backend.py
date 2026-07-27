@@ -143,6 +143,8 @@ async def get_backend(
             rpc_user=rpc_user,
             rpc_password=rpc_password,
             wallet_name=descriptor_wallet_name,
+            scan_start_height=settings.wallet.scan_start_height,
+            scan_lookback_blocks=settings.wallet.scan_lookback_blocks,
         )
     elif backend_type == "neutrino":
         from jmwallet.backends.neutrino import NeutrinoBackend
