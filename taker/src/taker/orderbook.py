@@ -21,7 +21,7 @@ from jmcore.bitcoin import (
 from jmcore.models import Offer, OfferType
 from jmcore.models import calculate_cj_fee as _calculate_cj_fee_raw
 from jmcore.paths import get_ignored_makers_path
-from jmcore.protocol import get_nick_version
+from jmcore.protocol import FEATURE_NEUTRINO_COMPAT, get_nick_version
 from loguru import logger
 
 from taker.config import MaxCjFee
@@ -263,6 +263,54 @@ def dedupe_offers_by_bond(offers: list[Offer], cj_amount: int) -> list[Offer]:
     result.extend(unbonded)
 
     return result
+
+
+def _offer_confirms_features(offer: Offer, required_features: set[str]) -> bool:
+    """Check whether *offer* is confirmed to support all required features.
+
+    A feature is confirmed via the handshake-derived ``features`` dict, or,
+    for ``neutrino_compat`` only, via the deprecated ``!neutrino`` offer flag
+    (kept for parity with the pre-check in ``Taker.do_coinjoin``).
+    """
+    return all(
+        offer.features.get(feature)
+        or (feature == FEATURE_NEUTRINO_COMPAT and offer.neutrino_compat)
+        for feature in required_features
+    )
+
+
+def prefer_offers_with_confirmed_features(
+    offers: list[Offer], n: int, required_features: set[str] | None
+) -> list[Offer]:
+    """Prefer offers whose makers are confirmed to support the required features.
+
+    ``filter_offers`` only drops offers *known* to lack a required feature;
+    offers with unknown feature status (empty ``features`` dict, e.g. relayed
+    by a directory without ``peerlist_features``) pass through so they can be
+    revalidated during the handshake. But when enough confirmed-compatible
+    offers exist to fill all ``n`` slots, selecting an unknown-status maker is
+    an avoidable risk: if it turns out to be incompatible the round needs a
+    replacement pass (or fails). Restrict the pool to confirmed offers in that
+    case; otherwise keep the unknown-status offers as fallback candidates.
+    """
+    if not required_features:
+        return offers
+
+    confirmed = [o for o in offers if _offer_confirms_features(o, required_features)]
+    unknown_count = len(offers) - len(confirmed)
+    if unknown_count and len(confirmed) >= n:
+        logger.info(
+            f"Preferring {len(confirmed)} offers with confirmed features "
+            f"{sorted(required_features)}; skipping {unknown_count} offers with "
+            f"unknown feature status (enough confirmed makers for {n} slots)"
+        )
+        return confirmed
+    if unknown_count:
+        logger.debug(
+            f"Only {len(confirmed)} offers confirm features {sorted(required_features)} "
+            f"(need {n}); keeping {unknown_count} unknown-status offers as candidates"
+        )
+    return offers
 
 
 # Order chooser functions (selection algorithms)
@@ -556,6 +604,10 @@ def choose_orders(
     # This must come after maker dedup so we compare the best offer from each nick
     deduped = dedupe_offers_by_bond(deduped_by_maker, cj_amount)
 
+    # When enough makers confirm the required features, avoid unknown-status
+    # ones (they may fail feature negotiation mid-session and need replacement).
+    deduped = prefer_offers_with_confirmed_features(deduped, n, required_features)
+
     if len(deduped) < n:
         logger.warning(
             f"Not enough makers: need {n}, found {len(deduped)} (from {len(offers)} total offers)"
@@ -647,6 +699,10 @@ def choose_sweep_orders(
     # Dedupe by bond UTXO (sybil protection)
     # Use estimated_cj_amount for fee comparison since we don't know exact amount yet
     deduped = dedupe_offers_by_bond(deduped_by_maker, estimated_cj_amount)
+
+    # When enough makers confirm the required features, avoid unknown-status
+    # ones (they may fail feature negotiation mid-session and need replacement).
+    deduped = prefer_offers_with_confirmed_features(deduped, n, required_features)
 
     logger.debug(
         f"After deduplication: {len(deduped)} unique makers from {len(eligible)} eligible offers"

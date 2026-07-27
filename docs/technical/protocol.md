@@ -302,7 +302,7 @@ Extended UTXO format includes scriptPubKey + block height for verification:
 | Legacy | `txid:vout` |
 | Extended | `txid:vout:scriptpubkey:height` |
 
-Both full-node and neutrino joinmarket-ng makers advertise `neutrino_compat` because both can provide metadata for their own wallet UTXOs. Neutrino takers require this feature to verify maker UTXOs via compact block filters. Reference implementation makers do not advertise features, so neutrino takers filter them out during the auth phase.
+Both full-node and neutrino joinmarket-ng makers advertise `neutrino_compat` because both can provide metadata for their own wallet UTXOs. Neutrino takers require this feature to verify maker UTXOs via compact block filters. Reference implementation makers do not advertise features, so neutrino takers avoid them at selection time when possible (preferring makers with confirmed `neutrino_compat` if enough exist to fill all slots), and otherwise drop and replace them during the auth phase when the missing feature is detected in the `!pubkey` handshake.
 
 **Handshake Integration:**
 

@@ -21,6 +21,7 @@ from taker.orderbook import (
     fidelity_bond_weighted_choose,
     filter_offers,
     is_fee_within_limits,
+    prefer_offers_with_confirmed_features,
     random_order_choose,
     weighted_order_choose,
 )
@@ -1559,3 +1560,121 @@ class TestRequiredFeaturesFiltering:
         )
         assert len(orders) == 2
         assert "J5incompatible1O" not in orders
+
+
+class TestPreferOffersWithConfirmedFeatures:
+    """Tests for preferring confirmed-compatible makers over unknown-status ones.
+
+    Unknown-status offers (empty features dict) pass filter_offers so that
+    takers behind feature-unaware directories can still trade, but when enough
+    confirmed-compatible makers exist they should be preferred: an
+    unknown-status maker that turns out to be incompatible forces a
+    replacement pass mid-session (or fails the round).
+    """
+
+    @staticmethod
+    def _offer(
+        nick: str,
+        features: dict[str, bool] | None = None,
+        neutrino_compat: bool = False,
+        bond: int = 0,
+    ) -> Offer:
+        return Offer(
+            counterparty=nick,
+            oid=0,
+            ordertype=OfferType.SW0_RELATIVE,
+            minsize=10_000,
+            maxsize=1_000_000,
+            txfee=0,
+            cjfee="0.001",
+            fidelity_bond_value=bond,
+            features=features or {},
+            neutrino_compat=neutrino_compat,
+        )
+
+    def test_restricts_to_confirmed_when_enough(self) -> None:
+        offers = [
+            self._offer("J5confirmed1OOOO", features={"neutrino_compat": True}),
+            self._offer("J5confirmed2OOOO", features={"neutrino_compat": True}),
+            self._offer("J5unknown1OOOOOO"),
+        ]
+        result = prefer_offers_with_confirmed_features(offers, 2, {"neutrino_compat"})
+        assert {o.counterparty for o in result} == {"J5confirmed1OOOO", "J5confirmed2OOOO"}
+
+    def test_keeps_unknown_when_not_enough_confirmed(self) -> None:
+        offers = [
+            self._offer("J5confirmed1OOOO", features={"neutrino_compat": True}),
+            self._offer("J5unknown1OOOOOO"),
+        ]
+        result = prefer_offers_with_confirmed_features(offers, 2, {"neutrino_compat"})
+        assert len(result) == 2
+
+    def test_noop_without_required_features(self) -> None:
+        offers = [
+            self._offer("J5confirmed1OOOO", features={"neutrino_compat": True}),
+            self._offer("J5unknown1OOOOOO"),
+        ]
+        assert prefer_offers_with_confirmed_features(offers, 1, None) == offers
+        assert prefer_offers_with_confirmed_features(offers, 1, set()) == offers
+
+    def test_deprecated_neutrino_flag_counts_as_confirmed(self) -> None:
+        offers = [
+            self._offer("J5legacyneutrino", neutrino_compat=True),
+            self._offer("J5confirmed1OOOO", features={"neutrino_compat": True}),
+            self._offer("J5unknown1OOOOOO"),
+        ]
+        result = prefer_offers_with_confirmed_features(offers, 2, {"neutrino_compat"})
+        assert {o.counterparty for o in result} == {"J5legacyneutrino", "J5confirmed1OOOO"}
+
+    def test_choose_orders_never_picks_unknown_when_enough_confirmed(
+        self, max_cj_fee: MaxCjFee
+    ) -> None:
+        """Even a huge fidelity bond must not pull in an unknown-status maker
+        when enough confirmed-compatible makers are available (the failure mode
+        observed on signet: a big-bond reference maker got selected over
+        confirmed neutrino_compat makers and later killed the round)."""
+        offers = [
+            self._offer("J5confirmed1OOOO", features={"neutrino_compat": True}, bond=10_000),
+            self._offer("J5confirmed2OOOO", features={"neutrino_compat": True}, bond=20_000),
+            self._offer("J5bigbondunknown", bond=100_000_000),
+        ]
+        for _ in range(20):
+            result, _fee = choose_orders(
+                offers=offers,
+                cj_amount=100_000,
+                n=2,
+                max_cj_fee=max_cj_fee,
+                required_features={"neutrino_compat"},
+            )
+            assert set(result) == {"J5confirmed1OOOO", "J5confirmed2OOOO"}
+
+    def test_choose_orders_falls_back_to_unknown_when_needed(self, max_cj_fee: MaxCjFee) -> None:
+        offers = [
+            self._offer("J5confirmed1OOOO", features={"neutrino_compat": True}),
+            self._offer("J5unknown1OOOOOO"),
+        ]
+        result, _fee = choose_orders(
+            offers=offers,
+            cj_amount=100_000,
+            n=2,
+            max_cj_fee=max_cj_fee,
+            required_features={"neutrino_compat"},
+        )
+        assert set(result) == {"J5confirmed1OOOO", "J5unknown1OOOOOO"}
+
+    def test_choose_sweep_orders_prefers_confirmed(self, max_cj_fee: MaxCjFee) -> None:
+        offers = [
+            self._offer("J5confirmed1OOOO", features={"neutrino_compat": True}, bond=10_000),
+            self._offer("J5confirmed2OOOO", features={"neutrino_compat": True}, bond=20_000),
+            self._offer("J5bigbondunknown", bond=100_000_000),
+        ]
+        for _ in range(20):
+            result, _cj_amount, _fee = choose_sweep_orders(
+                offers=offers,
+                total_input_value=500_000,
+                my_txfee=1000,
+                n=2,
+                max_cj_fee=max_cj_fee,
+                required_features={"neutrino_compat"},
+            )
+            assert set(result) == {"J5confirmed1OOOO", "J5confirmed2OOOO"}
