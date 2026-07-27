@@ -165,8 +165,29 @@ async def find_fidelity_bonds(
         else:
             # Hot wallet bond: derive key from wallet
             key = wallet.get_key_for_address(utxo_info.address)
-            pubkey = key.get_public_key_bytes(compressed=True) if key else None
-            private_key = key.private_key if key else None
+            if key is None:
+                # The address cache may not contain the bond address (e.g. a
+                # sync path that registered the bond UTXO without caching the
+                # address). Bond keys are derived from the locktime (the
+                # timenumber is the BIP32 child index), so derive directly
+                # and verify the derived address matches.
+                try:
+                    derived_address = wallet.get_fidelity_bond_address(0, locktime)
+                    if derived_address.lower() == utxo_info.address.lower():
+                        key = wallet.get_fidelity_bond_key(0, locktime)
+                except Exception as e:
+                    logger.debug(f"Could not derive bond key for locktime {locktime}: {e}")
+            if key is None:
+                # Without the key no valid proof can ever be produced;
+                # emitting the bond anyway would make every proof attempt
+                # fail later with "Bond missing pubkey".
+                logger.warning(
+                    f"Skipping fidelity bond {utxo_info.address[:20]}...: "
+                    "could not derive its key from this wallet"
+                )
+                continue
+            pubkey = key.get_public_key_bytes(compressed=True)
+            private_key = key.private_key
 
         # Get confirmation_time (Unix timestamp) from block height
         # For unconfirmed UTXOs (height=None), we can't calculate bond value yet

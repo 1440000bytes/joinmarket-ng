@@ -468,6 +468,76 @@ class TestFindFidelityBonds:
         assert bonds[0].bond_value == 50000
 
     @pytest.mark.asyncio
+    async def test_hot_bond_key_derived_from_locktime_on_cache_miss(
+        self, test_private_key, test_pubkey
+    ):
+        """When the address cache misses, the key is derived from the locktime.
+
+        Regression test: light-client syncs could register a bond UTXO
+        without caching its address, so get_key_for_address() returned None
+        and every proof failed with "Bond missing pubkey".
+        """
+        mock_utxo = MagicMock()
+        mock_utxo.path = "m/84'/0'/0'/2/0:1748736000"
+        mock_utxo.value = 100_000_000
+        mock_utxo.confirmations = 1000
+        mock_utxo.height = 850000
+        mock_utxo.address = "bcrt1qbondaddress"
+        mock_utxo.txid = "txid789"
+        mock_utxo.vout = 0
+
+        mock_key = MagicMock()
+        mock_key.get_public_key_bytes.return_value = test_pubkey
+        mock_key.private_key = test_private_key
+
+        mock_backend = AsyncMock()
+        mock_backend.get_block_time.return_value = 1700000000
+
+        mock_wallet = MagicMock()
+        mock_wallet.utxo_cache = {
+            FIDELITY_BOND_MIXDEPTH: [mock_utxo],
+        }
+        mock_wallet.get_key_for_address.return_value = None  # Cache miss
+        mock_wallet.get_fidelity_bond_address.return_value = mock_utxo.address
+        mock_wallet.get_fidelity_bond_key.return_value = mock_key
+        mock_wallet.backend = mock_backend
+
+        with patch("maker.fidelity.calculate_timelocked_fidelity_bond_value", return_value=50000):
+            bonds = await find_fidelity_bonds(mock_wallet)
+
+        assert len(bonds) == 1
+        assert bonds[0].pubkey == test_pubkey
+        assert bonds[0].private_key is test_private_key
+        mock_wallet.get_fidelity_bond_key.assert_called_once_with(0, 1748736000)
+
+    @pytest.mark.asyncio
+    async def test_hot_bond_without_derivable_key_is_skipped(self):
+        """A hot bond whose key cannot be derived must be skipped entirely.
+
+        Emitting it with pubkey=None would make every later proof attempt
+        fail with "Bond missing pubkey".
+        """
+        mock_utxo = MagicMock()
+        mock_utxo.path = "m/84'/0'/0'/2/0:1748736000"
+        mock_utxo.value = 100_000_000
+        mock_utxo.confirmations = 1000
+        mock_utxo.height = 850000
+        mock_utxo.address = "bcrt1qbondaddress"
+        mock_utxo.txid = "txid789"
+        mock_utxo.vout = 0
+
+        mock_wallet = MagicMock()
+        mock_wallet.utxo_cache = {
+            FIDELITY_BOND_MIXDEPTH: [mock_utxo],
+        }
+        mock_wallet.get_key_for_address.return_value = None
+        # Locktime derivation yields a DIFFERENT address (not our bond)
+        mock_wallet.get_fidelity_bond_address.return_value = "bcrt1qsomethingelse"
+
+        bonds = await find_fidelity_bonds(mock_wallet)
+        assert bonds == []
+
+    @pytest.mark.asyncio
     async def test_skips_external_addresses(self):
         """External addresses (branch 0) should not be considered."""
         mock_utxo = MagicMock()
