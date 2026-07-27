@@ -7,6 +7,120 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-07-27
+
+Automatic histroy reconstruction on import, network fee estimation for neutrino, UTXO selector with all mixdepths, CLI alphabetic sorting of subcommands and options, security hardening, neutrino taker flow improvements, and bug fixes.
+
+### Added
+
+- Reconstruct and persist on-chain wallet history after seed import ([0fc884eb](../../commit/0fc884eb63a35b63d24793eaa9d52fd0d2c4724f))
+- Estimate neutrino fees over Tor with safe provider fallbacks ([08b9dd07](../../commit/08b9dd0726ac6dbc601a8dfea8fdeb547f273b0a))
+- Subcommands and options are now listed alphabetically in all CLI --help outputs ([a13c8d33](../../commit/a13c8d336505bbfaf3fd5ce8fd567b10014f9182))
+- The orderbook watcher CLI is now jm-orderbook-watcher; the old orderbook-watcher name still works but is deprecated ([2905fd71](../../commit/2905fd71a71f3f6565f825b64895f8ca3a7e4a54))
+- Add notifications.verify_tls option for self-signed/private-CA notification servers and log the underlying error when a notification fails ([f1a82812](../../commit/f1a828124fd382963479711b835dd7ce011e8f92))
+- The interactive UTXO selector (--select-utxos) now shows the whole wallet grouped by mixdepth; the source mixdepth is derived from the selection unless pinned with --mixdepth ([cc658466](../../commit/cc658466df67a18eb27e11e35881797fe308cb50))
+- jm-taker coinjoin --select-utxos shows the whole wallet and derives the source mixdepth (and INTERNAL destination) from the selected UTXOs unless --mixdepth is set ([8ebdbe9e](../../commit/8ebdbe9e03da1a416a5fa120058981df70191ffb))
+- The shell TUI send flow can open the full-wallet UTXO selector instead of asking for a mixdepth ([03070865](../../commit/03070865b7f2532ecf0f76960b3e3806063dbf57))
+
+### Fixed
+
+- Fix a server error after deleting a tumbler plan via the API ([96626c81](../../commit/96626c812861d7672564a7dd910a632e9ae051b3))
+- Stop log flooding and CPU spin when directory connections drop mid-round ([32bc16d9](../../commit/32bc16d951bf910b4ca8add889a9e4da06d05ede))
+- Failed CoinJoin rounds no longer leave UTXOs locked until the lock TTL expires ([12e4e4c6](../../commit/12e4e4c6e48b64a076cda25467e0cac731be9102))
+- Tumbler plans now fully empty the wallet to the destinations instead of leaving part of the last mixdepth behind ([5e634932](../../commit/5e634932ea94b2c7ef59ee908dffe8e822ee88cd))
+- Tumbler phase retries no longer get blocked by input locks left over from a failed attempt ([5d1c4a77](../../commit/5d1c4a77d8fc46cd4a818d5c01afba64d476f2bb))
+- A crashed maker session phase no longer aborts the whole tumble ([e93e1946](../../commit/e93e194682eeb94f8a3840c26569c0689a41d5da))
+- Fee settings saved in JAM (sat/vB rate, fee limits) are now applied to direct sends, coinjoins, and tumbles instead of being silently ignored, fixing coinjoins on the neutrino backend ([44a7a076](../../commit/44a7a076e3740055a05bad7768664904f8e171cb))
+- Fee estimation now falls back to the next source when an onion fee endpoint is unreachable instead of failing the transaction ([389ca312](../../commit/389ca3126ac560d768db1235dbb9e67d847c7169))
+- Fix reconstructed history showing amount 0 for internal transfers and over-counting taker peers by one ([c20488c7](../../commit/c20488c7ebb8fcc4a25bece3c31308874f295430))
+- Fix sweep CoinJoins occasionally aborting with a negative residual of 1 sat when multiple makers charge relative fees ([fb7b0f11](../../commit/fb7b0f115e6a94e13238b52a948f251cb63bd48d))
+- Fix maker/taker/orderbook-watcher processes hanging after shutdown instead of exiting ([bfd0ee46](../../commit/bfd0ee467df22f740210ea3ed69cee59f6ef7c5b))
+- Bound maker-controlled CoinJoin input counts to prevent mining-fee inflation and reject invalid maker input sets before they can abort a round ([dd67f8ee](../../commit/dd67f8eef8e9a2056664d6eaf13599d6b65edd84))
+- Prevent maker rounds from failing when input selection would leave sub-dust change ([2a6d8d63](../../commit/2a6d8d63a490cdbe07eb2be94021c8fbc9e62020))
+- Fix makers on light-client backends (Neutrino) failing to create fidelity bond proofs with 'Bond missing pubkey' ([bbd71bae](../../commit/bbd71bae70f47b879c3261607f452cc6930e4c7d))
+- Make maker bond discovery robust when the bond address is missing from the wallet's address cache ([101d96a3](../../commit/101d96a3364a0b68493b3d68615649f907d0bf17))
+- Neutrino takers now replace makers that turn out not to support neutrino_compat instead of aborting the CoinJoin ([e6d3cf01](../../commit/e6d3cf01612e8f9f83f106b9e51b86bf3e485dff))
+- Neutrino takers now prefer makers with confirmed neutrino_compat support during selection, falling back to unknown-status makers only when needed ([3f0e6509](../../commit/3f0e65096383ce7600143f2a3ead1afcef7c5bb1))
+- Neutrino takers now detect incompatible makers right after the fill phase and replace them before sending PoDLE revelations ([ddbd42d8](../../commit/ddbd42d8928de5bdf921e47d483c688299ba8fd2))
+- The taker now retries with other makers when a replacement candidate does not respond, instead of failing the CoinJoin ([bae5e265](../../commit/bae5e265ae01d68d6cbc389aa1da6e7757dd1760))
+
+### Configuration Changes
+
+Existing `config.toml` files are not updated automatically. Review the bundled template changes below and apply the relevant options manually.
+
+````diff
+--- config.toml.template (0.34.2)
++++ config.toml.template (0.35.0)
+@@ -128,6 +128,22 @@
+ # effect against older neutrino-api builds without the tracker. Set to false
+ # for chain-only behaviour.
+ # neutrino_include_mempool = true
++
++# External HTTP fee estimate source, used when the backend cannot estimate
++# fees itself (neutrino; the descriptor_wallet backend always uses Bitcoin
++# Core's estimatesmartfee). Fetched over the Tor SOCKS proxy configured in
++# [tor]. Accepted response formats: mempool.space recommended fees
++# (/api/v1/fees/recommended), Esplora /fee-estimates, and LND fee.url JSON.
++# Unset (default): over Tor, try the mempool.space onion service first, then
++# Blockstream's Esplora onion, then both providers' clearnet endpoints through
++# Tor. Failed sources are deprioritized for 10 minutes before being retried.
++# This is disabled on regtest or when no Tor proxy is available. Set to "off"
++# to disable external estimation (a manual fee rate
++# is then required with neutrino). A comma-separated list supplies a custom
++# fallback order. Self-hosting a mempool/Esplora instance is the most private
++# option. Every resolved estimate is still subject to the hard
++# wallet.max_fee_rate_sat_vb safety cap above (default 1000 sat/vB).
++# fee_estimate_url = "http://your-esplora.onion/api/fee-estimates,https://backup.example/fee-estimates"
+
+ # ============================================================================
+ # Network Settings
+@@ -181,6 +197,14 @@
+ #    0  disable auto-freezing
+ # Release a frozen UTXO with `jm-wallet unfreeze`.
+ # max_sats_freeze_reuse = -1
++
++# Automatically reconstruct CoinJoin/send/deposit history from on-chain data
++# for wallets imported from seed (wallets with no recorded history). Uses the
++# same equal-output CoinJoin heuristic as the legacy client to guess each
++# transaction's role (maker/taker/send/deposit) and fees. Reconstructed rows
++# are tagged as on-chain guesses and never override protocol-recorded history.
++# Manual control: `jm-wallet reconstruct-history`.
++# reconstruct_history = true
+
+ # Smart wallet scanning optimizations
+ # When importing an existing wallet, initial sync scans recent blocks for fast startup.
+@@ -261,6 +285,13 @@
+ # mempool_url = ""
+ # include_nick = true
+ # use_tor = true
++
++# Verify TLS certificates of notification servers. Set to false when your
++# notification server (e.g. Gotify) uses a self-signed certificate or a
++# private CA that Python's bundled certifi store does not trust. To keep
++# verification enabled instead, point the REQUESTS_CA_BUNDLE environment
++# variable at your CA bundle (e.g. /etc/ssl/certs/ca-certificates.crt).
++# verify_tls = true
+
+ # Event notifications
+ # notify_fill = true
+@@ -437,6 +468,15 @@
+ # max_cj_fee_abs = 500        # Absolute fee in satoshis per maker
+ # max_cj_fee_rel = "0.001"    # Relative fee (0.001 = 0.1%)
+
++# Maximum inputs a single maker may contribute to the CoinJoin.
++# The taker pays the mining fee for EVERY input, so a maker with many inputs
++# consolidates its UTXOs at your expense: each extra input costs you about
++# 68 vbytes times the fee rate. Makers above the cap are dropped and replaced.
++# Worst-case mining fee added by counterparties is roughly
++# counterparty_count * max_maker_utxos * 68 * fee_rate satoshis.
++# Set to 0 to disable the cap (not recommended).
++# max_maker_utxos = 15
++
+ # PoDLE commitment requirements (control which UTXOs can be used as PoDLE inputs).
+ # These match the reference JoinMarket defaults; loosening them weakens the
+ # anti-DoS commitment scheme.
+````
+
 ## [0.34.2] - 2026-07-20
 
 ### Fixed
@@ -3266,7 +3380,8 @@ This release did not change the bundled `config.toml.template`.
 - Pre-built image support for directory server compose.
 - Tor configuration instructions.
 
-[Unreleased]: ../../compare/0.34.2...HEAD
+[Unreleased]: ../../compare/0.35.0...HEAD
+[0.35.0]: ../../compare/0.34.2...0.35.0
 [0.34.2]: ../../compare/0.34.1...0.34.2
 [0.34.1]: ../../compare/0.34.0...0.34.1
 [0.34.0]: ../../compare/0.33.0...0.34.0
