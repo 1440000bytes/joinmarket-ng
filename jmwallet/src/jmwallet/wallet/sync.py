@@ -599,7 +599,18 @@ class WalletSyncMixin:
         if bond_addresses is not None:
             for address, locktime, index in bond_addresses:
                 addresses.append(address)
-                address_to_info[address.lower()] = (locktime, index)
+                addr_lower = address.lower()
+                address_to_info[addr_lower] = (locktime, index)
+                # Register the bond address in the wallet caches, matching the
+                # descriptor sync paths. Without this, light-client syncs
+                # (e.g. Neutrino) stored the bond UTXO but left the address
+                # unknown to ``get_key_for_address``, so the maker could not
+                # derive the bond key and proof creation failed with
+                # "Bond missing pubkey". External bonds (index=-1) have no
+                # derivable key, so they are only cached by locktime.
+                if index >= 0:
+                    self.address_cache[addr_lower] = (0, FIDELITY_BOND_BRANCH, index)
+                self.fidelity_bond_locktime_cache[addr_lower] = locktime
         else:
             for locktime in locktimes:
                 timenumber = timestamp_to_timenumber(locktime)

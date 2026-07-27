@@ -1113,6 +1113,93 @@ class TestSyncFidelityBondDeduplication:
         assert outpoints.count(("d" * 64, 0)) == 1
 
 
+class TestSyncFidelityBondAddressCache:
+    """sync_fidelity_bonds with explicit bond_addresses must register the
+    addresses in the wallet caches.
+
+    Regression test: on light-client backends (Neutrino) the maker syncs
+    bonds via sync_all -> sync_fidelity_bonds(bond_addresses=...). Before
+    the fix, this path never populated address_cache, so
+    get_key_for_address() returned None for the bond address and the maker
+    failed every bond proof with "Bond missing pubkey".
+    """
+
+    @pytest.mark.asyncio
+    async def test_explicit_bond_addresses_populate_caches(self, test_mnemonic: str, mock_backend):
+        from jmcore.timenumber import timestamp_to_timenumber
+
+        from jmwallet.wallet.address import script_to_p2wsh_address
+
+        ws = WalletService(
+            mnemonic=test_mnemonic,
+            backend=mock_backend,
+            network="regtest",
+            mixdepth_count=5,
+            gap_limit=20,
+        )
+
+        locktime = 1893456000
+        timenumber = timestamp_to_timenumber(locktime)
+        # Derive the canonical bond address without the caching side effects
+        # of get_fidelity_bond_address() so the cache starts empty.
+        script = ws.get_fidelity_bond_script(timenumber, locktime)
+        address = script_to_p2wsh_address(script, ws.network)
+        assert address.lower() not in ws.address_cache
+
+        mock_backend.get_utxos = AsyncMock(
+            return_value=[
+                UTXOInfo(
+                    txid="e" * 64,
+                    vout=0,
+                    value=1_000_000,
+                    address=address,
+                    confirmations=100,
+                    scriptpubkey="0020" + "ff" * 32,
+                    path="",
+                    mixdepth=0,
+                    locktime=locktime,
+                )
+            ]
+        )
+
+        await ws.sync_fidelity_bonds([], bond_addresses=[(address, locktime, timenumber)])
+
+        addr_lower = address.lower()
+        assert ws.address_cache[addr_lower] == (0, 2, timenumber)
+        assert ws.fidelity_bond_locktime_cache[addr_lower] == locktime
+
+        # The maker derives the bond key through get_key_for_address()
+        key = ws.get_key_for_address(address)
+        assert key is not None
+        expected = ws.get_fidelity_bond_key(timenumber, locktime)
+        assert key.get_public_key_bytes(compressed=True) == expected.get_public_key_bytes(
+            compressed=True
+        )
+
+    @pytest.mark.asyncio
+    async def test_external_bond_address_only_caches_locktime(
+        self, test_mnemonic: str, mock_backend
+    ):
+        """External bonds (index=-1) have no derivable key: only the locktime
+        is cached, so get_key_for_address() must not derive a bogus key."""
+        ws = WalletService(
+            mnemonic=test_mnemonic,
+            backend=mock_backend,
+            network="regtest",
+            mixdepth_count=5,
+            gap_limit=20,
+        )
+
+        locktime = 1893456000
+        address = "bcrt1q" + "external" * 5
+
+        await ws.sync_fidelity_bonds([], bond_addresses=[(address, locktime, -1)])
+
+        assert address.lower() not in ws.address_cache
+        assert ws.fidelity_bond_locktime_cache[address.lower()] == locktime
+        assert ws.get_key_for_address(address) is None
+
+
 class TestFreezeUnfreezeGuard:
     """Tests for the fidelity-bond guard in the bulk unfreeze path.
 
