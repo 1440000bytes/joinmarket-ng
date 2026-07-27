@@ -488,6 +488,23 @@ class CoinJoinSession:
                 if nick not in blacklist_makers:
                     blacklist_makers.append(nick)
 
+        # Opportunistic early drop for neutrino takers: a maker whose !pubkey
+        # did not advertise neutrino_compat would be dropped in _phase_auth
+        # anyway (we cannot verify its UTXOs without extended metadata), so
+        # drop it now, before wasting an !auth round trip, and let the fill
+        # replacement machinery find a substitute. The auth-phase check stays
+        # as a safety net for replacement paths.
+        if self.backend.requires_neutrino_metadata():
+            for nick in list(self.maker_sessions.keys()):
+                session = self.maker_sessions[nick]
+                if session.responded_fill and not session.supports_neutrino_compat:
+                    logger.warning(
+                        f"Dropping maker {nick} after !pubkey: no neutrino_compat in "
+                        f"advertised features (taker requires extended UTXO metadata)."
+                    )
+                    failed_makers.append(nick)
+                    del self.maker_sessions[nick]
+
         if len(self.maker_sessions) < self.config.minimum_makers:
             logger.error(f"Not enough makers responded: {len(self.maker_sessions)}")
             return PhaseResult(

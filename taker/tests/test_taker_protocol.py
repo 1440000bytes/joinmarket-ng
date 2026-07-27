@@ -2369,6 +2369,81 @@ class TestNeutrinoIncompatibleMakerReplacement:
         assert session.process_pubkey_response("J5x", "") is False
         assert mk.responded_fill is False
 
+    @staticmethod
+    def _prepare_fill(taker: Taker, responses: dict[str, dict[str, str]]) -> None:
+        """Wire the directory client and commitment mocks for a _phase_fill run."""
+        dc = taker.directory_client
+        dc.prefer_direct_connections = False
+        dc.get_connected_peer = MagicMock(return_value=None)
+        binding = MagicMock()
+        binding.channel_id = "directory:host:5222"
+        binding.is_direct = False
+        binding.peer_location = None
+        dc.bind_session = MagicMock(return_value=binding)
+        dc.send_privmsg = AsyncMock(return_value="directory:host:5222")
+        dc.wait_for_responses = AsyncMock(return_value=responses)
+        taker._session.podle_commitment.to_commitment_str = MagicMock(return_value="ab" * 32)
+
+    @pytest.mark.asyncio
+    async def test_phase_fill_early_drops_makers_without_neutrino_compat(self):
+        """A neutrino taker drops makers whose !pubkey lacks neutrino_compat
+        right after the fill phase, before wasting an !auth round trip, and
+        reports them as failed so the fill replacement machinery kicks in."""
+        taker = self._make_neutrino_taker(minimum_makers=2)
+
+        good_crypto = CryptoSession()
+        legacy_crypto = CryptoSession()
+        self._prepare_fill(
+            taker,
+            {
+                "J5good": {
+                    "data": f"{good_crypto.get_pubkey_hex()} features=neutrino_compat signpk sig"
+                },
+                "J5legacy": {"data": f"{legacy_crypto.get_pubkey_hex()} signpk sig"},
+            },
+        )
+        taker._session.maker_sessions = {
+            "J5good": MakerSession(nick="J5good", offer=_simple_offer("J5good")),
+            "J5legacy": MakerSession(nick="J5legacy", offer=_simple_offer("J5legacy")),
+        }
+
+        result = await taker._session._phase_fill()
+
+        assert result.success is False
+        assert result.failed_makers == ["J5legacy"]
+        assert result.needs_replacement is True
+        assert set(taker._session.maker_sessions.keys()) == {"J5good"}
+        assert taker._session.maker_sessions["J5good"].supports_neutrino_compat is True
+
+    @pytest.mark.asyncio
+    async def test_phase_fill_keeps_legacy_makers_for_full_node_taker(self):
+        """Full-node takers can verify legacy makers' UTXOs, so a missing
+        features field in !pubkey must not drop the maker."""
+        taker = self._make_neutrino_taker(minimum_makers=2)
+        taker.backend.requires_neutrino_metadata = MagicMock(return_value=False)
+
+        good_crypto = CryptoSession()
+        legacy_crypto = CryptoSession()
+        self._prepare_fill(
+            taker,
+            {
+                "J5good": {
+                    "data": f"{good_crypto.get_pubkey_hex()} features=neutrino_compat signpk sig"
+                },
+                "J5legacy": {"data": f"{legacy_crypto.get_pubkey_hex()} signpk sig"},
+            },
+        )
+        taker._session.maker_sessions = {
+            "J5good": MakerSession(nick="J5good", offer=_simple_offer("J5good")),
+            "J5legacy": MakerSession(nick="J5legacy", offer=_simple_offer("J5legacy")),
+        }
+
+        result = await taker._session._phase_fill()
+
+        assert result.success is True
+        assert result.failed_makers == []
+        assert set(taker._session.maker_sessions.keys()) == {"J5good", "J5legacy"}
+
     @pytest.mark.asyncio
     async def test_auth_replacement_detects_replacement_maker_features(self):
         """Replacement makers advertising neutrino_compat in their !pubkey must
