@@ -23,7 +23,6 @@ from jmcore.bond_calc import calculate_timelocked_fidelity_bond_value
 from jmcore.btc_script import derive_bond_address
 from jmcore.commitment_blacklist import set_blacklist_path
 from jmcore.crypto import NickIdentity
-from jmcore.encryption import CryptoSession
 from jmcore.notifications import get_notifier
 from jmcore.paths import read_nick_state
 from jmcore.protocol import FEATURE_NEUTRINO_COMPAT, JM_VERSION
@@ -1247,20 +1246,15 @@ class Taker(TakerMonitoringMixin):
                     if nick in responses and not responses[nick].get("error"):
                         try:
                             response_data = responses[nick]["data"].strip()
-                            parts = response_data.split()
-                            if parts:
-                                nacl_pubkey = parts[0]
-                                self._session.maker_sessions[nick].pubkey = nacl_pubkey
-                                self._session.maker_sessions[nick].responded_fill = True
-
-                                crypto = CryptoSession.__new__(CryptoSession)
-                                crypto.keypair = self._session.crypto_session.keypair
-                                crypto.box = None
-                                crypto.counterparty_pubkey = ""
-                                crypto.setup_encryption(nacl_pubkey)
-                                self._session.maker_sessions[nick].crypto = crypto
+                            # Shared with _phase_fill: also parses the features
+                            # field so replacement makers advertising
+                            # neutrino_compat are not dropped again in the next
+                            # auth pass.
+                            if self._session.process_pubkey_response(nick, response_data):
                                 new_makers_ready += 1
                                 logger.debug(f"Replacement maker {nick} ready")
+                            else:
+                                del self._session.maker_sessions[nick]
                         except Exception as e:
                             logger.warning(f"Failed to process {nick}: {e}")
                             del self._session.maker_sessions[nick]

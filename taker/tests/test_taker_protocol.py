@@ -2240,3 +2240,193 @@ class TestPhaseAuthMakerAuthentication:
         )
         assert result.success is True
         assert nick in session_state.maker_sessions
+
+
+# --- Tests for neutrino-incompatible maker replacement (auth phase) ---
+
+
+def _simple_offer(nick: str) -> Offer:
+    return Offer(
+        counterparty=nick,
+        oid=0,
+        ordertype=OfferType.SW0_RELATIVE,
+        minsize=100_000,
+        maxsize=10_000_000,
+        txfee=0,
+        cjfee="0.001",
+    )
+
+
+class TestNeutrinoIncompatibleMakerReplacement:
+    """Regression tests for a neutrino taker meeting makers that turn out not
+    to advertise neutrino_compat mid-session.
+
+    Previously _phase_auth dropped such makers without reporting them in
+    ``failed_makers``, so ``needs_replacement`` stayed False and the whole
+    CoinJoin failed hard instead of replacing the incompatible maker.
+    """
+
+    @staticmethod
+    def _make_neutrino_taker(minimum_makers: int = 2) -> Taker:
+        from taker.coinjoin_session import CoinJoinSession
+
+        with patch.object(Taker, "__init__", lambda self, *a, **k: None):
+            taker = Taker.__new__(Taker)
+        taker._session = CoinJoinSession()
+        taker._session.attach(taker)
+        taker.wallet = MagicMock()
+        taker.backend = AsyncMock()
+        taker.backend.requires_neutrino_metadata = MagicMock(return_value=True)
+        taker.config = MagicMock()
+        taker.config.minimum_makers = minimum_makers
+        taker.config.maker_timeout_sec = 1
+
+        dc = MagicMock()
+        dc.send_privmsg = AsyncMock(return_value="direct")
+        dc.upgrade_channel_prefer_direct = MagicMock(side_effect=lambda n, ch: ch)
+        dc.wait_for_responses = AsyncMock(return_value={})
+        taker.directory_client = dc
+
+        commitment = MagicMock()
+        commitment.has_neutrino_metadata.return_value = True
+        commitment.to_revelation.return_value = {
+            "utxo": "a" * 64 + ":0",
+            "P": "00",
+            "P2": "00",
+            "sig": "00",
+            "e": "00",
+        }
+        taker._session.podle_commitment = commitment
+        return taker
+
+    @pytest.mark.asyncio
+    async def test_phase_auth_reports_incompatible_makers_as_failed(self):
+        """Makers dropped for missing neutrino_compat must be reported in
+        failed_makers so the replacement loop can ignore and replace them."""
+        taker = self._make_neutrino_taker(minimum_makers=2)
+
+        compatible = MakerSession(
+            nick="J5good", offer=_simple_offer("J5good"), supports_neutrino_compat=True
+        )
+        incompatible = MakerSession(
+            nick="J5legacy", offer=_simple_offer("J5legacy"), supports_neutrino_compat=False
+        )
+        taker_crypto, _ = make_crypto_pair()
+        compatible.crypto = taker_crypto
+        incompatible.crypto = taker_crypto
+        taker._session.maker_sessions = {"J5good": compatible, "J5legacy": incompatible}
+
+        result = await taker._session._phase_auth()
+
+        assert result.success is False
+        assert result.failed_makers == ["J5legacy"]
+        assert result.needs_replacement is True
+        # The compatible maker stays in the session for the replacement pass.
+        assert set(taker._session.maker_sessions.keys()) == {"J5good"}
+        # The early return fires before waiting for !ioauth responses.
+        taker.directory_client.wait_for_responses.assert_not_awaited()
+
+    def test_process_pubkey_response_parses_features(self):
+        """The shared !pubkey processing must record neutrino_compat support."""
+        from taker.coinjoin_session import CoinJoinSession
+
+        session = CoinJoinSession()
+        session.crypto_session = CryptoSession()
+        maker_crypto = CryptoSession()
+        mk = MakerSession(nick="J5x", offer=_simple_offer("J5x"))
+        session.maker_sessions = {"J5x": mk}
+
+        payload = f"{maker_crypto.get_pubkey_hex()} features=neutrino_compat,other signpk sig"
+        assert session.process_pubkey_response("J5x", payload) is True
+        assert mk.supports_neutrino_compat is True
+        assert mk.responded_fill is True
+        assert mk.pubkey == maker_crypto.get_pubkey_hex()
+        assert mk.crypto is not None
+
+    def test_process_pubkey_response_without_features(self):
+        """Legacy makers send no features field; support flag stays False."""
+        from taker.coinjoin_session import CoinJoinSession
+
+        session = CoinJoinSession()
+        session.crypto_session = CryptoSession()
+        maker_crypto = CryptoSession()
+        mk = MakerSession(nick="J5x", offer=_simple_offer("J5x"))
+        session.maker_sessions = {"J5x": mk}
+
+        payload = f"{maker_crypto.get_pubkey_hex()} signpk sig"
+        assert session.process_pubkey_response("J5x", payload) is True
+        assert mk.supports_neutrino_compat is False
+        assert mk.crypto is not None
+
+    def test_process_pubkey_response_rejects_empty_payload(self):
+        from taker.coinjoin_session import CoinJoinSession
+
+        session = CoinJoinSession()
+        session.crypto_session = CryptoSession()
+        mk = MakerSession(nick="J5x", offer=_simple_offer("J5x"))
+        session.maker_sessions = {"J5x": mk}
+
+        assert session.process_pubkey_response("J5x", "") is False
+        assert mk.responded_fill is False
+
+    @pytest.mark.asyncio
+    async def test_auth_replacement_detects_replacement_maker_features(self):
+        """Replacement makers advertising neutrino_compat in their !pubkey must
+        be recognized (previously the replacement mini-fill skipped the features
+        field, so replacements were always re-dropped as incompatible)."""
+        taker = self._make_neutrino_taker(minimum_makers=2)
+        taker._session.cj_amount = 1_000_000
+        taker._session.crypto_session = CryptoSession()
+        taker._session.podle_commitment.to_commitment_str = MagicMock(return_value="ab" * 32)
+
+        compatible = MakerSession(
+            nick="J5good", offer=_simple_offer("J5good"), supports_neutrino_compat=True
+        )
+        taker_crypto, _ = make_crypto_pair()
+        compatible.crypto = taker_crypto
+        taker._session.maker_sessions = {"J5good": compatible}
+
+        # First auth pass fails after dropping the incompatible maker; the
+        # second (after replacement) succeeds.
+        taker._session._phase_auth = AsyncMock(
+            side_effect=[
+                PhaseResult(success=False, failed_makers=["J5legacy"]),
+                PhaseResult(success=True),
+            ]
+        )
+
+        replacement_offer = _simple_offer("J5new")
+        taker.orderbook_manager = MagicMock()
+        taker.orderbook_manager.select_makers = MagicMock(
+            return_value=({"J5new": replacement_offer}, 100)
+        )
+
+        binding = MagicMock()
+        binding.channel_id = "direct"
+        binding.is_direct = True
+        taker.directory_client.bind_session = MagicMock(return_value=binding)
+
+        maker_crypto = CryptoSession()
+        taker.directory_client.wait_for_responses = AsyncMock(
+            return_value={
+                "J5new": {
+                    "data": f"{maker_crypto.get_pubkey_hex()} features=neutrino_compat signpk sig"
+                }
+            }
+        )
+
+        ok = await taker._run_auth_with_replacements(
+            required_features={"neutrino_compat"}, max_replacement_attempts=3
+        )
+
+        assert ok is True
+        # The incompatible maker was ignored and hard-excluded from re-selection.
+        taker.orderbook_manager.add_ignored_maker.assert_any_call("J5legacy")
+        _, kwargs = taker.orderbook_manager.select_makers.call_args
+        assert "J5legacy" in kwargs["hard_exclude_nicks"]
+        assert kwargs["required_features"] == {"neutrino_compat"}
+        # The replacement maker's features were parsed from its !pubkey.
+        new_session = taker._session.maker_sessions["J5new"]
+        assert new_session.supports_neutrino_compat is True
+        assert new_session.responded_fill is True
+        assert new_session.crypto is not None

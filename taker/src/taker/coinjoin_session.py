@@ -257,6 +257,58 @@ class CoinJoinSession:
             del self.maker_sessions[nick]
         return dropped
 
+    def process_pubkey_response(self, nick: str, response_data: str) -> bool:
+        """Parse a maker's !pubkey payload and set up its encryption session.
+
+        Payload format: ``<nacl_pubkey_hex> [features=<comma-separated>]
+        <signing_pk> <sig>``. Records the maker's NaCl pubkey, parses the
+        optional features field (e.g. ``features=neutrino_compat``) into
+        ``supports_neutrino_compat``, and creates the per-maker crypto session
+        reusing the taker keypair from ``self.crypto_session`` (the pubkey the
+        maker saw in !fill). Used for both the initial fill phase and the
+        mini-fill run for replacement makers, so feature detection stays
+        consistent across the two paths.
+
+        Returns True on success; False on an empty payload or missing taker
+        crypto session (the caller drops the maker session). Exceptions from
+        an invalid pubkey propagate and are handled the same way by callers.
+        """
+        if self.crypto_session is None:
+            logger.error(f"No taker crypto session while processing !pubkey from {nick}")
+            return False
+
+        parts = response_data.split()
+        if not parts:
+            logger.warning(f"Empty !pubkey response from {nick}")
+            return False
+
+        session = self.maker_sessions[nick]
+        nacl_pubkey = parts[0]
+        session.pubkey = nacl_pubkey
+        session.responded_fill = True
+
+        # Parse optional features (e.g., "features=neutrino_compat")
+        for part in parts[1:]:
+            if part.startswith("features="):
+                features_str = part[len("features=") :]
+                features = set(features_str.split(",")) if features_str else set()
+                if FEATURE_NEUTRINO_COMPAT in features:
+                    session.supports_neutrino_compat = True
+                    logger.debug(f"Maker {nick} supports neutrino_compat")
+                break
+
+        # Set up encryption session with this maker using their NaCl pubkey.
+        # IMPORTANT: Reuse the same keypair from self.crypto_session that was
+        # sent in !fill, just set up a new box with the maker's pubkey.
+        crypto = CryptoSession.__new__(CryptoSession)
+        crypto.keypair = self.crypto_session.keypair  # Reuse taker keypair!
+        crypto.box = None
+        crypto.counterparty_pubkey = ""
+        crypto.setup_encryption(nacl_pubkey)
+        session.crypto = crypto
+        logger.debug(f"Processed !pubkey from {nick}: {nacl_pubkey[:16]}..., encryption set up")
+        return True
+
     async def _phase_fill(self) -> PhaseResult:
         """Send !fill to all selected makers and wait for !pubkey responses.
 
@@ -405,39 +457,7 @@ class CoinJoinSession:
 
                 try:
                     response_data = responses[nick]["data"].strip()
-                    # Format: "<nacl_pubkey_hex> [features=...] <signing_pk> <sig>"
-                    # We need the first part (nacl_pubkey_hex) and optionally features
-                    parts = response_data.split()
-                    if parts:
-                        nacl_pubkey = parts[0]
-                        self.maker_sessions[nick].pubkey = nacl_pubkey
-                        self.maker_sessions[nick].responded_fill = True
-
-                        # Parse optional features (e.g., "features=neutrino_compat")
-                        for part in parts[1:]:
-                            if part.startswith("features="):
-                                features_str = part[9:]  # Skip "features="
-                                features = set(features_str.split(",")) if features_str else set()
-                                if "neutrino_compat" in features:
-                                    self.maker_sessions[nick].supports_neutrino_compat = True
-                                    logger.debug(f"Maker {nick} supports neutrino_compat")
-                                break
-
-                        # Set up encryption session with this maker using their NaCl pubkey
-                        # IMPORTANT: Reuse the same keypair from self.crypto_session
-                        # that was sent in !fill, just set up new box with maker's pubkey
-                        crypto = CryptoSession.__new__(CryptoSession)
-                        crypto.keypair = self.crypto_session.keypair  # Reuse taker keypair!
-                        crypto.box = None
-                        crypto.counterparty_pubkey = ""
-                        crypto.setup_encryption(nacl_pubkey)
-                        self.maker_sessions[nick].crypto = crypto
-                        logger.debug(
-                            f"Processed !pubkey from {nick}: {nacl_pubkey[:16]}..., "
-                            f"encryption set up"
-                        )
-                    else:
-                        logger.warning(f"Empty !pubkey response from {nick}")
+                    if not self.process_pubkey_response(nick, response_data):
                         failed_makers.append(nick)
                         del self.maker_sessions[nick]
                 except Exception as e:
@@ -512,6 +532,10 @@ class CoinJoinSession:
         has_metadata = self.podle_commitment.has_neutrino_metadata()
         taker_requires_extended = self.backend.requires_neutrino_metadata()
 
+        # Makers dropped for lacking a required feature. Reported as failed so
+        # the caller can add them to the ignored list and select replacements.
+        incompatible_makers: list[str] = []
+
         for nick, session in list(self.maker_sessions.items()):
             if session.crypto is None:
                 logger.error(f"No encryption session for {nick}")
@@ -529,6 +553,7 @@ class CoinJoinSession:
                     f"doesn't support neutrino_compat. Taker cannot verify maker's UTXOs "
                     f"without extended metadata (scriptpubkey + blockheight)."
                 )
+                incompatible_makers.append(nick)
                 del self.maker_sessions[nick]
                 continue
 
@@ -572,10 +597,9 @@ class CoinJoinSession:
                 force_channel=session.comm_channel,
             )
 
-        # Track makers filtered due to incompatibility (not the same as failed)
-        incompatible_makers: list[str] = []
-
-        # Check if we still have enough makers after filtering incompatible ones
+        # Check if we still have enough makers after filtering incompatible ones.
+        # The incompatible makers are reported as failed so the replacement loop
+        # in _run_auth_with_replacements can ignore them and pick substitutes.
         if len(self.maker_sessions) < self.config.minimum_makers:
             logger.error(
                 f"Not enough compatible makers: {len(self.maker_sessions)} "
@@ -594,8 +618,9 @@ class CoinJoinSession:
             timeout=timeout,
         )
 
-        # Track failed makers for potential replacement
-        failed_makers: list[str] = []
+        # Track failed makers for potential replacement, seeded with the makers
+        # already dropped for incompatibility so they are ignored going forward.
+        failed_makers: list[str] = list(incompatible_makers)
 
         # Process responses
         # Maker sends !ioauth as ENCRYPTED space-separated:
