@@ -98,6 +98,7 @@ class DaemonState:
         # ``getwalletinfo.scanning`` state, which is the source of truth.
         self.rescanning: bool = False
         self.rescan_progress: float = 0.0
+        self.rescan_error: str | None = None
         self._rescan_task: asyncio.Task[None] | None = None
 
         # In-memory config overrides (configset values, not persisted)
@@ -236,6 +237,7 @@ class DaemonState:
         self._tx_broadcast_notified.clear()
         self.rescanning = False
         self.rescan_progress = 0.0
+        self.rescan_error = None
         self.tumble_runner = None
         self.tumble_task = None
         self.tumble_plan_wallet = None

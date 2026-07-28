@@ -1028,6 +1028,94 @@ class TestNeutrinoBackend:
         await backend.close()
 
     @pytest.mark.asyncio
+    async def test_ensure_addresses_scanned_rescans_below_genesis(self):
+        """Genesis coverage is bypassed with the server's tolerated -1 height."""
+
+        backend = NeutrinoBackend(
+            neutrino_url="http://localhost:8334",
+            network="regtest",
+        )
+        backend.get_block_height = AsyncMock(return_value=1000)
+        backend._api_call = AsyncMock(return_value={})
+        backend._wait_for_rescan = AsyncMock(return_value=True)
+        backend._get_rescan_coverage = AsyncMock(return_value=(0, 1000))
+
+        bond_addr = "bcrt1qbondaddressexample0000000000000000000000000xyz"
+        await backend.ensure_addresses_scanned([bond_addr])
+
+        rescan_calls = [
+            c for c in backend._api_call.call_args_list if c.args[:2] == ("POST", "v1/rescan")
+        ]
+        assert rescan_calls[-1].kwargs["data"]["start_height"] == -1
+        await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_ensure_addresses_scanned_allows_retry_after_post_failure(self):
+        """A failed backfill must not leave new addresses cached as covered."""
+
+        backend = NeutrinoBackend(
+            neutrino_url="http://localhost:8334",
+            network="regtest",
+        )
+        backend.get_block_height = AsyncMock(return_value=1000)
+        backend._get_rescan_coverage = AsyncMock(return_value=(0, 1000))
+        backend._wait_for_rescan = AsyncMock(return_value=True)
+        backend._api_call = AsyncMock(side_effect=RuntimeError("server unavailable"))
+        bond_addr = "bcrt1qretrybondexample000000000000000000000000000xyz"
+
+        with pytest.raises(RuntimeError, match="server unavailable"):
+            await backend.ensure_addresses_scanned([bond_addr])
+        assert bond_addr not in backend._watched_addresses
+
+        backend._api_call = AsyncMock(return_value={})
+        await backend.ensure_addresses_scanned([bond_addr])
+
+        assert bond_addr in backend._watched_addresses
+        assert backend._just_rescanned is True
+        await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_ensure_addresses_scanned_allows_retry_after_preparation_failure(self):
+        """Failures before the POST must also roll back local watch coverage."""
+
+        backend = NeutrinoBackend(
+            neutrino_url="http://localhost:8334",
+            network="regtest",
+        )
+        backend.get_block_height = AsyncMock(side_effect=RuntimeError("tip unavailable"))
+        bond_addr = "bcrt1qpreparefailure0000000000000000000000000000xyz"
+
+        with pytest.raises(RuntimeError, match="tip unavailable"):
+            await backend.ensure_addresses_scanned([bond_addr])
+
+        assert bond_addr not in backend._watched_addresses
+        await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_ensure_addresses_scanned_rejects_unconfirmed_rescan(self):
+        """Modern servers must confirm either status completion or new coverage."""
+
+        backend = NeutrinoBackend(
+            neutrino_url="http://localhost:8334",
+            network="regtest",
+        )
+        backend._server_capabilities.detected = True
+        backend._server_capabilities.has_rescan_status = True
+        backend._server_capabilities.has_persistent_rescan_state = True
+        backend.get_block_height = AsyncMock(return_value=1000)
+        backend._get_rescan_coverage = AsyncMock(side_effect=[(0, 1000), (0, 1000)])
+        backend._wait_for_rescan = AsyncMock(return_value=False)
+        backend._api_call = AsyncMock(return_value={})
+        bond_addr = "bcrt1qunconfirmedbond000000000000000000000000000xyz"
+
+        with pytest.raises(RuntimeError, match="rescan was not confirmed"):
+            await backend.ensure_addresses_scanned([bond_addr])
+
+        assert bond_addr not in backend._watched_addresses
+        assert backend._just_rescanned is False
+        await backend.close()
+
+    @pytest.mark.asyncio
     async def test_ensure_addresses_scanned_skips_already_watched(self):
         """Already-watched addresses do not trigger a redundant rescan."""
 
@@ -1597,6 +1685,18 @@ class TestNeutrinoBackend:
             assert backend.has_mempool_access() is False
         finally:
             await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_get_utxos_propagates_api_failure(self):
+        backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="regtest")
+        backend._initial_rescan_done = True
+        backend._watched_addresses = {"bcrt1qtest"}
+        backend._api_call = AsyncMock(side_effect=RuntimeError("api unavailable"))
+
+        with pytest.raises(RuntimeError, match="api unavailable"):
+            await backend.get_utxos(["bcrt1qtest"])
+
+        await backend.close()
 
     @pytest.mark.asyncio
     async def test_get_utxos_sends_include_mempool_when_capable(self):

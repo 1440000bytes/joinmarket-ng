@@ -379,11 +379,104 @@ class TestRecoverWallet:
         assert mock_ws_cls.call_args.kwargs["network"] == "mainnet"
 
         mock_ws.setup_descriptor_wallet.assert_awaited_once_with(
+            include_all_fidelity_bonds=False,
+            rescan_existing=True,
             smart_scan=wallet_settings.smart_scan,
             background_full_rescan=wallet_settings.background_full_rescan,
         )
         # Bond-aware sync so recovered fidelity bonds are scanned and surfaced.
         mock_ws.sync_with_registered_bonds.assert_awaited_once()
+
+    @patch("jmwalletd.wallet_ops._get_network", return_value="mainnet")
+    @patch("jmwalletd._backend.get_backend", new_callable=AsyncMock)
+    @patch("jmwallet.wallet.service.WalletService")
+    async def test_sw_fb_recovery_imports_all_bonds_and_uses_requested_scan_range(
+        self,
+        mock_ws_cls: MagicMock,
+        mock_get_backend: AsyncMock,
+        mock_get_network: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        wallet_path = tmp_path / "wallets" / "recovered_fb.jmdat"
+        wallet_path.parent.mkdir(parents=True, exist_ok=True)
+        mock_ws = MagicMock()
+        mock_ws.sync_with_registered_bonds = AsyncMock()
+        mock_ws.setup_descriptor_wallet = AsyncMock()
+        mock_ws_cls.return_value = mock_ws
+        mock_get_backend.return_value = _make_descriptor_backend()
+        wallet_settings = _make_wallet_settings()
+
+        with patch("jmwalletd.wallet_ops._get_wallet_settings", return_value=wallet_settings):
+            await recover_wallet(
+                wallet_path=wallet_path,
+                password="password",
+                wallet_type="sw-fb",
+                seedphrase="abandon " * 11 + "about",
+                data_dir=tmp_path,
+                scan_range=2_500,
+            )
+
+        assert mock_ws_cls.call_args.kwargs["scan_range"] == 2_500
+        mock_ws.setup_descriptor_wallet.assert_awaited_once_with(
+            include_all_fidelity_bonds=True,
+            rescan_existing=True,
+            smart_scan=wallet_settings.smart_scan,
+            background_full_rescan=wallet_settings.background_full_rescan,
+        )
+
+    @patch("jmwalletd.wallet_ops._get_network", return_value="mainnet")
+    @patch("jmwalletd._backend.get_backend", new_callable=AsyncMock)
+    @patch("jmwallet.wallet.service.WalletService")
+    async def test_recovery_setup_failure_leaves_no_wallet_file(
+        self,
+        mock_ws_cls: MagicMock,
+        mock_get_backend: AsyncMock,
+        mock_get_network: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        wallet_path = tmp_path / "wallets" / "retryable.jmdat"
+        wallet_path.parent.mkdir(parents=True, exist_ok=True)
+        mock_ws = MagicMock()
+        mock_ws.setup_descriptor_wallet = AsyncMock(side_effect=RuntimeError("rpc unavailable"))
+        mock_ws_cls.return_value = mock_ws
+        mock_get_backend.return_value = _make_descriptor_backend()
+
+        with pytest.raises(RuntimeError, match="rpc unavailable"):
+            await recover_wallet(
+                wallet_path=wallet_path,
+                password="password",
+                wallet_type="sw-fb",
+                seedphrase="abandon " * 11 + "about",
+                data_dir=tmp_path,
+            )
+
+        assert not wallet_path.exists()
+        assert (wallet_path.parent / ".wallet-operation.lock").exists()
+
+    async def test_recovery_rejects_a_concurrent_wallet_reservation(self, tmp_path: Path) -> None:
+        wallet_path = tmp_path / "wallets" / "different-name.jmdat"
+        wallet_path.parent.mkdir(parents=True, exist_ok=True)
+        import fcntl
+        import os
+
+        reservation = wallet_path.parent / ".wallet-operation.lock"
+        reservation_fd = os.open(reservation, os.O_CREAT | os.O_RDWR, 0o600)
+        fcntl.flock(reservation_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        try:
+            with pytest.raises(FileExistsError, match="operation already in progress"):
+                await recover_wallet(
+                    wallet_path=wallet_path,
+                    password="password",
+                    wallet_type="sw-fb",
+                    seedphrase="abandon " * 11 + "about",
+                    data_dir=tmp_path,
+                )
+        finally:
+            fcntl.flock(reservation_fd, fcntl.LOCK_UN)
+            os.close(reservation_fd)
+
+        assert reservation.exists()
 
     @patch("jmwalletd.wallet_ops._get_network", return_value="mainnet")
     @patch("jmwalletd._backend.get_backend", new_callable=AsyncMock)
@@ -403,6 +496,7 @@ class TestRecoverWallet:
         mock_ws.sync = AsyncMock()
         mock_ws.sync_with_registered_bonds = AsyncMock()
         mock_ws.setup_descriptor_wallet = AsyncMock()
+        mock_ws.discover_fidelity_bonds = AsyncMock()
         mock_ws_cls.return_value = mock_ws
         mock_get_backend.return_value = _make_neutrino_backend()
 
@@ -418,6 +512,74 @@ class TestRecoverWallet:
         # Neutrino backend: setup_descriptor_wallet must NOT be called.
         mock_ws.setup_descriptor_wallet.assert_not_awaited()
         mock_ws.sync_with_registered_bonds.assert_awaited_once()
+        # A plain "sw" wallet has no bond branch to discover.
+        mock_ws.discover_fidelity_bonds.assert_not_awaited()
+
+    @patch("jmwalletd.wallet_ops._get_network", return_value="mainnet")
+    @patch("jmwalletd._backend.get_backend", new_callable=AsyncMock)
+    @patch("jmwallet.wallet.service.WalletService")
+    async def test_sw_fb_recovery_on_neutrino_discovers_bonds(
+        self,
+        mock_ws_cls: MagicMock,
+        mock_get_backend: AsyncMock,
+        mock_get_network: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Light-client recovery scans the canonical bond branch explicitly."""
+        wallet_path = tmp_path / "wallets" / "recovered_neutrino_fb.jmdat"
+        wallet_path.parent.mkdir(parents=True, exist_ok=True)
+
+        mock_ws = MagicMock()
+        mock_ws.sync_with_registered_bonds = AsyncMock()
+        mock_ws.setup_descriptor_wallet = AsyncMock()
+        mock_ws.discover_fidelity_bonds = AsyncMock()
+        mock_ws_cls.return_value = mock_ws
+        mock_get_backend.return_value = _make_neutrino_backend()
+
+        await recover_wallet(
+            wallet_path=wallet_path,
+            password="password",
+            wallet_type="sw-fb",
+            seedphrase="abandon " * 11 + "about",
+            data_dir=tmp_path,
+        )
+
+        mock_ws.setup_descriptor_wallet.assert_not_awaited()
+        mock_ws.discover_fidelity_bonds.assert_awaited_once()
+        assert wallet_path.exists()
+
+    @patch("jmwalletd.wallet_ops._get_network", return_value="mainnet")
+    @patch("jmwalletd._backend.get_backend", new_callable=AsyncMock)
+    @patch("jmwallet.wallet.service.WalletService")
+    async def test_scan_range_below_configured_default_is_widened(
+        self,
+        mock_ws_cls: MagicMock,
+        mock_get_backend: AsyncMock,
+        mock_get_network: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Legacy gaplimit-style values (e.g. JAM's default 6) must not shrink
+        descriptor coverage below the configured [wallet].scan_range."""
+        wallet_path = tmp_path / "wallets" / "recovered_small_range.jmdat"
+        wallet_path.parent.mkdir(parents=True, exist_ok=True)
+        mock_ws = MagicMock()
+        mock_ws.sync_with_registered_bonds = AsyncMock()
+        mock_ws.setup_descriptor_wallet = AsyncMock()
+        mock_ws_cls.return_value = mock_ws
+        mock_get_backend.return_value = _make_descriptor_backend()
+        wallet_settings = _make_wallet_settings()
+
+        with patch("jmwalletd.wallet_ops._get_wallet_settings", return_value=wallet_settings):
+            await recover_wallet(
+                wallet_path=wallet_path,
+                password="password",
+                wallet_type="sw-fb",
+                seedphrase="abandon " * 11 + "about",
+                data_dir=tmp_path,
+                scan_range=6,
+            )
+
+        assert mock_ws_cls.call_args.kwargs["scan_range"] == wallet_settings.scan_range
 
 
 class TestOpenWallet:

@@ -524,7 +524,7 @@ class TestDescriptorWalletBackendUnit:
                     }
                 return {"scanning": False}
             if method == "listdescriptors":
-                return {"descriptors": [{"desc": "wpkh(xpub.../0/*)#check"}]}
+                return {"descriptors": [{"desc": "wpkh(xpub.../0/*)#check", "range": [0, 999]}]}
             raise ValueError(f"Unexpected method: {method}")
 
         backend._rpc_call = mock_rpc
@@ -550,6 +550,34 @@ class TestDescriptorWalletBackendUnit:
         assert result["success_count"] == 1
         assert result["error_count"] == 0
         assert backend._descriptors_imported is True
+
+    @pytest.mark.asyncio
+    async def test_import_descriptors_timeout_rejects_partial_verification(
+        self, mock_backend: DescriptorWalletBackend
+    ) -> None:
+        import httpx
+
+        backend = mock_backend
+        backend.wait_for_rescan_complete = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+        async def mock_rpc(method, params=None, client=None, use_wallet=True):
+            if method == "getdescriptorinfo":
+                return {"descriptor": f"{params[0]}#check"}
+            if method == "importdescriptors":
+                raise httpx.ReadTimeout("simulated read timeout", request=None)
+            if method == "listdescriptors":
+                return {"descriptors": [{"desc": "wpkh(other/0/*)#check", "range": [0, 999]}]}
+            raise ValueError(f"Unexpected method: {method}")
+
+        backend._rpc_call = mock_rpc
+
+        with pytest.raises(RuntimeError, match="missing or undersized"):
+            await backend.import_descriptors(
+                [{"desc": "wpkh(xpub.../0/*)", "range": [0, 999]}],
+                rescan=True,
+                smart_scan=False,
+                background_full_rescan=False,
+            )
 
     @pytest.mark.asyncio
     async def test_import_descriptors_reports_scan_progress_during_blocking_import(
@@ -737,6 +765,15 @@ class TestDescriptorWalletBackendUnit:
         assert utxos[1].value == 2_000_000
         assert utxos[1].confirmations == 0  # Unconfirmed visible
         assert utxos[1].height is None
+
+    @pytest.mark.asyncio
+    async def test_get_utxos_propagates_rpc_failure(
+        self, mock_backend: DescriptorWalletBackend
+    ) -> None:
+        mock_backend._rpc_call = AsyncMock(side_effect=RuntimeError("rpc unavailable"))
+
+        with pytest.raises(RuntimeError, match="rpc unavailable"):
+            await mock_backend.get_utxos(["bc1qtest1"])
 
     @pytest.mark.asyncio
     async def test_get_utxos_filter_addresses(self, mock_backend: DescriptorWalletBackend):
@@ -3840,6 +3877,8 @@ class TestDescriptorRangeUpgrade:
         ) -> Any:
             if method == "listunspent":
                 return []  # No UTXOs (everything was spent)
+            if method == "getblockchaininfo":
+                return {"blocks": 1000}
             if method == "listdescriptors":
                 return {
                     "descriptors": [

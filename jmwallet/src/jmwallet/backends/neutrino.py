@@ -1147,6 +1147,7 @@ class NeutrinoBackend(BlockchainBackend):
 
         except Exception as e:
             logger.error(f"Failed to fetch UTXOs: {e}")
+            raise
 
         return utxos
 
@@ -1888,26 +1889,22 @@ class NeutrinoBackend(BlockchainBackend):
         if not new_addresses:
             return
 
-        tip_height = await self.get_block_height()
-        start_height = await self._resolve_scan_start_height(tip_height)
-
-        # Bypass neutrino-api's "skip already-scanned range" optimisation, which
-        # would otherwise resume from last_scanned_tip+1 and never re-check the
-        # historical blocks where the new address may have been funded. neutrino-api
-        # only skips when start_height >= last_start_height, and persists the
-        # *earliest* start ever scanned, so we must request one block below that
-        # persisted floor to force a genuine re-scan of the old blocks against the
-        # new address' filter.
-        persisted_start, _persisted_tip = await self._get_rescan_coverage()
-        if persisted_start > 0:
-            start_height = min(start_height, persisted_start - 1)
-        start_height = max(start_height, self._min_valid_blockheight)
-
-        logger.info(
-            f"Rescanning {len(new_addresses)} newly watched address(es) "
-            f"(e.g. fidelity bonds) from height {start_height} to backfill history"
-        )
         try:
+            tip_height = await self.get_block_height()
+            start_height = await self._resolve_scan_start_height(tip_height)
+
+            # Bypass neutrino-api's global "skip already-scanned range"
+            # optimization by requesting one block below its persisted floor.
+            persisted_start, persisted_tip = await self._get_rescan_coverage()
+            if persisted_tip > 0 and start_height >= persisted_start:
+                # At genesis this is -1; neutrino-api ignores that nonexistent
+                # block and continues scanning from height 0.
+                start_height = persisted_start - 1
+
+            logger.info(
+                f"Rescanning {len(new_addresses)} newly watched address(es) "
+                f"(e.g. fidelity bonds) from height {start_height} to backfill history"
+            )
             # Issue the rescan directly rather than via ``rescan_from_height`` so
             # this deliberate one-time backfill is not rejected by the interactive
             # depth guard (the already-scanned span can exceed it). neutrino-api
@@ -1917,15 +1914,27 @@ class NeutrinoBackend(BlockchainBackend):
                 "v1/rescan",
                 data={"start_height": start_height, "addresses": new_addresses},
             )
-            await self._wait_for_rescan(
+            completed = await self._wait_for_rescan(
                 require_started=True, timeout=self._INITIAL_RESCAN_TIMEOUT_SECONDS
             )
-            _, post_tip = await self._get_rescan_coverage()
+            post_start, post_tip = await self._get_rescan_coverage()
+            coverage_confirms_completion = post_start <= start_height and post_tip >= tip_height
+            status_unavailable = (
+                self._server_capabilities.detected
+                and not self._server_capabilities.has_rescan_status
+            )
+            if not completed and not coverage_confirms_completion and not status_unavailable:
+                raise RuntimeError("Neutrino historical address rescan was not confirmed")
             self._last_rescan_height = max(self._last_rescan_height, post_tip, tip_height)
             # Force the next get_utxos to retry while async indexing settles.
             self._just_rescanned = True
         except Exception as e:
-            logger.warning(f"Failed to rescan newly watched addresses: {e}")
+            # Let callers retry on the same backend instance. The server-side
+            # watch operation is idempotent, so re-registering is harmless.
+            self._watched_addresses.difference_update(new_addresses)
+            self._just_rescanned = False
+            logger.error(f"Failed to rescan newly watched addresses: {e}")
+            raise
 
     async def rescan_from_height(
         self,

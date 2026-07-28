@@ -11,7 +11,10 @@ module only wires things together in the way the HTTP daemon needs.
 from __future__ import annotations
 
 import base64
+import fcntl
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -51,6 +54,25 @@ def _get_wallet_settings() -> WalletSettings:
     return get_settings().wallet
 
 
+@contextmanager
+def _reserve_wallet_path(wallet_path: Path) -> Iterator[None]:
+    """Reserve the daemon's single-wallet create/recovery lifecycle."""
+    wallet_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = wallet_path.parent / ".wallet-operation.lock"
+    lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise FileExistsError(f"Wallet operation already in progress: {wallet_path}") from exc
+        if wallet_path.exists():
+            raise FileExistsError(f"Wallet file already exists: {wallet_path}")
+        yield
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+
+
 async def create_wallet(
     *,
     wallet_path: Path,
@@ -73,9 +95,6 @@ async def create_wallet(
         FileExistsError: If the wallet file already exists.
         ValueError: If the wallet type is invalid.
     """
-    from jmwallet.wallet.service import WalletService
-    from jmwalletd._backend import get_backend
-
     if wallet_path.exists():
         raise FileExistsError(f"Wallet file already exists: {wallet_path}")
 
@@ -85,6 +104,9 @@ async def create_wallet(
         raise ValueError(msg)
 
     from mnemonic import Mnemonic
+
+    from jmwallet.wallet.service import WalletService
+    from jmwalletd._backend import get_backend
 
     mnemo = Mnemonic("english")
     seedphrase = mnemo.generate(strength=128)
@@ -118,23 +140,25 @@ async def create_wallet(
         reconstruct_history=wallet_settings.reconstruct_history,
     )
 
-    # Persist the wallet file (encrypted with the password).
-    _save_wallet_file(
-        wallet_path=wallet_path,
-        mnemonic=seedphrase,
-        password=password,
-        wallet_type=wallet_type,
-        creation_height=creation_height,
-    )
+    # Hold the process-independent lifecycle reservation through setup and
+    # initial sync. jmwalletd can expose only one active wallet, so different
+    # target filenames must not initialize competing backends concurrently.
+    with _reserve_wallet_path(wallet_path):
+        _save_wallet_file(
+            wallet_path=wallet_path,
+            mnemonic=seedphrase,
+            password=password,
+            wallet_type=wallet_type,
+            creation_height=creation_height,
+        )
 
-    # Ensure the watch-only descriptor wallet is loaded in Bitcoin Core
-    # and import HD descriptors.  No rescan needed for a brand-new wallet.
-    # Skipped for non-descriptor backends (e.g. neutrino).
-    if _is_descriptor_backend(backend):
-        await ws.setup_descriptor_wallet(rescan=False)
+        # Ensure the watch-only descriptor wallet is loaded in Bitcoin Core
+        # and import HD descriptors. No rescan is needed for a new wallet.
+        if _is_descriptor_backend(backend):
+            await ws.setup_descriptor_wallet(rescan=False)
 
-    # Initial sync to populate caches.
-    await ws.sync()
+        # Initial sync to populate caches.
+        await ws.sync()
 
     logger.info("Created wallet: {}", wallet_path.name)
     return ws, seedphrase
@@ -147,6 +171,7 @@ async def recover_wallet(
     wallet_type: str,
     seedphrase: str,
     data_dir: Path,
+    scan_range: int | None = None,
 ) -> Any:
     """Recover a wallet from a BIP39 seed phrase.
 
@@ -158,9 +183,6 @@ async def recover_wallet(
         ValueError: If the seed phrase or wallet type is invalid.
     """
     from mnemonic import Mnemonic
-
-    from jmwallet.wallet.service import WalletService
-    from jmwalletd._backend import get_backend
 
     if wallet_path.exists():
         raise FileExistsError(f"Wallet file already exists: {wallet_path}")
@@ -175,6 +197,30 @@ async def recover_wallet(
         msg = f"Invalid wallet type: {wallet_type}. Must be one of {valid_types}"
         raise ValueError(msg)
 
+    with _reserve_wallet_path(wallet_path):
+        return await _recover_reserved_wallet(
+            wallet_path=wallet_path,
+            password=password,
+            wallet_type=wallet_type,
+            seedphrase=seedphrase,
+            data_dir=data_dir,
+            scan_range=scan_range,
+        )
+
+
+async def _recover_reserved_wallet(
+    *,
+    wallet_path: Path,
+    password: str,
+    wallet_type: str,
+    seedphrase: str,
+    data_dir: Path,
+    scan_range: int | None,
+) -> Any:
+    """Recover a wallet while the caller owns its exclusive path reservation."""
+    from jmwallet.wallet.service import WalletService
+    from jmwalletd._backend import get_backend
+
     backend = await get_backend(
         data_dir=data_dir,
         mnemonic=seedphrase,
@@ -182,6 +228,13 @@ async def recover_wallet(
     )
 
     wallet_settings = _get_wallet_settings()
+    # ``scan_range`` can only widen coverage. Clients built around the legacy
+    # gaplimit semantics (JAM) send small values like 6; honoring those
+    # verbatim would shrink descriptor coverage below the configured default
+    # and hide funds.
+    effective_scan_range = wallet_settings.scan_range
+    if scan_range is not None:
+        effective_scan_range = max(scan_range, wallet_settings.scan_range)
     ws = WalletService(
         mnemonic=seedphrase,
         backend=backend,
@@ -189,31 +242,46 @@ async def recover_wallet(
         network=_get_network(),
         mixdepth_count=wallet_settings.mixdepth_count,
         gap_limit=wallet_settings.gap_limit,
-        scan_range=wallet_settings.scan_range,
+        scan_range=effective_scan_range,
         max_sats_freeze_reuse=wallet_settings.max_sats_freeze_reuse,
         reconstruct_history=wallet_settings.reconstruct_history,
     )
 
-    _save_wallet_file(
-        wallet_path=wallet_path,
-        mnemonic=seedphrase,
-        password=password,
-        wallet_type=wallet_type,
-    )
+    try:
+        # Ensure the watch-only descriptor wallet is loaded in Bitcoin Core
+        # and import HD descriptors so sync can find existing UTXOs.
+        # Skipped for non-descriptor backends (e.g. neutrino).
+        if _is_descriptor_backend(backend):
+            await ws.setup_descriptor_wallet(
+                include_all_fidelity_bonds=wallet_type == "sw-fb",
+                rescan_existing=True,
+                smart_scan=wallet_settings.smart_scan,
+                background_full_rescan=wallet_settings.background_full_rescan,
+            )
 
-    # Ensure the watch-only descriptor wallet is loaded in Bitcoin Core
-    # and import HD descriptors so sync can find existing UTXOs.
-    # Skipped for non-descriptor backends (e.g. neutrino).
-    if _is_descriptor_backend(backend):
-        await ws.setup_descriptor_wallet(
-            smart_scan=wallet_settings.smart_scan,
-            background_full_rescan=wallet_settings.background_full_rescan,
+        # Bond-aware sync so any fidelity bonds recorded in the per-wallet
+        # registry are imported and their UTXOs scanned (otherwise recovered
+        # bonds would be invisible in /utxos and /display).
+        await ws.sync_with_registered_bonds()
+
+        # Light-client backends (neutrino) have no descriptor import, so scan
+        # all 960 canonical timelock addresses explicitly. Discovery registers
+        # found bonds in the per-wallet registry, keeping them visible in
+        # subsequent bond-aware syncs.
+        if wallet_type == "sw-fb" and not _is_descriptor_backend(backend):
+            await ws.discover_fidelity_bonds()
+
+        # Do not leave a wallet file behind when descriptor setup or initial
+        # synchronization fails. The same recovery request must be retryable.
+        _save_wallet_file(
+            wallet_path=wallet_path,
+            mnemonic=seedphrase,
+            password=password,
+            wallet_type=wallet_type,
         )
-
-    # Bond-aware sync so any fidelity bonds recorded in the per-wallet
-    # registry are imported and their UTXOs scanned (otherwise recovered
-    # bonds would be invisible in /utxos and /display).
-    await ws.sync_with_registered_bonds()
+    except Exception:
+        wallet_path.unlink(missing_ok=True)
+        raise
 
     logger.info("Recovered wallet: {}", wallet_path.name)
     return ws

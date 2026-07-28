@@ -706,7 +706,7 @@ class WalletSyncMixin:
         Returns:
             List of discovered fidelity bond UTXOs
         """
-        from jmcore.timenumber import TIMENUMBER_COUNT, timenumber_to_timestamp
+        from jmcore.timenumber import TIMENUMBER_COUNT
 
         logger.info(f"Starting fidelity bond discovery scan ({TIMENUMBER_COUNT} timelocks)")
 
@@ -716,13 +716,9 @@ class WalletSyncMixin:
             self.backend if isinstance(self.backend, DescriptorWalletBackend) else None
         )
 
-        # Build the full address map across all timenumbers.
-        # Each timenumber has exactly one address (timenumber = BIP32 child index).
-        all_address_to_locktime: dict[str, tuple[int, int]] = {}
-        for timenumber in range(TIMENUMBER_COUNT):
-            locktime = timenumber_to_timestamp(timenumber)
-            address = self.get_fidelity_bond_address(timenumber, locktime)
-            all_address_to_locktime[address] = (locktime, timenumber)
+        # Build the full address map without populating the live bond caches.
+        # Only funded addresses discovered below should appear in wallet displays.
+        all_address_to_locktime = self._canonical_bond_address_map()
 
         # For descriptor wallets, import all addresses in batches WITHOUT triggering
         # a per-batch rescan.  A single blockchain rescan is run after all descriptors
@@ -757,6 +753,9 @@ class WalletSyncMixin:
                     )
                 except Exception as e:
                     logger.error(f"Failed to import batch {batch_start}-{batch_end}: {e}")
+                    raise RuntimeError(
+                        f"Failed to import fidelity bond recovery batch {batch_start}-{batch_end}"
+                    ) from e
 
                 if progress_callback:
                     progress_callback(batch_end, total_addrs)
@@ -771,10 +770,12 @@ class WalletSyncMixin:
                 "with the Bitcoin node and its storage performance."
             )
             await descriptor_backend.start_background_rescan(0)
-            await descriptor_backend.wait_for_rescan_complete(
+            completed = await descriptor_backend.wait_for_rescan_complete(
                 poll_interval=5.0,
                 progress_callback=rescan_progress_callback,
             )
+            if not completed:
+                raise RuntimeError("Fidelity bond discovery rescan did not complete")
 
             # Query all UTXOs in a single call after rescan completes.
             all_addresses = list(all_address_to_locktime.keys())
@@ -783,13 +784,21 @@ class WalletSyncMixin:
                 backend_utxos = await self.backend.get_utxos(all_addresses)
             except Exception as e:
                 logger.error(f"Failed to fetch UTXOs after rescan: {e}")
-                backend_utxos = []
+                raise RuntimeError("Failed to query fidelity bond recovery addresses") from e
         else:
             # Non-descriptor backends: scan in batches and query UTXOs per batch.
             backend_utxos = []
             address_to_locktime = all_address_to_locktime
             all_addresses_list = list(all_address_to_locktime.keys())
             total_addrs = len(all_addresses_list)
+
+            # Light-client backends (neutrino) only scan new blocks for
+            # already-watched addresses. Register every candidate address and
+            # backfill the wallet's history once up front, otherwise a bond
+            # funded before this call stays invisible whenever the initial
+            # rescan already ran (e.g. a warm jmwalletd session). No-op for
+            # backends without watch support.
+            await self.backend.ensure_addresses_scanned(all_addresses_list)
             for batch_start in range(0, total_addrs, batch_size):
                 batch_addrs = all_addresses_list[batch_start : batch_start + batch_size]
                 batch_end = batch_start + len(batch_addrs)
@@ -798,6 +807,9 @@ class WalletSyncMixin:
                     backend_utxos.extend(batch_utxos)
                 except Exception as e:
                     logger.error(f"Failed to scan batch {batch_start}-{batch_end}: {e}")
+                    raise RuntimeError(
+                        f"Failed to query fidelity bond recovery batch {batch_start}-{batch_end}"
+                    ) from e
 
                 if progress_callback:
                     progress_callback(batch_end, total_addrs)
@@ -806,8 +818,11 @@ class WalletSyncMixin:
 
         # Process found UTXOs
         for utxo in backend_utxos:
-            if utxo.address in address_to_locktime:
-                locktime, idx = address_to_locktime[utxo.address]
+            address_lower = utxo.address.lower()
+            if address_lower in address_to_locktime:
+                locktime, idx = address_to_locktime[address_lower]
+                self.address_cache[address_lower] = (0, FIDELITY_BOND_BRANCH, idx)
+                self.fidelity_bond_locktime_cache[address_lower] = locktime
                 path = f"{self.root_path}/0'/{FIDELITY_BOND_BRANCH}/{idx}:{locktime}"
 
                 utxo_info = _make_utxo_info(
@@ -842,6 +857,12 @@ class WalletSyncMixin:
             logger.info(f"Discovery complete: found {len(discovered_utxos)} fidelity bond(s)")
         else:
             logger.info("Discovery complete: no fidelity bonds found")
+
+        # Persist discovered bonds in the per-wallet registry so subsequent
+        # registry-aware syncs keep scanning them. Essential for light-client
+        # backends: unlike Bitcoin Core, nothing else records the bond, so a
+        # discovered UTXO would disappear again on the next sync.
+        self._self_register_bond_utxos(discovered_utxos)
 
         return discovered_utxos
 
@@ -1551,8 +1572,10 @@ class WalletSyncMixin:
         self,
         scan_range: int | None = None,
         fidelity_bond_addresses: list[tuple[str, int, int]] | None = None,
+        include_all_fidelity_bonds: bool = False,
         rescan: bool = True,
         check_existing: bool = True,
+        rescan_existing: bool = False,
         smart_scan: bool = True,
         background_full_rescan: bool = True,
     ) -> bool:
@@ -1576,8 +1599,14 @@ class WalletSyncMixin:
                 The legacy ``max(DEFAULT_SCAN_RANGE, gap_limit * 10)`` formula
                 was removed (issue #475).
             fidelity_bond_addresses: Optional list of (address, locktime, index) tuples
+            include_all_fidelity_bonds: Import all 960 canonical fidelity bond
+                addresses without marking unfunded addresses as known bonds. This
+                is intended for mnemonic recovery, where the used locktime is not
+                known before scanning.
             rescan: Whether to rescan blockchain
             check_existing: If True, checks if wallet is already set up and skips import
+            rescan_existing: If True and existing descriptor coverage is complete,
+                still start the requested full-history rescan. Used by retryable recovery.
             smart_scan: If True and rescan=True, scan from ~1 year ago for fast startup.
                        A full rescan runs in background to catch older transactions.
             background_full_rescan: If True and smart_scan=True, run full rescan in background
@@ -1612,9 +1641,57 @@ class WalletSyncMixin:
             expected_count = self.mixdepth_count * 2  # external + internal per mixdepth
             if fidelity_bond_addresses:
                 expected_count += len(fidelity_bond_addresses)
+            if include_all_fidelity_bonds:
+                from jmcore.timenumber import TIMENUMBER_COUNT
 
-            if await self.backend.is_wallet_setup(expected_descriptor_count=expected_count):
+                expected_count += TIMENUMBER_COUNT
+
+            setup_complete = await self.backend.is_wallet_setup(
+                expected_descriptor_count=expected_count
+            )
+            if setup_complete:
+                imported_descriptors = await self.backend.list_descriptors()
+                descriptors_by_base = {
+                    str(item.get("desc", "")).split("#", 1)[0]: item
+                    for item in imported_descriptors
+                }
+                expected_regular = self._generate_import_descriptors(scan_range)
+                for expected in expected_regular:
+                    actual = descriptors_by_base.get(expected["desc"])
+                    actual_range = actual.get("range") if actual is not None else None
+                    if (
+                        actual is None
+                        or not isinstance(actual_range, list | tuple)
+                        or len(actual_range) != 2
+                        or int(actual_range[0]) > 0
+                        or int(actual_range[1]) < scan_range - 1
+                    ):
+                        setup_complete = False
+                        logger.info(
+                            "Descriptor count is sufficient but regular descriptor identity "
+                            "or range coverage is incomplete; running wallet setup"
+                        )
+                        break
+
+            if setup_complete and include_all_fidelity_bonds:
+                imported_bonds = {
+                    base[5:-1].lower()
+                    for base in descriptors_by_base
+                    if base.startswith("addr(") and base.endswith(")")
+                }
+                canonical_bonds = self._canonical_fidelity_bond_address_entries()
+                expected_bonds = {address for address, _locktime, _index in canonical_bonds}
+                setup_complete = expected_bonds.issubset(imported_bonds)
+                if not setup_complete:
+                    logger.info(
+                        "Descriptor count is sufficient but canonical fidelity bond "
+                        "coverage is incomplete; importing the missing recovery set"
+                    )
+
+            if setup_complete:
                 logger.info("Descriptor wallet already set up, skipping import")
+                if rescan and rescan_existing:
+                    await self.backend.start_background_rescan(0)
                 return True
 
         # Generate descriptors for all mixdepths
@@ -1633,6 +1710,17 @@ class WalletSyncMixin:
                 # Cache the address info
                 self.address_cache[address] = (0, FIDELITY_BOND_BRANCH, index)
                 self.fidelity_bond_locktime_cache[address] = locktime
+
+        if include_all_fidelity_bonds:
+            canonical_bonds = self._canonical_fidelity_bond_address_entries()
+            logger.info(
+                f"Including all {len(canonical_bonds)} canonical fidelity bond addresses "
+                "for recovery"
+            )
+            descriptors.extend(
+                {"desc": f"addr({address})", "internal": False}
+                for address, _locktime, _index in canonical_bonds
+            )
 
         # Setup wallet and import descriptors
         logger.info("Setting up descriptor wallet...")
@@ -1710,14 +1798,29 @@ class WalletSyncMixin:
                     "internal": False,
                 }
             )
-            # Cache the address info
-            self.address_cache[address] = (0, FIDELITY_BOND_BRANCH, index)
-            self.fidelity_bond_locktime_cache[address] = locktime
-
         logger.info(f"Importing {len(descriptors)} fidelity bond address(es)...")
-        await self.backend.import_descriptors(descriptors, rescan=rescan)
+        result = await self.backend.import_descriptors(descriptors, rescan=rescan)
+        if result["error_count"]:
+            raise RuntimeError(
+                f"Failed to import {result['error_count']} fidelity bond descriptor(s)"
+            )
+        for address, locktime, index in fidelity_bond_addresses:
+            address_lower = address.lower()
+            self.address_cache[address_lower] = (0, FIDELITY_BOND_BRANCH, index)
+            self.fidelity_bond_locktime_cache[address_lower] = locktime
         logger.info("Fidelity bond addresses imported")
         return True
+
+    def _canonical_fidelity_bond_address_entries(self) -> list[tuple[str, int, int]]:
+        """Return every canonical bond as ``(address, locktime, timenumber)``.
+
+        Derivation is side-effect free: unfunded recovery candidates are not
+        inserted into the live address or fidelity-bond caches.
+        """
+        return [
+            (address, locktime, timenumber)
+            for address, (locktime, timenumber) in self._canonical_bond_address_map().items()
+        ]
 
     def _generate_import_descriptors(
         self, scan_range: int = DEFAULT_SCAN_RANGE

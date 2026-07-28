@@ -20,10 +20,12 @@ import asyncio
 import datetime
 import os
 import uuid
+from unittest.mock import MagicMock
 
 import httpx
 import pytest
 from loguru import logger
+from mnemonic import Mnemonic
 
 pytestmark = pytest.mark.e2e
 
@@ -154,5 +156,72 @@ async def test_funded_fidelity_bond_appears_in_utxos(
                 f"Bond UTXO surfaced: {bond_entry['utxo']} "
                 f"locktime={bond_entry['locktime']} path={bond_entry['path']}"
             )
+        finally:
+            await _lock(client, name, token)
+
+
+@pytest.mark.asyncio
+async def test_recover_wallet_discovers_preexisting_fidelity_bond(
+    ensure_blockchain_ready: None,
+) -> None:
+    """Mnemonic recovery imports the complete bond branch before rescanning."""
+    from jmcore.timenumber import timestamp_to_timenumber
+    from jmwallet.wallet.service import WalletService
+    from tests.e2e.rpc_utils import mine_blocks, send_from_test_funder
+
+    await _wait_for_jmwalletd()
+    mnemonic = Mnemonic("english").generate(strength=128)
+    _lockdate, locktime = _next_year_lockdate()
+    timenumber = timestamp_to_timenumber(locktime)
+    derivation_wallet = WalletService(
+        mnemonic=mnemonic,
+        backend=MagicMock(),
+        network="regtest",
+    )
+    bond_address = derivation_wallet.get_fidelity_bond_address(timenumber, locktime)
+
+    dummy = "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080"
+    funded = await send_from_test_funder(bond_address, 0.01, confirmations=1)
+    if not funded:
+        await mine_blocks(1, bond_address)
+        await mine_blocks(110, dummy)
+
+    name = _wallet_name()
+    async with httpx.AsyncClient(timeout=120, verify=TLS_VERIFY) as client:
+        r = await client.post(
+            f"{API}/wallet/recover",
+            json={
+                "walletname": name,
+                "password": "testpass",
+                "wallettype": "sw-fb",
+                "seedphrase": mnemonic,
+                "scan_range": 100,
+            },
+        )
+        assert r.status_code == 201, f"wallet/recover failed: {r.status_code} {r.text}"
+        token = r.json()["token"]
+
+        try:
+            bond_entry = None
+            for _ in range(10):
+                r = await client.get(f"{API}/wallet/{name}/utxos", headers=_auth(token))
+                assert r.status_code == 200, f"utxos failed: {r.status_code} {r.text}"
+                bond_entry = next(
+                    (
+                        entry
+                        for entry in r.json()["utxos"]
+                        if entry["address"] == bond_address
+                    ),
+                    None,
+                )
+                if bond_entry is not None:
+                    break
+                await asyncio.sleep(2.0)
+
+            assert bond_entry is not None, (
+                "Preexisting fidelity bond was not discovered during mnemonic recovery"
+            )
+            assert bond_entry["locktime"]
+            assert bond_entry["path"].endswith(f":{locktime}")
         finally:
             await _lock(client, name, token)

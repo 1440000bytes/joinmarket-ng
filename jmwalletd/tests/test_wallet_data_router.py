@@ -648,6 +648,24 @@ class TestRescan:
         data = resp.json()
         assert data["rescanning"] is False
 
+    def test_rescan_info_reports_last_failure(self, authed_client: tuple[TestClient, str]) -> None:
+        client, token = authed_client
+        state = get_daemon_state()
+        state.rescanning = False
+        state.rescan_error = "block data unavailable"
+
+        resp = client.get(
+            "/api/v1/wallet/test_wallet.jmdat/getrescaninfo",
+            headers=_auth_headers(token),
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "rescanning": False,
+            "progress": None,
+            "error": "block data unavailable",
+        }
+
     def test_rescan_info_reports_core_progress(self, authed_client: tuple[TestClient, str]) -> None:
         """Progress comes from Bitcoin Core's getwalletinfo, not the stale
         daemon-side counter (issue #550)."""
@@ -712,6 +730,27 @@ class TestRescan:
 
 class TestRunRescan:
     """Unit tests for the background rescan driver coroutine."""
+
+    async def test_duplicate_request_reuses_active_tracking_task(
+        self, daemon_state_with_wallet: DaemonState
+    ) -> None:
+        from jmwalletd.routers.wallet_data import rescan_blockchain
+
+        state = daemon_state_with_wallet
+        existing_task = MagicMock()
+        existing_task.done.return_value = False
+        state._rescan_task = existing_task
+
+        response = await rescan_blockchain(
+            walletname=state.wallet_name,
+            blockheight=0,
+            _auth={},
+            _wallet=None,
+            state=state,
+        )
+
+        assert response.walletname == state.wallet_name
+        state.wallet_service.backend.start_background_rescan.assert_not_awaited()
 
     async def test_uses_background_rescan_and_tracks_progress(
         self, daemon_state_with_wallet: DaemonState
@@ -797,6 +836,24 @@ class TestRunRescan:
 
         assert state.rescanning is False
         assert state.rescan_progress == 0.0
+        assert state.rescan_error == "boom"
+
+    async def test_reports_rescan_completion_timeout(
+        self, daemon_state_with_wallet: DaemonState
+    ) -> None:
+        from jmwalletd.routers.wallet_data import _run_rescan
+
+        state = daemon_state_with_wallet
+        backend = state.wallet_service.backend
+        backend.get_rescan_status = AsyncMock(return_value={"in_progress": False})
+        backend.start_background_rescan = AsyncMock(return_value=False)
+        backend.wait_for_rescan_complete = AsyncMock(return_value=False)
+
+        state.rescanning = True
+        await _run_rescan(state, 0)
+
+        assert state.rescanning is False
+        assert state.rescan_error == "Blockchain rescan did not complete"
 
 
 class TestYieldGenReport:

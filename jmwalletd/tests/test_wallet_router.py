@@ -289,6 +289,7 @@ class TestWalletRecover:
                 "password": "pass",
                 "wallettype": "sw",
                 "seedphrase": seedphrase,
+                "scan_range": 2_500,
             },
         )
         assert resp.status_code == 201
@@ -296,6 +297,8 @@ class TestWalletRecover:
         assert data["walletname"] == "recovered.jmdat"
         assert data["seedphrase"] == seedphrase
         assert daemon_state.wallet_mnemonic == seedphrase
+        assert mock_recover.await_args is not None
+        assert mock_recover.await_args.kwargs["scan_range"] == 2_500
 
     @patch("jmwalletd.routers.wallet.recover_wallet", new_callable=AsyncMock)
     def test_monitor_failure_rolls_back_wallet_file(

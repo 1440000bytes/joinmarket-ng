@@ -1020,16 +1020,36 @@ class DescriptorWalletBackend(BlockchainBackend):
                 )
                 try:
                     verify = await self._rpc_call("listdescriptors")
-                    actual_count = len(verify.get("descriptors", []))
                 except Exception as verify_err:
                     raise RuntimeError(
                         "importdescriptors timed out and the post-timeout "
                         "verification call also failed; please retry."
                     ) from verify_err
-                if actual_count == 0:
+                actual_by_base = {
+                    str(item.get("desc", "")).split("#", 1)[0]: item
+                    for item in verify.get("descriptors", [])
+                }
+                missing_or_undersized: list[str] = []
+                for request in import_requests:
+                    requested_base = str(request["desc"]).split("#", 1)[0]
+                    actual = actual_by_base.get(requested_base)
+                    requested_range = request.get("range")
+                    actual_range = actual.get("range") if actual is not None else None
+                    range_missing = False
+                    if isinstance(requested_range, list | tuple) and len(requested_range) == 2:
+                        range_missing = (
+                            not isinstance(actual_range, list | tuple)
+                            or len(actual_range) != 2
+                            or int(actual_range[0]) > int(requested_range[0])
+                            or int(actual_range[1]) < int(requested_range[1])
+                        )
+                    if actual is None or range_missing:
+                        missing_or_undersized.append(requested_base)
+                if missing_or_undersized:
                     raise RuntimeError(
-                        "importdescriptors timed out and the wallet still has "
-                        "no descriptors. Please retry the command."
+                        "importdescriptors timed out and post-timeout verification "
+                        f"found {len(missing_or_undersized)} missing or undersized "
+                        "descriptor(s). Please retry the command."
                     ) from timeout_err
                 # Synthesize an all-success result so the existing code path
                 # below treats this as a normal completion.
@@ -1536,12 +1556,23 @@ class DescriptorWalletBackend(BlockchainBackend):
             True if setup completed successfully
         """
         await self.create_wallet(disable_private_keys=True)
-        await self.import_descriptors(
+        result = await self.import_descriptors(
             descriptors,
             rescan=rescan,
             smart_scan=smart_scan,
             background_full_rescan=background_full_rescan,
         )
+        if result["error_count"]:
+            raise RuntimeError(
+                f"Descriptor wallet setup failed to import {result['error_count']} descriptor(s)"
+            )
+        if (
+            rescan
+            and smart_scan
+            and background_full_rescan
+            and not result.get("background_rescan_started", False)
+        ):
+            raise RuntimeError("Descriptor wallet setup failed to start the full-history rescan")
         return True
 
     async def list_descriptors(self) -> list[dict[str, Any]]:
@@ -1695,7 +1726,7 @@ class DescriptorWalletBackend(BlockchainBackend):
 
         except Exception as e:
             logger.error(f"Failed to get UTXOs via listunspent: {e}")
-            return []
+            raise
 
     async def get_all_utxos(self) -> list[UTXO]:
         """

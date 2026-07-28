@@ -86,8 +86,20 @@ class TestWalletCreationModels:
             password="p",
             wallettype="sw",
             seedphrase="abandon " * 11 + "about",
+            scan_range=2_500,
         )
         assert req.seedphrase == "abandon " * 11 + "about"
+        assert req.scan_range == 2_500
+
+    @pytest.mark.parametrize("scan_range", [0, 10_001])
+    def test_recover_wallet_rejects_invalid_scan_range(self, scan_range: int) -> None:
+        with pytest.raises(ValidationError):
+            RecoverWalletRequest(
+                walletname="w.jmdat",
+                password="p",
+                seedphrase="abandon " * 11 + "about",
+                scan_range=scan_range,
+            )
 
     def test_unlock_request(self) -> None:
         req = UnlockWalletRequest(password="secret")

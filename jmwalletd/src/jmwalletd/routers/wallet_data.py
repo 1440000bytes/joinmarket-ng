@@ -541,14 +541,19 @@ async def _run_rescan(state: DaemonState, blockheight: int) -> None:
 
         if already is not None and already.get("in_progress"):
             logger.info("Bitcoin Core is already rescanning; tracking the existing scan")
-            await backend.wait_for_rescan_complete(progress_callback=_on_progress)
+            completed = await backend.wait_for_rescan_complete(progress_callback=_on_progress)
+            if not completed:
+                raise RuntimeError("Blockchain rescan did not complete")
         elif hasattr(backend, "start_background_rescan"):
             completed = await backend.start_background_rescan(blockheight)
             if not completed:
-                await backend.wait_for_rescan_complete(progress_callback=_on_progress)
+                completed = await backend.wait_for_rescan_complete(progress_callback=_on_progress)
+                if not completed:
+                    raise RuntimeError("Blockchain rescan did not complete")
         else:
             await backend.rescan_blockchain(blockheight)
-    except Exception:
+    except Exception as exc:
+        state.rescan_error = str(exc)
         logger.exception("Rescan failed")
     finally:
         state.rescanning = False
@@ -573,8 +578,13 @@ async def rescan_blockchain(
     if not (hasattr(backend, "start_background_rescan") or hasattr(backend, "rescan_blockchain")):
         raise ActionNotAllowed("Rescan not supported by the current backend.")
 
+    if state._rescan_task is not None and not state._rescan_task.done():
+        logger.info("Rescan tracking task already active; returning existing operation")
+        return RescanBlockchainResponse(walletname=walletname)
+
     state.rescanning = True
     state.rescan_progress = 0.0
+    state.rescan_error = None
 
     # Keep a reference so the task is not garbage-collected mid-flight and
     # can be cancelled on wallet lock.
@@ -596,7 +606,7 @@ async def get_rescan_info(
     rescanning, progress = await state.live_rescan_status()
     if rescanning:
         return RescanInfoResponse(rescanning=True, progress=progress)
-    return RescanInfoResponse(rescanning=False)
+    return RescanInfoResponse(rescanning=False, error=state.rescan_error)
 
 
 # ---------------------------------------------------------------------------

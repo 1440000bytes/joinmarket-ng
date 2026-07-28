@@ -305,6 +305,7 @@ async def wallet_recover(
             wallet_type=body.wallettype,
             seedphrase=body.seedphrase,
             data_dir=state.data_dir,
+            scan_range=body.scan_range,
         )
     except FileExistsError as exc:
         raise WalletAlreadyExists() from exc

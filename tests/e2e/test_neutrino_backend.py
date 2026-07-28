@@ -1108,3 +1108,90 @@ class TestNeutrinoFidelityBonds:
             f"Neutrino surfaced fidelity bond {bond_utxo.txid}:{bond_utxo.vout} "
             f"value={bond_utxo.value} locktime={bond_utxo.locktime}"
         )
+
+    async def test_mnemonic_recovery_discovers_and_persists_bond(
+        self,
+        neutrino_backend,
+        ensure_blockchain_ready,
+        tmp_path,
+    ):
+        """Recovery-style discovery scans all 960 candidates and persists hits.
+
+        Mirrors jmwalletd's ``sw-fb`` wallet import on the light-client
+        backend: the bond was funded before any local wallet state existed,
+        so there is no registry entry and no cached bond address. Discovery
+        must backfill the already-scanned history for the canonical timelock
+        addresses, find the bond, and record it in the per-wallet registry so
+        the next registry-aware sync still sees it.
+        """
+        import asyncio
+        import uuid
+
+        from jmcore.timenumber import timenumber_to_timestamp
+        from mnemonic import Mnemonic
+
+        from jmwallet.wallet.address import script_to_p2wsh_address
+        from jmwallet.wallet.bond_registry import load_registry
+        from tests.e2e.rpc_utils import mine_blocks
+
+        mnemonic = Mnemonic("english").generate(strength=128)
+        data_dir = tmp_path / f"nrecover-{uuid.uuid4().hex[:8]}"
+        data_dir.mkdir(parents=True, exist_ok=True)
+
+        wallet = WalletService(
+            mnemonic=mnemonic,
+            backend=neutrino_backend,
+            network=NetworkType.REGTEST,
+            data_dir=data_dir,
+        )
+
+        # Fund the canonical bond address without touching the wallet caches,
+        # reproducing "bond funded before this wallet was imported here".
+        timenumber = 0  # Jan 2020 -> already unlocked
+        locktime = timenumber_to_timestamp(timenumber)
+        script = wallet.get_fidelity_bond_script(timenumber, locktime)
+        bond_address = script_to_p2wsh_address(script, wallet.network)
+        logger.info(f"Funding pre-existing neutrino bond address: {bond_address}")
+        await mine_blocks(1, bond_address)
+        await mine_blocks(110, "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080")
+
+        # Recovery ordering: regular sync first (warm session, initial rescan
+        # done), then the canonical discovery scan.
+        await wallet.sync_all()
+
+        discovered = []
+        for attempt in range(6):
+            discovered = await wallet.discover_fidelity_bonds()
+            if any(u.address == bond_address for u in discovered):
+                break
+            logger.info(f"Bond not discovered yet (attempt {attempt + 1}); retrying...")
+            await asyncio.sleep(3)
+
+        assert any(u.address == bond_address for u in discovered), (
+            "Pre-existing fidelity bond was not discovered by the light-client "
+            "canonical scan during mnemonic recovery"
+        )
+
+        # Discovery must persist the bond; light clients have no descriptor
+        # wallet remembering the address, so without a registry entry the
+        # bond would vanish again on the next sync.
+        registry = load_registry(
+            data_dir, wallet.wallet_fingerprint, allow_legacy_fallback=False
+        )
+        assert registry.get_bond_by_address(bond_address) is not None
+
+        await wallet.sync_with_registered_bonds()
+        bond_utxo = next(
+            (
+                u
+                for u in wallet.utxo_cache.get(0, [])
+                if u.address == bond_address and u.is_fidelity_bond
+            ),
+            None,
+        )
+        await wallet.close()
+
+        assert bond_utxo is not None, (
+            "Discovered bond disappeared from the bond-aware sync after recovery"
+        )
+        assert bond_utxo.locktime == locktime

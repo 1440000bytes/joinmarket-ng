@@ -76,6 +76,17 @@ class RecoverWalletRequest(BaseModel):
     password: str
     wallettype: str = "sw-fb"
     seedphrase: str
+    scan_range: int | None = Field(
+        default=None,
+        ge=1,
+        le=10_000,
+        description=(
+            "Regular address indices to import per branch during descriptor-backend recovery. "
+            "Widen-only: values below the configured [wallet].scan_range are "
+            "raised to it, so legacy gaplimit-style values cannot shrink "
+            "coverage."
+        ),
+    )
 
 
 class UnlockWalletRequest(BaseModel):
@@ -522,6 +533,7 @@ class RescanInfoResponse(BaseModel):
 
     rescanning: bool
     progress: float | None = None
+    error: str | None = None
 
 
 # ---------------------------------------------------------------------------

@@ -37,6 +37,19 @@ one.
 grows; `scan_lookback_blocks` is about initial time coverage. For normal
 use the defaults are fine and you never touch them.
 
+Fidelity bonds use a separate timelock branch that cannot be represented by
+the regular ranged descriptors. When jmwalletd recovers an `sw-fb` wallet, it
+imports all 960 canonical fidelity-bond address descriptors before scanning
+(Bitcoin Core), or scans and backfills the same 960 addresses through the
+light-client watch list (neutrino) and records found bonds in the per-wallet
+registry. This lets a normal import recover old bonds without a separate CLI
+step. For Bitcoin Core descriptor recovery, the API also accepts an optional
+`scan_range` field (up to 10,000) for regular address-index coverage; it can
+only widen coverage, never shrink it below the configured
+`[wallet].scan_range`. Neutrino regular-address discovery continues to follow
+the BIP44 `gap_limit`. CLI mnemonic recovery can use `jm-wallet recover-bonds`
+when the bond coverage was not set up by an older version.
+
 ### The 1,000,000 index limit
 
 Bitcoin Core's `importdescriptors` rejects any descriptor whose range spans
