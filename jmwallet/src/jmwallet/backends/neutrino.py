@@ -1807,10 +1807,26 @@ class NeutrinoBackend(BlockchainBackend):
                     scriptpubkey_matches=False,
                 )
 
-            # Step 4: Calculate confirmations
+            # Step 4: Calculate confirmations from the API-verified creation
+            # height, never from peer-supplied metadata. The peer height is only
+            # a bounded scan-start hint and may be stale or malicious.
+            actual_blockheight = result.get("block_height")
+            if not isinstance(actual_blockheight, int) or actual_blockheight <= 0:
+                return UTXOVerificationResult(
+                    valid=False,
+                    value=result.get("value", 0),
+                    error="UTXO response is missing a confirmed block height",
+                )
             tip_height = await self.get_block_height()
-            # The blockheight parameter is the confirmation height hint from the peer
-            confirmations = tip_height - blockheight + 1 if blockheight > 0 else 0
+            if actual_blockheight > tip_height:
+                return UTXOVerificationResult(
+                    valid=False,
+                    value=result.get("value", 0),
+                    error=(
+                        f"UTXO block height {actual_blockheight} is above chain tip {tip_height}"
+                    ),
+                )
+            confirmations = tip_height - actual_blockheight + 1
 
             logger.info(
                 f"UTXO {txid}:{vout} verified: value={result.get('value', 0)}, "

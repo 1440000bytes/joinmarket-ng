@@ -2215,6 +2215,56 @@ class TestNeutrinoBackend:
             await backend.close()
 
     @pytest.mark.asyncio
+    async def test_verify_utxo_uses_api_block_height_for_confirmations(self):
+        """Peer metadata is a scan hint, not authoritative confirmation data."""
+        backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="regtest")
+        backend._api_call = AsyncMock(
+            return_value={
+                "unspent": True,
+                "value": 100000,
+                "scriptpubkey": "0014" + "00" * 20,
+                "block_height": 800000,
+            }
+        )
+        backend.get_block_height = AsyncMock(return_value=800010)
+
+        try:
+            result = await backend.verify_utxo_with_metadata(
+                txid="a" * 64,
+                vout=0,
+                scriptpubkey="0014" + "00" * 20,
+                blockheight=799000,
+            )
+            assert result.valid is True
+            assert result.confirmations == 11
+        finally:
+            await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_verify_utxo_requires_api_block_height(self):
+        backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="regtest")
+        backend._api_call = AsyncMock(
+            return_value={
+                "unspent": True,
+                "value": 100000,
+                "scriptpubkey": "0014" + "00" * 20,
+            }
+        )
+        backend.get_block_height = AsyncMock(return_value=800010)
+
+        try:
+            result = await backend.verify_utxo_with_metadata(
+                txid="a" * 64,
+                vout=0,
+                scriptpubkey="0014" + "00" * 20,
+                blockheight=800000,
+            )
+            assert result.valid is False
+            assert "confirmed block height" in (result.error or "")
+        finally:
+            await backend.close()
+
+    @pytest.mark.asyncio
     async def test_verify_utxo_with_metadata_disables_mempool_overlay(self):
         """Operator opt-out propagates include_mempool=false to the GET params."""
         backend = NeutrinoBackend(
