@@ -50,6 +50,13 @@ only widen coverage, never shrink it below the configured
 the BIP44 `gap_limit`. CLI mnemonic recovery can use `jm-wallet recover-bonds`
 when the bond coverage was not set up by an older version.
 
+When Neutrino adds the 960 recovery candidates after its initial sync,
+JoinMarket requests a forced historical rescan so persisted global coverage
+does not hide transactions for those newly watched addresses. Servers without
+the force capability fall back to requesting one block below the persisted
+coverage floor; reliable completion confirmation requires a neutrino-api
+version that exposes `GET /v1/rescan/status` (v0.7.0+).
+
 ### The 1,000,000 index limit
 
 Bitcoin Core's `importdescriptors` rejects any descriptor whose range spans

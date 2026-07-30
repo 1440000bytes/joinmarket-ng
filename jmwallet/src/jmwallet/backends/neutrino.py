@@ -79,6 +79,10 @@ class ServerCapabilities:
     #: (v0.9.0+ with persistent state).
     has_persistent_rescan_state: bool = False
 
+    #: ``POST /v1/rescan`` accepts ``force: true`` to bypass global
+    #: persisted-range skipping for newly watched addresses.
+    has_force_rescan: bool = False
+
     #: Server runs the watched-only mempool tracker (neutrino-api 1.3.0+).
     #: When true, ``/v1/utxos`` accepts ``include_mempool``, the response
     #: may contain unconfirmed entries with ``height == 0``, and
@@ -213,6 +217,10 @@ class NeutrinoBackend(BlockchainBackend):
 
         # Track if we just completed a rescan (to enable retry logic for async UTXO lookups)
         self._just_rescanned: bool = False
+
+        # Serializes newly-watched-address backfills within this process so
+        # concurrent callers cannot query half-scanned state.
+        self._ensure_scan_lock = asyncio.Lock()
 
         # Adjust minimum blockheight based on network
         if network == "regtest":
@@ -466,6 +474,7 @@ class NeutrinoBackend(BlockchainBackend):
         try:
             rescan_status = await self._api_call("GET", "v1/rescan/status")
             caps.has_rescan_status = True
+            caps.has_force_rescan = bool(rescan_status.get("force_rescan_supported", False))
 
             # Check for persistent state fields (v0.9.0+)
             if "last_start_height" in rescan_status and "last_scanned_tip" in rescan_status:
@@ -501,6 +510,8 @@ class NeutrinoBackend(BlockchainBackend):
             features.append("rescan-status")
         if caps.has_persistent_rescan_state:
             features.append("persistent-state")
+        if caps.has_force_rescan:
+            features.append("force-rescan")
         if caps.has_mempool_tracker:
             features.append("mempool-tracker")
         if caps.has_tx_enumeration:
@@ -648,6 +659,22 @@ class NeutrinoBackend(BlockchainBackend):
         require_started: bool = False,
         start_timeout: float = 10.0,
     ) -> bool:
+        """Wait for rescan completion and report whether it was confirmed."""
+        status = await self._wait_for_rescan_status(
+            timeout=timeout,
+            poll_interval=poll_interval,
+            require_started=require_started,
+            start_timeout=start_timeout,
+        )
+        return status is not None
+
+    async def _wait_for_rescan_status(
+        self,
+        timeout: float = 300.0,
+        poll_interval: float = 2.0,
+        require_started: bool = False,
+        start_timeout: float = 10.0,
+    ) -> dict[str, Any] | None:
         """
         Wait until the neutrino daemon reports no rescan is in progress.
 
@@ -663,14 +690,14 @@ class NeutrinoBackend(BlockchainBackend):
                 when ``require_started`` is enabled.
 
         Returns:
-            True if rescan completion was confirmed via status polling,
-            False if status could not be confirmed (timeout or endpoint error).
+            The terminal status response if completion was confirmed, otherwise
+            None (timeout or endpoint error).
         """
         # When the server does not expose /v1/rescan/status, polling is
         # pointless.  Fall back immediately so the caller uses a fixed delay.
         if self._server_capabilities.detected and not self._server_capabilities.has_rescan_status:
             logger.debug("Server lacks /v1/rescan/status; cannot poll for completion")
-            return False
+            return None
 
         start = asyncio.get_event_loop().time()
         saw_in_progress = False
@@ -689,10 +716,10 @@ class NeutrinoBackend(BlockchainBackend):
                         "Rescan status never entered in_progress=true; "
                         "treating completion as unconfirmed"
                     )
-                    return False
+                    return None
 
                 if not in_progress:
-                    return True
+                    return status
             except Exception as e:
                 # Endpoint not available (old server version or any error) –
                 # do not assume completion.
@@ -700,12 +727,12 @@ class NeutrinoBackend(BlockchainBackend):
                     logger.warning("GET /v1/rescan/status not available")
                 else:
                     logger.warning(f"GET /v1/rescan/status failed ({e})")
-                return False
+                return None
 
             elapsed = asyncio.get_event_loop().time() - start
             if elapsed >= timeout:
                 logger.warning(f"Rescan did not complete within {timeout:.0f}s; proceeding anyway")
-                return False
+                return None
 
             await asyncio.sleep(poll_interval)
 
@@ -1881,6 +1908,13 @@ class NeutrinoBackend(BlockchainBackend):
         if not addresses:
             return
 
+        # Serialize backfills within this process: a second caller must not
+        # observe the addresses as "watched" and query UTXOs while the first
+        # caller's historical rescan is still pending or being rolled back.
+        async with self._ensure_scan_lock:
+            await self._ensure_addresses_scanned_locked(addresses)
+
+    async def _ensure_addresses_scanned_locked(self, addresses: list[str]) -> None:
         # Only rescan addresses we are not already covering. ``add_watch_address``
         # is idempotent; we use the watched set to detect genuinely new ones.
         new_addresses = [a for a in addresses if a not in self._watched_addresses]
@@ -1889,14 +1923,22 @@ class NeutrinoBackend(BlockchainBackend):
         if not new_addresses:
             return
 
+        # Capability detection normally runs during ``wait_for_sync``, but this
+        # method can be the first backend call (e.g. direct bond discovery on a
+        # fresh instance). Detect eagerly (idempotent, cached) so a new server
+        # gets the force flag instead of the legacy coverage-floor fallback.
+        await self._detect_server_capabilities()
+
         try:
             tip_height = await self.get_block_height()
             start_height = await self._resolve_scan_start_height(tip_height)
 
-            # Bypass neutrino-api's global "skip already-scanned range"
-            # optimization by requesting one block below its persisted floor.
+            # New servers support an explicit force flag. Older servers ignore
+            # unknown request fields, so retain the one-block-below-floor
+            # fallback when the capability was not advertised.
             persisted_start, persisted_tip = await self._get_rescan_coverage()
-            if persisted_tip > 0 and start_height >= persisted_start:
+            force_rescan = self._server_capabilities.has_force_rescan
+            if not force_rescan and persisted_tip > 0 and start_height >= persisted_start:
                 # At genesis this is -1; neutrino-api ignores that nonexistent
                 # block and continues scanning from height 0.
                 start_height = persisted_start - 1
@@ -1909,30 +1951,72 @@ class NeutrinoBackend(BlockchainBackend):
             # this deliberate one-time backfill is not rejected by the interactive
             # depth guard (the already-scanned span can exceed it). neutrino-api
             # uses compact filters, so even a deep re-scan is bounded and fast.
-            await self._api_call(
-                "POST",
-                "v1/rescan",
-                data={"start_height": start_height, "addresses": new_addresses},
-            )
-            completed = await self._wait_for_rescan(
-                require_started=True, timeout=self._INITIAL_RESCAN_TIMEOUT_SECONDS
-            )
-            post_start, post_tip = await self._get_rescan_coverage()
-            coverage_confirms_completion = post_start <= start_height and post_tip >= tip_height
-            status_unavailable = (
-                self._server_capabilities.detected
-                and not self._server_capabilities.has_rescan_status
-            )
-            if not completed and not coverage_confirms_completion and not status_unavailable:
-                raise RuntimeError("Neutrino historical address rescan was not confirmed")
-            self._last_rescan_height = max(self._last_rescan_height, post_tip, tip_height)
+            rescan_request: dict[str, Any] = {
+                "start_height": start_height,
+                "addresses": new_addresses,
+            }
+            if force_rescan:
+                rescan_request["force"] = True
+            # Force-capable servers serialize scans and reject overlap with
+            # 409 (typically the background auto-sync). Wait for the active
+            # scan and retry instead of failing the whole backfill.
+            max_busy_retries = 5
+            for attempt in range(max_busy_retries + 1):
+                try:
+                    await self._api_call(
+                        "POST",
+                        "v1/rescan",
+                        data=rescan_request,
+                        expected_status_codes=frozenset({409}),
+                    )
+                    break
+                except httpx.HTTPStatusError as exc:
+                    if exc.response.status_code != 409 or attempt == max_busy_retries:
+                        raise
+                    logger.info(
+                        "Neutrino rescan slot is busy (likely auto-sync); waiting "
+                        "for the active scan before retrying the backfill"
+                    )
+                    await self._wait_for_rescan(
+                        require_started=False,
+                        timeout=self._INITIAL_RESCAN_TIMEOUT_SECONDS,
+                    )
+            if force_rescan:
+                # Force-capable servers admit the scan synchronously: the
+                # in-progress flag is already set when the POST returns and
+                # overlapping scans are rejected with 409. Completion is
+                # therefore ``in_progress == false`` with an empty
+                # ``last_error``; forced subset scans deliberately do not
+                # update the global coverage metadata, so coverage cannot be
+                # used as a completion signal here.
+                status = await self._wait_for_rescan_status(
+                    require_started=False, timeout=self._INITIAL_RESCAN_TIMEOUT_SECONDS
+                )
+                if status is None:
+                    raise RuntimeError("Neutrino historical address rescan was not confirmed")
+                last_error = str(status.get("last_error") or "")
+                if last_error:
+                    raise RuntimeError(f"Neutrino historical address rescan failed: {last_error}")
+                self._last_rescan_height = max(self._last_rescan_height, tip_height)
+            else:
+                completed = await self._wait_for_rescan(
+                    require_started=True, timeout=self._INITIAL_RESCAN_TIMEOUT_SECONDS
+                )
+                post_start, post_tip = await self._get_rescan_coverage()
+                coverage_confirms_completion = post_start <= start_height and post_tip >= tip_height
+                status_unavailable = (
+                    self._server_capabilities.detected
+                    and not self._server_capabilities.has_rescan_status
+                )
+                if not completed and not coverage_confirms_completion and not status_unavailable:
+                    raise RuntimeError("Neutrino historical address rescan was not confirmed")
+                self._last_rescan_height = max(self._last_rescan_height, post_tip, tip_height)
             # Force the next get_utxos to retry while async indexing settles.
             self._just_rescanned = True
         except Exception as e:
             # Let callers retry on the same backend instance. The server-side
             # watch operation is idempotent, so re-registering is harmless.
             self._watched_addresses.difference_update(new_addresses)
-            self._just_rescanned = False
             logger.error(f"Failed to rescan newly watched addresses: {e}")
             raise
 

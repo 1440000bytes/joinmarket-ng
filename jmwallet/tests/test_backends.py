@@ -1050,6 +1050,198 @@ class TestNeutrinoBackend:
         await backend.close()
 
     @pytest.mark.asyncio
+    async def test_ensure_addresses_scanned_uses_server_force_rescan(self):
+        """New servers backfill without lowering persisted coverage metadata."""
+
+        backend = NeutrinoBackend(
+            neutrino_url="http://localhost:8334",
+            network="regtest",
+        )
+        backend._server_capabilities.detected = True
+        backend._server_capabilities.has_rescan_status = True
+        backend._server_capabilities.has_persistent_rescan_state = True
+        backend._server_capabilities.has_force_rescan = True
+        backend.get_block_height = AsyncMock(return_value=1000)
+        backend._api_call = AsyncMock(return_value={})
+        backend._wait_for_rescan = AsyncMock(return_value=True)
+        backend._get_rescan_coverage = AsyncMock(return_value=(0, 1000))
+
+        bond_addr = "bcrt1qforcebondexample000000000000000000000000000xyz"
+        await backend.ensure_addresses_scanned([bond_addr])
+
+        rescan_calls = [
+            c for c in backend._api_call.call_args_list if c.args[:2] == ("POST", "v1/rescan")
+        ]
+        assert rescan_calls[-1].kwargs["data"] == {
+            "start_height": 0,
+            "addresses": [bond_addr],
+            "force": True,
+        }
+        await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_ensure_addresses_scanned_force_uses_terminal_status_snapshot(self):
+        """A following auto-sync status must not change the forced scan result."""
+
+        backend = NeutrinoBackend(
+            neutrino_url="http://localhost:8334",
+            network="regtest",
+        )
+        backend._server_capabilities.detected = True
+        backend._server_capabilities.has_rescan_status = True
+        backend._server_capabilities.has_persistent_rescan_state = True
+        backend._server_capabilities.has_force_rescan = True
+        backend.get_block_height = AsyncMock(return_value=1000)
+        backend._get_rescan_coverage = AsyncMock(return_value=(0, 1000))
+        status_calls = 0
+
+        async def api_call(method: str, endpoint: str, **kwargs: object) -> dict:
+            nonlocal status_calls
+            if method == "GET" and endpoint == "v1/rescan/status":
+                status_calls += 1
+                if status_calls == 1:
+                    return {"in_progress": False, "last_error": ""}
+                return {"in_progress": True, "last_error": "unrelated auto-sync failure"}
+            return {}
+
+        backend._api_call = AsyncMock(side_effect=api_call)
+        bond_addr = "bcrt1qforcedsnapshot000000000000000000000000000xyz"
+
+        await backend.ensure_addresses_scanned([bond_addr])
+
+        assert status_calls == 1
+        assert backend._just_rescanned is True
+        await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_ensure_addresses_scanned_force_surfaces_async_scan_error(self):
+        """A forced scan that failed server-side must raise, not report success."""
+
+        backend = NeutrinoBackend(
+            neutrino_url="http://localhost:8334",
+            network="regtest",
+        )
+        backend._server_capabilities.detected = True
+        backend._server_capabilities.has_rescan_status = True
+        backend._server_capabilities.has_persistent_rescan_state = True
+        backend._server_capabilities.has_force_rescan = True
+        backend.get_block_height = AsyncMock(return_value=1000)
+        backend._wait_for_rescan = AsyncMock(return_value=True)
+        backend._get_rescan_coverage = AsyncMock(return_value=(0, 1000))
+
+        async def api_call(method: str, endpoint: str, **kwargs: object) -> dict:
+            if method == "GET" and endpoint == "v1/rescan/status":
+                return {"in_progress": False, "last_error": "failed to get best block"}
+            return {}
+
+        backend._api_call = AsyncMock(side_effect=api_call)
+        bond_addr = "bcrt1qforcedfailure00000000000000000000000000000xyz"
+
+        with pytest.raises(RuntimeError, match="failed to get best block"):
+            await backend.ensure_addresses_scanned([bond_addr])
+
+        assert bond_addr not in backend._watched_addresses
+        assert backend._just_rescanned is False
+        await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_ensure_addresses_scanned_failure_preserves_prior_rescan_state(self):
+        """A failed attempt must not clear retry state owned by an earlier rescan."""
+
+        backend = NeutrinoBackend(
+            neutrino_url="http://localhost:8334",
+            network="regtest",
+        )
+        backend._server_capabilities.detected = True
+        backend._server_capabilities.has_rescan_status = True
+        backend._server_capabilities.has_force_rescan = True
+        backend._just_rescanned = True
+        backend.get_block_height = AsyncMock(return_value=1000)
+        backend._get_rescan_coverage = AsyncMock(return_value=(0, 1000))
+        backend._api_call = AsyncMock(side_effect=RuntimeError("server unavailable"))
+        bond_addr = "bcrt1qpreserverescan000000000000000000000000000xyz"
+
+        with pytest.raises(RuntimeError, match="server unavailable"):
+            await backend.ensure_addresses_scanned([bond_addr])
+
+        assert backend._just_rescanned is True
+        await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_ensure_addresses_scanned_retries_after_busy_rejection(self):
+        """A 409 from the serialized rescan slot waits and retries, not fails."""
+
+        backend = NeutrinoBackend(
+            neutrino_url="http://localhost:8334",
+            network="regtest",
+        )
+        backend._server_capabilities.detected = True
+        backend._server_capabilities.has_rescan_status = True
+        backend._server_capabilities.has_persistent_rescan_state = True
+        backend._server_capabilities.has_force_rescan = True
+        backend.get_block_height = AsyncMock(return_value=1000)
+        backend._wait_for_rescan = AsyncMock(return_value=True)
+        backend._get_rescan_coverage = AsyncMock(return_value=(0, 1000))
+
+        import httpx
+
+        request = httpx.Request("POST", "http://localhost:8334/v1/rescan")
+        busy = httpx.HTTPStatusError(
+            "busy", request=request, response=httpx.Response(409, request=request)
+        )
+        post_attempts = 0
+
+        async def api_call(method: str, endpoint: str, **kwargs: object) -> dict:
+            nonlocal post_attempts
+            if method == "POST" and endpoint == "v1/rescan":
+                post_attempts += 1
+                if post_attempts == 1:
+                    raise busy
+            return {}
+
+        backend._api_call = AsyncMock(side_effect=api_call)
+        bond_addr = "bcrt1qbusyretrybond00000000000000000000000000000xyz"
+
+        await backend.ensure_addresses_scanned([bond_addr])
+
+        assert post_attempts == 2
+        assert bond_addr in backend._watched_addresses
+        assert backend._just_rescanned is True
+        await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_ensure_addresses_scanned_busy_retries_are_bounded(self):
+        """A permanently busy rescan slot stops after the configured retry limit."""
+
+        backend = NeutrinoBackend(
+            neutrino_url="http://localhost:8334",
+            network="regtest",
+        )
+        backend._server_capabilities.detected = True
+        backend._server_capabilities.has_rescan_status = True
+        backend._server_capabilities.has_force_rescan = True
+        backend.get_block_height = AsyncMock(return_value=1000)
+        backend._get_rescan_coverage = AsyncMock(return_value=(0, 1000))
+        backend._wait_for_rescan = AsyncMock(return_value=True)
+
+        import httpx
+
+        request = httpx.Request("POST", "http://localhost:8334/v1/rescan")
+        busy = httpx.HTTPStatusError(
+            "busy", request=request, response=httpx.Response(409, request=request)
+        )
+        backend._api_call = AsyncMock(side_effect=busy)
+        bond_addr = "bcrt1qboundedbusy000000000000000000000000000000xyz"
+
+        with pytest.raises(httpx.HTTPStatusError):
+            await backend.ensure_addresses_scanned([bond_addr])
+
+        assert backend._api_call.await_count == 6
+        assert backend._wait_for_rescan.await_count == 5
+        assert bond_addr not in backend._watched_addresses
+        await backend.close()
+
+    @pytest.mark.asyncio
     async def test_ensure_addresses_scanned_allows_retry_after_post_failure(self):
         """A failed backfill must not leave new addresses cached as covered."""
 
@@ -1082,6 +1274,7 @@ class TestNeutrinoBackend:
             neutrino_url="http://localhost:8334",
             network="regtest",
         )
+        backend._api_call = AsyncMock(side_effect=RuntimeError("server unavailable"))
         backend.get_block_height = AsyncMock(side_effect=RuntimeError("tip unavailable"))
         bond_addr = "bcrt1qpreparefailure0000000000000000000000000000xyz"
 
@@ -1683,6 +1876,27 @@ class TestNeutrinoBackend:
             await backend._detect_server_capabilities()
             assert backend.server_capabilities.has_mempool_tracker is False
             assert backend.has_mempool_access() is False
+        finally:
+            await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_detect_capabilities_reads_force_rescan_support(self):
+        backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="regtest")
+        backend._api_call = AsyncMock(
+            side_effect=[
+                {"synced": True, "block_height": 800000, "filter_height": 800000},
+                {
+                    "in_progress": False,
+                    "last_start_height": 0,
+                    "last_scanned_tip": 800000,
+                    "force_rescan_supported": True,
+                },
+            ]
+        )
+
+        try:
+            await backend._detect_server_capabilities()
+            assert backend.server_capabilities.has_force_rescan is True
         finally:
             await backend.close()
 
