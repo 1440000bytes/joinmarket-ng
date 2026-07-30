@@ -16,14 +16,22 @@ This prevents merging CoinJoin outputs with their change, blocking trivial linka
 
 **Address Branches (per mixdepth):**
 
-- External (0): Receiving addresses
-- Internal (1): Change addresses
+- External (0): User-facing receiving and deposit addresses; these may also be
+  supplied explicitly as CoinJoin destinations
+- Internal (1): Automatically generated change addresses and CoinJoin destinations
+  that use the `INTERNAL` sentinel
+
+With an `INTERNAL` destination, the equal CoinJoin output goes to the next
+mixdepth on branch `/1`. Wrapping from the last mixdepth back to mixdepth 0
+changes only the mixdepth component of the path, so the automatically generated
+output remains on `/1`. An explicitly supplied destination is used as provided
+and may belong to either branch or to another wallet.
 
 Example:
 ```
-mixdepth 0/external: m/84'/0'/0'/0/0 -> bc1q... (receive)
-mixdepth 0/internal: m/84'/0'/0'/1/0 -> bc1q... (change)
-mixdepth 1/external: m/84'/0'/1'/0/0 -> bc1q... (CJ output from mixdepth 0)
+mixdepth 0/external: m/84'/0'/0'/0/0 -> bc1q... (receive or explicit CJ destination)
+mixdepth 0/internal: m/84'/0'/0'/1/0 -> bc1q... (change or wrapped INTERNAL output)
+mixdepth 1/internal: m/84'/0'/1'/1/0 -> bc1q... (INTERNAL output from mixdepth 0)
 ```
 
 ### PoDLE (Proof of Discrete Log Equivalence)
