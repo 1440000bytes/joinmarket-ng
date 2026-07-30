@@ -611,8 +611,7 @@ class Taker(TakerMonitoringMixin):
                 # Use internal chain (/1) for CoinJoin outputs, not external (/0)
                 # This matches the reference implementation behavior where all JM-generated
                 # addresses (CJ outputs and change) use the internal branch
-                dest_index = self.wallet.get_next_address_index(dest_mixdepth, 1)
-                destination = self.wallet.get_change_address(dest_mixdepth, dest_index)
+                destination = self.wallet.get_new_internal_address(dest_mixdepth)
                 logger.info(f"Using internal address: {destination}")
             else:
                 # Warn when the user-supplied destination does not match the

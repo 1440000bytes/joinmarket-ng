@@ -1104,8 +1104,7 @@ class CoinJoinSession:
             # Only generate change address if we'll actually have a change output
             # This avoids recording unused addresses in history
             if expected_change > self.config.dust_threshold:
-                change_index = self.wallet.get_next_address_index(mixdepth, 1)
-                taker_change_address = self.wallet.get_change_address(mixdepth, change_index)
+                taker_change_address = self.wallet.get_new_internal_address(mixdepth)
                 self.taker_change_address = taker_change_address
                 logger.debug(f"Generated change address (expected: {expected_change} sats)")
             else:

@@ -8,7 +8,7 @@ to the first selected UTXO when the caller does not set one).
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, call
 
 import pytest
 from _taker_test_helpers import make_taker_config, make_utxo
@@ -22,8 +22,9 @@ def _make_wallet(utxos_by_md: dict[int, list]) -> AsyncMock:
     wallet.wallet_fingerprint = "deadbeef"
     wallet.get_utxos = AsyncMock(side_effect=lambda md: utxos_by_md.get(md, []))
     wallet.get_locked_input_outpoints = Mock(return_value=set())
-    wallet.get_next_address_index = Mock(return_value=0)
-    wallet.get_change_address = Mock(return_value="bcrt1qinternaldest")
+    wallet.select_utxos = Mock(side_effect=lambda md, *_args, **_kwargs: utxos_by_md.get(md, []))
+    wallet.get_new_internal_address = Mock(return_value="bcrt1qinternaldest")
+    wallet.reserve_coinjoin_inputs = Mock(return_value=True)
     return wallet
 
 
@@ -115,10 +116,40 @@ async def test_do_coinjoin_derives_mixdepth_from_selection(
     # derived from the selection and the INTERNAL destination targets md+1.
     assert result is None
     assert taker.last_source_mixdepth == 2
-    wallet.get_next_address_index.assert_called_once_with(3, 1)
+    wallet.get_new_internal_address.assert_called_once_with(3)
     taker._maybe_select_utxos_interactively.assert_awaited_once_with(
         amount=5_000_000, mixdepth=None
     )
+
+
+@pytest.mark.asyncio
+async def test_one_mixdepth_internal_destination_and_change_are_distinct(tmp_path: Path) -> None:
+    """The taker's destination reservation must advance same-branch change."""
+    selected_utxo = make_utxo(txid_char="a", value=25_000_000, mixdepth=0, confirmations=10)
+    wallet = _make_wallet({0: [selected_utxo]})
+    wallet.mixdepth_count = 1
+    destination = "bcrt1qqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcruj60yu"
+    change = "bcrt1qqgpqyqszqgpqyqszqgpqyqszqgpqyqszazmwwa"
+    wallet.get_new_internal_address.side_effect = [destination, change]
+
+    backend = _backend()
+    backend.get_mempool_min_fee = AsyncMock(return_value=None)
+    taker = Taker(wallet, backend, _make_config(tmp_path, select_utxos=False, fee_rate=1.0))
+    taker.directory_client.fetch_orderbook = AsyncMock(return_value=[])
+
+    result = await taker.do_coinjoin(amount=5_000_000, destination="INTERNAL", mixdepth=0)
+    assert result is None
+
+    taker._session.preselected_utxos = [selected_utxo]
+    taker._session.cj_amount = 5_000_000
+    taker._session.is_sweep = False
+    taker._session._fee_rate = 1.0
+    taker._session.maker_sessions = {}
+
+    assert await taker._session._phase_build_tx(destination=destination, mixdepth=0) is True
+    assert taker._session.taker_change_address == change
+    assert destination != taker._session.taker_change_address
+    assert wallet.get_new_internal_address.call_args_list == [call(0), call(0)]
 
 
 @pytest.mark.asyncio

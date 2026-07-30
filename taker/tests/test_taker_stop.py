@@ -23,9 +23,8 @@ def mock_wallet() -> AsyncMock:
     wallet.sync_all = AsyncMock()
     wallet.get_total_balance = AsyncMock(return_value=0)
     wallet.get_utxos = AsyncMock(return_value=[make_utxo(txid_char="a")])
-    wallet.get_next_address_index = Mock(return_value=0)
     wallet.get_receive_address = Mock(return_value="bcrt1qdest")
-    wallet.get_change_address = Mock(return_value="bcrt1qchange")
+    wallet.get_new_internal_address = Mock(return_value="bcrt1qchange")
     wallet.close = AsyncMock()
     return wallet
 

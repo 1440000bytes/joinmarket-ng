@@ -790,6 +790,19 @@ class WalletService(WalletSyncMixin, CoinSelectionMixin, WalletDisplayMixin, Wal
         self.reserved_addresses.update(addresses)
         logger.debug(f"Reserved {len(addresses)} addresses: {addresses}")
 
+    def get_new_internal_address(self, mixdepth: int) -> str:
+        """Allocate and reserve the next internal address for a CoinJoin output.
+
+        Reserving within the same synchronous operation ensures consecutive
+        allocations from one branch receive distinct indices. This matters for
+        one-mixdepth wallets, where the equal output and change both use the
+        same ``(mixdepth=0, branch=1)`` sequence.
+        """
+        index = self.get_next_address_index(mixdepth, 1)
+        address = self.get_change_address(mixdepth, index)
+        self.reserve_addresses({address})
+        return address
+
     async def sync(self) -> dict[int, list[UTXOInfo]]:
         """Sync wallet (alias for sync_all for backward compatibility)."""
         return await self.sync_all()

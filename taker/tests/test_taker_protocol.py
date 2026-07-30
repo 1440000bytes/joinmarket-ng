@@ -46,9 +46,8 @@ def mock_wallet():
             make_utxo(txid_char="b", address="bcrt1qtest2", path="m/84'/1'/0'/0/1"),
         ]
     )
-    wallet.get_next_address_index = Mock(return_value=0)
     wallet.get_receive_address = Mock(return_value="bcrt1qdest")
-    wallet.get_change_address = Mock(return_value="bcrt1qchange")
+    wallet.get_new_internal_address = Mock(return_value="bcrt1qchange")
     wallet.get_key_for_address = Mock()
     wallet.select_utxos = Mock(return_value=[make_utxo(txid_char="a", address="bcrt1qtest1")])
     # Sync method on the real WalletService; the pre-flight eligibility check
@@ -713,9 +712,8 @@ class TestSweepCjAmountPreservation:
         ]
         wallet.get_utxos = AsyncMock(return_value=sweep_utxos)
         wallet.get_all_utxos = Mock(return_value=sweep_utxos)
-        wallet.get_next_address_index = Mock(return_value=0)
         wallet.get_receive_address = Mock(return_value="bcrt1qdest")
-        wallet.get_change_address = Mock(return_value="bcrt1qchange")
+        wallet.get_new_internal_address = Mock(return_value="bcrt1qchange")
         wallet.get_key_for_address = Mock()
         wallet.select_utxos = Mock(return_value=sweep_utxos)
         wallet.reserve_coinjoin_inputs = Mock(return_value=True)

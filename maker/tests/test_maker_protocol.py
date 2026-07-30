@@ -719,6 +719,56 @@ async def test_select_our_utxos_falls_back_after_lock_conflict():
 
 
 @pytest.mark.asyncio
+async def test_select_our_utxos_one_mixdepth_uses_distinct_internal_addresses():
+    """Equal and change outputs must not reuse one address with one mixdepth."""
+    from unittest.mock import AsyncMock, MagicMock, call
+
+    from jmcore.models import Offer, OfferType
+    from jmwallet.wallet.models import UTXOInfo
+
+    from maker.coinjoin import CoinJoinSession
+
+    wallet = MagicMock()
+    wallet.mixdepth_count = 1
+    wallet.get_balance_for_offers = AsyncMock(return_value=10_000_000)
+    wallet.get_locked_input_outpoints.return_value = set()
+    wallet.reserve_coinjoin_inputs.return_value = True
+    selected = UTXOInfo(
+        txid="ab" * 32,
+        vout=0,
+        value=5_000_000,
+        address="bcrt1qmakerinput",
+        confirmations=10,
+        scriptpubkey="0014" + "ab" * 20,
+        path="m/84'/0'/0'/0/0",
+        mixdepth=0,
+    )
+    wallet.select_utxos_with_merge.return_value = [selected]
+    wallet.get_new_internal_address.side_effect = ["bcrt1qcjout", "bcrt1qchange"]
+
+    offer = Offer(
+        counterparty="J5SingleMixdepthMaker",
+        ordertype=OfferType.SW0_RELATIVE,
+        oid=0,
+        minsize=10_000,
+        maxsize=100_000_000,
+        txfee=1000,
+        cjfee="0.0003",
+    )
+    session = CoinJoinSession(
+        taker_nick="J5SomeTaker", offer=offer, wallet=wallet, backend=MagicMock()
+    )
+    session.amount = 1_000_000
+
+    utxos, cj_address, change_address, mixdepth = await session._select_our_utxos()
+
+    assert mixdepth == 0
+    assert set(utxos) == {(selected.txid, selected.vout)}
+    assert cj_address != change_address
+    assert wallet.get_new_internal_address.call_args_list == [call(0), call(0)]
+
+
+@pytest.mark.asyncio
 async def test_select_our_utxos_releases_lock_after_address_failure():
     """A failure after reservation must not leave maker liquidity locked."""
     from unittest.mock import AsyncMock, MagicMock
@@ -744,7 +794,7 @@ async def test_select_our_utxos_releases_lock_after_address_failure():
     )
     mock_wallet.select_utxos_with_merge.return_value = [selected]
     mock_wallet.reserve_coinjoin_inputs.return_value = True
-    mock_wallet.get_next_address_index.side_effect = RuntimeError("address store failed")
+    mock_wallet.get_new_internal_address.side_effect = RuntimeError("address store failed")
 
     offer = Offer(
         counterparty="J5LockCleanupMaker",

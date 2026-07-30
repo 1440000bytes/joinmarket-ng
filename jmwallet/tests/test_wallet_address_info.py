@@ -1263,6 +1263,15 @@ class TestAddressReservation:
         assert addr1 in wallet.reserved_addresses
         assert addr2 in wallet.reserved_addresses
 
+    def test_new_internal_address_reserves_before_next_allocation(self, wallet):
+        """Consecutive allocations from one internal branch must be distinct."""
+        first = wallet.get_new_internal_address(0)
+        second = wallet.get_new_internal_address(0)
+
+        assert first == wallet.get_change_address(0, 0)
+        assert second == wallet.get_change_address(0, 1)
+        assert {first, second} <= wallet.reserved_addresses
+
     def test_reserved_addresses_skipped_by_get_next_address_index(self, wallet):
         """Test that reserved addresses cause get_next_address_index to skip past them."""
         # Reserve address at index 0 for change in mixdepth 0
