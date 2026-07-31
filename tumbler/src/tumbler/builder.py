@@ -106,6 +106,8 @@ class TumbleParameters:
 
     @property
     def rng(self) -> random.Random:
+        if self.seed is None:
+            return random.SystemRandom()
         return random.Random(self.seed)
 
     @property

@@ -7,7 +7,6 @@ the CLI and the ``jmwalletd`` HTTP daemon can share it without duplication.
 from __future__ import annotations
 
 import math
-import random
 import time
 from dataclasses import dataclass, field
 from hashlib import sha256
@@ -15,6 +14,7 @@ from typing import TYPE_CHECKING
 
 from jmcore.bitcoin import estimate_vsize, get_address_type
 from jmcore.btc_script import mk_freeze_script
+from jmcore.randomness import secure_random
 from loguru import logger
 
 from jmwallet.wallet.address import pubkey_to_p2wpkh_script
@@ -417,7 +417,7 @@ async def direct_send(
         raise ValueError(msg)
     if tx_fee_factor > 0:
         upper_rate = min(fee_rate * (1 + tx_fee_factor), max_fee_rate_sat_vb)
-        fee_rate = random.uniform(fee_rate, upper_rate)
+        fee_rate = secure_random.uniform(fee_rate, upper_rate)
         logger.debug("Randomized direct-send fee rate: {:.2f} sat/vB", fee_rate)
     enforce_fee_rate_cap(fee_rate, max_fee_rate_sat_vb, source="final")
 

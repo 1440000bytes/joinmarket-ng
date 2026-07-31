@@ -341,7 +341,7 @@ class TestTakerBroadcast:
         taker._session.maker_sessions = {}
 
         # With no makers, should fall back to self
-        with patch("random.shuffle", side_effect=lambda x: x):
+        with patch("jmcore.randomness.secure_random.shuffle", side_effect=lambda x: x):
             txid = await taker._session._phase_broadcast()
 
         assert txid == "txid123"
@@ -524,7 +524,7 @@ class TestTakerBroadcast:
         taker.backend.verify_tx_output = AsyncMock(return_value=False)
 
         # Force deterministic order: maker first
-        with patch("random.shuffle", side_effect=lambda x: x.sort()):
+        with patch("jmcore.randomness.secure_random.shuffle", side_effect=lambda x: x.sort()):
             txid = await taker._session._phase_broadcast()
 
         # Should succeed via self fallback (full node behavior)
@@ -825,7 +825,7 @@ class TestNeutrinoBroadcast:
         fullnode_taker._session.tx_metadata["output_owners"].insert(0, ("taker", "cj"))
 
         # Force deterministic order: maker1 first
-        with patch("random.shuffle", side_effect=lambda x: x.sort()):
+        with patch("jmcore.randomness.secure_random.shuffle", side_effect=lambda x: x.sort()):
             txid = await fullnode_taker._session._phase_broadcast()
 
         # Should succeed via first maker (verification returns True)
@@ -844,7 +844,7 @@ class TestNeutrinoBroadcast:
         # First verification fails, second succeeds
         fullnode_taker.backend.verify_tx_output = AsyncMock(side_effect=[False, False, True, True])
 
-        with patch("random.shuffle", side_effect=lambda x: x.sort()):
+        with patch("jmcore.randomness.secure_random.shuffle", side_effect=lambda x: x.sort()):
             txid = await fullnode_taker._session._phase_broadcast()
 
         # Should succeed
@@ -873,7 +873,7 @@ class TestNeutrinoBroadcast:
         # First maker's verification succeeds, so loop exits early.
         neutrino_taker.backend.verify_tx_output = AsyncMock(return_value=True)
 
-        with patch("random.shuffle", side_effect=lambda x: x.sort()):
+        with patch("jmcore.randomness.secure_random.shuffle", side_effect=lambda x: x.sort()):
             txid = await neutrino_taker._session._phase_broadcast()
 
         assert txid != ""

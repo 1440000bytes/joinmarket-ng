@@ -11,7 +11,6 @@ Coordinates all maker components:
 from __future__ import annotations
 
 import asyncio
-import random
 import time
 
 from jmcore.commitment_blacklist import set_blacklist_path
@@ -25,6 +24,7 @@ from jmcore.paths import read_nick_state
 from jmcore.protocol import (
     JM_VERSION,
 )
+from jmcore.randomness import secure_random
 from jmcore.rate_limiter import RateLimiter
 from jmcore.tor_control import (
     EphemeralHiddenService,
@@ -896,7 +896,7 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
 
             delay_max = self.config.offer_reannounce_delay_max
             if delay_max > 0:
-                delay = random.uniform(0, delay_max)
+                delay = secure_random.uniform(0, delay_max)
                 logger.info(
                     f"Delaying offer re-announcement by {delay:.0f}s (max {delay_max}s) for privacy"
                 )

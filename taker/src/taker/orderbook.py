@@ -10,7 +10,6 @@ Implements:
 
 from __future__ import annotations
 
-import random
 from collections.abc import Callable
 from typing import Any
 
@@ -22,6 +21,7 @@ from jmcore.models import Offer, OfferType
 from jmcore.models import calculate_cj_fee as _calculate_cj_fee_raw
 from jmcore.paths import get_ignored_makers_path
 from jmcore.protocol import FEATURE_NEUTRINO_COMPAT, get_nick_version
+from jmcore.randomness import secure_random
 from loguru import logger
 
 from taker.config import MaxCjFee
@@ -330,7 +330,7 @@ def random_order_choose(offers: list[Offer], n: int) -> list[Offer]:
     if len(offers) <= n:
         return offers[:]
 
-    return random.sample(offers, n)
+    return secure_random.sample(offers, n)
 
 
 def cheapest_order_choose(offers: list[Offer], n: int, cj_amount: int = 0) -> list[Offer]:
@@ -382,7 +382,7 @@ def weighted_order_choose(
 
     total_weight = sum(weights)
     if total_weight == 0:
-        return random.sample(offers, n)
+        return secure_random.sample(offers, n)
 
     selected = []
     remaining_offers = list(enumerate(offers))
@@ -394,7 +394,7 @@ def weighted_order_choose(
 
         # Weighted random selection
         total = sum(remaining_weights)
-        r = random.uniform(0, total)
+        r = secure_random.uniform(0, total)
         cumulative = 0
 
         for i, (idx, offer) in enumerate(remaining_offers):
@@ -499,18 +499,18 @@ def fidelity_bond_weighted_choose(
 
         picked: Offer | None = None
 
-        if random.random() < bondless_makers_allowance:
+        if secure_random.random() < bondless_makers_allowance:
             # Bondless slot: pick uniformly from ALL remaining offers.
             # Bonded and bondless compete on equal footing here, so a rare
             # bondless maker has probability ~1/len(remaining).
-            picked = random.choice(remaining)
+            picked = secure_random.choice(remaining)
         else:
             # Bonded slot: pick weighted by bond value
             picked = _pick_weighted_bonded(remaining)
 
         if picked is None:
             # Bonded pool empty -- fall back to uniform random
-            picked = random.choice(remaining)
+            picked = secure_random.choice(remaining)
 
         selected.append(picked)
         remaining.remove(picked)
@@ -537,7 +537,7 @@ def _pick_weighted_bonded(pool: list[Offer]) -> Offer | None:
     if not bonded:
         return None
     total = sum(w for _, w in bonded)
-    r = random.uniform(0, total)
+    r = secure_random.uniform(0, total)
     cumulative = 0
     for offer, weight in bonded:
         cumulative += weight

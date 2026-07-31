@@ -7,10 +7,9 @@ Supports multiple simultaneous offers with different fee structures (relative/ab
 
 from __future__ import annotations
 
-import random
-
 from jmcore.constants import DUST_THRESHOLD
 from jmcore.models import Offer, OfferType
+from jmcore.randomness import secure_random
 from jmwallet.wallet.service import WalletService
 from loguru import logger
 
@@ -29,7 +28,7 @@ def _randomize(value: float, factor: float, low: float | None = None) -> float:
     if factor <= 0:
         result = float(value)
     else:
-        result = random.uniform(value * (1.0 - factor), value * (1.0 + factor))
+        result = secure_random.uniform(value * (1.0 - factor), value * (1.0 + factor))
     if low is not None and result < low:
         return float(low)
     return result
@@ -436,7 +435,9 @@ class OfferManager:
                 randomized_max_size = int(max_available)
             elif offer_cfg.size_factor > 0 and max_available > 0:
                 randomized_max_size = int(
-                    random.uniform(max_available * (1.0 - offer_cfg.size_factor), max_available)
+                    secure_random.uniform(
+                        max_available * (1.0 - offer_cfg.size_factor), max_available
+                    )
                 )
             else:
                 randomized_max_size = max_available

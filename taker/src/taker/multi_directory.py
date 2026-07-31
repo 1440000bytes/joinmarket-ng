@@ -10,7 +10,6 @@ it as disconnected.
 from __future__ import annotations
 
 import asyncio
-import random
 from dataclasses import dataclass
 from typing import Any
 
@@ -21,6 +20,7 @@ from jmcore.directory_pool import DirectoryClientPool
 from jmcore.models import Offer
 from jmcore.network import ONION_HOSTID, OnionPeer
 from jmcore.protocol import NOT_SERVING_ONION_HOSTNAME, parse_jm_message
+from jmcore.randomness import secure_random
 from loguru import logger
 
 
@@ -654,7 +654,7 @@ class MultiDirectoryClient(DirectoryClientPool):
             target_directories = list(self.clients.keys())
 
         # Shuffle to load balance
-        random.shuffle(target_directories)
+        secure_random.shuffle(target_directories)
 
         # Send via the first working directory
         # We strictly send to ONE directory to avoid message duplication

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import random
+
 import pytest
 
 from tumbler.builder import INTERNAL_DESTINATION, PlanBuilder, TumbleParameters
@@ -50,6 +52,9 @@ class TestPlanBuilder:
         plan_b = PlanBuilder("w", _params(seed=123)).build()
         assert [p.kind for p in plan_a.phases] == [p.kind for p in plan_b.phases]
         assert [p.wait_seconds for p in plan_a.phases] == [p.wait_seconds for p in plan_b.phases]
+
+    def test_unseeded_plan_uses_operating_system_rng(self) -> None:
+        assert isinstance(_params(seed=None).rng, random.SystemRandom)
 
     def test_destinations_land_in_distinct_mixdepths(self) -> None:
         params = _params(

@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 from jmcore.bitcoin import get_txid, pubkey_to_p2wpkh_script
 from jmcore.encryption import CryptoSession
 from jmcore.protocol import FEATURE_NEUTRINO_COMPAT, UTXOMetadata, parse_utxo_list
+from jmcore.randomness import secure_random
 from jmwallet.history import (
     HistoryWriteError,
     append_history_entry,
@@ -1331,8 +1332,6 @@ class CoinJoinSession:
         The randomized rate is stored in self._randomized_fee_rate and used
         by _estimate_tx_fee() for all calculations.
         """
-        import random
-
         if self._fee_rate is None:
             return
 
@@ -1344,7 +1343,7 @@ class CoinJoinSession:
                 base_rate * (1 + self.config.tx_fee_factor),
                 self.config.max_fee_rate_sat_vb,
             )
-            self._randomized_fee_rate = random.uniform(
+            self._randomized_fee_rate = secure_random.uniform(
                 base_rate,
                 upper_rate,
             )
@@ -1835,7 +1834,6 @@ class CoinJoinSession:
             Transaction ID if successful, empty string otherwise
         """
         import base64
-        import random
 
         inputs_valid, validation_error = await self._revalidate_inputs_before_broadcast()
         if not inputs_valid:
@@ -1897,7 +1895,7 @@ class CoinJoinSession:
                 logger.warning("RANDOM_PEER policy but no makers available, using self")
                 return await self._broadcast_self()
 
-            random.shuffle(maker_nicks)
+            secure_random.shuffle(maker_nicks)
 
             for candidate in maker_nicks:
                 txid = await self._broadcast_via_maker(candidate, tx_b64)
@@ -1916,7 +1914,7 @@ class CoinJoinSession:
 
             # Select N random makers (or all if less than N)
             peer_count = min(self.config.broadcast_peer_count, len(maker_nicks))
-            selected_peers = random.sample(maker_nicks, peer_count)
+            selected_peers = secure_random.sample(maker_nicks, peer_count)
 
             success_count = await self._broadcast_to_all_makers(selected_peers, tx_b64)
 
@@ -1945,7 +1943,7 @@ class CoinJoinSession:
                 return ""
 
             # Try makers in random order with verification
-            random.shuffle(maker_nicks)
+            secure_random.shuffle(maker_nicks)
 
             for maker_nick in maker_nicks:
                 txid = await self._broadcast_via_maker(maker_nick, tx_b64)

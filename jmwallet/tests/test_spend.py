@@ -903,7 +903,7 @@ class TestDirectSendFeeRateCap:
         wallet = _make_mock_wallet(utxos)
         backend = _make_mock_backend()
 
-        with patch("jmwallet.wallet.spend.random.uniform", side_effect=lambda _low, high: high):
+        with patch("jmcore.randomness.secure_random.uniform", side_effect=lambda _low, high: high):
             result = await direct_send(
                 wallet=wallet,
                 backend=backend,

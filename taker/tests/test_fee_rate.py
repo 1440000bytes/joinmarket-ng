@@ -221,6 +221,6 @@ class TestResolveFeeRateCap:
             tx_fee_factor=1.0,
             max_fee_rate_sat_vb=1_000.0,
         )
-        with patch("random.uniform", side_effect=lambda _low, high: high):
+        with patch("jmcore.randomness.secure_random.uniform", side_effect=lambda _low, high: high):
             await taker._session._resolve_fee_rate()
         assert taker._session._randomized_fee_rate == 1_000.0

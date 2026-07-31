@@ -6,6 +6,8 @@ Provides UTXO selection strategies for CoinJoin transactions and sweeps.
 
 from __future__ import annotations
 
+from jmcore.randomness import secure_random
+
 from jmwallet.wallet.models import UTXOInfo
 
 
@@ -352,8 +354,6 @@ class CoinSelectionMixin:
         Returns:
             Extended ``selected`` list (may be mutated in-place).
         """
-        import random as rand_module
-
         if merge_algorithm == "greedy":
             # Add ALL remaining UTXOs
             selected.extend(remaining)
@@ -363,7 +363,7 @@ class CoinSelectionMixin:
             selected.append(remaining_sorted[0])
         elif merge_algorithm == "random" and remaining:
             # Add 0-2 additional UTXOs randomly
-            extra_count = rand_module.randint(0, min(2, len(remaining)))
+            extra_count = secure_random.randint(0, min(2, len(remaining)))
             if extra_count > 0:
                 # Prefer smaller UTXOs for consolidation
                 remaining_sorted = sorted(remaining, key=lambda u: u.value)

@@ -20,6 +20,7 @@ from jmcore.bitcoin import (
     parse_transaction_bytes,
     serialize_transaction,
 )
+from jmcore.randomness import secure_random
 from pydantic.dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -71,8 +72,6 @@ class CoinJoinTxBuilder:
         Returns:
             (tx_bytes, metadata) where metadata maps inputs/outputs to owners
         """
-        import random
-
         # Collect all inputs with owner info
         all_inputs: list[tuple[TxInput, str]] = []
 
@@ -98,8 +97,8 @@ class CoinJoinTxBuilder:
             all_outputs.append((out, nick, "change"))
 
         # Shuffle for privacy
-        random.shuffle(all_inputs)
-        random.shuffle(all_outputs)
+        secure_random.shuffle(all_inputs)
+        secure_random.shuffle(all_outputs)
 
         # Build metadata
         metadata = {

@@ -4,12 +4,12 @@ Configuration for JoinMarket Taker.
 
 from __future__ import annotations
 
-import random
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 
 from jmcore.config import WalletConfig
 from jmcore.models import OfferType
+from jmcore.randomness import secure_random
 from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 
 # Default counterparty count is randomized per CoinJoin in [MIN, MAX] when no
@@ -28,7 +28,7 @@ def resolve_counterparty_count(value: int | None) -> int:
     Otherwise the explicit value is returned unchanged.
     """
     if value is None:
-        return random.randint(DEFAULT_COUNTERPARTY_COUNT_MIN, DEFAULT_COUNTERPARTY_COUNT_MAX)
+        return secure_random.randint(DEFAULT_COUNTERPARTY_COUNT_MIN, DEFAULT_COUNTERPARTY_COUNT_MAX)
     return value
 
 
