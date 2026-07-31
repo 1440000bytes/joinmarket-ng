@@ -212,7 +212,7 @@ Allows cold storage of bond private key while hot wallet handles per-session pro
 >
 > If your hardware wallet cannot sign CLTV scripts through either HWI or a device-native QR PSBT flow, you will need to enter your BIP39 mnemonic into the `sign_bond_mnemonic.py` script to spend the bond. This does not mean funds are lost -- it is an inconvenience that degrades security from "hardware wallet cold storage" to "software signing on a (potentially offline) computer". **Plan ahead**: use a CLTV compatible hardware wallet for full cold storage, or create a dedicated mnemonic/passphrase specifically for the bond so that mnemonic exposure does not risk your main wallet.
 >
-> **Before locking real funds**, complete the full workflow end-to-end including a test spend (without broadcasting) to confirm your tooling works. See "Test the full flow" below.
+> **Before locking real funds**, complete the full workflow end-to-end including a test spend (without broadcasting) to confirm your tooling works. See "Test the full flow" below. If your device model is not in the compatibility table (or you want to confirm it), you can test it without your real wallet using a publicly known test mnemonic -- see "Testing device compatibility with the public test mnemonic" below.
 
 For maximum security, keep the bond UTXO private key on a hardware wallet. The bond private key never touches any internet-connected device.
 
@@ -301,7 +301,7 @@ For maximum security, keep the bond UTXO private key on a hardware wallet. The b
    # All other devices -- test mnemonic signing:
    python scripts/sign_bond_mnemonic.py "$(tr -d '\n' < unsigned-bond-test.psbt)"
    ```
-   **Do not broadcast** the test transaction -- just confirm that signing succeeds and produces valid output. Use `bitcoin-cli decoderawtransaction <signed_hex>` to inspect. `--test-unfunded` uses a synthetic input so you can validate derivation path, signer compatibility, and the full signing toolchain **before funding**.
+   **Do not broadcast** the test transaction -- just confirm that signing succeeds and produces valid output. For the HWI and QR flows, run `python scripts/finalize_bond_psbt.py --file <signed_psbt>` on the signed PSBT: it cryptographically verifies the signature, which is the definitive check (the synthetic input can never be broadcast, so a broken signature would otherwise go unnoticed). `--test-unfunded` uses a synthetic input so you can validate derivation path, signer compatibility, and the full signing toolchain **before funding**. To check a device model without your real wallet first, see "Testing device compatibility with the public test mnemonic" below.
 
 8. **Fund the bond** -- only after confirming the full flow works, send Bitcoin to the bond P2WSH address.
 
@@ -369,6 +369,72 @@ For pre-funding dry-run signer tests, add `--test-unfunded` (optionally `--test-
 | BitBox02 | **No** | |
 | KeepKey | **No** | |
 
+**Testing device compatibility with the public test mnemonic:**
+
+You can check whether a specific device model can sign a fidelity bond spend before creating a bond or locking any funds, using only the device and this repository. The test uses the publicly known BIP39 test mnemonic and a bond spend PSBT with a synthetic (nonexistent) UTXO. The device cannot tell the difference from a real bond spend -- same P2WSH CLTV witness script, nLockTime, and BIP143 SIGHASH_ALL signing -- so a successful, cryptographically verified signature proves the model supports fidelity bond redemption. Nothing can ever be broadcast.
+
+> **WARNING**: The test mnemonic is publicly known. NEVER send funds to it and never use it for anything other than testing.
+
+Test wallet (mainnet, no BIP39 passphrase):
+
+```
+Mnemonic:            abandon abandon abandon abandon abandon abandon
+                     abandon abandon abandon abandon abandon about
+Master fingerprint:  73c5da0a
+Signing key path:    m/84'/0'/0'/0/0
+Public key:          0330d54fd0dd420a6e5f8d3624f5f3482cae350f79d5f0753bf5beef9c2d91af3c
+Bond locktime:       2026-02-01 00:00 UTC (1769904000)
+Bond address:        bc1qrd0yehles4ppg66tl823yylw654ksfftsy9y79d2uqk59jtlqjhqd7zpam
+```
+
+The test key deliberately uses the standard BIP84 path: bond addresses are derived from the public key alone, so the reference implementation's non-standard `/2` branch is not needed (see the note in "Cold Wallet Setup" above) and standard-path keys maximize device compatibility.
+
+Save this unsigned test PSBT (it sweeps the synthetic bond UTXO back to the test wallet's first address) to `unsigned-bond-test.psbt`:
+
+```
+cHNidP8BAFICAAAAARERERERERERERERERERERERERERERERERERERERERERAAAAAAD+////ATCGAQAAAAAAFgAUwM681sPTyox13F7GLr5VMw75EOKAl35pAAEBK6CGAQAAAAAAIgAgG15M3/mFQhRrS/nVEhPu1StoJSuBCk8VquAtQsl/BK4BAwQBAAAAAQUqBICXfmmxdSEDMNVP0N1CCm5fjTYk9fNILK41D3nV8HU79b7vnC2RrzysIgYDMNVP0N1CCm5fjTYk9fNILK41D3nV8HU79b7vnC2RrzwYc8XaClQAAIAAAACAAAAAgAAAAAAAAAAAAAA=
+```
+
+1. **Load the test mnemonic on the device** (mainnet). Prefer a temporary or ephemeral wallet mode so your real seed is untouched: Blockstream Jade offers a temporary signer mode ("Recovery Phrase Login"), and most other devices can restore from a recovery phrase on a spare or reset device. The device should report master fingerprint `73c5da0a`.
+
+2. **Sign the PSBT**:
+
+   ```bash
+   # USB devices via HWI (pip install -U hwi):
+   python scripts/sign_bond_psbt.py --no-broadcast \
+     --file unsigned-bond-test.psbt > signed-bond-test.psbt
+
+   # QR devices (e.g. Specter DIY): render the PSBT as a QR code, scan and
+   # sign on the device, then save the signed PSBT the device returns:
+   qrencode -t ANSIUTF8 "$(tr -d '\n' < unsigned-bond-test.psbt)"
+   ```
+
+3. **Verify the signature**:
+
+   ```bash
+   python scripts/finalize_bond_psbt.py --file signed-bond-test.psbt
+   ```
+
+   The finalizer cryptographically verifies the device's signature over the CLTV witness script (BIP143 SIGHASH_ALL) and prints `Signature verified` plus the final transaction hex. Because the input does not exist, the transaction can never be broadcast (do not try; it would be rejected).
+
+If step 3 reports `Signature verified`, your device model can sign fidelity bond spends. If the device rejects the PSBT (typically an error about the witness script or an unsupported policy) or verification fails, the model cannot currently be used for bond cold storage -- plan for the mnemonic signing fallback (Option C below) or a dedicated bond mnemonic. Either way, please [open an issue](https://github.com/joinmarket-ng/joinmarket-ng/issues) with your device model, firmware version, and result so the compatibility table stays accurate.
+
+The vector is deterministic; you can regenerate the exact same PSBT with:
+
+```bash
+jm-wallet create-bond-address 0330d54fd0dd420a6e5f8d3624f5f3482cae350f79d5f0753bf5beef9c2d91af3c \
+  --locktime-date "2026-02" --wallet-fingerprint 73c5da0a
+jm-wallet spend-bond bc1qrd0yehles4ppg66tl823yylw654ksfftsy9y79d2uqk59jtlqjhqd7zpam \
+  bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu \
+  --fee-rate 1.0 --test-unfunded \
+  --master-fingerprint 73c5da0a \
+  --derivation-path "m/84'/0'/0'/0/0" \
+  --wallet-fingerprint 73c5da0a \
+  --output unsigned-bond-test.psbt
+```
+
+This checks the device model only. Before funding a real bond, also run "Test the full flow" above with your own wallet's fingerprint, pubkey, and derivation path to validate your complete setup.
+
 **Option A -- HWI signing (Jade, and Ledger with the legacy app):**
 
 Blockstream Jade supports arbitrary witnessScript inputs, so it can sign CLTV bonds directly via HWI. Ledger devices running the legacy Bitcoin app (2.0.x and earlier) also could; the current Ledger app (2.1+) has been reported to reject bond PSBTs (see the table above).
@@ -401,13 +467,13 @@ qrencode -t ANSIUTF8 "$(tr -d '\n' < unsigned-bond.psbt)"
 
 Scan the QR on Specter DIY, inspect the transaction details, and sign it. Then scan or copy the signed PSBT output back to the online machine and save it as `signed-bond.psbt`.
 
-Bitcoin Core's `finalizepsbt` may not finalize this custom CLTV P2WSH witness script even when the PSBT contains a valid partial signature. Use the bond finalizer script to build the final witness transaction:
+Bitcoin Core's `finalizepsbt` may not finalize this custom CLTV P2WSH witness script even when the PSBT contains a valid partial signature. Use the bond finalizer script to verify the signature and build the final witness transaction:
 
 ```bash
 python scripts/finalize_bond_psbt.py --file signed-bond.psbt
 ```
 
-The script outputs the final raw transaction hex. Inspect it before broadcasting:
+The script cryptographically verifies the device's signature (BIP143 SIGHASH_ALL over the CLTV witness script) and outputs the final raw transaction hex. Inspect it before broadcasting:
 
 ```bash
 bitcoin-cli decoderawtransaction <signed_hex>

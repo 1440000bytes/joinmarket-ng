@@ -48,8 +48,9 @@ technical pages for more depth.
   and Specter DIY can sign bond redemptions; Ledger only with the legacy
   Bitcoin app (2.0.x and earlier -- the current app has been reported to
   reject bond PSBTs). Trezor, Coldcard, BitBox02, and KeepKey currently
-  cannot. Always test the full create-and-spend flow before funding a bond.
-  See the hardware-wallet support notes in [Privacy](privacy.md).
+  cannot. Always test the full create-and-spend flow before funding a bond;
+  you can check any device model risk-free with the public test mnemonic
+  described in the hardware-wallet support notes in [Privacy](privacy.md).
 
 ## Taker Operation
 

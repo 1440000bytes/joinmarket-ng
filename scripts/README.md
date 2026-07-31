@@ -33,7 +33,7 @@ These scripts support the cold storage fidelity bond workflow. See [`docs/techni
 
 - **sign_bond_psbt.py** - Sign a fidelity bond spending PSBT using a hardware wallet (via HWI, >= 3.1.0 to detect newer device models). Supports Blockstream Jade, and Ledger devices running the legacy Bitcoin app (2.0.x and earlier); the current Ledger app (2.1+) has been reported to reject bond PSBTs. Trezor/Coldcard/BitBox02/KeepKey cannot sign CLTV scripts.
 
-- **finalize_bond_psbt.py** - Finalize a signed fidelity bond spending PSBT, such as one returned by Specter DIY's QR signing flow. Builds the final CLTV P2WSH witness transaction when Bitcoin Core's `finalizepsbt` cannot finalize the custom witness script.
+- **finalize_bond_psbt.py** - Verify and finalize a signed fidelity bond spending PSBT, such as one returned by Specter DIY's QR signing flow or `sign_bond_psbt.py --no-broadcast`. Cryptographically verifies the partial signature (BIP143 SIGHASH_ALL over the CLTV witness script) and builds the final P2WSH witness transaction when Bitcoin Core's `finalizepsbt` cannot finalize the custom witness script. Standard library only, so it also serves as the verification step of the hardware wallet compatibility test in the privacy guide.
 
 - **sign_bond_mnemonic.py** - Sign a fidelity bond spending PSBT using a BIP39 mnemonic. Use when hardware wallet signing is not available. Reads and validates the mnemonic interactively (hidden input) and outputs a fully signed raw transaction. Requires `coincurve` and `mnemonic`.
 
