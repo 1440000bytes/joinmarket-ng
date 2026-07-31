@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
 import pytest
 from fastapi.testclient import TestClient
 from loguru import logger
 
+import jmwalletd.app as app_module
 from jmwalletd.log_buffer import get_log_buffer, install_log_sink
 
 
@@ -45,6 +51,51 @@ class TestGetLogs:
         response = client.get("/api/v1/logs", headers=_auth_headers(token))
         assert response.status_code == 200
         assert "probe-marker-12345" in response.text
+
+
+def test_create_app_uses_configured_log_level(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    installed_levels: list[str] = []
+    settings = SimpleNamespace(logging=SimpleNamespace(level="ERROR"))
+    monkeypatch.setattr(app_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        app_module,
+        "install_log_sink",
+        lambda *, level: installed_levels.append(level),
+    )
+
+    app_module.create_app(data_dir=tmp_path)
+
+    assert installed_levels == ["ERROR"]
+
+
+def test_install_log_sink_replaces_preconfigured_console_sink() -> None:
+    script = """
+from loguru import logger
+
+from jmcore.cli_common import setup_logging
+from jmwalletd.log_buffer import get_log_buffer, install_log_sink
+
+setup_logging("DEBUG")
+install_log_sink("WARNING")
+get_log_buffer().clear()
+logger.debug("filtered-debug-marker")
+logger.warning("visible-warning-marker")
+print(get_log_buffer().text(), end="")
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "filtered-debug-marker" not in result.stderr
+    assert result.stderr.count("visible-warning-marker") == 1
+    assert "filtered-debug-marker" not in result.stdout
+    assert result.stdout.count("visible-warning-marker") == 1
 
 
 class TestLogRingBuffer:
