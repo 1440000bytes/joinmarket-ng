@@ -20,6 +20,8 @@ from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
+from jmcore.secure_files import atomic_write_private, ensure_private_directory, read_private_file
+
 if TYPE_CHECKING:
     from jmcore.settings import WalletSettings
 
@@ -57,7 +59,7 @@ def _get_wallet_settings() -> WalletSettings:
 @contextmanager
 def _reserve_wallet_path(wallet_path: Path) -> Iterator[None]:
     """Reserve the daemon's single-wallet create/recovery lifecycle."""
-    wallet_path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_private_directory(wallet_path.parent)
     lock_path = wallet_path.parent / ".wallet-operation.lock"
     lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
@@ -103,13 +105,11 @@ async def create_wallet(
         msg = f"Invalid wallet type: {wallet_type}. Must be one of {valid_types}"
         raise ValueError(msg)
 
-    from mnemonic import Mnemonic
-
+    from jmwallet.mnemonic import generate_wallet_mnemonic
     from jmwallet.wallet.service import WalletService
     from jmwalletd._backend import get_backend
 
-    mnemo = Mnemonic("english")
-    seedphrase = mnemo.generate(strength=128)
+    seedphrase = generate_wallet_mnemonic(strength=128)
 
     backend = await get_backend(
         data_dir=data_dir,
@@ -436,8 +436,8 @@ def _save_wallet_file(
         salt=salt,
     )
 
-    wallet_path.parent.mkdir(parents=True, exist_ok=True)
-    wallet_path.write_bytes(header + encrypted)
+    ensure_private_directory(wallet_path.parent)
+    atomic_write_private(wallet_path, header + encrypted)
 
     logger.debug("Saved wallet file (argon2id): {}", wallet_path)
 
@@ -466,7 +466,7 @@ def _load_wallet_file(*, wallet_path: Path, password: str) -> tuple[str, int | N
 
     from cryptography.fernet import Fernet, InvalidToken
 
-    raw = wallet_path.read_bytes()
+    raw = read_private_file(wallet_path)
 
     if raw.startswith(_WALLET_MAGIC):
         key, encrypted = _derive_key_from_header(raw, password=password)

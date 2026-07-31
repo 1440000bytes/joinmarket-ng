@@ -9,13 +9,13 @@ from __future__ import annotations
 import base64
 import json
 import math
-import os
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated
 
 import typer
 from jmcore.cli_common import resolve_backend_settings, setup_cli, setup_logging
+from jmcore.secure_files import atomic_write_private
 from loguru import logger
 
 from jmwallet.cli import app
@@ -342,9 +342,7 @@ def generate_hot_keypair(
             )
             + "\n"
         )
-        fd = os.open(saved_key_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
-            f.write(key_content)
+        atomic_write_private(saved_key_file, key_content.encode("utf-8"))
         logger.info(f"Wrote hot keypair to {saved_key_file} with mode 0600")
 
     print("\n" + "=" * 80)

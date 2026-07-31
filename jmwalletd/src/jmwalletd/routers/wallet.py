@@ -43,6 +43,7 @@ from jmwalletd.models import (
     TokenResponse,
     UnlockWalletRequest,
     UnlockWalletResponse,
+    WalletName,
 )
 from jmwalletd.state import CoinjoinState, DaemonState
 from jmwalletd.wallet_ops import (
@@ -349,7 +350,7 @@ async def wallet_recover(
 # ---------------------------------------------------------------------------
 @router.post("/wallet/{walletname}/unlock", operation_id="unlockwallet")
 async def wallet_unlock(
-    walletname: str,
+    walletname: WalletName,
     body: UnlockWalletRequest,
     state: DaemonState = Depends(get_daemon_state),
 ) -> UnlockWalletResponse:

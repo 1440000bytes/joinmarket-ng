@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from mnemonic import Mnemonic
 
 from jmwalletd.wallet_ops import (
     _get_network,
@@ -81,6 +82,20 @@ class TestWalletFileIO:
 
         with pytest.raises(ValueError, match="[Ww]rong|[Ii]nvalid|[Dd]ecrypt"):
             _load_wallet_file(wallet_path=wallet_path, password="wrong")
+
+    def test_load_tightens_existing_wallet_mode(self, tmp_path: Path) -> None:
+        wallet_path = tmp_path / "test.jmdat"
+        _save_wallet_file(
+            wallet_path=wallet_path,
+            mnemonic="abandon " * 11 + "about",
+            password="password",
+            wallet_type="sw",
+        )
+        wallet_path.chmod(0o644)
+
+        _load_wallet_file(wallet_path=wallet_path, password="password")
+
+        assert wallet_path.stat().st_mode & 0o777 == 0o600
 
     def test_save_creates_file(self, tmp_path: Path) -> None:
         wallet_path = tmp_path / "new_wallet.jmdat"
@@ -233,8 +248,11 @@ class TestCreateWallet:
             )
         assert ws is mock_ws
         assert isinstance(seedphrase, str)
-        assert len(seedphrase.split()) >= 12
+        assert len(seedphrase.split()) == 12
+        assert Mnemonic("english").check(seedphrase)
         assert wallet_path.exists()
+        assert wallet_path.stat().st_mode & 0o777 == 0o600
+        assert wallet_path.parent.stat().st_mode & 0o777 == 0o700
 
         # Verify network was passed through.
         mock_ws_cls.assert_called_once()
@@ -322,6 +340,31 @@ class TestCreateWallet:
                 wallet_type="invalid-type",
                 data_dir=tmp_path,
             )
+
+    @patch("jmwalletd._backend.get_backend", new_callable=AsyncMock)
+    async def test_entropy_failure_prevents_backend_and_file_creation(
+        self,
+        mock_get_backend: AsyncMock,
+        tmp_path: Path,
+    ) -> None:
+        wallet_path = tmp_path / "wallets" / "failed.jmdat"
+
+        with (
+            patch(
+                "jmwallet.mnemonic.secrets.token_bytes",
+                side_effect=OSError("operating-system CSPRNG unavailable"),
+            ),
+            pytest.raises(OSError, match="CSPRNG unavailable"),
+        ):
+            await create_wallet(
+                wallet_path=wallet_path,
+                password="password",
+                wallet_type="sw",
+                data_dir=tmp_path,
+            )
+
+        mock_get_backend.assert_not_awaited()
+        assert not wallet_path.exists()
 
 
 class TestGetNetwork:

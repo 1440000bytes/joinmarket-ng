@@ -80,6 +80,14 @@ class TestWalletCreationModels:
         req = CreateWalletRequest(walletname="w.jmdat", password="p", wallettype="sw")
         assert req.wallettype == "sw"
 
+    @pytest.mark.parametrize(
+        "walletname",
+        ["", ".", "..", "../outside.jmdat", "/tmp/outside.jmdat", "dir\\outside.jmdat"],
+    )
+    def test_create_wallet_rejects_non_filename_wallet_name(self, walletname: str) -> None:
+        with pytest.raises(ValidationError, match="single non-empty filename"):
+            CreateWalletRequest(walletname=walletname, password="p")
+
     def test_recover_wallet(self) -> None:
         req = RecoverWalletRequest(
             walletname="w.jmdat",
@@ -90,6 +98,14 @@ class TestWalletCreationModels:
         )
         assert req.seedphrase == "abandon " * 11 + "about"
         assert req.scan_range == 2_500
+
+    def test_recover_wallet_rejects_path_traversal(self) -> None:
+        with pytest.raises(ValidationError, match="single non-empty filename"):
+            RecoverWalletRequest(
+                walletname="../../outside.jmdat",
+                password="p",
+                seedphrase="abandon " * 11 + "about",
+            )
 
     @pytest.mark.parametrize("scan_range", [0, 10_001])
     def test_recover_wallet_rejects_invalid_scan_range(self, scan_range: int) -> None:

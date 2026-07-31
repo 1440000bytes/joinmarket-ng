@@ -43,6 +43,7 @@ class TestDaemonState:
 
     def test_wallets_dir(self, daemon_state: DaemonState) -> None:
         assert daemon_state.wallets_dir == daemon_state.data_dir / "wallets"
+        assert daemon_state.wallets_dir.stat().st_mode & 0o777 == 0o700
 
     def test_list_wallets_empty(self, daemon_state: DaemonState) -> None:
         assert daemon_state.list_wallets() == []

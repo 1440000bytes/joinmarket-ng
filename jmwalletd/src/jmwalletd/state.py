@@ -19,6 +19,7 @@ from typing import Any
 from loguru import logger
 
 from jmcore.paths import get_default_data_dir
+from jmcore.secure_files import ensure_private_directory
 from jmwalletd.auth import JMTokenAuthority
 
 
@@ -148,7 +149,7 @@ class DaemonState:
     def wallets_dir(self) -> Path:
         """Return the directory where wallet files are stored."""
         d = self.data_dir / "wallets"
-        d.mkdir(parents=True, exist_ok=True)
+        ensure_private_directory(d)
         return d
 
     def list_wallets(self) -> list[str]:

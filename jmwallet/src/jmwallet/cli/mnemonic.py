@@ -8,7 +8,10 @@ import os
 from pathlib import Path
 
 import typer
+from jmcore.secure_files import atomic_write_private
 from loguru import logger
+
+from jmwallet.mnemonic import generate_wallet_mnemonic
 
 # ============================================================================
 # Mnemonic Generation and Encryption
@@ -25,8 +28,6 @@ def generate_mnemonic_secure(word_count: int = 24) -> str:
     Returns:
         BIP39 mnemonic phrase with valid checksum
     """
-    from mnemonic import Mnemonic
-
     if word_count not in (12, 15, 18, 21, 24):
         raise ValueError("word_count must be 12, 15, 18, 21, or 24")
 
@@ -37,8 +38,7 @@ def generate_mnemonic_secure(word_count: int = 24) -> str:
     # entropy_bits = word_count * 11 * 32 / 33
     entropy_bits = {12: 128, 15: 160, 18: 192, 21: 224, 24: 256}[word_count]
 
-    m = Mnemonic("english")
-    return m.generate(strength=entropy_bits)
+    return generate_wallet_mnemonic(strength=entropy_bits)
 
 
 def validate_mnemonic(mnemonic: str) -> bool:
@@ -192,16 +192,12 @@ def save_mnemonic_file(
         output_file: The output file path
         password: Optional password for encryption
     """
-    output_file.parent.mkdir(parents=True, exist_ok=True)
-
     if password:
         encrypted = encrypt_mnemonic(mnemonic, password)
-        output_file.write_bytes(encrypted)
-        os.chmod(output_file, 0o600)
+        atomic_write_private(output_file, encrypted)
         logger.info(f"Encrypted mnemonic saved to {output_file}")
     else:
-        output_file.write_text(mnemonic)
-        os.chmod(output_file, 0o600)
+        atomic_write_private(output_file, mnemonic.encode("utf-8"))
         logger.warning(f"Mnemonic saved to {output_file} (PLAINTEXT - consider using --password)")
 
 

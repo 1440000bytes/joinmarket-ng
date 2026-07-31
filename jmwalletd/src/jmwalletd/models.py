@@ -6,9 +6,19 @@ All models match the schemas defined in the reference JoinMarket OpenAPI spec
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field
+
+
+def _validate_wallet_name(value: str) -> str:
+    """Require a single filename so wallet paths cannot escape wallets/."""
+    if not value or value in {".", ".."} or "/" in value or "\\" in value or "\x00" in value:
+        raise ValueError("walletname must be a single non-empty filename")
+    return value
+
+
+WalletName = Annotated[str, AfterValidator(_validate_wallet_name)]
 
 # ---------------------------------------------------------------------------
 # Shared / Error
@@ -52,7 +62,7 @@ class TokenResponse(BaseModel):
 class CreateWalletRequest(BaseModel):
     """POST /api/v1/wallet/create request."""
 
-    walletname: str
+    walletname: WalletName
     password: str
     wallettype: str = "sw-fb"
 
@@ -72,7 +82,7 @@ class CreateWalletResponse(BaseModel):
 class RecoverWalletRequest(BaseModel):
     """POST /api/v1/wallet/recover request."""
 
-    walletname: str
+    walletname: WalletName
     password: str
     wallettype: str = "sw-fb"
     seedphrase: str

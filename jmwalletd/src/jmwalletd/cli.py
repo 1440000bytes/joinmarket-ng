@@ -13,6 +13,7 @@ from typing import Annotated
 import typer
 
 from jmcore.cli_help import SortedTyper
+from jmcore.secure_files import atomic_write_private, ensure_private_directory, ensure_private_file
 
 app = SortedTyper(
     name="jmwalletd",
@@ -71,11 +72,13 @@ def serve(
     ssl_context: ssl.SSLContext | None = None
     if not no_tls:
         ssl_dir = resolved_data_dir / "ssl"
+        ensure_private_directory(ssl_dir)
         cert_file = ssl_dir / "cert.pem"
         key_file = ssl_dir / "key.pem"
 
         if not cert_file.exists() or not key_file.exists():
             _generate_self_signed_cert(ssl_dir)
+        ensure_private_file(key_file)
 
         ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ssl_context.load_cert_chain(str(cert_file), str(key_file))
@@ -97,7 +100,7 @@ def _generate_self_signed_cert(ssl_dir: Path) -> None:
     """Generate a self-signed TLS certificate for the daemon."""
     from loguru import logger
 
-    ssl_dir.mkdir(parents=True, exist_ok=True)
+    ensure_private_directory(ssl_dir)
     cert_file = ssl_dir / "cert.pem"
     key_file = ssl_dir / "key.pem"
 
@@ -140,12 +143,13 @@ def _generate_self_signed_cert(ssl_dir: Path) -> None:
         .sign(key, hashes.SHA256())
     )
 
-    key_file.write_bytes(
+    atomic_write_private(
+        key_file,
         key.private_bytes(
             encoding=serialization.Encoding.PEM,
             format=serialization.PrivateFormat.TraditionalOpenSSL,
             encryption_algorithm=serialization.NoEncryption(),
-        )
+        ),
     )
     cert_file.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
 
