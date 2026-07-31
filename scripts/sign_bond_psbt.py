@@ -431,8 +431,9 @@ def main() -> None:
         print(signed_psbt)
         print("=" * 80, file=sys.stderr)
         print(
-            "\nCould not auto-finalize. To finalize and broadcast:\n"
-            "  bitcoin-cli finalizepsbt <signed_psbt_base64>\n"
+            "\nCould not auto-finalize. Use the bond finalizer, which verifies\n"
+            "the signature and builds the final transaction:\n"
+            "  python scripts/finalize_bond_psbt.py <signed_psbt_base64>\n"
             "\nOr import into Sparrow: File -> Open Transaction -> From Text",
             file=sys.stderr,
         )
