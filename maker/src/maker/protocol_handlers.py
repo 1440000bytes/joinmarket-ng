@@ -27,7 +27,7 @@ from jmwallet.backends.base import BlockchainBackend
 from jmwallet.wallet.service import WalletService
 from loguru import logger
 
-from maker.coinjoin import CoinJoinSession
+from maker.coinjoin import CoinJoinSession, CoinJoinState
 from maker.config import MakerConfig
 from maker.fidelity import FidelityBondInfo, create_fidelity_bond_proof
 from maker.maker_session import MakerSession
@@ -415,6 +415,7 @@ class ProtocolHandlersMixin:
         This allows makers to have multiple offers (e.g., relative and absolute fee)
         simultaneously, each with a unique ID.
         """
+        reservation_owned = False
         try:
             # Check for self-CoinJoin (same wallet running both maker and taker)
             if taker_nick in self._own_wallet_nicks:
@@ -432,11 +433,11 @@ class ProtocolHandlersMixin:
             offer_id = int(parts[1])
             amount = int(parts[2])
             taker_pk = parts[3]  # Taker's NaCl pubkey for E2E encryption
-            commitment = parts[4]  # PoDLE commitment (with prefix like "P")
-
-            # Strip commitment prefix if present (e.g., "P" for standard PoDLE)
-            if commitment.startswith("P"):
-                commitment = commitment[1:]
+            wire_commitment = parts[4]
+            if not wire_commitment.startswith("P"):
+                logger.warning(f"Rejecting !fill from {taker_nick}: unsupported commitment type")
+                return
+            commitment = wire_commitment[1:]
 
             # Validate commitment format before any further processing.
             # Must be exactly 64 hex characters (32-byte SHA256 hash).
@@ -446,6 +447,7 @@ class ProtocolHandlersMixin:
                     f"Rejecting !fill from {taker_nick}: {error} (raw={commitment[:32]!r})"
                 )
                 return
+            commitment = commitment.lower()
 
             # Check if commitment is already blacklisted
             if not check_commitment(commitment):
@@ -455,9 +457,24 @@ class ProtocolHandlersMixin:
                 )
                 return
 
+            # Reserve synchronously before the first await. Network !hp2
+            # broadcasts may blacklist this commitment while the same
+            # multi-maker round is in progress, but a second local session must
+            # never be allowed to authenticate with it concurrently.
+            if commitment in self._reserved_commitments:
+                logger.warning(
+                    f"Rejecting !fill from {taker_nick}: commitment already in use "
+                    f"({commitment[:16]}...)"
+                )
+                return
+            self._reserved_commitments.add(commitment)
+            reservation_owned = True
+
             # Find the offer by ID (supports multiple offers with different IDs)
             offer = self.offer_manager.get_offer_by_id(self.current_offers, offer_id)
             if offer is None:
+                self._release_commitment_reservation(commitment)
+                reservation_owned = False
                 logger.warning(
                     f"Invalid offer ID: {offer_id} (available: "
                     f"{[o.oid for o in self.current_offers]})"
@@ -466,6 +483,8 @@ class ProtocolHandlersMixin:
 
             is_valid, error = self.offer_manager.validate_offer_fill(offer, amount)
             if not is_valid:
+                self._release_commitment_reservation(commitment)
+                reservation_owned = False
                 logger.warning(f"Invalid fill request for offer {offer_id}: {error}")
                 return
 
@@ -491,6 +510,26 @@ class ProtocolHandlersMixin:
             success, response = await session.handle_fill(amount, commitment, taker_pk)
 
             if success:
+                previous_session = self.active_sessions.get(taker_nick)
+                if previous_session is not None:
+                    # Takers may rotate a rejected commitment and retry the
+                    # fill phase under the same nick. Preserve that behavior
+                    # only before auth starts; replacing a running or advanced
+                    # session could race its commitment and input cleanup.
+                    if (
+                        previous_session.lock.locked()
+                        or previous_session.state != CoinJoinState.PUBKEY_SENT
+                    ):
+                        self._release_commitment_reservation(commitment)
+                        reservation_owned = False
+                        logger.warning(
+                            f"Rejecting replacement !fill from {taker_nick}: "
+                            "session authentication already started"
+                        )
+                        return
+                    previous_session.release_input_locks()
+                    self._release_commitment_reservation(previous_session.commitment.hex())
+
                 self.active_sessions[taker_nick] = session
                 logger.info(
                     f"Created CoinJoin session with {taker_nick} "
@@ -502,9 +541,17 @@ class ProtocolHandlersMixin:
 
                 await self._send_response(taker_nick, "pubkey", response)
             else:
+                self._release_commitment_reservation(commitment)
+                reservation_owned = False
                 logger.warning(f"Failed to handle fill: {response.get('error')}")
 
         except Exception as e:
+            if reservation_owned:
+                self._release_commitment_reservation(commitment)
+                active_session = self.active_sessions.get(taker_nick)
+                if active_session is not None and active_session.commitment.hex() == commitment:
+                    active_session.release_input_locks()
+                    self.active_sessions.pop(taker_nick, None)
             logger.error(f"Failed to handle !fill: {e}")
 
     async def _handle_auth(

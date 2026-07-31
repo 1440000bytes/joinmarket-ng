@@ -7,12 +7,14 @@ including both relative and absolute fee offers with different offer IDs.
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from jmcore.models import NetworkType, Offer, OfferType
 
 from maker.bot import MakerBot
+from maker.coinjoin import CoinJoinState
 from maker.config import MakerConfig, OfferConfig
 from maker.offers import OfferManager
 
@@ -493,6 +495,188 @@ class TestMakerBotMultiOfferFill:
         assert call_kwargs["offer"].ordertype == OfferType.SW0_ABSOLUTE
 
     @pytest.mark.asyncio
+    async def test_fill_reserves_commitment_across_local_sessions(self, maker_bot):
+        """Only one local in-flight session may use a commitment."""
+
+        async def mock_handle_fill(amount, commitment, taker_pk):
+            return True, {"nacl_pubkey": "abc123", "features": []}
+
+        with (
+            patch("maker.protocol_handlers.CoinJoinSession") as mock_session_class,
+            patch("maker.protocol_handlers.check_commitment", return_value=True),
+            patch.object(maker_bot, "_send_response", new=AsyncMock()),
+        ):
+            mock_session = MagicMock()
+            mock_session.handle_fill = mock_handle_fill
+            mock_session.validate_channel = MagicMock(return_value=True)
+            mock_session_class.return_value = mock_session
+
+            await maker_bot._handle_fill("J5FirstTaker", f"fill 0 500000 taker_pk_hex P{'ab' * 32}")
+            await maker_bot._handle_fill(
+                "J5SecondTaker", f"fill 0 500000 taker_pk_hex P{'AB' * 32}"
+            )
+
+        mock_session_class.assert_called_once()
+        assert "J5FirstTaker" in maker_bot.active_sessions
+        assert "J5SecondTaker" not in maker_bot.active_sessions
+        assert "ab" * 32 in maker_bot._reserved_commitments
+
+    @pytest.mark.asyncio
+    async def test_fill_failure_releases_commitment_reservation(self, maker_bot):
+        """A failed fill must not consume a commitment locally."""
+
+        async def mock_handle_fill(amount, commitment, taker_pk):
+            return False, {"error": "invalid taker pubkey"}
+
+        with (
+            patch("maker.protocol_handlers.CoinJoinSession") as mock_session_class,
+            patch("maker.protocol_handlers.check_commitment", return_value=True),
+        ):
+            mock_session = MagicMock()
+            mock_session.handle_fill = mock_handle_fill
+            mock_session.validate_channel = MagicMock(return_value=True)
+            mock_session_class.return_value = mock_session
+
+            await maker_bot._handle_fill(
+                "J5FailedTaker", f"fill 0 500000 taker_pk_hex P{'ac' * 32}"
+            )
+
+        assert "ac" * 32 not in maker_bot._reserved_commitments
+
+    @pytest.mark.asyncio
+    async def test_fill_exception_before_reservation_keeps_other_session_reservation(
+        self, maker_bot
+    ):
+        """Cleanup only releases a reservation acquired by this fill call."""
+        commitment = "a1" * 32
+        maker_bot._reserved_commitments.add(commitment)
+
+        with patch(
+            "maker.protocol_handlers.check_commitment",
+            side_effect=RuntimeError("blacklist unavailable"),
+        ):
+            await maker_bot._handle_fill(
+                "J5OtherTaker", f"fill 0 500000 taker_pk_hex P{commitment}"
+            )
+
+        assert commitment in maker_bot._reserved_commitments
+
+    @pytest.mark.asyncio
+    async def test_fill_replaces_same_taker_without_orphaning_reservation(self, maker_bot):
+        """A pre-auth commitment retry replaces and releases the first fill."""
+
+        def make_mock_session(*args, **kwargs):
+            mock_session = MagicMock()
+
+            async def mock_handle_fill(amount, commitment, taker_pk):
+                mock_session.commitment = bytes.fromhex(commitment)
+                mock_session.state = CoinJoinState.PUBKEY_SENT
+                return True, {"nacl_pubkey": "abc123", "features": []}
+
+            mock_session.handle_fill = mock_handle_fill
+            mock_session.validate_channel = MagicMock(return_value=True)
+            return mock_session
+
+        with (
+            patch("maker.protocol_handlers.CoinJoinSession") as mock_session_class,
+            patch("maker.protocol_handlers.check_commitment", return_value=True),
+            patch.object(maker_bot, "_send_response", new=AsyncMock()),
+        ):
+            mock_session_class.side_effect = make_mock_session
+
+            await maker_bot._handle_fill(
+                "J5RepeatedTaker", f"fill 0 500000 taker_pk_hex P{'ad' * 32}"
+            )
+            first_session = maker_bot.active_sessions["J5RepeatedTaker"]
+            first_session.release_input_locks = MagicMock()
+            await maker_bot._handle_fill(
+                "J5RepeatedTaker", f"fill 0 500000 taker_pk_hex P{'ae' * 32}"
+            )
+
+        assert mock_session_class.call_count == 2
+        assert maker_bot.active_sessions["J5RepeatedTaker"] is not first_session
+        assert "ad" * 32 not in maker_bot._reserved_commitments
+        assert "ae" * 32 in maker_bot._reserved_commitments
+        first_session.release_input_locks.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_fill_does_not_replace_session_during_auth(self, maker_bot):
+        """A replacement cannot release a commitment while auth owns the lock."""
+
+        def make_mock_session(*args, **kwargs):
+            mock_session = MagicMock()
+
+            async def mock_handle_fill(amount, commitment, taker_pk):
+                mock_session.commitment = bytes.fromhex(commitment)
+                mock_session.state = CoinJoinState.PUBKEY_SENT
+                return True, {"nacl_pubkey": "abc123", "features": []}
+
+            mock_session.handle_fill = mock_handle_fill
+            mock_session.validate_channel = MagicMock(return_value=True)
+            return mock_session
+
+        with (
+            patch("maker.protocol_handlers.CoinJoinSession") as mock_session_class,
+            patch("maker.protocol_handlers.check_commitment", return_value=True),
+            patch.object(maker_bot, "_send_response", new=AsyncMock()),
+        ):
+            mock_session_class.side_effect = make_mock_session
+
+            await maker_bot._handle_fill(
+                "J5AuthenticatingTaker", f"fill 0 500000 taker_pk_hex P{'b1' * 32}"
+            )
+            first_session = maker_bot.active_sessions["J5AuthenticatingTaker"]
+            first_session.release_input_locks = MagicMock()
+            await first_session.lock.acquire()
+            await maker_bot._handle_fill(
+                "J5AuthenticatingTaker", f"fill 0 500000 taker_pk_hex P{'b2' * 32}"
+            )
+
+        assert maker_bot.active_sessions["J5AuthenticatingTaker"] is first_session
+        assert "b1" * 32 in maker_bot._reserved_commitments
+        assert "b2" * 32 not in maker_bot._reserved_commitments
+        first_session.release_input_locks.assert_not_called()
+        first_session.lock.release()
+
+    @pytest.mark.asyncio
+    async def test_timeout_cleanup_releases_commitment_reservation(self, maker_bot):
+        commitment = "af" * 32
+        session = MagicMock()
+        session.is_timed_out.return_value = True
+        session.lock = asyncio.Lock()
+        session.commitment = bytes.fromhex(commitment)
+        maker_bot.active_sessions["J5TimedOutTaker"] = session
+        maker_bot._reserved_commitments.add(commitment)
+
+        maker_bot._cleanup_timed_out_sessions()
+
+        assert "J5TimedOutTaker" not in maker_bot.active_sessions
+        assert commitment not in maker_bot._reserved_commitments
+        session.release_input_locks.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_timeout_cleanup_defers_locked_session(self, maker_bot):
+        commitment = "b0" * 32
+        session = MagicMock()
+        session.is_timed_out.return_value = True
+        session.lock = asyncio.Lock()
+        await session.lock.acquire()
+        session.commitment = bytes.fromhex(commitment)
+        maker_bot.active_sessions["J5BusyTaker"] = session
+        maker_bot._reserved_commitments.add(commitment)
+
+        maker_bot._cleanup_timed_out_sessions()
+
+        assert maker_bot.active_sessions["J5BusyTaker"] is session
+        assert commitment in maker_bot._reserved_commitments
+        session.release_input_locks.assert_not_called()
+
+        session.lock.release()
+        maker_bot._cleanup_timed_out_sessions()
+        assert "J5BusyTaker" not in maker_bot.active_sessions
+        assert commitment not in maker_bot._reserved_commitments
+
+    @pytest.mark.asyncio
     async def test_fill_invalid_offer_id_rejected(self, maker_bot):
         """Test that !fill with invalid offer ID is rejected."""
         with patch("maker.protocol_handlers.check_commitment", return_value=True):
@@ -503,6 +687,15 @@ class TestMakerBotMultiOfferFill:
 
         # Should not create a session - the invalid offer ID causes rejection
         assert "J5Taker789" not in maker_bot.active_sessions
+
+    @pytest.mark.asyncio
+    async def test_fill_rejects_commitment_without_scheme_prefix(self, maker_bot):
+        await maker_bot._handle_fill(
+            "J5BareCommitment",
+            f"fill 0 500000 taker_pk_hex {'cc' * 32}",
+        )
+
+        assert "J5BareCommitment" not in maker_bot.active_sessions
 
     @pytest.mark.asyncio
     async def test_fill_amount_validation_per_offer(self, maker_bot):

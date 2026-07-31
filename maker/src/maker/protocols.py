@@ -62,6 +62,7 @@ class MakerBotProtocol(Protocol):
     _all_directories_disconnected: bool
     _mempool_notified_txids: set[str]
     _own_wallet_nicks: set[str]
+    _reserved_commitments: set[str]
     _hp2_own_broadcast_semaphore: asyncio.Semaphore
     _hp2_relay_broadcast_semaphore: asyncio.Semaphore
 
@@ -85,6 +86,8 @@ class MakerBotProtocol(Protocol):
 
     # Defined in MakerBot, called by BackgroundTasksMixin
     def _cleanup_timed_out_sessions(self) -> None: ...
+
+    def _release_commitment_reservation(self, commitment: str) -> None: ...
 
     async def _resync_wallet_and_update_offers(self) -> None: ...
 

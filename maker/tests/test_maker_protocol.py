@@ -770,5 +770,176 @@ async def test_select_our_utxos_releases_lock_after_address_failure():
     mock_wallet.release_coinjoin_inputs.assert_called_once_with({(selected.txid, selected.vout)})
 
 
+@pytest.mark.asyncio
+async def test_handle_auth_allows_hp2_seen_after_fill(tmp_path, monkeypatch):
+    """An hp2 broadcast from the same round must not invalidate an accepted fill."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    import jmcore.commitment_blacklist as commitment_blacklist
+    from jmcore.commitment_blacklist import CommitmentBlacklist
+    from jmcore.models import Offer, OfferType
+    from jmwallet.backends.base import UTXO
+    from jmwallet.wallet.models import UTXOInfo
+
+    from maker.coinjoin import CoinJoinSession
+
+    mock_wallet = MagicMock()
+    mock_backend = MagicMock()
+    mock_backend.requires_neutrino_metadata.return_value = False
+    mock_backend.get_utxo = AsyncMock(
+        return_value=UTXO(
+            txid="bb" * 32,
+            vout=0,
+            value=2_000_000,
+            address="bcrt1qtakerinput",
+            confirmations=10,
+            scriptpubkey="0014" + "cd" * 20,
+        )
+    )
+    selected = UTXOInfo(
+        txid="cc" * 32,
+        vout=1,
+        value=5_000_000,
+        address="bcrt1qmakerinput",
+        confirmations=10,
+        scriptpubkey="0014" + "ab" * 20,
+        path="m/84'/0'/1'/0/0",
+        mixdepth=1,
+    )
+    selected_outpoints = {(selected.txid, selected.vout)}
+    mock_key = MagicMock()
+    mock_key.get_public_key_bytes.return_value = bytes.fromhex("02" + "ab" * 32)
+    mock_key.get_private_key_bytes.return_value = bytes(32)
+    mock_wallet.get_key_for_address.return_value = mock_key
+    offer = Offer(
+        counterparty="J5AtomicMaker",
+        ordertype=OfferType.SW0_RELATIVE,
+        oid=0,
+        minsize=10_000,
+        maxsize=100_000_000,
+        txfee=1000,
+        cjfee="0.0003",
+    )
+    session = CoinJoinSession(
+        taker_nick="J5AtomicTaker",
+        offer=offer,
+        wallet=mock_wallet,
+        backend=mock_backend,
+        taker_utxo_age=1,
+    )
+    taker_crypto = CryptoSession()
+    success, _ = await session.handle_fill(
+        amount=1_000_000,
+        commitment="aa" * 32,
+        taker_pk=taker_crypto.get_pubkey_hex(),
+    )
+    assert success is True
+
+    blacklist = CommitmentBlacklist(blacklist_path=tmp_path / "commitmentlist")
+    monkeypatch.setattr(commitment_blacklist, "_global_blacklist", blacklist)
+    assert blacklist.add("aa" * 32) is True
+
+    parsed_revelation = {
+        "P": bytes.fromhex("02" + "cd" * 32),
+        "P2": bytes.fromhex("02" + "ef" * 32),
+        "sig": bytes.fromhex("11" * 32),
+        "e": bytes.fromhex("22" * 32),
+        "txid": "bb" * 32,
+        "vout": 0,
+    }
+    with (
+        patch("maker.coinjoin.parse_podle_revelation", return_value=parsed_revelation),
+        patch("maker.coinjoin.verify_podle", return_value=(True, "")),
+        patch("maker.coinjoin.verify_podle_binding", return_value=(True, "")),
+        patch.object(
+            session,
+            "_select_our_utxos",
+            new_callable=AsyncMock,
+            return_value=(
+                {next(iter(selected_outpoints)): selected},
+                "bcrt1qcoinjoin",
+                "bcrt1qchange",
+                1,
+            ),
+        ),
+        patch("jmcore.crypto.ecdsa_sign", return_value="mock_sig"),
+    ):
+        success, response = await session.handle_auth(
+            commitment="aa" * 32,
+            revelation={},
+            kphex="",
+        )
+
+    assert success is True
+    assert response["utxo_list"]
+    mock_wallet.release_coinjoin_inputs.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("auth_success", [True, False])
+async def test_on_auth_releases_commitment_reservation(auth_success):
+    """Auth completion must not leave an in-flight commitment reservation."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from maker.coinjoin import CoinJoinState
+    from maker.maker_session import MakerSession
+
+    commitment = "ba" * 32
+    taker_nick = "J5ReservationTaker"
+    inner = MagicMock()
+    inner.taker_nick = taker_nick
+    inner.state = CoinJoinState.PUBKEY_SENT
+    inner.commitment = bytes.fromhex(commitment)
+    inner.crypto.is_encrypted = True
+    inner.crypto.decrypt.return_value = f"{'bb' * 32}:0|02{'cc' * 32}|02{'dd' * 32}|11|22"
+    inner.our_utxos = {}
+    inner.amount = 500_000
+    inner.cj_address = "bcrt1qcoinjoin"
+    inner.change_address = "bcrt1qchange"
+    inner.handle_auth = AsyncMock(
+        return_value=(
+            auth_success,
+            {
+                "utxo_list": "cc:0",
+                "auth_pub": "02" + "ee" * 32,
+                "cj_addr": "bcrt1qcoinjoin",
+                "change_addr": "bcrt1qchange",
+                "btc_sig": "signature",
+            }
+            if auth_success
+            else {"error": "invalid PoDLE", "error_code": "PoDLE verification failed"},
+        )
+    )
+    session = MakerSession(inner)
+
+    bot = MagicMock()
+    bot.active_sessions = {taker_nick: session}
+    bot.directory_clients = {}
+    bot.config.network.value = "regtest"
+    bot.wallet.wallet_fingerprint = "fingerprint"
+    bot._broadcast_commitment = AsyncMock()
+    session.send_response = AsyncMock()
+    notifier = MagicMock()
+
+    with (
+        patch("maker.maker_session.UTXOMetadata.from_str"),
+        patch("maker.maker_session.create_maker_history_entry", return_value=MagicMock()),
+        patch("maker.maker_session.append_history_entry"),
+        patch("maker.maker_session.get_notifier", return_value=notifier),
+        patch("maker.maker_session.spawn_task"),
+    ):
+        await session.on_auth(bot, "auth ciphertext", "dir:test")
+
+    bot._release_commitment_reservation.assert_called_once_with(commitment)
+    if auth_success:
+        bot._broadcast_commitment.assert_awaited_once_with(commitment)
+        assert bot.active_sessions[taker_nick] is session
+        inner.wallet.release_coinjoin_inputs.assert_not_called()
+    else:
+        bot._broadcast_commitment.assert_not_awaited()
+        assert taker_nick not in bot.active_sessions
+        inner.wallet.release_coinjoin_inputs.assert_called_once_with(set())
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

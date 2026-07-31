@@ -92,6 +92,7 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
         )
         self._directory_pool.clients = self.directory_clients
         self.active_sessions: dict[str, MakerSession] = {}
+        self._reserved_commitments: set[str] = set()
         self.current_offers: list[Offer] = []
         self.fidelity_bond: FidelityBondInfo | None = None
         self.current_block_height: int = 0  # Cached block height for bond proof generation
@@ -749,19 +750,30 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
     def _cleanup_timed_out_sessions(self) -> None:
         """Remove timed-out sessions from active_sessions and clean up rate limiter."""
         # Prune dead sessions
+        # A handler that started before the deadline may still be validating
+        # auth or signing a transaction. Releasing its reservation while it is
+        # running would let a second local session claim the same commitment.
         dead_sessions = [
-            sid for sid, session in self.active_sessions.items() if session.is_timed_out()
+            sid
+            for sid, session in self.active_sessions.items()
+            if session.is_timed_out() and not session.lock.locked()
         ]
         for sid in dead_sessions:
             logger.debug("Cleaning up timed out session: {}", sid)
             # A timed-out session never completed: free its committed inputs so
             # they can be re-offered (the persisted lock would otherwise hold
             # them until its TTL).
-            self.active_sessions[sid].release_input_locks()
+            session = self.active_sessions[sid]
+            session.release_input_locks()
+            self._release_commitment_reservation(session.commitment.hex())
             del self.active_sessions[sid]
 
         # Ensure rate limiters are cleaned up periodically
         self._direct_connection_rate_limiter.cleanup_old_entries()
+
+    def _release_commitment_reservation(self, commitment: str) -> None:
+        """Release a commitment reserved by an in-flight local session."""
+        self._reserved_commitments.discard(commitment.lower())
 
     async def _resync_wallet_and_update_offers(self) -> None:
         """Re-sync wallet and update offers if balance changed.

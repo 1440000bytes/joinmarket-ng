@@ -277,6 +277,7 @@ class MakerSession:
 
                 # Broadcast the commitment via hp2 so other makers can blacklist it.
                 await bot._broadcast_commitment(commitment)
+                bot._release_commitment_reservation(commitment)
             else:
                 error_msg = response.get("error", "unknown error")
                 error_code = response.get("error_code", "")
@@ -289,6 +290,12 @@ class MakerSession:
                 except Exception as e:
                     logger.warning(f"Failed to send !error to {taker_nick}: {e}")
 
+                # Release protocol resources before best-effort notification
+                # work so notifier failures cannot extend the reservation.
+                self.release_input_locks()
+                bot._release_commitment_reservation(commitment)
+                bot.active_sessions.pop(taker_nick, None)
+
                 spawn_task(
                     get_notifier().notify_rejection(
                         taker_nick,
@@ -296,8 +303,6 @@ class MakerSession:
                         error_msg,
                     )
                 )
-                self.release_input_locks()
-                bot.active_sessions.pop(taker_nick, None)
 
         except Exception as e:
             logger.error(f"Failed to handle !auth: {e}")
