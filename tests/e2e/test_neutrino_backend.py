@@ -18,6 +18,7 @@ backend works correctly with the JoinMarket wallet implementation.
 from __future__ import annotations
 
 import os
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import pytest_asyncio
@@ -27,7 +28,7 @@ from jmwallet.wallet.service import WalletService
 from loguru import logger
 from maker.bot import MakerBot
 from maker.config import MakerConfig
-from taker.config import TakerConfig
+from taker.config import BroadcastPolicy, TakerConfig
 from taker.taker import Taker
 
 # Mark all tests in this module as requiring Docker neutrino profile
@@ -631,6 +632,9 @@ class TestNeutrinoCoinJoin:
         # Sync taker wallet
         logger.info("Syncing taker wallet (neutrino)...")
         await taker_wallet.sync()
+        assert neutrino_backend.has_mempool_access(), (
+            "This regression test requires neutrino-api's watched-mempool tracker"
+        )
         taker_balance = await taker_wallet.get_total_balance()
         logger.info(f"Taker balance: {taker_balance:,} sats")
 
@@ -671,7 +675,6 @@ class TestNeutrinoCoinJoin:
         logger.info(
             f"Taker wallet funded with {taker_balance:,} sats via neutrino backend"
         )
-
         # For mixdepth 0, wallet policy does not merge multiple UTXOs for CoinJoin
         # input selection. Ensure at least one eligible md0 UTXO is large enough.
         required_utxo_confirmations = COINBASE_MATURITY_CONFIRMATIONS
@@ -782,6 +785,7 @@ class TestNeutrinoCoinJoin:
             counterparty_count=1,  # Only need 1 maker for this test
             minimum_makers=1,  # Allow single maker CoinJoin
             taker_utxo_age=required_utxo_confirmations,
+            tx_broadcast=BroadcastPolicy.RANDOM_PEER,
         )
 
         taker = Taker(
@@ -810,12 +814,31 @@ class TestNeutrinoCoinJoin:
                 f"Initiating CoinJoin for {cj_amount:,} sats with neutrino taker..."
             )
 
-            txid = await taker.do_coinjoin(
-                amount=cj_amount,
-                destination=dest_address,
-                mixdepth=0,
-                counterparty_count=1,
+            self_broadcast = AsyncMock(
+                side_effect=AssertionError(
+                    "neutrino taker must not fall back to self-broadcast"
+                )
             )
+            tracked_lookup = AsyncMock(wraps=neutrino_backend.get_transaction)
+            confirmed_output_miss = AsyncMock(return_value=False)
+            with (
+                patch.object(neutrino_backend, "broadcast_transaction", self_broadcast),
+                patch.object(neutrino_backend, "get_transaction", tracked_lookup),
+                patch.object(
+                    neutrino_backend,
+                    "verify_tx_output",
+                    confirmed_output_miss,
+                ),
+            ):
+                txid = await taker.do_coinjoin(
+                    amount=cj_amount,
+                    destination=dest_address,
+                    mixdepth=0,
+                    counterparty_count=1,
+                )
+            self_broadcast.assert_not_awaited()
+            assert txid, "CoinJoin failed to return a txid"
+            tracked_lookup.assert_any_await(txid)
 
             # Verify success
             if txid:
@@ -835,20 +858,12 @@ class TestNeutrinoCoinJoin:
                     logger.info(
                         "Waiting for transaction to be broadcast and confirmed..."
                     )
-                    # The taker returns txid immediately after receiving signatures,
-                    # but makers receive !push and broadcast asynchronously (~60s later).
-                    # We check mempool and mine manually if found, or wait for confirmation.
-                    # As a safety net, if the tx hasn't appeared after a grace period,
-                    # we broadcast it directly via Bitcoin Core RPC (the neutrino taker
-                    # may fail to relay when Tor is not accessible from the test host).
+                    # RANDOM_PEER returns only after Neutrino observes the maker's
+                    # broadcast. Check Core's mempool, then mine and verify it.
                     import httpx
 
                     max_retries = 40  # Up to ~2 minutes total wait time
                     retry_delay = 3  # Check every 3 seconds
-                    self_broadcast_after = (
-                        20  # Broadcast via Core after this many attempts
-                    )
-                    self_broadcast_done = False
                     found = False
 
                     for attempt in range(max_retries):
@@ -892,35 +907,6 @@ class TestNeutrinoCoinJoin:
                                     continue
                         except Exception as e:
                             logger.warning(f"Failed to check mempool: {e}")
-
-                        # 3. Safety net: broadcast directly via Bitcoin Core RPC
-                        # when makers are slow to relay (e.g. Tor not reachable
-                        # from host, or maker broadcast delay).
-                        if (
-                            not self_broadcast_done
-                            and attempt >= self_broadcast_after
-                            and taker._session.final_tx
-                        ):
-                            logger.info(
-                                "Transaction not seen after "
-                                f"{(attempt + 1) * retry_delay}s, "
-                                "broadcasting directly via Bitcoin Core..."
-                            )
-                            try:
-                                broadcast_txid = (
-                                    await bitcoin_backend.broadcast_transaction(
-                                        taker._session.final_tx.hex()
-                                    )
-                                )
-                                logger.info(
-                                    f"Direct broadcast succeeded: {broadcast_txid}"
-                                )
-                            except Exception as be:
-                                logger.info(
-                                    f"Direct broadcast returned: {be} "
-                                    "(may already be in mempool)"
-                                )
-                            self_broadcast_done = True
 
                         if (attempt + 1) % 5 == 0:
                             logger.info(

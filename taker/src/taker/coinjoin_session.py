@@ -1822,7 +1822,7 @@ class CoinJoinSession:
                     WARNING: No fallback if all makers fail!
 
         Neutrino notes:
-        - Cannot verify mempool transactions (only confirmed blocks)
+        - A watched-mempool tracker can verify unconfirmed transactions by txid
         - When the backend has no mempool access, all non-SELF policies fall back
           to broadcasting to ALL available makers simultaneously (like MULTIPLE_PEERS
           with peer_count = all makers). Verification is skipped; the
@@ -2099,9 +2099,10 @@ class CoinJoinSession:
         Sends !push command and waits briefly for the transaction to appear.
         We don't expect a response from the maker - they broadcast unquestioningly.
 
-        Verification is done using verify_tx_output() which works with all backends
-        including Neutrino (which can't fetch arbitrary transactions by txid).
-        We verify both CJ and change outputs for extra confidence.
+        Verification first checks exact-txid visibility through get_transaction().
+        For Neutrino this uses the watched-mempool tracker. Output verification is
+        retained as a fallback in case the transaction confirms and leaves the tracker
+        before it is observed here.
 
         Args:
             maker_nick: The maker's nick to send the push request to
@@ -2111,19 +2112,19 @@ class CoinJoinSession:
             Transaction ID if broadcast detected, empty string otherwise
         """
         try:
-            start_time = time.time()
+            start_time = time.monotonic()
+            deadline = start_time + self.config.broadcast_timeout_sec
             logger.info(f"Requesting broadcast via maker: {maker_nick}")
 
             # Send !push to the maker (unencrypted, like reference implementation)
             # Use the same comm_channel as the rest of the session
             session = self.maker_sessions.get(maker_nick)
             force_channel = session.comm_channel if session else None
-            await self.directory_client.send_privmsg(
-                maker_nick, "push", tx_b64, log_routing=True, force_channel=force_channel
-            )
-
-            # Wait and check if the transaction was broadcast
-            await asyncio.sleep(2)  # Give maker time to broadcast
+            remaining = deadline - time.monotonic()
+            async with asyncio.timeout(remaining):
+                await self.directory_client.send_privmsg(
+                    maker_nick, "push", tx_b64, log_routing=True, force_channel=force_channel
+                )
 
             # Calculate the expected txid
             builder = CoinJoinTxBuilder(self.config.bitcoin_network or self.config.network)
@@ -2131,7 +2132,11 @@ class CoinJoinSession:
 
             # Get current block height for Neutrino optimization
             try:
-                current_height = await self.backend.get_block_height()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError
+                async with asyncio.timeout(remaining):
+                    current_height = await self.backend.get_block_height()
             except Exception as e:
                 logger.debug(f"Could not get block height: {e}, proceeding without hint")
                 current_height = None
@@ -2139,83 +2144,76 @@ class CoinJoinSession:
             # Get taker's CJ output index for verification
             taker_cj_vout = self._get_taker_cj_output_index()
             if taker_cj_vout is None:
-                logger.warning("Could not find taker CJ output index for verification")
-                # Can't verify without output index - treat as unverified failure
-                return ""
+                logger.warning(
+                    "Could not find taker CJ output index; chain-output fallback is unavailable"
+                )
 
             # Also get change output for additional verification
             taker_change_vout = self._get_taker_change_output_index()
 
-            # Verify the transaction was broadcast by checking our CJ output exists
-            # This works with all backends including Neutrino (uses address-based lookup)
-            verify_start = time.time()
-            cj_verified = await self.backend.verify_tx_output(
-                txid=expected_txid,
-                vout=taker_cj_vout,
-                address=self.cj_destination,
-                start_height=current_height,
-            )
-            verify_time = time.time() - verify_start
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
 
-            # Also verify change output if it exists (extra confidence)
-            change_verified = True  # Default to True if no change output
-            if taker_change_vout is not None and self.taker_change_address:
-                change_verify_start = time.time()
-                change_verified = await self.backend.verify_tx_output(
-                    txid=expected_txid,
-                    vout=taker_change_vout,
-                    address=self.taker_change_address,
-                    start_height=current_height,
-                )
-                change_verify_time = time.time() - change_verify_start
-                logger.debug(
-                    f"Change output verification: {change_verified} "
-                    f"(took {change_verify_time:.2f}s)"
-                )
+                try:
+                    async with asyncio.timeout(remaining):
+                        try:
+                            tx = await self.backend.get_transaction(expected_txid)
+                        except Exception as e:
+                            logger.debug(
+                                f"Exact transaction lookup failed for {expected_txid}: {e}; "
+                                "trying output verification"
+                            )
+                            tx = None
+                        if tx is not None and tx.txid == expected_txid:
+                            total_time = time.monotonic() - start_time
+                            logger.info(
+                                f"Transaction broadcast via {maker_nick} detected in mempool: "
+                                f"{expected_txid} (total: {total_time:.2f}s)"
+                            )
+                            return expected_txid
 
-            if cj_verified and change_verified:
-                total_time = time.time() - start_time
-                logger.info(
-                    f"Transaction broadcast via {maker_nick} confirmed: {expected_txid} "
-                    f"(CJ verify: {verify_time:.2f}s, total: {total_time:.2f}s)"
-                )
-                return expected_txid
+                        # Neutrino removes transactions from its watched-mempool endpoint
+                        # after confirmation. Preserve address-based chain verification for
+                        # that race and for backends without arbitrary txid lookup.
+                        cj_verified = False
+                        if taker_cj_vout is not None and self.cj_destination:
+                            cj_verified = await self.backend.verify_tx_output(
+                                txid=expected_txid,
+                                vout=taker_cj_vout,
+                                address=self.cj_destination,
+                                start_height=current_height,
+                            )
+                        change_verified = True
+                        if taker_change_vout is not None and self.taker_change_address:
+                            change_verified = await self.backend.verify_tx_output(
+                                txid=expected_txid,
+                                vout=taker_change_vout,
+                                address=self.taker_change_address,
+                                start_height=current_height,
+                            )
 
-            # Wait longer and try once more
-            await asyncio.sleep(self.config.broadcast_timeout_sec - 2)
+                        if cj_verified and change_verified:
+                            total_time = time.monotonic() - start_time
+                            logger.info(
+                                f"Transaction broadcast via {maker_nick} confirmed on chain: "
+                                f"{expected_txid} (total: {total_time:.2f}s)"
+                            )
+                            return expected_txid
+                except TimeoutError:
+                    break
 
-            verify_start = time.time()
-            cj_verified = await self.backend.verify_tx_output(
-                txid=expected_txid,
-                vout=taker_cj_vout,
-                address=self.cj_destination,
-                start_height=current_height,
-            )
-            verify_time = time.time() - verify_start
-
-            # Verify change output again if it exists
-            if taker_change_vout is not None and self.taker_change_address:
-                change_verified = await self.backend.verify_tx_output(
-                    txid=expected_txid,
-                    vout=taker_change_vout,
-                    address=self.taker_change_address,
-                    start_height=current_height,
-                )
-
-            if cj_verified and change_verified:
-                total_time = time.time() - start_time
-                logger.info(
-                    f"Transaction broadcast via {maker_nick} confirmed: {expected_txid} "
-                    f"(CJ verify: {verify_time:.2f}s, total: {total_time:.2f}s)"
-                )
-                return expected_txid
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                await asyncio.sleep(min(2.0, remaining))
 
             # Could not verify broadcast
-            total_time = time.time() - start_time
+            total_time = time.monotonic() - start_time
             logger.debug(
                 f"Could not confirm broadcast via {maker_nick} - "
-                f"CJ output {expected_txid}:{taker_cj_vout} verified={cj_verified}, "
-                f"change output verified={change_verified} (took {total_time:.2f}s)"
+                f"transaction {expected_txid} was not visible within {total_time:.2f}s"
             )
             return ""
 

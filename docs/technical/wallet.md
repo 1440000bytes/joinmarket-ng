@@ -212,7 +212,9 @@ established via block-based UTXO lookups.
 
 When the tracker is available, neutrino behaves like the descriptor
 wallet backend: it can confirm that a maker actually broadcast the
-transaction and short-circuit the fan-out. `jm-wallet info
+transaction through `/v1/tx/{txid}` and short-circuit the fan-out.
+Confirmed-output scans remain the fallback when a transaction leaves the
+tracker as it confirms. `jm-wallet info
 --extended` also annotates addresses with `(unconfirmed)` for
 mempool UTXOs.
 

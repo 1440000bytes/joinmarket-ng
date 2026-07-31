@@ -7,12 +7,15 @@ the delegation of broadcasting to makers via !push command.
 
 from __future__ import annotations
 
+import asyncio
 import base64
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
+from jmwallet.backends.base import Transaction
 
 from taker.config import BroadcastPolicy, TakerConfig
+from taker.tx_builder import CoinJoinTxBuilder
 
 
 class TestBroadcastPolicy:
@@ -433,6 +436,136 @@ class TestTakerBroadcast:
         assert txid != ""
         # Should verify both CJ and change outputs
         assert taker.backend.verify_tx_output.call_count >= 2
+
+    @pytest.mark.asyncio
+    async def test_broadcast_via_maker_detects_tracked_mempool_transaction(self, taker) -> None:
+        """A watched mempool tx is sufficient even when output scans return 404."""
+        from jmcore.models import Offer, OfferType
+
+        from taker.taker import MakerSession
+
+        mock_offer = Offer(
+            counterparty="J5maker123",
+            oid=0,
+            ordertype=OfferType.SW0_RELATIVE,
+            minsize=100_000,
+            maxsize=10_000_000,
+            txfee=1000,
+            cjfee="0.0003",
+            fidelity_bond_value=0,
+        )
+        taker._session.maker_sessions = {
+            "J5maker123": MakerSession(nick="J5maker123", offer=mock_offer)
+        }
+        taker.directory_client = MagicMock()
+        taker.directory_client.send_privmsg = AsyncMock()
+        taker._session.tx_metadata = {"output_owners": [("taker", "cj"), ("taker", "change")]}
+        taker._session.cj_destination = "bcrt1qtest123"
+        taker._session.taker_change_address = "bcrt1qchange456"
+
+        expected_txid = CoinJoinTxBuilder(taker.config.network).get_txid(taker._session.final_tx)
+        tracked_tx = Transaction(
+            txid=expected_txid,
+            raw=taker._session.final_tx.hex(),
+            confirmations=0,
+        )
+        taker.backend.get_transaction = AsyncMock(side_effect=[None, tracked_tx])
+        taker.backend.verify_tx_output = AsyncMock(return_value=False)
+
+        tx_b64 = base64.b64encode(taker._session.final_tx).decode("ascii")
+        with patch("taker.coinjoin_session.asyncio.sleep", new=AsyncMock()):
+            txid = await taker._session._broadcast_via_maker("J5maker123", tx_b64)
+
+        assert txid == expected_txid
+        assert taker.backend.get_transaction.await_args_list == [
+            call(expected_txid),
+            call(expected_txid),
+        ]
+        assert taker.backend.verify_tx_output.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_broadcast_via_maker_uses_exact_lookup_without_output_metadata(
+        self, taker
+    ) -> None:
+        """Exact txid visibility does not depend on output-owner metadata."""
+        taker.directory_client = MagicMock()
+        taker.directory_client.send_privmsg = AsyncMock()
+        taker._session.tx_metadata = {}
+
+        expected_txid = CoinJoinTxBuilder(taker.config.network).get_txid(taker._session.final_tx)
+        taker.backend.get_transaction = AsyncMock(
+            return_value=Transaction(
+                txid=expected_txid,
+                raw=taker._session.final_tx.hex(),
+                confirmations=0,
+            )
+        )
+
+        tx_b64 = base64.b64encode(taker._session.final_tx).decode("ascii")
+        txid = await taker._session._broadcast_via_maker("J5maker123", tx_b64)
+
+        assert txid == expected_txid
+        taker.backend.verify_tx_output.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_broadcast_via_maker_falls_back_when_exact_lookup_errors(self, taker) -> None:
+        """A backend lookup error must not cause an early self-broadcast fallback."""
+        taker.directory_client = MagicMock()
+        taker.directory_client.send_privmsg = AsyncMock()
+        taker._session.tx_metadata = {"output_owners": [("taker", "cj")]}
+        taker._session.cj_destination = "bcrt1qtest123"
+        taker.backend.get_transaction = AsyncMock(side_effect=RuntimeError("lookup unavailable"))
+        taker.backend.verify_tx_output = AsyncMock(return_value=True)
+
+        tx_b64 = base64.b64encode(taker._session.final_tx).decode("ascii")
+        txid = await taker._session._broadcast_via_maker("J5maker123", tx_b64)
+
+        assert txid != ""
+        taker.backend.verify_tx_output.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_broadcast_via_maker_times_out_stalled_push(self, taker) -> None:
+        """The maker timeout also bounds delivery of the push message."""
+        push_cancelled = asyncio.Event()
+
+        async def stalled_push(*args, **kwargs) -> None:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                push_cancelled.set()
+                raise
+
+        taker.config.broadcast_timeout_sec = 0.01
+        taker.directory_client = MagicMock()
+        taker.directory_client.send_privmsg = AsyncMock(side_effect=stalled_push)
+
+        tx_b64 = base64.b64encode(taker._session.final_tx).decode("ascii")
+        txid = await taker._session._broadcast_via_maker("J5maker123", tx_b64)
+
+        assert txid == ""
+        assert push_cancelled.is_set()
+        taker.backend.get_transaction.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_broadcast_via_maker_propagates_cancellation(self, taker) -> None:
+        """Caller cancellation is not converted into an ordinary maker failure."""
+        push_started = asyncio.Event()
+
+        async def stalled_push(*args, **kwargs) -> None:
+            push_started.set()
+            await asyncio.Event().wait()
+
+        taker.directory_client = MagicMock()
+        taker.directory_client.send_privmsg = AsyncMock(side_effect=stalled_push)
+        tx_b64 = base64.b64encode(taker._session.final_tx).decode("ascii")
+        task = asyncio.create_task(taker._session._broadcast_via_maker("J5maker123", tx_b64))
+        await push_started.wait()
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        taker.backend.get_transaction.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_phase_broadcast_sends_to_all_makers_without_mempool_access(self, taker) -> None:
@@ -870,19 +1003,30 @@ class TestNeutrinoBroadcast:
         self._setup_makers(neutrino_taker, ["J5maker1", "J5maker2", "J5maker3"])
         neutrino_taker._session.tx_metadata["output_owners"].insert(0, ("taker", "cj"))
 
-        # First maker's verification succeeds, so loop exits early.
-        neutrino_taker.backend.verify_tx_output = AsyncMock(return_value=True)
+        # The watched transaction endpoint sees the exact txid even though
+        # Neutrino's confirmed-output endpoint still returns 404 in the mempool.
+        expected_txid = CoinJoinTxBuilder(neutrino_taker.config.network).get_txid(
+            neutrino_taker._session.final_tx
+        )
+        neutrino_taker.backend.get_transaction = AsyncMock(
+            return_value=Transaction(
+                txid=expected_txid,
+                raw=neutrino_taker._session.final_tx.hex(),
+                confirmations=0,
+            )
+        )
+        neutrino_taker.backend.verify_tx_output = AsyncMock(return_value=False)
 
         with patch("jmcore.randomness.secure_random.shuffle", side_effect=lambda x: x.sort()):
             txid = await neutrino_taker._session._phase_broadcast()
 
-        assert txid != ""
+        assert txid == expected_txid
         # Exactly one maker contacted (sequential, not fan-out).
         calls = neutrino_taker.directory_client.send_privmsg.call_args_list
         assert len(calls) == 1
         assert calls[0][0][0] == "J5maker1"
-        # Mempool verification was performed (proving we took the sequential path).
-        assert neutrino_taker.backend.verify_tx_output.await_count >= 1
+        neutrino_taker.backend.get_transaction.assert_awaited_once_with(expected_txid)
+        neutrino_taker.backend.verify_tx_output.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_neutrino_with_tracker_multiple_peers_respects_peer_count_cap(
