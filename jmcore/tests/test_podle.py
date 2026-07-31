@@ -5,9 +5,12 @@ Tests both PoDLE generation (taker side) and verification (maker side).
 """
 
 import hashlib
+from typing import Any
+from unittest.mock import Mock, patch
 
 import pytest
 
+import jmcore.podle as podle
 from jmcore.constants import SECP256K1_P
 from jmcore.podle import (
     G_COMPRESSED,
@@ -225,6 +228,103 @@ class TestGeneratePoDLE:
 
         assert c0.p == c1.p  # Same P (derived from same private key)
         assert c0.p2 != c1.p2  # Different P2 (different J point)
+
+    def test_proof_is_deterministic_for_same_transcript(self) -> None:
+        private_key = bytes([4] * 32)
+        utxo_str = "d" * 64 + ":3"
+
+        first = generate_podle(private_key, utxo_str, index=4)
+        second = generate_podle(private_key, utxo_str, index=4)
+
+        assert first == second
+
+    def test_nonce_is_bound_to_utxo_reference(self) -> None:
+        private_key = bytes([4] * 32)
+
+        first = generate_podle(private_key, "d" * 64 + ":3", index=4)
+        second = generate_podle(private_key, "e" * 64 + ":3", index=4)
+
+        assert first.p == second.p
+        assert first.p2 == second.p2
+        assert first.commitment == second.commitment
+        assert first.sig != second.sig
+        assert first.e != second.e
+
+    def test_generation_does_not_require_runtime_entropy(self) -> None:
+        with patch("secrets.token_bytes", side_effect=OSError("CSPRNG unavailable")):
+            commitment = generate_podle(bytes([5] * 32), "f" * 64 + ":5", index=5)
+
+        is_valid, error = verify_podle(
+            p=commitment.p,
+            p2=commitment.p2,
+            sig=commitment.sig,
+            e=commitment.e,
+            commitment=commitment.commitment,
+            index_range=range(10),
+        )
+        assert is_valid, error
+
+    def test_generation_retries_zero_challenge(self) -> None:
+        real_sha256 = hashlib.sha256
+        challenge_calls = 0
+
+        def force_first_zero_challenge(data: bytes = b"") -> Any:
+            nonlocal challenge_calls
+            if len(data) == 132:
+                challenge_calls += 1
+                if challenge_calls == 1:
+                    return Mock(digest=Mock(return_value=SECP256K1_N.to_bytes(32, "big")))
+            return real_sha256(data)
+
+        with (
+            patch("jmcore.podle._podle_nonce_candidates", return_value=iter((1, 2))),
+            patch("jmcore.podle.hashlib.sha256", side_effect=force_first_zero_challenge),
+        ):
+            commitment = generate_podle(bytes([5] * 32), "f" * 64 + ":5", index=5)
+
+        assert challenge_calls == 2
+        assert int.from_bytes(commitment.e, "big") % SECP256K1_N != 0
+        is_valid, error = verify_podle(
+            p=commitment.p,
+            p2=commitment.p2,
+            sig=commitment.sig,
+            e=commitment.e,
+            commitment=commitment.commitment,
+            index_range=range(10),
+        )
+        assert is_valid, error
+
+    def test_rfc6979_retries_rejected_candidate(self) -> None:
+        private_key = bytes.fromhex("01" * 32)
+        message_hash = bytes(32)
+        candidates = podle._rfc6979_nonce_candidates(private_key, message_hash)
+        rejected = next(candidates)
+        expected = next(candidates)
+        assert expected < rejected
+
+        with patch("jmcore.podle.SECP256K1_N", rejected):
+            actual = next(podle._rfc6979_nonce_candidates(private_key, message_hash))
+
+        assert actual == expected
+
+    def test_deterministic_proof_vector(self) -> None:
+        commitment = generate_podle(bytes.fromhex("01" * 32), "00" * 32 + ":0", index=0)
+
+        assert commitment.commitment.hex() == (
+            "0699ef3695ee2050f6d0cfcdb8ef0b49d118d6b0b0bc9f56c8621639ad05bec6"
+        )
+        assert commitment.p.hex() == (
+            "031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f"
+        )
+        assert commitment.p2.hex() == (
+            "0263c89959c452d2310684bc07b9f39d9f4d08a641e28e7ee0e6f69a27bc75dcbd"
+        )
+        assert commitment.sig.hex() == (
+            "4ef60eba328882679d63eccebc463b7e98683b846344181ff754ed77c95ca5af"
+        )
+        assert commitment.e.hex() == (
+            "b643f3799fb7a793c95c5500e8395cdeabe87ddeffa22e9bf203b427e953c3e4"
+        )
 
     def test_invalid_private_key_length(self) -> None:
         """Test invalid private key length."""

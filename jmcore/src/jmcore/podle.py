@@ -26,7 +26,8 @@ Reference: joinmarket-clientserver/src/jmclient/podle.py
 from __future__ import annotations
 
 import hashlib
-import secrets
+import hmac
+from collections.abc import Iterator
 from typing import Any
 
 from coincurve import PublicKey
@@ -216,6 +217,53 @@ def point_to_bytes(point: PublicKey) -> bytes:
 # PoDLE Generation (Taker side)
 # ==============================================================================
 
+_PODLE_NONCE_DOMAIN = b"JoinMarket/PoDLE/nonce/v1"
+
+
+def _rfc6979_nonce_candidates(private_key_bytes: bytes, message_hash: bytes) -> Iterator[int]:
+    """Yield secp256k1 nonce candidates using RFC 6979 with HMAC-SHA256."""
+    if len(private_key_bytes) != 32 or len(message_hash) != 32:
+        raise PoDLEError("RFC 6979 inputs must be 32 bytes")
+
+    # secp256k1 has qlen=256, so bits2octets is a 32-byte conditional reduction.
+    reduced_hash = (int.from_bytes(message_hash, "big") % SECP256K1_N).to_bytes(32, "big")
+    seed_material = private_key_bytes + reduced_hash
+    value = b"\x01" * 32
+    key = b"\x00" * 32
+
+    key = hmac.new(key, value + b"\x00" + seed_material, hashlib.sha256).digest()
+    value = hmac.new(key, value, hashlib.sha256).digest()
+    key = hmac.new(key, value + b"\x01" + seed_material, hashlib.sha256).digest()
+    value = hmac.new(key, value, hashlib.sha256).digest()
+
+    while True:
+        value = hmac.new(key, value, hashlib.sha256).digest()
+        candidate = int.from_bytes(value, "big")
+        if 1 <= candidate < SECP256K1_N:
+            yield candidate
+        key = hmac.new(key, value + b"\x00", hashlib.sha256).digest()
+        value = hmac.new(key, value, hashlib.sha256).digest()
+
+
+def _podle_nonce_candidates(
+    private_key_bytes: bytes,
+    utxo_str: str,
+    index: int,
+    p_bytes: bytes,
+    p2_bytes: bytes,
+) -> Iterator[int]:
+    """Yield deterministic nonces bound to a versioned PoDLE transcript."""
+    utxo_bytes = utxo_str.encode("utf-8")
+    transcript = (
+        _PODLE_NONCE_DOMAIN
+        + len(utxo_bytes).to_bytes(4, "big")
+        + utxo_bytes
+        + index.to_bytes(1, "big")
+        + p_bytes
+        + p2_bytes
+    )
+    return _rfc6979_nonce_candidates(private_key_bytes, hashlib.sha256(transcript).digest())
+
 
 def generate_podle(
     private_key_bytes: bytes,
@@ -262,26 +310,26 @@ def generate_podle(
     # Generate commitment C = H(P2)
     commitment = hashlib.sha256(p2_bytes).digest()
 
-    # Generate Schnorr-like proof
-    # Choose random nonce k_proof
-    k_proof = int.from_bytes(secrets.token_bytes(32), "big") % SECP256K1_N
-    if k_proof == 0:
-        k_proof = 1
+    # Derive the nonce from the secret key and proof transcript. This removes
+    # runtime RNG failures from a Schnorr-style operation where nonce reuse
+    # across two proofs would reveal the UTXO private key.
+    for k_proof in _podle_nonce_candidates(
+        private_key_bytes,
+        utxo_str,
+        index,
+        p_bytes,
+        p2_bytes,
+    ):
+        kg_bytes = point_to_bytes(scalar_mult_g(k_proof))
+        kj_bytes = point_to_bytes(point_mult(k_proof, j_point))
+        e_bytes = hashlib.sha256(kg_bytes + kj_bytes + p_bytes + p2_bytes).digest()
+        e = int.from_bytes(e_bytes, "big") % SECP256K1_N
+        if e == 0:
+            continue
+        s = (k_proof + e * k) % SECP256K1_N
+        if s != 0:
+            break
 
-    # Kg = k_proof * G
-    kg_point = scalar_mult_g(k_proof)
-    kg_bytes = point_to_bytes(kg_point)
-
-    # Kj = k_proof * J
-    kj_point = point_mult(k_proof, j_point)
-    kj_bytes = point_to_bytes(kj_point)
-
-    # Challenge e = H(Kg || Kj || P || P2)
-    e_bytes = hashlib.sha256(kg_bytes + kj_bytes + p_bytes + p2_bytes).digest()
-    e = int.from_bytes(e_bytes, "big") % SECP256K1_N
-
-    # Response s = k_proof + e * k (mod n) - JAM compatible
-    s = (k_proof + e * k) % SECP256K1_N
     s_bytes = s.to_bytes(32, "big")
 
     logger.debug(
