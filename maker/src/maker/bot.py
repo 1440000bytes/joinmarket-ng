@@ -774,11 +774,13 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
         """
         # Get current max balance available for offers before resync (excludes fidelity bonds)
         old_max_balance = 0
+        locked_outpoints = self.wallet.get_locked_input_outpoints()
         for mixdepth in range(self.wallet.mixdepth_count):
             balance = await self.wallet.get_balance_for_offers(
                 mixdepth,
                 min_confirmations=self.config.min_confirmations,
                 restrict_md0=not self.config.allow_mixdepth_zero_merge,
+                exclude=locked_outpoints,
             )
             old_max_balance = max(old_max_balance, balance)
 
@@ -800,11 +802,13 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
 
         # Get new max balance for offers after resync (excludes fidelity bonds)
         new_max_balance = 0
+        locked_outpoints = self.wallet.get_locked_input_outpoints()
         for mixdepth in range(self.wallet.mixdepth_count):
             balance = await self.wallet.get_balance_for_offers(
                 mixdepth,
                 min_confirmations=self.config.min_confirmations,
                 restrict_md0=not self.config.allow_mixdepth_zero_merge,
+                exclude=locked_outpoints,
             )
             new_max_balance = max(new_max_balance, balance)
 

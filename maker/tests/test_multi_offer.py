@@ -463,6 +463,7 @@ class TestMakerBotMultiOfferFill:
         assert call_kwargs["offer"].oid == 0
         assert call_kwargs["offer"].ordertype == OfferType.SW0_RELATIVE
         assert call_kwargs["min_confirmations"] == maker_bot.config.min_confirmations
+        assert call_kwargs["input_lock_ttl_sec"] == maker_bot.config.pending_tx_timeout_min * 60
 
     @pytest.mark.asyncio
     async def test_fill_absolute_offer(self, maker_bot, mock_backend):

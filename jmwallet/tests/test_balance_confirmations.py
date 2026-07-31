@@ -132,6 +132,17 @@ async def test_get_balance_for_offers_respects_min_confirmations(wallet_service)
 
 
 @pytest.mark.asyncio
+async def test_get_balance_for_offers_excludes_reserved_inputs(wallet_service):
+    assert (
+        await wallet_service.get_balance_for_offers(0, min_confirmations=1, exclude={("c", 0)})
+        == 4000
+    )
+    assert (
+        await wallet_service.get_balance_for_offers(1, min_confirmations=1, exclude={("e", 0)}) == 0
+    )
+
+
+@pytest.mark.asyncio
 async def test_get_total_balance_respects_min_confirmations(wallet_service):
     # MD 0: 15000 (all), 14000 (conf)
     # MD 1: 30000 (all), 20000 (conf)

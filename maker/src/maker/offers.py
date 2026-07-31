@@ -77,6 +77,7 @@ class OfferManager:
             List of offers. Each offer gets a unique oid (0, 1, 2, ...).
         """
         try:
+            locked_outpoints = self.wallet.get_locked_input_outpoints()
             balances = {}
             for mixdepth in range(self.wallet.mixdepth_count):
                 # Use balance for offers (excludes fidelity bonds)
@@ -84,6 +85,7 @@ class OfferManager:
                     mixdepth,
                     min_confirmations=self.config.min_confirmations,
                     restrict_md0=not self.config.allow_mixdepth_zero_merge,
+                    exclude=locked_outpoints,
                 )
                 balances[mixdepth] = balance
 

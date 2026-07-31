@@ -476,6 +476,7 @@ class ProtocolHandlersMixin:
                 backend=self.backend,
                 min_confirmations=self.config.min_confirmations,
                 session_timeout_sec=self.config.session_timeout_sec,
+                input_lock_ttl_sec=self.config.pending_tx_timeout_min * 60,
                 merge_algorithm=self.config.merge_algorithm.value,
                 restrict_md0=not self.config.allow_mixdepth_zero_merge,
             )

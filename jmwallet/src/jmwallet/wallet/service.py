@@ -564,7 +564,12 @@ class WalletService(WalletSyncMixin, CoinSelectionMixin, WalletDisplayMixin, Wal
         return sum(utxo.value for utxo in utxos)
 
     async def get_balance_for_offers(
-        self, mixdepth: int, min_confirmations: int = 0, *, restrict_md0: bool = True
+        self,
+        mixdepth: int,
+        min_confirmations: int = 0,
+        *,
+        restrict_md0: bool = True,
+        exclude: set[tuple[str, int]] | None = None,
     ) -> int:
         """Get balance available for maker offers (excludes fidelity bond UTXOs).
 
@@ -577,33 +582,38 @@ class WalletService(WalletSyncMixin, CoinSelectionMixin, WalletDisplayMixin, Wal
         are exempt because they already have CoinJoin privacy and can be
         safely merged.
 
-        The effective balance is therefore::
+        Inputs reserved by another in-flight session can be excluded so offer
+        and selection calculations use actually available liquidity.
+
+        The effective mixdepth-0 balance is therefore::
 
             max(sum_of_cj_outputs, largest_non_cj_output)
 
         When ``restrict_md0`` is False (opt-in via config), mixdepth 0 is
         treated the same as any other mixdepth.
         """
-        if mixdepth == 0 and restrict_md0:
-            if mixdepth not in self.utxo_cache:
-                await self.sync_mixdepth(mixdepth)
-            utxos = self.utxo_cache.get(mixdepth, [])
-            eligible = [
-                u
-                for u in utxos
-                if not u.frozen and not u.is_fidelity_bond and u.confirmations >= min_confirmations
-            ]
-            if not eligible:
-                return 0
+        if mixdepth not in self.utxo_cache:
+            await self.sync_mixdepth(mixdepth)
 
+        excluded = exclude or set()
+        eligible = [
+            u
+            for u in self.utxo_cache.get(mixdepth, [])
+            if not u.frozen
+            and not u.is_fidelity_bond
+            and u.confirmations >= min_confirmations
+            and (u.txid, u.vout) not in excluded
+        ]
+        if not eligible:
+            return 0
+
+        if mixdepth == 0 and restrict_md0:
             cj_pool = sum(u.value for u in eligible if u.label == "cj-out")
             non_cj = [u for u in eligible if u.label != "cj-out"]
             largest_single = max((u.value for u in non_cj), default=0)
             return max(cj_pool, largest_single)
 
-        return await self.get_balance(
-            mixdepth, include_fidelity_bonds=False, min_confirmations=min_confirmations
-        )
+        return sum(u.value for u in eligible)
 
     async def get_utxos(self, mixdepth: int) -> list[UTXOInfo]:
         """Get UTXOs for a mixdepth, syncing if not cached."""

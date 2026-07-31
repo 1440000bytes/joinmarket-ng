@@ -579,6 +579,7 @@ async def test_select_our_utxos_forwards_exclude_to_wallet():
         offer=offer,
         wallet=mock_wallet,
         backend=mock_backend,
+        input_lock_ttl_sec=3600,
     )
     session.amount = 1_000_000
 
@@ -589,11 +590,14 @@ async def test_select_our_utxos_forwards_exclude_to_wallet():
     assert (("ab" * 32), 1) in utxos_dict
     # The committed-elsewhere outpoints were passed straight to the selector.
     assert mock_wallet.select_utxos_with_merge.call_args.kwargs["exclude"] == (committed_elsewhere)
+    for call in mock_wallet.get_balance_for_offers.call_args_list:
+        assert call.kwargs["exclude"] == committed_elsewhere
     # Selection must reserve enough value for a non-dust change output.
     # real_cjfee = 1_000_000 * 0.0003 = 300 sats.
     assert mock_wallet.select_utxos_with_merge.call_args.args[1] == (
         1_000_000 + 1000 + DUST_THRESHOLD + 1 - 300
     )
+    mock_wallet.reserve_coinjoin_inputs.assert_called_once_with({(("ab" * 32), 1)}, ttl=3600)
 
 
 @pytest.mark.asyncio
@@ -650,6 +654,120 @@ async def test_select_our_utxos_declines_on_lock_conflict():
     utxos_dict, _, _, mixdepth = await session._select_our_utxos()
     assert utxos_dict == {}
     assert mixdepth == -1
+
+
+@pytest.mark.asyncio
+async def test_select_our_utxos_falls_back_after_lock_conflict():
+    """A reservation race in the largest mixdepth tries the next mixdepth."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from jmcore.models import Offer, OfferType
+    from jmwallet.wallet.models import UTXOInfo
+
+    from maker.coinjoin import CoinJoinSession
+
+    mock_wallet = MagicMock()
+    mock_wallet.mixdepth_count = 2
+    mock_wallet.get_balance_for_offers = AsyncMock(side_effect=[10_000_000, 9_000_000])
+    mock_wallet.get_locked_input_outpoints.return_value = set()
+    mock_wallet.get_next_address_index.return_value = 0
+    mock_wallet.get_change_address.return_value = "bcrt1qreservedfallback"
+
+    first = UTXOInfo(
+        txid="ab" * 32,
+        vout=0,
+        value=5_000_000,
+        address="bcrt1qfirst",
+        confirmations=2,
+        scriptpubkey="0014" + "ab" * 20,
+        path="m/84'/0'/0'/0/0",
+        mixdepth=0,
+    )
+    second = UTXOInfo(
+        txid="cd" * 32,
+        vout=0,
+        value=5_000_000,
+        address="bcrt1qsecond",
+        confirmations=2,
+        scriptpubkey="0014" + "cd" * 20,
+        path="m/84'/0'/1'/0/0",
+        mixdepth=1,
+    )
+    mock_wallet.select_utxos_with_merge.side_effect = [[first], [second]]
+    mock_wallet.reserve_coinjoin_inputs.side_effect = [False, True]
+
+    mock_backend = MagicMock()
+    mock_backend.requires_neutrino_metadata.return_value = False
+    offer = Offer(
+        counterparty="J5FallbackMaker",
+        ordertype=OfferType.SW0_RELATIVE,
+        oid=0,
+        minsize=10_000,
+        maxsize=100_000_000,
+        txfee=1000,
+        cjfee="0.0003",
+    )
+    session = CoinJoinSession(
+        taker_nick="J5SomeTaker", offer=offer, wallet=mock_wallet, backend=mock_backend
+    )
+    session.amount = 1_000_000
+
+    utxos, _, _, mixdepth = await session._select_our_utxos()
+
+    assert mixdepth == 1
+    assert set(utxos) == {(second.txid, second.vout)}
+
+
+@pytest.mark.asyncio
+async def test_select_our_utxos_releases_lock_after_address_failure():
+    """A failure after reservation must not leave maker liquidity locked."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from jmcore.models import Offer, OfferType
+    from jmwallet.wallet.models import UTXOInfo
+
+    from maker.coinjoin import CoinJoinSession
+
+    mock_wallet = MagicMock()
+    mock_wallet.mixdepth_count = 1
+    mock_wallet.get_balance_for_offers = AsyncMock(return_value=10_000_000)
+    mock_wallet.get_locked_input_outpoints.return_value = set()
+    selected = UTXOInfo(
+        txid="ab" * 32,
+        vout=0,
+        value=5_000_000,
+        address="bcrt1qmakerinput",
+        confirmations=2,
+        scriptpubkey="0014" + "ab" * 20,
+        path="m/84'/0'/0'/0/0",
+        mixdepth=0,
+    )
+    mock_wallet.select_utxos_with_merge.return_value = [selected]
+    mock_wallet.reserve_coinjoin_inputs.return_value = True
+    mock_wallet.get_next_address_index.side_effect = RuntimeError("address store failed")
+
+    offer = Offer(
+        counterparty="J5LockCleanupMaker",
+        ordertype=OfferType.SW0_RELATIVE,
+        oid=0,
+        minsize=10_000,
+        maxsize=100_000_000,
+        txfee=1000,
+        cjfee="0.0003",
+    )
+    session = CoinJoinSession(
+        taker_nick="J5SomeTaker",
+        offer=offer,
+        wallet=mock_wallet,
+        backend=MagicMock(),
+    )
+    session.amount = 1_000_000
+
+    utxos, _, _, mixdepth = await session._select_our_utxos()
+
+    assert utxos == {}
+    assert mixdepth == -1
+    mock_wallet.release_coinjoin_inputs.assert_called_once_with({(selected.txid, selected.vout)})
 
 
 if __name__ == "__main__":

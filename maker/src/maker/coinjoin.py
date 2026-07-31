@@ -66,6 +66,7 @@ class CoinJoinSession:
         taker_utxo_age: int = 5,
         taker_utxo_amtpercent: int = 20,
         session_timeout_sec: int = 300,
+        input_lock_ttl_sec: float = 3600,
         merge_algorithm: str = "default",
         restrict_md0: bool = True,
     ):
@@ -90,6 +91,7 @@ class CoinJoinSession:
         self.taker_nacl_pk = ""  # Taker's NaCl pubkey (hex) for btc_sig
         self.created_at = time.time()
         self.session_timeout_sec = session_timeout_sec
+        self.input_lock_ttl_sec = max(input_lock_ttl_sec, float(session_timeout_sec))
         self.comm_channel = ""  # Track communication channel ("direct" or "dir:<node_id>")
 
         # Feature detection for extended UTXO format (neutrino_compat)
@@ -427,7 +429,10 @@ class CoinJoinSession:
             )
 
             if not utxos_dict:
-                return False, {"error": "Failed to select UTXOs"}
+                return False, {
+                    "error": "Failed to select UTXOs",
+                    "error_code": "UTXO selection failed",
+                }
 
             self.our_utxos = utxos_dict
             self.cj_address = cj_addr
@@ -581,6 +586,7 @@ class CoinJoinSession:
         Returns:
             (utxos_dict, cj_address, change_address, mixdepth)
         """
+        reserved_outpoints: set[tuple[str, int]] = set()
         try:
             from jmcore.models import OfferType
 
@@ -600,6 +606,12 @@ class CoinJoinSession:
             # yield generator's ``DUST_THRESHOLD + 1`` requirement.
             required_amount = total_amount + DUST_THRESHOLD + 1 - real_cjfee
 
+            # Inputs disclosed to another in-flight session are not available
+            # liquidity. Apply the same exclusion to both the balance gate and
+            # the selector so the chosen mixdepth is actually fillable.
+            exclude = set(exclude_utxos or set())
+            exclude |= self.wallet.get_locked_input_outpoints()
+
             balances = {}
             for md in range(self.wallet.mixdepth_count):
                 # Use balance for offers (excludes fidelity bonds)
@@ -607,6 +619,7 @@ class CoinJoinSession:
                     md,
                     min_confirmations=self.min_confirmations,
                     restrict_md0=self.restrict_md0,
+                    exclude=exclude,
                 )
                 balances[md] = balance
 
@@ -616,39 +629,56 @@ class CoinJoinSession:
                 logger.error(f"No mixdepth with sufficient balance: need {required_amount}")
                 return {}, "", "", -1
 
-            max_mixdepth = max(eligible_mixdepths, key=lambda md: eligible_mixdepths[md])
+            selected: list[UTXOInfo] = []
+            utxos_dict: dict[tuple[str, int], UTXOInfo] = {}
+            max_mixdepth = -1
 
-            # Exclude inputs already committed to another in-flight CoinJoin
-            # (this process or another, maker or taker): re-read the persisted
-            # locks right before choosing so we never sign the same UTXO into
-            # two concurrent transactions (which would double-spend each other).
-            exclude = set(exclude_utxos or set())
-            exclude |= self.wallet.get_locked_input_outpoints()
-
-            # Use merge algorithm for UTXO selection
-            # Makers can consolidate UTXOs "for free" since takers pay all fees
-            selected = self.wallet.select_utxos_with_merge(
-                max_mixdepth,
-                required_amount,
-                self.min_confirmations,
-                merge_algorithm=self.merge_algorithm,
-                restrict_md0=self.restrict_md0,
-                exclude=exclude,
-            )
-
-            utxos_dict = {(utxo.txid, utxo.vout): utxo for utxo in selected}
-
-            # "Block first, then continue": persist a lock on the chosen inputs
-            # before revealing them to the taker. Acquisition is atomic across
-            # processes; on conflict (a racing round grabbed one first) decline
-            # this session rather than risk a conflicting transaction. The lock
-            # auto-expires, so a crashed round never blocks these funds forever.
-            if not self.wallet.reserve_coinjoin_inputs(
-                set(utxos_dict.keys()), ttl=self.session_timeout_sec
+            # Try eligible mixdepths from largest to smallest. Selection can
+            # still lose a race to another process after the balance snapshot;
+            # atomic reservation closes that race and lets us try another
+            # independent mixdepth instead of double-signing an input.
+            for candidate_mixdepth in sorted(
+                eligible_mixdepths, key=eligible_mixdepths.__getitem__, reverse=True
             ):
-                logger.warning(
-                    "Selected UTXOs were locked by a concurrent session; "
-                    "declining this CoinJoin to avoid a conflicting transaction"
+                try:
+                    candidate = self.wallet.select_utxos_with_merge(
+                        candidate_mixdepth,
+                        required_amount,
+                        self.min_confirmations,
+                        merge_algorithm=self.merge_algorithm,
+                        restrict_md0=self.restrict_md0,
+                        exclude=exclude,
+                    )
+                except ValueError as e:
+                    logger.debug(
+                        f"Mixdepth {candidate_mixdepth} became unavailable during selection: {e}"
+                    )
+                    continue
+
+                candidate_dict = {(utxo.txid, utxo.vout): utxo for utxo in candidate}
+                if not candidate_dict:
+                    continue
+
+                if not self.wallet.reserve_coinjoin_inputs(
+                    set(candidate_dict), ttl=self.input_lock_ttl_sec
+                ):
+                    logger.warning(
+                        f"Inputs from mixdepth {candidate_mixdepth} were locked by a "
+                        "concurrent session; trying another mixdepth"
+                    )
+                    exclude |= self.wallet.get_locked_input_outpoints()
+                    continue
+
+                reserved_outpoints = set(candidate_dict)
+                selected = candidate
+                utxos_dict = candidate_dict
+                max_mixdepth = candidate_mixdepth
+                break
+
+            if max_mixdepth < 0:
+                logger.error(
+                    f"No mixdepth remained selectable after input reservations: "
+                    f"need {required_amount}"
                 )
                 return {}, "", "", -1
 
@@ -678,6 +708,8 @@ class CoinJoinSession:
 
         except Exception as e:
             logger.error(f"Failed to select UTXOs: {e}")
+            if reserved_outpoints:
+                self.wallet.release_coinjoin_inputs(reserved_outpoints)
             return {}, "", "", -1
 
     async def _sign_transaction(self, tx_hex: str) -> list[str]:
