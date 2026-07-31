@@ -14,6 +14,7 @@ spam from blowing past reasonable memory even within the line limit.
 from __future__ import annotations
 
 import contextlib
+import sys
 import threading
 from collections import deque
 
@@ -64,6 +65,7 @@ class LogRingBuffer:
 
 _buffer: LogRingBuffer | None = None
 _sink_id: int | None = None
+_stderr_sink_id: int | None = 0
 
 
 def get_log_buffer() -> LogRingBuffer:
@@ -75,12 +77,20 @@ def get_log_buffer() -> LogRingBuffer:
 
 
 def install_log_sink(level: str = "DEBUG") -> None:
-    """Attach the ring buffer as a loguru sink.
+    """Attach the ring buffer as a loguru sink and reconfigure stderr logging.
 
-    Safe to call multiple times; the existing sink is removed first so the
+    Safe to call multiple times; existing sinks are removed first so the
     level can be updated at runtime without duplicating records.
     """
-    global _sink_id
+    global _sink_id, _stderr_sink_id
+    level_str = level.upper()
+
+    if _stderr_sink_id is not None:
+        with contextlib.suppress(ValueError):
+            logger.remove(_stderr_sink_id)
+        _stderr_sink_id = None
+    _stderr_sink_id = logger.add(sys.stderr, level=level_str)
+
     buffer = get_log_buffer()
     if _sink_id is not None:
         with contextlib.suppress(ValueError):
@@ -93,7 +103,7 @@ def install_log_sink(level: str = "DEBUG") -> None:
         format=(
             "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} - {message}"
         ),
-        level=level.upper(),
+        level=level_str,
         colorize=False,
         enqueue=False,
     )

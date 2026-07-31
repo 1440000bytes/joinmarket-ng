@@ -21,6 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from loguru import logger
 
+from jmcore.settings import get_settings
 from jmwalletd.deps import get_daemon_state, set_daemon_state
 from jmwalletd.errors import (
     InsufficientScope,
@@ -101,7 +102,7 @@ def create_app(*, data_dir: Path | None = None) -> FastAPI:
     # ------------------------------------------------------------------
     # In-memory log ring buffer so jam's Logs page can fetch recent output.
     # ------------------------------------------------------------------
-    install_log_sink()
+    install_log_sink(level=get_settings().logging.level)
 
     # ------------------------------------------------------------------
     # Cache-busting response headers (matching reference).
