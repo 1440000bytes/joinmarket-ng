@@ -150,15 +150,21 @@ class TestMergeAlgorithm:
         config = MakerConfig(mnemonic=TEST_MNEMONIC)
         assert config.merge_algorithm == MergeAlgorithm.DEFAULT
 
-    def test_default_min_confirmations_is_zero(self) -> None:
-        """Default min_confirmations is 0 (issue #491).
-
-        Makers offer unconfirmed UTXOs out of the box to maximize liquidity.
-        Operators who prefer to trade liquidity for RBF/eviction/reorg safety
-        can opt back in via [maker] min_confirmations >= 1.
-        """
+    def test_default_min_confirmations_is_one(self) -> None:
+        """Maker inputs need one confirmation for taker interoperability."""
         config = MakerConfig(mnemonic=TEST_MNEMONIC)
-        assert config.min_confirmations == 0
+        assert config.min_confirmations == 1
+
+    def test_zero_min_confirmations_is_rejected(self) -> None:
+        """Zero-confirmation maker inputs are not part of the base protocol."""
+        with pytest.raises(ValueError, match="greater than or equal to 1"):
+            MakerConfig(mnemonic=TEST_MNEMONIC, min_confirmations=0)
+
+    @pytest.mark.parametrize("offer_type", [OfferType.SWA_RELATIVE, OfferType.SWA_ABSOLUTE])
+    def test_wrapped_offer_types_are_rejected(self, offer_type: OfferType) -> None:
+        """The wallet signer currently produces only native P2WPKH inputs."""
+        with pytest.raises(ValueError, match="Wrapped SegWit maker offers are not supported"):
+            MakerConfig(mnemonic=TEST_MNEMONIC, offer_type=offer_type)
 
     def test_set_merge_algorithm_gradual(self) -> None:
         """Test setting merge algorithm to gradual."""
@@ -827,6 +833,16 @@ class TestNewSettingsWiring:
     Each test verifies that a setting defined in MakerSettings reaches the
     runtime MakerConfig produced by build_maker_config.
     """
+
+    def test_min_confirmations_passed_from_settings(self) -> None:
+        from jmcore.settings import JoinMarketSettings
+
+        from maker.cli import build_maker_config
+
+        settings = JoinMarketSettings()
+        settings.maker.min_confirmations = 2
+        config = build_maker_config(settings=settings, mnemonic=TEST_MNEMONIC, passphrase="")
+        assert config.min_confirmations == 2
 
     def test_directory_reconnect_interval_passed_from_settings(self) -> None:
         """maker.directory_reconnect_interval in config.toml must reach MakerConfig."""

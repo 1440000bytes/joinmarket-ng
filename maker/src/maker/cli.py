@@ -274,7 +274,7 @@ def build_maker_config(
         except ValueError:
             raise ValueError(
                 f"Invalid offer_type in config: {settings.maker.offer_type}. "
-                "Must be one of: sw0reloffer, sw0absoffer, swreloffer, swabsoffer"
+                "Must be one of: sw0reloffer, sw0absoffer"
             )
         actual_cj_fee_relative = settings.maker.cj_fee_relative
         actual_cj_fee_absolute = settings.maker.cj_fee_absolute

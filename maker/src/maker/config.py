@@ -119,6 +119,10 @@ class OfferConfig(BaseModel):
     @model_validator(mode="after")
     def validate_fee_config(self) -> OfferConfig:
         """Validate fee configuration based on offer type."""
+        if self.offer_type in (OfferType.SWA_RELATIVE, OfferType.SWA_ABSOLUTE):
+            raise ValueError(
+                "Wrapped SegWit maker offers are not supported by the P2WPKH wallet signer"
+            )
         if self.offer_type in (OfferType.SW0_RELATIVE, OfferType.SWA_RELATIVE):
             try:
                 cj_fee_float = float(self.cj_fee_relative)
@@ -269,10 +273,9 @@ class MakerConfig(WalletConfig):
         ),
     )
 
-    # Minimum confirmations for UTXOs offered into coinjoins. Default 0
-    # lets makers offer unconfirmed UTXOs; PoDLE commitments still require
-    # taker_utxo_age confirmations on a separate UTXO.
-    min_confirmations: int = Field(default=0, ge=0, description="Minimum confirmations for UTXOs")
+    # Base-protocol takers reject unconfirmed maker inputs. PoDLE commitments
+    # independently require taker_utxo_age confirmations on a taker UTXO.
+    min_confirmations: int = Field(default=1, ge=1, description="Minimum confirmations for UTXOs")
 
     # Fidelity bond configuration
     # List of locktimes (Unix timestamps) to scan for fidelity bonds
@@ -452,6 +455,10 @@ class MakerConfig(WalletConfig):
         # Only validate single-offer fields if offer_configs is empty
         # (when offer_configs is set, those fields are ignored)
         if not self.offer_configs:
+            if self.offer_type in (OfferType.SWA_RELATIVE, OfferType.SWA_ABSOLUTE):
+                raise ValueError(
+                    "Wrapped SegWit maker offers are not supported by the P2WPKH wallet signer"
+                )
             # Validate cj_fee_relative for relative offer types
             if self.offer_type in (OfferType.SW0_RELATIVE, OfferType.SWA_RELATIVE):
                 try:

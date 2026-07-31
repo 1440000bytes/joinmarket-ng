@@ -462,6 +462,7 @@ class TestMakerBotMultiOfferFill:
         call_kwargs = mock_session_class.call_args[1]
         assert call_kwargs["offer"].oid == 0
         assert call_kwargs["offer"].ordertype == OfferType.SW0_RELATIVE
+        assert call_kwargs["min_confirmations"] == maker_bot.config.min_confirmations
 
     @pytest.mark.asyncio
     async def test_fill_absolute_offer(self, maker_bot, mock_backend):

@@ -156,10 +156,9 @@ class TestSelectUtxos:
     ):
         """With ``min_confirmations=0`` an unconfirmed UTXO is selectable.
 
-        Regression coverage for issue #491: a maker that opts in via
-        ``[maker] min_confirmations = 0`` should be able to offer UTXOs
-        from unconfirmed parents. Default behaviour (``>= 1``) must keep
-        excluding them.
+        The generic wallet selector supports zero-confirmation policy for
+        callers that explicitly need it. Base-protocol makers require at least
+        one confirmation.
         """
         ws = WalletService(
             mnemonic=test_mnemonic,

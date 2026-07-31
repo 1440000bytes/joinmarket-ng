@@ -2058,6 +2058,17 @@ class TestPhaseAuthMakerAuthentication:
                         scriptpubkey=stored_spk,
                     )
                 )
+            elif backend_utxo == "one_confirmation":
+                taker.backend.get_utxo = AsyncMock(
+                    return_value=UTXO(
+                        txid=txid,
+                        vout=vout,
+                        value=value,
+                        address="bcrt1qtest",
+                        confirmations=1,
+                        scriptpubkey=stored_spk,
+                    )
+                )
             elif backend_utxo == "error":
                 taker.backend.get_utxo = AsyncMock(side_effect=RuntimeError("backend down"))
             else:
@@ -2209,6 +2220,16 @@ class TestPhaseAuthMakerAuthentication:
         assert result.success is False
         assert nick not in session_state.maker_sessions
         assert nick in result.failed_makers
+
+    @pytest.mark.asyncio
+    async def test_accepts_maker_with_one_confirmation(self):
+        result, session_state, nick = await self._drive_phase_auth(
+            auth_owns_utxo=True,
+            valid_btc_sig=True,
+            backend_utxo="one_confirmation",
+        )
+        assert result.success is True
+        assert nick in session_state.maker_sessions
 
     @pytest.mark.asyncio
     async def test_rejects_maker_when_backend_lookup_fails(self):

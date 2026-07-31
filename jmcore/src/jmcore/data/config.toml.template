@@ -392,11 +392,10 @@
 # size_factor = 0.1
 
 # Minimum confirmations for UTXOs offered into coinjoins.
-# Default 0 lets the maker offer unconfirmed (mempool) UTXOs, which
-# improves liquidity. The PoDLE commitment lives on a separate UTXO and
-# is still gated by taker_utxo_age (taker side, default 5). Raise this
-# to 1+ if you want to trade liquidity for RBF/eviction/reorg safety.
-# min_confirmations = 0
+# Base-protocol takers reject unconfirmed maker inputs, so this must be at
+# least 1. The PoDLE commitment lives on a separate taker UTXO and is still
+# gated by taker_utxo_age (default 5).
+# min_confirmations = 1
 
 # UTXO merge algorithm: "default", "gradual", "greedy", "random"
 # merge_algorithm = "default"
