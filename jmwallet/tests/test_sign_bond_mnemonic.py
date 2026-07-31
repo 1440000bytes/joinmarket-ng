@@ -1,8 +1,7 @@
 """Tests for the standalone mnemonic bond signing script.
 
-This test file is self-contained -- it does NOT import from jmcore or jmwallet,
-mirroring the script itself which has zero project dependencies (only coincurve).
-Test PSBTs are hardcoded from known BIP84 test vectors.
+This test file does not import from jmcore or jmwallet, mirroring the script
+itself. Test PSBTs are hardcoded from known BIP84 test vectors.
 """
 
 from __future__ import annotations
@@ -11,6 +10,7 @@ import base64
 import struct
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -18,6 +18,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "scripts"))
 
 from sign_bond_mnemonic import (
+    SECP256K1_N,
     _encode_varint,
     _path_to_string,
     _read_varint,
@@ -217,6 +218,41 @@ class TestDeriveKeyFromMnemonic:
             TEST_MNEMONIC, "m/84'/0'/0'/0/0", passphrase="test"
         )
         assert pubkey.hex() != EXPECTED_PUBKEY_0_0
+
+    def test_unicode_passphrase_uses_bip39_nfkd_normalization(self) -> None:
+        path = "m/84'/0'/0'/0/0"
+        _, pubkey_composed = derive_key_from_mnemonic(TEST_MNEMONIC, path, passphrase="é")
+        _, pubkey_decomposed = derive_key_from_mnemonic(
+            TEST_MNEMONIC, path, passphrase="e\N{COMBINING ACUTE ACCENT}"
+        )
+
+        assert pubkey_composed == pubkey_decomposed
+
+    def test_invalid_mnemonic_checksum_rejected(self) -> None:
+        with pytest.raises(ValueError, match="checksum"):
+            derive_key_from_mnemonic("abandon " * 11 + "abandon", "m/84'/0'/0'/0/0")
+
+    def test_invalid_bip32_master_key_rejected(self) -> None:
+        with (
+            patch("sign_bond_mnemonic.hmac.new") as hmac_new,
+            pytest.raises(ValueError, match="invalid master private key"),
+        ):
+            hmac_new.return_value.digest.return_value = bytes(64)
+            derive_key_from_mnemonic(TEST_MNEMONIC, [])
+
+    @pytest.mark.parametrize(
+        ("child_offset", "error"),
+        [(SECP256K1_N, "invalid child offset"), (SECP256K1_N - 1, "zero child key")],
+    )
+    def test_invalid_bip32_child_rejected(self, child_offset: int, error: str) -> None:
+        master = (1).to_bytes(32, "big") + bytes([2] * 32)
+        child = child_offset.to_bytes(32, "big") + bytes([3] * 32)
+        with (
+            patch("sign_bond_mnemonic.hmac.new") as hmac_new,
+            pytest.raises(ValueError, match=error),
+        ):
+            hmac_new.return_value.digest.side_effect = [master, child]
+            derive_key_from_mnemonic(TEST_MNEMONIC, [0])
 
     def test_invalid_path(self) -> None:
         with pytest.raises((ValueError, IndexError)):

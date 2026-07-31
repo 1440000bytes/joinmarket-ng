@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Sign a fidelity bond spending PSBT using a BIP39 mnemonic seed phrase.
 
-This script is FULLY SELF-CONTAINED -- it does not import from jmcore or
-jmwallet, so it works even when pydantic or other project dependencies have
-version conflicts. The only external dependency is ``coincurve``.
+This script does not import from jmcore or jmwallet, so it works even when
+pydantic or other project dependencies have version conflicts. Its external
+dependencies are ``coincurve`` and ``mnemonic``.
 
 This script is for users who have their bond wallet seed phrase (e.g., from
 Sparrow) but do NOT have a hardware wallet. It derives the private key from
@@ -24,7 +24,7 @@ and --derivation-path in the spend-bond command). The script extracts the
 derivation path from the PSBT automatically.
 
 REQUIREMENTS:
-  pip install coincurve
+  pip install coincurve mnemonic
 
 BROADCAST:
   bitcoin-cli sendrawtransaction <signed_tx_hex>
@@ -40,6 +40,8 @@ import hmac
 import struct
 import sys
 from pathlib import Path
+
+from mnemonic import Mnemonic
 
 # secp256k1 curve order -- used for BIP32 child key derivation
 SECP256K1_N = int(
@@ -430,8 +432,8 @@ def derive_key_from_mnemonic(
 ) -> tuple[bytes, bytes]:
     """Derive a private key and public key from a BIP39 mnemonic and path.
 
-    Uses inline BIP39 seed derivation and BIP32 key derivation -- no project
-    imports required. Only depends on ``coincurve``.
+    Uses standalone BIP39 validation and BIP32 key derivation without project
+    imports. Depends on ``coincurve`` and ``mnemonic``.
 
     Args:
         mnemonic: BIP39 mnemonic phrase (12 or 24 words).
@@ -443,15 +445,19 @@ def derive_key_from_mnemonic(
     """
     from coincurve import PrivateKey
 
-    # BIP39: mnemonic -> seed (PBKDF2-HMAC-SHA512, 2048 rounds)
-    mnemonic_bytes = mnemonic.encode("utf-8")
-    salt = ("mnemonic" + passphrase).encode("utf-8")
-    seed = hashlib.pbkdf2_hmac("sha512", mnemonic_bytes, salt, 2048)
+    normalized_mnemonic = " ".join(mnemonic.strip().split())
+    bip39 = Mnemonic("english")
+    if not bip39.check(normalized_mnemonic):
+        raise ValueError("Invalid English BIP39 mnemonic or checksum")
+    seed = bip39.to_seed(normalized_mnemonic, passphrase=passphrase)
 
     # BIP32: seed -> master key
     master_hmac = hmac.new(b"Bitcoin seed", seed, hashlib.sha512).digest()
     master_key_bytes = master_hmac[:32]
     master_chain_code = master_hmac[32:]
+    master_key_int = int.from_bytes(master_key_bytes, "big")
+    if not 1 <= master_key_int < SECP256K1_N:
+        raise ValueError("BIP32 produced an invalid master private key")
 
     # Derive child keys along the path
     if isinstance(path, list):
@@ -474,8 +480,14 @@ def derive_key_from_mnemonic(
 
         child_hmac = hmac.new(chain_code, data, hashlib.sha512).digest()
         child_key_offset = int.from_bytes(child_hmac[:32], "big")
+        if child_key_offset >= SECP256K1_N:
+            raise ValueError(f"BIP32 produced an invalid child offset at index {index}")
         parent_key_int = int.from_bytes(key_bytes, "big")
         child_key_int = (parent_key_int + child_key_offset) % SECP256K1_N
+        if child_key_int == 0:
+            raise ValueError(
+                f"BIP32 produced an invalid zero child key at index {index}"
+            )
 
         key_bytes = child_key_int.to_bytes(32, "big")
         chain_code = child_hmac[32:]
@@ -633,13 +645,16 @@ def main() -> None:
         print("ERROR: Empty mnemonic", file=sys.stderr)
         sys.exit(1)
 
-    # Validate word count
+    # Reject malformed mnemonics before accepting an optional passphrase.
     words = mnemonic.strip().split()
     if len(words) not in (12, 15, 18, 21, 24):
         print(
             f"ERROR: Expected 12-24 words, got {len(words)}",
             file=sys.stderr,
         )
+        sys.exit(1)
+    if not Mnemonic("english").check(" ".join(words)):
+        print("ERROR: Invalid English BIP39 mnemonic or checksum", file=sys.stderr)
         sys.exit(1)
 
     # Optional passphrase

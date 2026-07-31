@@ -9,7 +9,7 @@ reference JoinMarket implementation.  Tests verify:
 - End-to-end: signature can be verified by ``_verify_recoverable_signature``
 - CLI argument parsing and output format
 
-The script under test is self-contained (only depends on coincurve).
+The script under test has no project imports and depends on coincurve and mnemonic.
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ from coincurve import PrivateKey
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "scripts"))
 
 from sign_bond_cert_reference import (
+    SECP256K1_N,
     _bitcoin_message_hash,
     _derive_key_from_mnemonic,
     _make_bond_path,
@@ -143,6 +144,41 @@ class TestKeyDerivation:
         _, pub_no_pass = _derive_key_from_mnemonic(TEST_MNEMONIC, path)
         _, pub_with_pass = _derive_key_from_mnemonic(TEST_MNEMONIC, path, "mypassphrase")
         assert pub_no_pass != pub_with_pass
+
+    def test_unicode_passphrase_uses_bip39_nfkd_normalization(self) -> None:
+        path = _make_bond_path(73)
+        _, pubkey_composed = _derive_key_from_mnemonic(TEST_MNEMONIC, path, "é")
+        _, pubkey_decomposed = _derive_key_from_mnemonic(
+            TEST_MNEMONIC, path, "e\N{COMBINING ACUTE ACCENT}"
+        )
+
+        assert pubkey_composed == pubkey_decomposed
+
+    def test_invalid_mnemonic_checksum_rejected(self) -> None:
+        with pytest.raises(ValueError, match="checksum"):
+            _derive_key_from_mnemonic("abandon " * 11 + "abandon", _make_bond_path(73))
+
+    def test_invalid_bip32_master_key_rejected(self) -> None:
+        with (
+            patch("sign_bond_cert_reference.hmac.new") as hmac_new,
+            pytest.raises(ValueError, match="invalid master private key"),
+        ):
+            hmac_new.return_value.digest.return_value = bytes(64)
+            _derive_key_from_mnemonic(TEST_MNEMONIC, [])
+
+    @pytest.mark.parametrize(
+        ("child_offset", "error"),
+        [(SECP256K1_N, "invalid child offset"), (SECP256K1_N - 1, "zero child key")],
+    )
+    def test_invalid_bip32_child_rejected(self, child_offset: int, error: str) -> None:
+        master = (1).to_bytes(32, "big") + bytes([2] * 32)
+        child = child_offset.to_bytes(32, "big") + bytes([3] * 32)
+        with (
+            patch("sign_bond_cert_reference.hmac.new") as hmac_new,
+            pytest.raises(ValueError, match=error),
+        ):
+            hmac_new.return_value.digest.side_effect = [master, child]
+            _derive_key_from_mnemonic(TEST_MNEMONIC, [0])
 
     def test_pubkey_is_compressed(self) -> None:
         """Derived pubkey must be 33 bytes and start with 02 or 03."""

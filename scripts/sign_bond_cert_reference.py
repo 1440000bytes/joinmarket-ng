@@ -19,8 +19,8 @@ wallet), computing the correct BIP32 path for the bond, and signing the
 certificate message in the Electrum recoverable format that ``import-certificate``
 expects.
 
-This script is FULLY SELF-CONTAINED -- it does not import from jmcore or
-jmwallet.  The only external dependency is ``coincurve``.
+This script does not import from jmcore or jmwallet. Its external dependencies
+are ``coincurve`` and ``mnemonic``.
 
 USAGE:
   python scripts/sign_bond_cert_reference.py \\
@@ -36,7 +36,7 @@ USAGE:
       --passphrase
 
 REQUIREMENTS:
-  pip install coincurve
+  pip install coincurve mnemonic
 
 WORKFLOW:
   1. Run ``jm-wallet generate-hot-keypair`` to get the cert pubkey and privkey
@@ -55,6 +55,8 @@ import hashlib
 import hmac
 import struct
 import sys
+
+from mnemonic import Mnemonic
 
 # secp256k1 curve order -- used for BIP32 child key derivation
 SECP256K1_N = int(
@@ -137,15 +139,19 @@ def _derive_key_from_mnemonic(
     """
     from coincurve import PrivateKey
 
-    # BIP39: mnemonic -> seed (PBKDF2-HMAC-SHA512, 2048 rounds)
-    mnemonic_bytes = mnemonic.encode("utf-8")
-    salt = ("mnemonic" + passphrase).encode("utf-8")
-    seed = hashlib.pbkdf2_hmac("sha512", mnemonic_bytes, salt, 2048)
+    normalized_mnemonic = " ".join(mnemonic.strip().split())
+    bip39 = Mnemonic("english")
+    if not bip39.check(normalized_mnemonic):
+        raise ValueError("Invalid English BIP39 mnemonic or checksum")
+    seed = bip39.to_seed(normalized_mnemonic, passphrase=passphrase)
 
     # BIP32: seed -> master key
     master_hmac = hmac.new(b"Bitcoin seed", seed, hashlib.sha512).digest()
     key_bytes = master_hmac[:32]
     chain_code = master_hmac[32:]
+    master_key_int = int.from_bytes(key_bytes, "big")
+    if not 1 <= master_key_int < SECP256K1_N:
+        raise ValueError("BIP32 produced an invalid master private key")
 
     # Derive child keys along the path
     for index in path_indices:
@@ -158,8 +164,14 @@ def _derive_key_from_mnemonic(
 
         child_hmac = hmac.new(chain_code, data, hashlib.sha512).digest()
         child_key_offset = int.from_bytes(child_hmac[:32], "big")
+        if child_key_offset >= SECP256K1_N:
+            raise ValueError(f"BIP32 produced an invalid child offset at index {index}")
         parent_key_int = int.from_bytes(key_bytes, "big")
         child_key_int = (parent_key_int + child_key_offset) % SECP256K1_N
+        if child_key_int == 0:
+            raise ValueError(
+                f"BIP32 produced an invalid zero child key at index {index}"
+            )
 
         key_bytes = child_key_int.to_bytes(32, "big")
         chain_code = child_hmac[32:]
@@ -345,6 +357,9 @@ workflow:
     words = mnemonic.strip().split()
     if len(words) not in (12, 15, 18, 21, 24):
         print(f"Error: Expected 12-24 words, got {len(words)}", file=sys.stderr)
+        sys.exit(1)
+    if not Mnemonic("english").check(" ".join(words)):
+        print("Error: Invalid English BIP39 mnemonic or checksum", file=sys.stderr)
         sys.exit(1)
 
     # Optional passphrase

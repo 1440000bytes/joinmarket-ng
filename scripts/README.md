@@ -35,9 +35,9 @@ These scripts support the cold storage fidelity bond workflow. See [`docs/techni
 
 - **finalize_bond_psbt.py** - Finalize a signed fidelity bond spending PSBT, such as one returned by Specter DIY's QR signing flow. Builds the final CLTV P2WSH witness transaction when Bitcoin Core's `finalizepsbt` cannot finalize the custom witness script.
 
-- **sign_bond_mnemonic.py** - Sign a fidelity bond spending PSBT using a BIP39 mnemonic. Use when hardware wallet signing is not available. Reads the mnemonic interactively (hidden input) and outputs a fully signed raw transaction.
+- **sign_bond_mnemonic.py** - Sign a fidelity bond spending PSBT using a BIP39 mnemonic. Use when hardware wallet signing is not available. Reads and validates the mnemonic interactively (hidden input) and outputs a fully signed raw transaction. Requires `coincurve` and `mnemonic`.
 
-- **sign_bond_cert_reference.py** - Sign a fidelity bond certificate using a BIP39 mnemonic (for migration from the reference implementation). Derives the private key at `m/84'/0'/0'/2/<timenumber>` and signs the certificate in Electrum recoverable format accepted by `jm-wallet import-certificate`. Use this instead of `wallet-tool.py signmessage`, which has a bug preventing it from signing with fidelity bond paths.
+- **sign_bond_cert_reference.py** - Sign a fidelity bond certificate using a validated BIP39 mnemonic (for migration from the reference implementation). Derives the private key at `m/84'/0'/0'/2/<timenumber>` and signs the certificate in Electrum recoverable format accepted by `jm-wallet import-certificate`. Use this instead of `wallet-tool.py signmessage`, which has a bug preventing it from signing with fidelity bond paths. Requires `coincurve` and `mnemonic`.
 
 - **derive_bond_pubkey.py** - Derive the fidelity bond public key from the reference JoinMarket implementation's xpub (shown by `wallet-tool.py display`). Accepts the account xpub (`fbonds-mpk-` line) or the `/2` branch xpub and a locktime (YYYY-MM), then outputs the public key and the exact `create-bond-address` command to run. Only requires `coincurve`.
 
