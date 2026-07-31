@@ -365,6 +365,83 @@ class TestOnionPeerConnection:
         assert peer.supports_feature("neutrino_compat") is None
 
     @pytest.mark.asyncio
+    async def test_connect_accepts_one_way_peer_handshake(self):
+        """A peer need not send a reciprocal HANDSHAKE in the base protocol."""
+        peer = OnionPeer(nick="J5maker", location="test.onion:5222")
+        mock_connection = AsyncMock()
+        mock_connection.is_connected.return_value = True
+        mock_connection.receive.side_effect = TimeoutError
+
+        with patch("jmcore.network.connect_via_tor", return_value=mock_connection):
+            success = await peer.connect(
+                our_nick="J5taker",
+                our_location="NOT-SERVING-ONION",
+                network="regtest",
+            )
+            await peer.disconnect()
+
+        assert success is True
+        assert peer.peer_features == {}
+
+    @pytest.mark.asyncio
+    async def test_connect_fails_when_peer_closes_during_optional_handshake(self):
+        """EOF is rejection, unlike silence from a one-way legacy peer."""
+        peer = OnionPeer(nick="J5maker", location="test.onion:5222")
+        mock_connection = AsyncMock()
+        mock_connection.is_connected.return_value = True
+        mock_connection.receive.side_effect = ConnectionError("Connection closed by peer")
+
+        with patch("jmcore.network.connect_via_tor", return_value=mock_connection):
+            success = await peer.connect(
+                our_nick="J5taker",
+                our_location="NOT-SERVING-ONION",
+                network="regtest",
+            )
+
+        assert success is False
+        assert peer.status() == PeerStatus.DISCONNECTED
+        mock_connection.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_late_reciprocal_handshake_is_not_delivered_as_application_message(self):
+        """A handshake arriving after optional setup must not enter protocol queues."""
+        import json
+
+        on_message = AsyncMock()
+        peer = OnionPeer(
+            nick="J5maker",
+            location="test.onion:5222",
+            on_message=on_message,
+        )
+        handshake = {
+            "type": 793,
+            "line": json.dumps(
+                {
+                    "app-name": "joinmarket",
+                    "proto-ver": 5,
+                    "directory": False,
+                    "nick": "J5maker",
+                    "network": "regtest",
+                }
+            ),
+        }
+        mock_connection = Mock(spec=TCPConnection)
+        mock_connection.is_connected.return_value = True
+        mock_connection.receive = AsyncMock(
+            side_effect=[
+                json.dumps(handshake).encode(),
+                ConnectionError("Connection closed by peer"),
+            ]
+        )
+        mock_connection.close = AsyncMock()
+        peer._connection = mock_connection
+        peer._status = PeerStatus.HANDSHAKED
+
+        await peer._receive_loop()
+
+        on_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_connect_handshake_rejected(self):
         """Test connection when handshake has wrong app name."""
         peer = OnionPeer(

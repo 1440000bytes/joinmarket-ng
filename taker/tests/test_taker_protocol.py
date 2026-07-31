@@ -596,6 +596,31 @@ class TestMultiDirectoryClientDirectConnections:
         assert client._peer_connections == {}
 
     @pytest.mark.asyncio
+    async def test_failed_direct_peer_falls_back_to_directory(self):
+        """A peer whose setup failed must not blackhole the outgoing message."""
+        client = make_directory_client()
+        maker_nick = "J5maker"
+        server = "directory.test:5222"
+        directory = Mock()
+        directory._active_peers = {maker_nick: "maker.onion:5222"}
+        directory.send_private_message = AsyncMock()
+        client.clients = {server: directory}
+        client._active_nicks = {maker_nick: {server: True}}
+
+        failed_peer = Mock()
+        failed_peer.is_connected.return_value = False
+        failed_peer.is_connecting.return_value = False
+        failed_peer.try_to_connect.return_value = None
+        failed_peer.send_privmsg = AsyncMock()
+        client._peer_connections[maker_nick] = failed_peer
+
+        channel = await client.send_privmsg(maker_nick, "fill", "payload")
+
+        assert channel == f"directory:{server}"
+        failed_peer.send_privmsg.assert_not_awaited()
+        directory.send_private_message.assert_awaited_once_with(maker_nick, "fill", "payload")
+
+    @pytest.mark.asyncio
     async def test_wait_for_responses_deduplicates_sig_content_across_directories(self):
         """Cross-directory duplicate !sig messages must be counted only once.
 

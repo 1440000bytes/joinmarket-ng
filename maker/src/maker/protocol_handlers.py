@@ -14,10 +14,11 @@ import os
 from typing import TYPE_CHECKING, Any
 
 from jmcore.commitment_blacklist import add_commitment, check_commitment, validate_commitment_hex
-from jmcore.crypto import NickIdentity
+from jmcore.crypto import NickIdentity, verify_signed_privmsg
 from jmcore.deduplication import MessageDeduplicator
 from jmcore.directory_client import DirectoryClient
 from jmcore.models import Offer
+from jmcore.network import ONION_HOSTID
 from jmcore.notifications import get_notifier
 from jmcore.protocol import COMMAND_PREFIX, JM_VERSION, MessageType
 from jmcore.rate_limiter import RateLimitAction, RateLimiter
@@ -51,6 +52,7 @@ class ProtocolHandlersMixin:
     wallet: WalletService
     backend: BlockchainBackend
     nick: str
+    nick_identity: NickIdentity
     current_offers: list[Offer]
     fidelity_bond: FidelityBondInfo | None
     current_block_height: int
@@ -78,6 +80,20 @@ class ProtocolHandlersMixin:
         try:
             msg_type = message.get("type")
             line = message.get("line", "")
+            authenticated_data = ""
+
+            if msg_type == MessageType.PRIVMSG.value:
+                route = line.split(COMMAND_PREFIX, 2)
+                if len(route) != 3 or route[1] != self.nick:
+                    return
+                authenticated, _command, authenticated_data = verify_signed_privmsg(
+                    route[0], route[2].strip().lstrip("!"), ONION_HOSTID
+                )
+                if not authenticated:
+                    logger.warning(
+                        f"Dropping unauthenticated private message from {route[0]} via {source}"
+                    )
+                    return
 
             # Extract from_nick for rate limiting (format: from_nick!to_nick!msg)
             parts = line.split(COMMAND_PREFIX)
@@ -98,6 +114,10 @@ class ProtocolHandlersMixin:
                 cmd_parts = cmd_and_args.strip().split(maxsplit=1)
                 command = cmd_parts[0].lstrip("!")
                 first_arg = cmd_parts[1].split()[0] if len(cmd_parts) > 1 else ""
+                if command == "fill":
+                    fill_args = authenticated_data.split()
+                    if len(fill_args) >= 4:
+                        first_arg = f"{fill_args[0]}:{fill_args[3].lower()}"
                 fingerprint = MessageDeduplicator.make_fingerprint(from_nick, command, first_arg)
             elif msg_type == MessageType.PUBMSG.value:
                 # Parse the public message to check if it's an orderbook request
@@ -326,10 +346,12 @@ class ProtocolHandlersMixin:
                             f"Including fidelity bond proof in direct offer to {taker_nick}"
                         )
 
-                # Format: maker_nick!taker_nick!order_type data
-                # Note: The reference implementation uses COMMAND_PREFIX (!) as separator
+                # Direct private messages use the same signed envelope as
+                # directory-relayed private messages.
+                signed_data = self.nick_identity.sign_message(data, ONION_HOSTID)
                 line = (
-                    f"{self.nick}{COMMAND_PREFIX}{taker_nick}{COMMAND_PREFIX}{order_type_str}{data}"
+                    f"{self.nick}{COMMAND_PREFIX}{taker_nick}{COMMAND_PREFIX}"
+                    f"{order_type_str} {signed_data}"
                 )
 
                 # Send as PRIVMSG (type 685)

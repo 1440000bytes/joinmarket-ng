@@ -7,11 +7,13 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from jmcore.crypto import NickIdentity
 from jmcore.models import NetworkType, Offer, OfferType
-from jmcore.network import TCPConnection
+from jmcore.network import ONION_HOSTID, TCPConnection
+from jmcore.protocol import JM_VERSION, MessageType, create_handshake_request
 
 from maker.bot import MakerBot
 from maker.config import MakerConfig
@@ -355,7 +357,7 @@ class TestHiddenServiceListener:
     async def test_on_direct_connection_fill_command(
         self, mock_wallet, mock_backend, config_with_onion
     ):
-        """Test that direct connection fill command is routed correctly."""
+        """A signed fill from the handshaked nick is routed correctly."""
         bot = MakerBot(
             wallet=mock_wallet,
             backend=mock_backend,
@@ -372,27 +374,43 @@ class TestHiddenServiceListener:
             fill_called = True
             # At this point, the connection should be tracked
             connection_was_tracked = taker_nick in bot.direct_connections
-            assert taker_nick == "J5taker123"
+            assert taker_nick == taker_identity.nick
             assert "fill" in msg
             assert source == "direct"  # Should be called with source="direct"
 
         bot._handle_fill = mock_handle_fill
 
-        # Create a mock connection that sends a fill command then disconnects
+        taker_identity = NickIdentity(JM_VERSION)
+        fill_data = f"0 1000000 abc123 P{'ab' * 32}"
+        signed_fill = taker_identity.sign_message(fill_data, ONION_HOSTID)
         fill_msg = json.dumps(
-            {"nick": "J5taker123", "cmd": "fill", "data": f"0 1000000 abc123 P{'ab' * 32}"}
+            {
+                "type": MessageType.PRIVMSG.value,
+                "line": f"{taker_identity.nick}!{bot.nick}!fill {signed_fill}",
+            }
         )
+        handshake = create_handshake_request(
+            nick=taker_identity.nick,
+            location="NOT-SERVING-ONION",
+            network=NetworkType.REGTEST.value,
+            directory=False,
+        )
+        handshake_msg = json.dumps(
+            {"type": MessageType.HANDSHAKE.value, "line": json.dumps(handshake)}
+        )
+        incoming = iter([handshake_msg.encode(), fill_msg.encode()])
 
         async def mock_receive() -> bytes:
-            return fill_msg.encode()
+            return next(incoming)
 
         async def mock_close() -> None:
             pass
 
         mock_conn = MagicMock(spec=TCPConnection)
-        mock_conn.is_connected.side_effect = [True, False]
+        mock_conn.is_connected.side_effect = [True, True, False]
         mock_conn.receive = mock_receive
         mock_conn.close = mock_close
+        mock_conn.send = AsyncMock(return_value=True)
 
         await bot._on_direct_connection(mock_conn, "127.0.0.1:12345")
 
@@ -400,7 +418,125 @@ class TestHiddenServiceListener:
         # Connection is tracked during processing but cleaned up on disconnect
         assert connection_was_tracked, "Connection should be tracked during message handling"
         # After cleanup, connection should be removed
-        assert "J5taker123" not in bot.direct_connections, "Connection should be cleaned up"
+        assert taker_identity.nick not in bot.direct_connections, "Connection should be cleaned up"
+
+    @pytest.mark.asyncio
+    async def test_message_dispatch_authenticates_private_sender(
+        self, mock_wallet, mock_backend, config_with_onion
+    ):
+        bot = MakerBot(wallet=mock_wallet, backend=mock_backend, config=config_with_onion)
+        taker_identity = NickIdentity(JM_VERSION)
+        data = f"0 1000000 abc123 P{'cd' * 32}"
+        signed = taker_identity.sign_message(data, ONION_HOSTID)
+        message = {
+            "type": MessageType.PRIVMSG.value,
+            "line": f"{taker_identity.nick}!{bot.nick}!fill {signed}",
+        }
+
+        with patch.object(bot, "_handle_privmsg", new_callable=AsyncMock) as handler:
+            await bot._handle_message(message, source="dir:test")
+
+        handler.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_message_dispatch_drops_unsigned_private_message(
+        self, mock_wallet, mock_backend, config_with_onion
+    ):
+        bot = MakerBot(wallet=mock_wallet, backend=mock_backend, config=config_with_onion)
+        message = {
+            "type": MessageType.PRIVMSG.value,
+            "line": f"J5forged!{bot.nick}!fill 0 1000000 abc123 P{'ef' * 32}",
+        }
+
+        with patch.object(bot, "_handle_privmsg", new_callable=AsyncMock) as handler:
+            await bot._handle_message(message, source="dir:test")
+
+        handler.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_direct_handshake_does_not_replace_active_nick_binding(
+        self, mock_wallet, mock_backend, config_with_onion
+    ):
+        bot = MakerBot(wallet=mock_wallet, backend=mock_backend, config=config_with_onion)
+        taker_identity = NickIdentity(JM_VERSION)
+        existing_connection = MagicMock(spec=TCPConnection)
+        existing_connection.is_connected.return_value = True
+        bot.direct_connections[taker_identity.nick] = existing_connection
+
+        replacement_connection = MagicMock(spec=TCPConnection)
+        replacement_connection.send = AsyncMock(return_value=True)
+        replacement_connection.close = AsyncMock()
+        handshake = create_handshake_request(
+            nick=taker_identity.nick,
+            location="NOT-SERVING-ONION",
+            network=NetworkType.REGTEST.value,
+            directory=False,
+        )
+        message = json.dumps(
+            {"type": MessageType.HANDSHAKE.value, "line": json.dumps(handshake)}
+        ).encode()
+
+        handled = await bot._try_handle_handshake(
+            replacement_connection, message, "127.0.0.1:12346"
+        )
+
+        assert handled is True
+        assert bot.direct_connections[taker_identity.nick] is existing_connection
+        replacement_connection.send.assert_not_awaited()
+        replacement_connection.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_direct_handshake_replaces_stale_nick_binding(
+        self, mock_wallet, mock_backend, config_with_onion
+    ):
+        bot = MakerBot(wallet=mock_wallet, backend=mock_backend, config=config_with_onion)
+        taker_identity = NickIdentity(JM_VERSION)
+        stale_connection = MagicMock(spec=TCPConnection)
+        stale_connection.is_connected.return_value = False
+        bot.direct_connections[taker_identity.nick] = stale_connection
+
+        replacement_connection = MagicMock(spec=TCPConnection)
+        replacement_connection.send = AsyncMock(return_value=True)
+        replacement_connection.close = AsyncMock()
+        handshake = create_handshake_request(
+            nick=taker_identity.nick,
+            location="NOT-SERVING-ONION",
+            network=NetworkType.REGTEST.value,
+            directory=False,
+        )
+        message = json.dumps(
+            {"type": MessageType.HANDSHAKE.value, "line": json.dumps(handshake)}
+        ).encode()
+
+        handled = await bot._try_handle_handshake(
+            replacement_connection, message, "127.0.0.1:12346"
+        )
+
+        assert handled is True
+        assert bot.direct_connections[taker_identity.nick] is replacement_connection
+        replacement_connection.send.assert_awaited_once()
+        replacement_connection.close.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_rotated_fill_commitment_is_not_deduplicated(
+        self, mock_wallet, mock_backend, config_with_onion
+    ):
+        bot = MakerBot(wallet=mock_wallet, backend=mock_backend, config=config_with_onion)
+        taker_identity = NickIdentity(JM_VERSION)
+
+        def fill_message(commitment: str) -> dict[str, object]:
+            data = f"0 1000000 abc123 P{commitment}"
+            signed = taker_identity.sign_message(data, ONION_HOSTID)
+            return {
+                "type": MessageType.PRIVMSG.value,
+                "line": f"{taker_identity.nick}!{bot.nick}!fill {signed}",
+            }
+
+        with patch.object(bot, "_handle_privmsg", new_callable=AsyncMock) as handler:
+            await bot._handle_message(fill_message("ab" * 32), source="dir:first")
+            await bot._handle_message(fill_message("cd" * 32), source="dir:second")
+
+        assert handler.await_count == 2
 
     @pytest.mark.asyncio
     async def test_on_direct_connection_clean_eof_not_logged_as_error(

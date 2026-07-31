@@ -598,14 +598,22 @@ class OnionPeer:
         msg = json.dumps({"type": MessageType.HANDSHAKE.value, "line": json.dumps(handshake)})
         await self._connection.send(msg.encode("utf-8"))
 
-        # Wait for handshake response
-        response_data = await asyncio.wait_for(self._connection.receive(), timeout=self.timeout)
+        # A reciprocal peer handshake is optional in the base protocol. Wait
+        # briefly so extension-capable peers can advertise features, but remain
+        # compatible with peers that accept the initiating handshake silently.
+        try:
+            response_data = await asyncio.wait_for(
+                self._connection.receive(), timeout=min(self.timeout, 2.0)
+            )
+        except TimeoutError:
+            self.peer_features = {}
+            return
         response = json.loads(response_data.decode("utf-8"))
 
         if response.get("type") != MessageType.HANDSHAKE.value:
             raise OnionPeerConnectionError(f"Expected HANDSHAKE, got type {response.get('type')}")
 
-        # Reference implementation sends {"type": 793, "line": "<json-string>"}
+        # A reciprocal response uses the ordinary peer HANDSHAKE format.
         line = response.get("line", "")
         try:
             data = json.loads(line) if line else {}
@@ -649,10 +657,24 @@ class OnionPeer:
         if not self._connection:
             return
 
+        import json
+
+        from jmcore.protocol import MessageType
+
         try:
             while self._status == PeerStatus.HANDSHAKED and self._connection.is_connected():
                 try:
                     data = await self._connection.receive()
+                    try:
+                        message = json.loads(data.decode("utf-8"))
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        message = None
+                    if (
+                        isinstance(message, dict)
+                        and message.get("type") == MessageType.HANDSHAKE.value
+                    ):
+                        logger.debug(f"Ignoring late handshake from peer {self.nick}")
+                        continue
                     if self.on_message:
                         await self.on_message(self.nick, data)
                 except ConnectionError:

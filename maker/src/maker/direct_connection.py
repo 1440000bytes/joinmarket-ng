@@ -10,9 +10,10 @@ from __future__ import annotations
 import asyncio
 import json
 
+from jmcore.crypto import NickIdentity, verify_signed_privmsg
 from jmcore.directory_client import DirectoryClient
 from jmcore.models import Offer
-from jmcore.network import TCPConnection
+from jmcore.network import ONION_HOSTID, TCPConnection
 from jmcore.protocol import (
     COMMAND_PREFIX,
     FEATURE_NEUTRINO_COMPAT,
@@ -41,6 +42,7 @@ class DirectConnectionMixin:
     config: MakerConfig
     backend: BlockchainBackend
     nick: str
+    nick_identity: NickIdentity
     current_offers: list[Offer]
     directory_clients: dict[str, DirectoryClient]
     direct_connections: dict[str, TCPConnection]
@@ -52,9 +54,6 @@ class DirectConnectionMixin:
         The reference implementation uses OnionCustomMessage format:
             {"type": 685, "line": "from_nick!to_nick!command data"}
         Where type 685 = PRIVMSG, type 687 = PUBMSG.
-
-        Our internal format (for future use):
-            {"nick": "sender", "cmd": "command", "data": "..."}
 
         Returns:
             (sender_nick, command, message_data) tuple or None if parsing fails.
@@ -112,22 +111,16 @@ class DirectConnectionMixin:
                 logger.debug(f"Ignoring message not for us: to={to_nick}, us={self.nick}")
                 return None
 
-            # Strip leading "!" and parse command
+            # Authenticate the same signed envelope used through directories.
             rest = rest.strip().lstrip("!")
+            authenticated, command, msg_data = verify_signed_privmsg(
+                sender_nick, rest, ONION_HOSTID
+            )
+            if not authenticated:
+                logger.warning(f"Dropping unauthenticated direct message from {sender_nick}")
+                return None
 
-            # Extract command and data
-            cmd_parts = rest.split(" ", 1)
-            cmd = cmd_parts[0]
-            msg_data = cmd_parts[1] if len(cmd_parts) > 1 else ""
-
-            return (sender_nick, cmd, msg_data)
-
-        # Check for our internal format: {"nick": str, "cmd": str, "data": str}
-        elif "nick" in message or "cmd" in message:
-            sender_nick = message.get("nick", "unknown")
-            cmd = message.get("cmd", "")
-            msg_data = message.get("data", "")
-            return (sender_nick, cmd, msg_data)
+            return (sender_nick, command, msg_data)
 
         return None
 
@@ -136,18 +129,9 @@ class DirectConnectionMixin:
     ) -> bool:
         """Try to handle a handshake request on a direct connection.
 
-        In the reference implementation, when a non-directory peer (maker) receives
-        a HANDSHAKE (793) from a connecting peer (taker), it responds with its own
-        HANDSHAKE (793) using the client handshake format -- NOT a DN_HANDSHAKE (795).
-        Only directory nodes respond with DN_HANDSHAKE.
-
-        Both sides send HANDSHAKE (793) to each other (symmetric handshake).
-        The taker sends first (on connection), the maker responds with its own.
-        Both sides then mark the peer as handshaked.
-
-        If the maker were to send DN_HANDSHAKE (795), the reference taker would
-        reject it with "Unexpected dn-handshake from non-dn node" because it only
-        accepts DN_HANDSHAKE from peers marked as directories.
+        The connecting peer sends HANDSHAKE (793). A reciprocal peer HANDSHAKE
+        is optional in the base protocol; this maker sends one to advertise
+        negotiated extensions. DN_HANDSHAKE (795) is directory-only.
 
         Args:
             connection: The TCP connection
@@ -212,6 +196,21 @@ class DirectConnectionMixin:
                 )
                 return True
 
+        existing_connection = self.direct_connections.get(peer_nick)
+        if (
+            existing_connection is not None
+            and existing_connection is not connection
+            and existing_connection.is_connected()
+        ):
+            logger.warning(
+                f"Rejecting duplicate direct handshake for active peer {peer_nick} from {peer_str}"
+            )
+            await connection.close()
+            return True
+
+        # Bind all later messages on this connection to the handshaked nick.
+        self.direct_connections[peer_nick] = connection
+
         # Build our feature set for the handshake
         features = FeatureSet()
         if self.backend.can_provide_neutrino_metadata():
@@ -225,9 +224,7 @@ class DirectConnectionMixin:
         else:
             our_location = "NOT-SERVING-ONION"
 
-        # Respond with HANDSHAKE (793) using client handshake format.
-        # In the reference implementation, both peers send HANDSHAKE (793) to each
-        # other -- it is a symmetric exchange. Only directories use DN_HANDSHAKE (795).
+        # Advertise optional capabilities with a reciprocal peer HANDSHAKE.
         response_data = create_handshake_request(
             nick=self.nick,
             location=our_location,
@@ -332,9 +329,23 @@ class DirectConnectionMixin:
 
                     logger.debug(f"Direct message from {sender_nick}: cmd={cmd}")
 
-                    # Track this connection by nick for sending responses
-                    if sender_nick and sender_nick != "unknown":
-                        self.direct_connections[sender_nick] = connection
+                    registered_nick = next(
+                        (
+                            nick
+                            for nick, registered_connection in self.direct_connections.items()
+                            if registered_connection is connection
+                        ),
+                        None,
+                    )
+                    if registered_nick is None:
+                        logger.warning(f"Dropping message before direct handshake from {peer_str}")
+                        continue
+                    if sender_nick != registered_nick:
+                        logger.warning(
+                            f"Dropping direct message claiming {sender_nick} on "
+                            f"{registered_nick}'s connection"
+                        )
+                        continue
 
                     # Handle PUBLIC messages (orderbook requests via direct connection)
                     if cmd.startswith("PUBLIC:"):
