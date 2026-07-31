@@ -1708,6 +1708,39 @@ class NeutrinoBackend(BlockchainBackend):
         Returns:
             UTXOVerificationResult with verification status and UTXO data
         """
+        return await self._verify_utxo_with_metadata(
+            txid=txid,
+            vout=vout,
+            scriptpubkey=scriptpubkey,
+            blockheight=blockheight,
+            enforce_rescan_depth=True,
+        )
+
+    async def verify_wallet_utxo_with_metadata(
+        self,
+        txid: str,
+        vout: int,
+        scriptpubkey: str,
+        blockheight: int,
+    ) -> UTXOVerificationResult:
+        """Verify a wallet-owned UTXO at its locally known confirmation height."""
+        return await self._verify_utxo_with_metadata(
+            txid=txid,
+            vout=vout,
+            scriptpubkey=scriptpubkey,
+            blockheight=blockheight,
+            enforce_rescan_depth=False,
+        )
+
+    async def _verify_utxo_with_metadata(
+        self,
+        txid: str,
+        vout: int,
+        scriptpubkey: str,
+        blockheight: int,
+        *,
+        enforce_rescan_depth: bool,
+    ) -> UTXOVerificationResult:
         # Security: Validate blockheight to prevent rescan abuse
         tip_height = await self.get_block_height()
 
@@ -1726,7 +1759,7 @@ class NeutrinoBackend(BlockchainBackend):
 
         # Limit rescan depth to prevent DoS
         rescan_depth = tip_height - blockheight
-        if rescan_depth > self._max_rescan_depth:
+        if enforce_rescan_depth and rescan_depth > self._max_rescan_depth:
             return UTXOVerificationResult(
                 valid=False,
                 error=f"Rescan depth {rescan_depth} exceeds max {self._max_rescan_depth}. "

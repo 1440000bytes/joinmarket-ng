@@ -163,6 +163,178 @@ class TestTakerBroadcast:
         taker.backend.broadcast_transaction.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_phase_broadcast_refuses_newly_spent_input(self, taker) -> None:
+        from jmwallet.wallet.models import UTXOInfo
+
+        taker._session.selected_utxos = [
+            UTXOInfo(
+                txid="a" * 64,
+                vout=0,
+                value=1_000_000,
+                address="bcrt1qinput",
+                confirmations=5,
+                scriptpubkey="0014" + "ab" * 20,
+                path="m/84'/0'/0'/0/0",
+                mixdepth=0,
+            )
+        ]
+        taker.backend.get_utxo = AsyncMock(return_value=None)
+
+        txid = await taker._session._phase_broadcast()
+
+        assert txid == ""
+        taker.backend.broadcast_transaction.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_phase_broadcast_refuses_reorged_unconfirmed_input(self, taker) -> None:
+        from jmwallet.backends.base import UTXO
+        from jmwallet.wallet.models import UTXOInfo
+
+        selected = UTXOInfo(
+            txid="b" * 64,
+            vout=1,
+            value=1_000_000,
+            address="bcrt1qinput",
+            confirmations=5,
+            scriptpubkey="0014" + "cd" * 20,
+            path="m/84'/0'/0'/0/1",
+            mixdepth=0,
+        )
+        taker._session.selected_utxos = [selected]
+        taker.backend.get_utxo = AsyncMock(
+            return_value=UTXO(
+                txid=selected.txid,
+                vout=selected.vout,
+                value=selected.value,
+                address=selected.address,
+                confirmations=0,
+                scriptpubkey=selected.scriptpubkey,
+            )
+        )
+
+        txid = await taker._session._phase_broadcast()
+
+        assert txid == ""
+        taker.backend.broadcast_transaction.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_phase_broadcast_revalidates_neutrino_wallet_input_metadata(self, taker) -> None:
+        from jmwallet.backends.base import UTXOVerificationResult
+        from jmwallet.wallet.models import UTXOInfo
+
+        selected = UTXOInfo(
+            txid="c" * 64,
+            vout=2,
+            value=1_000_000,
+            address="bcrt1qinput",
+            confirmations=5,
+            scriptpubkey="0014" + "ef" * 20,
+            path="m/84'/0'/0'/0/2",
+            mixdepth=0,
+            height=100,
+        )
+        taker._session.selected_utxos = [selected]
+        taker.backend.requires_neutrino_metadata.return_value = True
+        taker.backend.verify_wallet_utxo_with_metadata = AsyncMock(
+            return_value=UTXOVerificationResult(valid=False, error="pending spend")
+        )
+        taker.backend.verify_utxo_with_metadata = AsyncMock()
+
+        txid = await taker._session._phase_broadcast()
+
+        assert txid == ""
+        taker.backend.verify_wallet_utxo_with_metadata.assert_awaited_once_with(
+            txid=selected.txid,
+            vout=selected.vout,
+            scriptpubkey=selected.scriptpubkey,
+            blockheight=selected.height,
+        )
+        taker.backend.verify_utxo_with_metadata.assert_not_awaited()
+        taker.backend.broadcast_transaction.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_revalidation_keeps_wallet_trust_independent_of_maker_metadata(
+        self, taker
+    ) -> None:
+        from jmwallet.backends.base import UTXOVerificationResult
+        from jmwallet.wallet.models import UTXOInfo
+
+        selected = UTXOInfo(
+            txid="d" * 64,
+            vout=3,
+            value=1_000_000,
+            address="bcrt1qinput",
+            confirmations=150_000,
+            scriptpubkey="0014" + "12" * 20,
+            path="m/84'/0'/0'/0/3",
+            mixdepth=0,
+            height=650_000,
+        )
+        taker._session.selected_utxos = [selected]
+        maker_session = MagicMock()
+        maker_session.utxos = [
+            {
+                "txid": selected.txid,
+                "vout": selected.vout,
+                "scriptpubkey": "0014" + "34" * 20,
+                "blockheight": 1,
+            }
+        ]
+        taker._session.maker_sessions = {"J5maker": maker_session}
+        taker.backend.requires_neutrino_metadata.return_value = True
+        taker.backend.verify_wallet_utxo_with_metadata = AsyncMock(
+            return_value=UTXOVerificationResult(valid=True, confirmations=150_000)
+        )
+        taker.backend.verify_utxo_with_metadata = AsyncMock()
+
+        valid, error = await taker._session._revalidate_inputs_before_broadcast()
+
+        assert valid is True
+        assert error == ""
+        taker.backend.verify_wallet_utxo_with_metadata.assert_awaited_once_with(
+            txid=selected.txid,
+            vout=selected.vout,
+            scriptpubkey=selected.scriptpubkey,
+            blockheight=selected.height,
+        )
+        taker.backend.verify_utxo_with_metadata.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_revalidation_uses_bounded_metadata_api_for_maker_input(self, taker) -> None:
+        from jmwallet.backends.base import UTXOVerificationResult
+
+        maker_session = MagicMock()
+        maker_session.utxos = [
+            {
+                "txid": "e" * 64,
+                "vout": 4,
+                "scriptpubkey": "0014" + "56" * 20,
+                "blockheight": 650_000,
+            }
+        ]
+        taker._session.maker_sessions = {"J5maker": maker_session}
+        taker.backend.requires_neutrino_metadata.return_value = True
+        taker.backend.verify_wallet_utxo_with_metadata = AsyncMock()
+        taker.backend.verify_utxo_with_metadata = AsyncMock(
+            return_value=UTXOVerificationResult(
+                valid=False,
+                error="Rescan depth 150001 exceeds max 100000",
+            )
+        )
+
+        valid, error = await taker._session._revalidate_inputs_before_broadcast()
+
+        assert valid is False
+        assert "is no longer available" in error
+        taker.backend.verify_utxo_with_metadata.assert_awaited_once_with(
+            txid="e" * 64,
+            vout=4,
+            scriptpubkey="0014" + "56" * 20,
+            blockheight=650_000,
+        )
+        taker.backend.verify_wallet_utxo_with_metadata.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_phase_broadcast_random_peer_fallback_to_self(self, taker) -> None:
         """Test RANDOM_PEER policy falls back to self if no makers."""
         taker.config.tx_broadcast = BroadcastPolicy.RANDOM_PEER

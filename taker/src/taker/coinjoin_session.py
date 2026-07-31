@@ -873,6 +873,8 @@ class CoinJoinSession:
                         return (
                             f"Neutrino UTXO verification failed for {txid}:{vout}: {result.error}"
                         )
+                    if result.confirmations <= 0:
+                        return f"UTXO {txid}:{vout} is unconfirmed"
                     value = result.value
                     address = ""  # Not available from verification
                     scriptpubkey = utxo_meta.scriptpubkey or ""
@@ -897,6 +899,7 @@ class CoinJoinSession:
                     "value": value,
                     "address": address,
                     "scriptpubkey": scriptpubkey,
+                    "blockheight": utxo_meta.blockheight,
                 }
             )
             logger.debug(f"Added UTXO from {nick}: {txid}:{vout} = {value} sats")
@@ -1767,6 +1770,46 @@ class CoinJoinSession:
         except Exception as e:
             logger.warning(f"Failed to generate manual CSV entry: {e}")
 
+    async def _revalidate_inputs_before_broadcast(self) -> tuple[bool, str]:
+        """Recheck every known input against the current chain and mempool view."""
+        inputs: dict[tuple[str, int], tuple[str, int | None, bool]] = {
+            (utxo.txid, utxo.vout): (utxo.scriptpubkey, utxo.height, True)
+            for utxo in self.selected_utxos
+        }
+        for session in self.maker_sessions.values():
+            for utxo in session.utxos:
+                inputs.setdefault(
+                    (utxo["txid"], utxo["vout"]),
+                    (utxo.get("scriptpubkey", ""), utxo.get("blockheight"), False),
+                )
+
+        for (txid, vout), (scriptpubkey, blockheight, wallet_owned) in inputs.items():
+            try:
+                if self.backend.requires_neutrino_metadata():
+                    if not scriptpubkey or blockheight is None:
+                        return False, f"missing verification metadata for {txid}:{vout}"
+                    verify = (
+                        self.backend.verify_wallet_utxo_with_metadata
+                        if wallet_owned
+                        else self.backend.verify_utxo_with_metadata
+                    )
+                    result = await verify(
+                        txid=txid,
+                        vout=vout,
+                        scriptpubkey=scriptpubkey,
+                        blockheight=blockheight,
+                    )
+                    if not result.valid or result.confirmations <= 0:
+                        return False, f"input {txid}:{vout} is no longer available"
+                else:
+                    backend_utxo = await self.backend.get_utxo(txid, vout)
+                    if backend_utxo is None or backend_utxo.confirmations <= 0:
+                        return False, f"input {txid}:{vout} is no longer available"
+            except Exception as e:
+                return False, f"failed to revalidate input {txid}:{vout}: {e}"
+
+        return True, ""
+
     async def _phase_broadcast(self) -> str:
         """
         Broadcast the signed transaction based on the configured policy.
@@ -1794,6 +1837,11 @@ class CoinJoinSession:
         """
         import base64
         import random
+
+        inputs_valid, validation_error = await self._revalidate_inputs_before_broadcast()
+        if not inputs_valid:
+            logger.error(f"Refusing to broadcast after input revalidation: {validation_error}")
+            return ""
 
         policy = self.config.tx_broadcast
         has_mempool = self.backend.has_mempool_access()

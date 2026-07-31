@@ -411,6 +411,25 @@ class BlockchainBackend(ABC):
             scriptpubkey_matches=True,
         )
 
+    async def verify_wallet_utxo_with_metadata(
+        self,
+        txid: str,
+        vout: int,
+        scriptpubkey: str,
+        blockheight: int,
+    ) -> UTXOVerificationResult:
+        """Verify a wallet-owned UTXO using locally known metadata.
+
+        Light-client backends may use the trusted wallet height differently from
+        peer-provided scan hints. Full-node backends use the standard verification.
+        """
+        return await self.verify_utxo_with_metadata(
+            txid=txid,
+            vout=vout,
+            scriptpubkey=scriptpubkey,
+            blockheight=blockheight,
+        )
+
     def requires_neutrino_metadata(self) -> bool:
         """
         Check if this backend requires Neutrino-compatible metadata for UTXO verification.

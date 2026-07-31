@@ -991,6 +991,55 @@ class TestNeutrinoBackend:
         await backend.close()
 
     @pytest.mark.asyncio
+    async def test_neutrino_wallet_utxo_uses_trusted_height_beyond_peer_limit(self):
+        """Wallet heights may scan deeply while peer-provided heights remain bounded."""
+        backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="mainnet")
+        backend._max_rescan_depth = 100_000
+        backend.get_block_height = AsyncMock(return_value=800_001)
+        scriptpubkey = "0014" + "00" * 20
+        backend._api_call = AsyncMock(
+            return_value={
+                "unspent": True,
+                "value": 1_000_000,
+                "scriptpubkey": scriptpubkey,
+                "block_height": 650_000,
+            }
+        )
+
+        peer_result = await backend.verify_utxo_with_metadata(
+            txid="ab" * 32,
+            vout=0,
+            scriptpubkey=scriptpubkey,
+            blockheight=650_000,
+        )
+        assert peer_result.valid is False
+        assert "exceeds max" in (peer_result.error or "")
+        backend._api_call.assert_not_awaited()
+
+        future_wallet_result = await backend.verify_wallet_utxo_with_metadata(
+            txid="ab" * 32,
+            vout=0,
+            scriptpubkey=scriptpubkey,
+            blockheight=900_000,
+        )
+        assert future_wallet_result.valid is False
+        assert "in the future" in (future_wallet_result.error or "")
+        backend._api_call.assert_not_awaited()
+
+        wallet_result = await backend.verify_wallet_utxo_with_metadata(
+            txid="ab" * 32,
+            vout=0,
+            scriptpubkey=scriptpubkey,
+            blockheight=650_000,
+        )
+        assert wallet_result.valid is True
+        assert wallet_result.confirmations == 150_002
+        backend._api_call.assert_awaited_once()
+        assert backend._api_call.await_args.kwargs["params"]["start_height"] == 649_999
+
+        await backend.close()
+
+    @pytest.mark.asyncio
     async def test_ensure_addresses_scanned_rescans_new_address(self):
         """A newly watched bond address triggers a historical rescan.
 
