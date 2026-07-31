@@ -27,6 +27,29 @@ Primary goals:
 - rate limiting and message validation in directory/maker paths
 - fidelity bond weighting as Sybil-cost mechanism
 
+## Randomness and Key Material
+
+Wallet mnemonics are encoded from explicit entropy bytes obtained through
+Python's `secrets` API, which delegates to the operating system CSPRNG. The
+command-line wallet requests 256 bits by default; jmwalletd requests 128 bits.
+Both sizes are valid BIP39 entropy lengths. Entropy acquisition errors abort
+wallet creation before backend initialization or wallet-file persistence, and
+there is no weaker fallback.
+
+Private wallet and TLS key files are created through owner-only temporary files
+and atomically installed with mode `0600`. Daemon wallet and TLS directories are
+mode `0700`. These permissions protect against other unprivileged local users;
+they do not protect against the wallet process's own user, root, backups, swap,
+or a compromised host.
+
+PoDLE proof nonces use a domain-separated RFC 6979-style HMAC-SHA256 derivation
+keyed by the UTXO private key and bound to the proof transcript. Proof generation
+therefore does not depend on runtime randomness, avoiding private-key exposure
+if an operating-system RNG later repeats a nonce. Maker selection, transaction
+ordering, fee variation, and other adversary-relevant choices use
+`secrets.SystemRandom`. Explicit tumbler seeds remain deterministic only for
+reproducible plans.
+
 ## Directory and Messaging
 
 - use multiple directory servers where possible

@@ -596,7 +596,7 @@ The PoDLE proves that two public keys $P = k \cdot G$ and $P_2 = k \cdot J$ shar
 1. **Commitment**: Taker computes $C = \textrm{SHA256}(P_2)$ and sends to maker
 
 2. **Revelation**: After maker commits, taker reveals $(P, P_2, s, e)$ where:
-   - $K_G = r \cdot G$, $K_J = r \cdot J$ (commitments using random nonce $r$)
+   - $K_G = r \cdot G$, $K_J = r \cdot J$ (commitments using deterministic nonce $r$)
    - $e = \textrm{SHA256}(K_G \| K_J \| P \| P_2)$ (challenge hash)
    - $s = r + e \cdot k \pmod{n}$ (Schnorr-like response)
 
@@ -605,5 +605,10 @@ The PoDLE proves that two public keys $P = k \cdot G$ and $P_2 = k \cdot J$ shar
    - $e \stackrel{?}{=} \textrm{SHA256}((s \cdot G - e \cdot P) \| (s \cdot J - e \cdot P_2) \| P \| P_2)$
 
 This ensures the taker controls a real UTXO without revealing which one until makers have committed, preventing costless Sybil attacks on the orderbook.
+
+The nonce $r$ is derived with a domain-separated RFC 6979-style HMAC-SHA256
+construction keyed by $k$. Its transcript binds the UTXO reference, NUMS index,
+$P$, and $P_2$. Verifiers and the wire format are unchanged, while proof
+generation no longer risks key disclosure from a repeated runtime RNG value.
 
 ---
