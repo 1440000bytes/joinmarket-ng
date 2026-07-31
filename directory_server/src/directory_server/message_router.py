@@ -71,6 +71,11 @@ class MessageRouter:
         if not from_peer:
             logger.warning(f"Unknown peer sending public message: {from_key}")
             return
+        if from_nick != from_peer.nick:
+            logger.warning(
+                f"Dropping public message claiming {from_nick} from connection {from_peer.nick}"
+            )
+            return
 
         # Track offers (absorder, absoffer, reloffer, relorder)
         if rest:
@@ -227,6 +232,11 @@ class MessageRouter:
         from_peer = self.peer_registry.get_by_key(from_key)
         if not from_peer or from_peer.network != to_peer.network:
             logger.warning("Network mismatch or unknown sender")
+            return
+        if from_nick != from_peer.nick:
+            logger.warning(
+                f"Dropping private message claiming {from_nick} from connection {from_peer.nick}"
+            )
             return
 
         try:

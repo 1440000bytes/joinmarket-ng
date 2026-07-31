@@ -209,6 +209,50 @@ class TestMessageRouterPrivateMessageFailedSend:
         assert to_peer.location_string in failed_peers
 
 
+class TestMessageRouterSenderBinding:
+    """Messages cannot claim a nick other than the handshaked connection."""
+
+    @pytest.mark.anyio
+    async def test_drops_public_message_with_forged_sender(self, registry, sample_peers):
+        sent_messages = []
+
+        async def record_send(peer_key: str, data: bytes) -> None:
+            sent_messages.append((peer_key, data))
+
+        router = MessageRouter(peer_registry=registry, send_callback=record_send)
+        sender = sample_peers[0]
+        forged = sample_peers[1]
+        envelope = MessageEnvelope(
+            message_type=MessageType.PUBMSG,
+            payload=f"{forged.nick}!PUBLIC!sw0reloffer 0 30000 72590 0 0.001",
+        )
+
+        await router._handle_public_message(envelope, sender.location_string)
+
+        assert sent_messages == []
+        assert router.get_offer_stats()["total_offers"] == 0
+
+    @pytest.mark.anyio
+    async def test_drops_private_message_with_forged_sender(self, registry, sample_peers):
+        sent_messages = []
+
+        async def record_send(peer_key: str, data: bytes) -> None:
+            sent_messages.append((peer_key, data))
+
+        router = MessageRouter(peer_registry=registry, send_callback=record_send)
+        connection_owner = sample_peers[0]
+        forged = sample_peers[1]
+        recipient = sample_peers[2]
+        envelope = MessageEnvelope(
+            message_type=MessageType.PRIVMSG,
+            payload=f"{forged.nick}!{recipient.nick}!fill payload pubkey signature",
+        )
+
+        await router._handle_private_message(envelope, connection_owner.location_string)
+
+        assert sent_messages == []
+
+
 class TestOfferTracking:
     """Tests for offer tracking functionality."""
 
