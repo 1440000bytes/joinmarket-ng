@@ -675,6 +675,108 @@ class TestSpendBondBIP32Derivation:
             assert "sign_bond_mnemonic.py" in result.stdout
 
 
+class TestDeviceCompatibilityDocVector:
+    """The hardware wallet compatibility test vector published in the docs.
+
+    docs/technical/privacy.md ("Testing device compatibility with the public
+    test mnemonic") publishes a deterministic unsigned bond spend PSBT built
+    from the public BIP39 test mnemonic. This test regenerates the PSBT with
+    the exact documented CLI flow and asserts the docs stay accurate.
+    """
+
+    DOCS_PATH = Path(__file__).resolve().parents[2] / "docs" / "technical" / "privacy.md"
+    SECTION_MARKER = "Testing device compatibility with the public test mnemonic"
+
+    # Values documented in the vector (abandon x11 + about, m/84'/0'/0'/0/0)
+    PUBKEY = "0330d54fd0dd420a6e5f8d3624f5f3482cae350f79d5f0753bf5beef9c2d91af3c"
+    MASTER_FINGERPRINT = "73c5da0a"
+    LOCKTIME = 1769904000  # 2026-02-01 00:00 UTC
+    BOND_ADDRESS = "bc1qrd0yehles4ppg66tl823yylw654ksfftsy9y79d2uqk59jtlqjhqd7zpam"
+    DESTINATION = "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu"
+
+    def _docs_section(self) -> str:
+        text = self.DOCS_PATH.read_text()
+        assert self.SECTION_MARKER in text, "compat test section missing from docs"
+        return text.split(self.SECTION_MARKER, 1)[1]
+
+    def _documented_psbt(self) -> str:
+        import re
+
+        match = re.search(r"^(cHNidP8[A-Za-z0-9+/=]+)$", self._docs_section(), re.M)
+        assert match is not None, "unsigned test PSBT missing from docs section"
+        return match.group(1)
+
+    def test_docs_section_mentions_vector_values(self) -> None:
+        section = self._docs_section()
+        for value in (
+            self.PUBKEY,
+            self.MASTER_FINGERPRINT,
+            str(self.LOCKTIME),
+            self.BOND_ADDRESS,
+            self.DESTINATION,
+        ):
+            assert value in section
+
+    def test_documented_bond_address_matches_pubkey_and_locktime(self) -> None:
+        from jmcore.btc_script import mk_freeze_script
+
+        from jmwallet.wallet.address import script_to_p2wsh_address
+
+        witness_script = mk_freeze_script(self.PUBKEY, self.LOCKTIME)
+        assert script_to_p2wsh_address(witness_script, "mainnet") == self.BOND_ADDRESS
+
+    def test_documented_psbt_regenerates_from_cli_flow(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+
+            create_result = runner.invoke(
+                app,
+                [
+                    "create-bond-address",
+                    self.PUBKEY,
+                    "--locktime-date",
+                    "2026-02",
+                    "--data-dir",
+                    str(data_dir),
+                    "--wallet-fingerprint",
+                    self.MASTER_FINGERPRINT,
+                ],
+            )
+            assert create_result.exit_code == 0, create_result.stdout
+            assert self.BOND_ADDRESS in create_result.stdout
+
+            output_file = data_dir / "unsigned-bond-test.psbt"
+            spend_result = runner.invoke(
+                app,
+                [
+                    "spend-bond",
+                    self.BOND_ADDRESS,
+                    self.DESTINATION,
+                    "--fee-rate",
+                    "1.0",
+                    "--test-unfunded",
+                    "--master-fingerprint",
+                    self.MASTER_FINGERPRINT,
+                    "--derivation-path",
+                    "m/84'/0'/0'/0/0",
+                    "--data-dir",
+                    str(data_dir),
+                    "--wallet-fingerprint",
+                    self.MASTER_FINGERPRINT,
+                    "--output",
+                    str(output_file),
+                ],
+            )
+            assert spend_result.exit_code == 0, spend_result.stdout
+
+            generated = output_file.read_text().strip()
+            assert generated == self._documented_psbt(), (
+                "The unsigned test PSBT in docs/technical/privacy.md no longer "
+                "matches the output of the documented CLI flow. Regenerate the "
+                "documented vector or fix the regression."
+            )
+
+
 def _extract_psbt_from_output(lines: list[str]) -> str | None:
     """Extract the PSBT base64 string from CLI output.
 
