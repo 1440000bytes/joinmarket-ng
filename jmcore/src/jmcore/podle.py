@@ -415,8 +415,8 @@ def verify_podle(
         s_int = int.from_bytes(sig, "big")
         e_int = int.from_bytes(e, "big")
 
-        if s_int >= SECP256K1_N or e_int >= SECP256K1_N:
-            return False, "Signature values out of range"
+        if s_int == 0 or s_int >= SECP256K1_N:
+            return False, "Signature value out of range"
 
         # sg = s * G
         sg = scalar_mult_g(s_int) if s_int > 0 else None
@@ -531,7 +531,7 @@ def deserialize_revelation(revelation_str: str) -> dict[str, Any] | None:
     """
     Deserialize PoDLE revelation from wire format.
 
-    Format: P|P2|sig|e|utxo (pipe-separated hex strings)
+    Format: utxo|P|P2|sig|e (pipe-separated strings)
     """
     try:
         parts = revelation_str.split("|")
@@ -540,11 +540,11 @@ def deserialize_revelation(revelation_str: str) -> dict[str, Any] | None:
             return None
 
         return {
-            "P": parts[0],
-            "P2": parts[1],
-            "sig": parts[2],
-            "e": parts[3],
-            "utxo": parts[4],
+            "utxo": parts[0],
+            "P": parts[1],
+            "P2": parts[2],
+            "sig": parts[3],
+            "e": parts[4],
         }
 
     except Exception as e:
@@ -556,14 +556,14 @@ def serialize_revelation(commitment: PoDLECommitment) -> str:
     """
     Serialize PoDLE revelation to wire format.
 
-    Format: P|P2|sig|e|utxo (pipe-separated hex strings)
+    Format: utxo|P|P2|sig|e (pipe-separated strings)
     """
     return "|".join(
         [
+            commitment.utxo,
             commitment.p.hex(),
             commitment.p2.hex(),
             commitment.sig.hex(),
             commitment.e.hex(),
-            commitment.utxo,
         ]
     )

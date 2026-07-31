@@ -367,11 +367,11 @@ class TestRevelationParsing:
         """Test deserializing wire format."""
         wire_format = "|".join(
             [
+                "ee" * 32 + ":0",  # utxo
                 "02" + "aa" * 32,  # P
                 "03" + "bb" * 32,  # P2
                 "cc" * 32,  # sig
                 "dd" * 32,  # e
-                "ee" * 32 + ":0",  # utxo
             ]
         )
 
@@ -453,8 +453,8 @@ class TestSerializeRevelation:
 
         parts = wire.split("|")
         assert len(parts) == 5
-        assert parts[0] == "02" + "aa" * 32
-        assert parts[4] == "ee" * 32 + ":0"
+        assert parts[0] == "ee" * 32 + ":0"
+        assert parts[1] == "02" + "aa" * 32
 
     def test_roundtrip(self) -> None:
         """Test serialization roundtrip."""
@@ -622,6 +622,37 @@ class TestVerifyPoDLEEdgeCases:
         )
         assert not is_valid
         assert "out of range" in error
+
+    def test_verify_zero_sig_is_out_of_range(self) -> None:
+        commitment = generate_podle(bytes([7] * 32), "f" * 64 + ":5", index=0)
+
+        is_valid, error = verify_podle(
+            p=commitment.p,
+            p2=commitment.p2,
+            sig=bytes(32),
+            e=commitment.e,
+            commitment=commitment.commitment,
+            index_range=range(1),
+        )
+
+        assert not is_valid
+        assert "out of range" in error
+
+    def test_verify_raw_challenge_is_not_range_rejected(self) -> None:
+        """The SHA256 challenge stays raw and is reduced only for arithmetic."""
+        commitment = generate_podle(bytes([6] * 32), "e" * 64 + ":4", index=0)
+
+        is_valid, error = verify_podle(
+            p=commitment.p,
+            p2=commitment.p2,
+            sig=commitment.sig,
+            e=SECP256K1_N.to_bytes(32, "big"),
+            commitment=commitment.commitment,
+            index_range=range(1),
+        )
+
+        assert not is_valid
+        assert "out of range" not in error
 
     def test_verify_fails_for_all_indices(self) -> None:
         """Test verification fails when proof index is outside checked range."""

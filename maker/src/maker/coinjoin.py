@@ -62,7 +62,7 @@ class CoinJoinSession:
         wallet: WalletService,
         backend: BlockchainBackend,
         min_confirmations: int = 1,
-        taker_utxo_retries: int = 10,
+        taker_utxo_retries: int = 3,
         taker_utxo_age: int = 5,
         taker_utxo_amtpercent: int = 20,
         session_timeout_sec: int = 300,
