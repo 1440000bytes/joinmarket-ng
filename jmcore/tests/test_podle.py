@@ -294,6 +294,36 @@ class TestGeneratePoDLE:
         )
         assert is_valid, error
 
+    def test_generation_retries_zero_response(self) -> None:
+        real_sha256 = hashlib.sha256
+        challenge_calls = 0
+
+        def force_first_zero_response(data: bytes = b"") -> Any:
+            nonlocal challenge_calls
+            if len(data) == 132:
+                challenge_calls += 1
+                if challenge_calls == 1:
+                    return Mock(digest=Mock(return_value=(SECP256K1_N - 1).to_bytes(32, "big")))
+            return real_sha256(data)
+
+        with (
+            patch("jmcore.podle._podle_nonce_candidates", return_value=iter((1, 2))),
+            patch("jmcore.podle.hashlib.sha256", side_effect=force_first_zero_response),
+        ):
+            commitment = generate_podle((1).to_bytes(32, "big"), "f" * 64 + ":5", index=5)
+
+        assert challenge_calls == 2
+        assert int.from_bytes(commitment.sig, "big") != 0
+        is_valid, error = verify_podle(
+            p=commitment.p,
+            p2=commitment.p2,
+            sig=commitment.sig,
+            e=commitment.e,
+            commitment=commitment.commitment,
+            index_range=range(10),
+        )
+        assert is_valid, error
+
     def test_rfc6979_retries_rejected_candidate(self) -> None:
         private_key = bytes.fromhex("01" * 32)
         message_hash = bytes(32)
@@ -357,6 +387,71 @@ class TestGeneratePoDLE:
         """Test zero private key is rejected."""
         with pytest.raises(PoDLEError, match="Invalid private key value"):
             generate_podle(bytes(32), "a" * 64 + ":0")
+
+    def test_curve_order_private_key(self) -> None:
+        """Test a private scalar equal to the curve order is rejected."""
+        with pytest.raises(PoDLEError, match="Invalid private key value"):
+            generate_podle(SECP256K1_N.to_bytes(32, "big"), "a" * 64 + ":0")
+
+
+class TestPoDLEResponseArithmetic:
+    """Compatibility tests for the libsecp256k1 response calculation."""
+
+    @pytest.mark.parametrize(
+        ("private_scalar", "nonce", "challenge_scalar"),
+        [
+            (1, 1, 1),
+            (3, 7, 5),
+            (SECP256K1_N - 1, SECP256K1_N - 2, 2),
+            (123456789, SECP256K1_N - 1, SECP256K1_N + 17),
+        ],
+    )
+    def test_matches_protocol_scalar_equation(
+        self,
+        private_scalar: int,
+        nonce: int,
+        challenge_scalar: int,
+    ) -> None:
+        private_key = podle.PrivateKey(private_scalar.to_bytes(32, "big"))
+        challenge = challenge_scalar.to_bytes(32, "big")
+
+        response = podle._compute_podle_response(private_key, nonce, challenge)
+
+        expected = (nonce + (challenge_scalar % SECP256K1_N) * private_scalar) % SECP256K1_N
+        assert expected != 0
+        assert response == expected.to_bytes(32, "big")
+
+    def test_zero_challenge_requires_retry(self) -> None:
+        private_key = podle.PrivateKey((1).to_bytes(32, "big"))
+        for challenge in (bytes(32), SECP256K1_N.to_bytes(32, "big")):
+            assert podle._compute_podle_response(private_key, 1, challenge) is None
+
+    def test_zero_response_requires_retry(self) -> None:
+        private_key = podle.PrivateKey((1).to_bytes(32, "big"))
+        assert (
+            podle._compute_podle_response(
+                private_key,
+                1,
+                (SECP256K1_N - 1).to_bytes(32, "big"),
+            )
+            is None
+        )
+
+    def test_response_does_not_mutate_private_key(self) -> None:
+        private_key = podle.PrivateKey((7).to_bytes(32, "big"))
+        original_secret = private_key.secret
+
+        response = podle._compute_podle_response(private_key, 11, (13).to_bytes(32, "big"))
+
+        assert response is not None
+        assert private_key.secret == original_secret
+
+    def test_generation_rejects_exhausted_nonce_candidates(self) -> None:
+        with (
+            patch("jmcore.podle._podle_nonce_candidates", return_value=iter(())),
+            pytest.raises(PoDLEError, match="nonce candidates exhausted"),
+        ):
+            generate_podle((1).to_bytes(32, "big"), "a" * 64 + ":0")
 
 
 class TestVerifyPoDLE:

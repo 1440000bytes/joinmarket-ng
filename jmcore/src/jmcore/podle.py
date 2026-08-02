@@ -30,7 +30,7 @@ import hmac
 from collections.abc import Iterator
 from typing import Any
 
-from coincurve import PublicKey
+from coincurve import PrivateKey, PublicKey
 from loguru import logger
 from pydantic import ValidationError
 from pydantic.dataclasses import dataclass
@@ -265,6 +265,32 @@ def _podle_nonce_candidates(
     return _rfc6979_nonce_candidates(private_key_bytes, hashlib.sha256(transcript).digest())
 
 
+def _compute_podle_response(
+    private_key: PrivateKey,
+    nonce: int,
+    challenge: bytes,
+) -> bytes | None:
+    """Compute ``s = nonce + challenge * key`` with libsecp256k1 key tweaks.
+
+    The challenge is public, so reducing it in Python does not expose secret
+    material. The secret multiplication and response addition are delegated to
+    libsecp256k1's secret-key tweak operations instead of Python bigint
+    arithmetic. ``None`` means the challenge or resulting response is zero and
+    the caller must retry.
+    """
+    challenge_scalar = int.from_bytes(challenge, "big") % SECP256K1_N
+    if challenge_scalar == 0:
+        return None
+    try:
+        response = PrivateKey(private_key.secret)
+        response.multiply(challenge_scalar.to_bytes(32, "big"), update=True)
+        response.add(nonce.to_bytes(32, "big"), update=True)
+        return response.secret
+    except ValueError:
+        # secp256k1 rejects the zero response, matching the protocol retry rule.
+        return None
+
+
 def generate_podle(
     private_key_bytes: bytes,
     utxo_str: str,
@@ -291,20 +317,20 @@ def generate_podle(
     if not 0 <= index <= 255:
         raise PoDLEError(f"Invalid NUMS index: {index} (must be 0-255)")
 
-    # Get private key as integer
-    k = int.from_bytes(private_key_bytes, "big")
-    if k == 0 or k >= SECP256K1_N:
-        raise PoDLEError("Invalid private key value")
+    try:
+        private_key = PrivateKey(private_key_bytes)
+    except ValueError as exc:
+        raise PoDLEError("Invalid private key value") from exc
 
     # Calculate P = k*G (standard public key)
-    p_point = scalar_mult_g(k)
+    p_point = private_key.public_key
     p_bytes = point_to_bytes(p_point)
 
     # Get NUMS point J
     j_point = get_nums_point(index)
 
     # Calculate P2 = k*J
-    p2_point = point_mult(k, j_point)
+    p2_point = j_point.multiply(private_key_bytes)
     p2_bytes = point_to_bytes(p2_point)
 
     # Generate commitment C = H(P2)
@@ -313,6 +339,7 @@ def generate_podle(
     # Derive the nonce from the secret key and proof transcript. This removes
     # runtime RNG failures from a Schnorr-style operation where nonce reuse
     # across two proofs would reveal the UTXO private key.
+    s_bytes: bytes | None = None
     for k_proof in _podle_nonce_candidates(
         private_key_bytes,
         utxo_str,
@@ -323,14 +350,11 @@ def generate_podle(
         kg_bytes = point_to_bytes(scalar_mult_g(k_proof))
         kj_bytes = point_to_bytes(point_mult(k_proof, j_point))
         e_bytes = hashlib.sha256(kg_bytes + kj_bytes + p_bytes + p2_bytes).digest()
-        e = int.from_bytes(e_bytes, "big") % SECP256K1_N
-        if e == 0:
-            continue
-        s = (k_proof + e * k) % SECP256K1_N
-        if s != 0:
+        s_bytes = _compute_podle_response(private_key, k_proof, e_bytes)
+        if s_bytes is not None:
             break
-
-    s_bytes = s.to_bytes(32, "big")
+    if s_bytes is None:
+        raise PoDLEError("PoDLE nonce candidates exhausted")
 
     logger.debug(
         f"Generated PoDLE for {utxo_str} using NUMS index {index}, "
