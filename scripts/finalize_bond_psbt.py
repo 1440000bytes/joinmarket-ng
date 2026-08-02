@@ -15,7 +15,7 @@ and outputs the final raw transaction hex ready for inspection and broadcast.
 Because the signature is verified, a successful run proves the signing device
 produced a valid bond spend signature. This makes the script suitable as the
 verification step of the hardware wallet compatibility test described in
-docs/technical/privacy.md (which uses a synthetic, non-broadcastable UTXO).
+docs/fidelity-bond-operations.md (which uses a synthetic, non-broadcastable UTXO).
 
 The script is intentionally dependency-free (Python standard library only) so
 it can run on an offline machine. Signature verification only handles public

@@ -298,7 +298,7 @@ def create_fidelity_bond_proof(
     - 33 bytes: Certificate public key (ephemeral random key for hot wallet, pre-signed for cold)
     - 2 bytes: Certificate expiry (retarget period number when cert becomes invalid)
     - 33 bytes: UTXO public key (the key that can spend the bond UTXO)
-    - 32 bytes: TXID (little-endian)
+    - 32 bytes: TXID (display order)
     - 4 bytes: Vout (little-endian)
     - 4 bytes: Locktime (little-endian)
 

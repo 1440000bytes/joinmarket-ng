@@ -104,7 +104,8 @@ automatically.
 Makers automatically discover bonds from the local registry at startup.
 
 - User workflow (generate/list/recover bonds): [Wallet guide](README-jmwallet.md)
-- Protocol details and cold-wallet certificate flow: [Technical Privacy Notes](technical/privacy.md#fidelity-bonds)
+- Setup and cold-wallet certificate flow: [Fidelity Bond Operations](fidelity-bond-operations.md)
+- Privacy and protocol details: [Technical Privacy Notes](technical/privacy.md#fidelity-bonds)
 
 ## Migration from JoinMarket Reference
 

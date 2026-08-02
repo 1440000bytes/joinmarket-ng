@@ -6,15 +6,16 @@ technical pages for more depth.
 
 ## Backups
 
-- **Mnemonic is the only critical secret.** It is sufficient to recover all
-  wallet funds (CoinJoin outputs, change, fidelity bond UTXOs). Keep at least
-  one offline copy and treat it like a hardware-wallet seed.
+- **Back up every key that controls funds.** The JoinMarket mnemonic recovers
+  wallet-derived outputs and bonds. An external-key bond additionally requires
+  the external signer seed or key, any BIP39 passphrase, and its derivation path.
 - **Record fidelity bond metadata.** For each active bond, store the
-  derivation path (mixdepth + branch + index) and the locktime in your
-  backup. The mnemonic alone is enough to spend the bond, but having the path
-  and locktime makes recovery dramatically faster and avoids scanning every
-  candidate timelock. See [Privacy: Fidelity Bonds](privacy.md) and
-  [Wallet](wallet.md) for derivation details.
+  derivation path and locktime in your backup. A wallet-derived bond can be
+  spent from the JoinMarket mnemonic alone, but the metadata makes recovery
+  faster. An external-key bond also requires its external seed or key, any
+  passphrase, and the exact key origin. See
+  [Fidelity Bond Operations](../fidelity-bond-operations.md) and [Wallet](wallet.md)
+  for recovery details.
 - **Back up before any major change.** Re-confirm the mnemonic and bond
   metadata before upgrades, re-imports, or hardware migrations.
 
@@ -42,15 +43,15 @@ technical pages for more depth.
 - **Use a dedicated mnemonic for fidelity bonds.**
   The bond mnemonic only holds bond funds, which are locked and not
   required for the maker operation, since they can sign a delegated certificate.
-  It's safer but more complex to setup, see
-  ([Privacy: dedicated mnemonic](privacy.md)).
+  It is safer but requires a separate backup; see
+  [Fidelity Bond Operations](../fidelity-bond-operations.md#backups-and-compromise).
 - **Prefer hardware-wallet-signed bonds when possible.** Blockstream Jade
   and Specter DIY can sign bond redemptions; Ledger only with the legacy
   Bitcoin app (2.0.x and earlier -- the current app has been reported to
   reject bond PSBTs). Trezor, Coldcard, BitBox02, and KeepKey currently
   cannot. Always test the full create-and-spend flow before funding a bond;
   you can check any device model risk-free with the public test mnemonic
-  described in the hardware-wallet support notes in [Privacy](privacy.md).
+  described in [Fidelity Bond Operations](../fidelity-bond-operations.md#testing-device-compatibility-with-the-public-test-mnemonic).
 
 ## Taker Operation
 

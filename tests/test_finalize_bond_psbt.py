@@ -36,7 +36,7 @@ WITNESS_SCRIPT_HEX = (
     "d90d9d58c04ac"
 )
 
-# Hardware wallet compatibility test vector from docs/technical/privacy.md:
+# Hardware wallet compatibility test vector from docs/fidelity-bond-operations.md:
 # the public BIP39 test mnemonic ("abandon" x11 + "about"), key at
 # m/84'/0'/0'/0/0, bond locktime 2026-02-01 UTC, synthetic UTXO. Signed with
 # scripts/sign_bond_mnemonic.py (deterministic RFC 6979 signature).
@@ -412,7 +412,7 @@ class TestSignatureVerification:
 class TestAbandonMnemonicVector:
     """The documented hardware wallet compatibility test vector.
 
-    docs/technical/privacy.md publishes an unsigned test PSBT built from the
+    docs/fidelity-bond-operations.md publishes an unsigned test PSBT built from the
     public BIP39 test mnemonic so users can check whether their device model
     can sign fidelity bond spends before locking real funds. This signed
     counterpart (produced with scripts/sign_bond_mnemonic.py) must finalize

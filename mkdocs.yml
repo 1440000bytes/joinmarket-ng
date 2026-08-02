@@ -288,6 +288,7 @@ nav:
   - Main Modules:
       - JM Core: README-jmcore.md
       - Wallet: README-jmwallet.md
+      - Fidelity Bond Operations: fidelity-bond-operations.md
       - Taker: README-taker.md
       - Maker: README-maker.md
       - Tumbler: README-tumbler.md

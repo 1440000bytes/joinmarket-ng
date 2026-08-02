@@ -21,7 +21,7 @@ during enumeration.
 For Trezor, Coldcard, BitBox02, and KeepKey users: use
 scripts/sign_bond_mnemonic.py instead, which performs the signing in software
 using your BIP39 mnemonic. Specter DIY users can sign via QR PSBT exchange
-(see docs/technical/privacy.md and scripts/finalize_bond_psbt.py).
+(see docs/fidelity-bond-operations.md and scripts/finalize_bond_psbt.py).
 
 This script works with Jade (and Ledgers running the legacy app) and is
 preserved for other devices if their firmware adds support for custom P2WSH
@@ -322,7 +322,7 @@ def main() -> None:
         "  and earlier); the current app (2.1+) has been reported to reject\n"
         "  bond PSBTs with error 0x6a80. Trezor, Coldcard, BitBox02, and\n"
         "  KeepKey will reject the signing request. If signing fails, use the\n"
-        "  Specter DIY QR flow (see docs/technical/privacy.md) or:\n"
+        "  Specter DIY QR flow (see docs/fidelity-bond-operations.md) or:\n"
         "    python scripts/sign_bond_mnemonic.py <psbt_base64>\n",
         file=sys.stderr,
     )

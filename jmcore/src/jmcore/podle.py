@@ -15,9 +15,8 @@ Protocol flow:
 4. Taker reveals P, P2, sig, e as the "revelation"
 5. Maker verifies: P = k*G and P2 = k*J (same k)
 
-For detailed cryptographic documentation including NUMS point generation algorithm
-and secp256k1 curve parameters, see docs/technical/privacy.md section
-"Cryptographic Foundations".
+For detailed cryptographic documentation including the NUMS point generation
+algorithm and secp256k1 parameters, see docs/technical/privacy.md#podle.
 
 Reference: https://gist.github.com/AdamISZ/9cbba5e9408d23813ca8
 Reference: joinmarket-clientserver/src/jmclient/podle.py

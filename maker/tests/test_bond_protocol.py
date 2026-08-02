@@ -19,7 +19,7 @@ def test_bond_proof_format_matches_reference():
     - 33 bytes: Certificate pubkey
     - 2 bytes: Certificate expiry (blocks / 2016)
     - 33 bytes: UTXO pubkey
-    - 32 bytes: TXID (little-endian)
+    - 32 bytes: TXID (display order)
     - 4 bytes: Vout (little-endian)
     - 4 bytes: Locktime (little-endian)
     """

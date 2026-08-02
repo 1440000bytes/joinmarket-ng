@@ -457,7 +457,7 @@ def verify_fidelity_bond_proof(
     - 33 bytes: Certificate public key
     - 2 bytes: Certificate expiry (blocks / 2016)
     - 33 bytes: UTXO public key
-    - 32 bytes: TXID (little-endian)
+    - 32 bytes: TXID (display order)
     - 4 bytes: Vout (little-endian)
     - 4 bytes: Locktime (little-endian)
 

@@ -678,13 +678,13 @@ class TestSpendBondBIP32Derivation:
 class TestDeviceCompatibilityDocVector:
     """The hardware wallet compatibility test vector published in the docs.
 
-    docs/technical/privacy.md ("Testing device compatibility with the public
+    docs/fidelity-bond-operations.md ("Testing device compatibility with the public
     test mnemonic") publishes a deterministic unsigned bond spend PSBT built
     from the public BIP39 test mnemonic. This test regenerates the PSBT with
     the exact documented CLI flow and asserts the docs stay accurate.
     """
 
-    DOCS_PATH = Path(__file__).resolve().parents[2] / "docs" / "technical" / "privacy.md"
+    DOCS_PATH = Path(__file__).resolve().parents[2] / "docs" / "fidelity-bond-operations.md"
     SECTION_MARKER = "Testing device compatibility with the public test mnemonic"
 
     # Values documented in the vector (abandon x11 + about, m/84'/0'/0'/0/0)
@@ -771,7 +771,7 @@ class TestDeviceCompatibilityDocVector:
 
             generated = output_file.read_text().strip()
             assert generated == self._documented_psbt(), (
-                "The unsigned test PSBT in docs/technical/privacy.md no longer "
+                "The unsigned test PSBT in docs/fidelity-bond-operations.md no longer "
                 "matches the output of the documented CLI flow. Regenerate the "
                 "documented vector or fix the regression."
             )

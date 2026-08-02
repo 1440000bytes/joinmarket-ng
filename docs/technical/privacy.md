@@ -1,680 +1,184 @@
 # Privacy
 
-### Mixdepths
+## Mixdepths
 
-HD path: `m/84'/coin_type'/mixdepth'/chain/index` (P2WPKH Native SegWit)
+Mixdepths are isolated wallet accounts. Inputs for one CoinJoin come from one
+mixdepth, equal CoinJoin outputs move to the next mixdepth, and change remains
+in the source mixdepth. This separation prevents the wallet from immediately
+merging an equal output with its linkable change.
 
-`coin_type` is `0` on mainnet and `1` on testnet/signet/regtest.
+An `INTERNAL` destination uses the next mixdepth and wraps from the final
+mixdepth to mixdepth 0. Explicit destinations are used as provided and may be in
+another wallet.
 
-**Design (Default: 5 isolated accounts):**
+Treat mixdepth boundaries as privacy boundaries when making manual sends. For
+the exact HD paths, address branches, and wallet behavior, see
+[Technical Wallet Notes](wallet.md#hd-structure).
 
-- Inputs for a CoinJoin come from a **single mixdepth**
-- CoinJoin outputs go to the **next mixdepth** (wrapping 4 -> 0)
-- Change outputs stay in the **same mixdepth**
+## PoDLE
 
-This prevents merging CoinJoin outputs with their change, blocking trivial linkage.
+Proof of Discrete Log Equivalence (PoDLE) prevents cost-free probing of maker
+UTXOs. Without it, a taker could repeatedly request transactions, collect maker
+inputs, and abort before paying any CoinJoin cost.
 
-**Address Branches (per mixdepth):**
+### Protocol Flow
 
-- External (0): User-facing receiving and deposit addresses; these may also be
-  supplied explicitly as CoinJoin destinations
-- Internal (1): Automatically generated change addresses and CoinJoin destinations
-  that use the `INTERNAL` sentinel
+1. The taker commits to `C = SHA256(P2)`, where `P2 = k * J`.
+2. The maker accepts the commitment and sends its encryption key.
+3. The taker reveals `P = k * G`, `P2`, and a Schnorr-like proof.
+4. The maker verifies the commitment, proof, UTXO, and ownership binding.
+5. The maker blacklists the commitment immediately.
+6. After `!ioauth`, the maker relays `!hp2` through fresh directory
+   connections, a random nick, and an isolated Tor stream.
 
-With an `INTERNAL` destination, the equal CoinJoin output goes to the next
-mixdepth on branch `/1`. Wrapping from the last mixdepth back to mixdepth 0
-changes only the mixdepth component of the path, so the automatically generated
-output remains on `/1`. An explicitly supplied destination is used as provided
-and may belong to either branch or to another wallet.
+Relay happens after every maker in the current transaction has processed the
+commitment. Relaying earlier could make peers reject the same taker's `!auth`.
+The ephemeral relay identity keeps the public blacklist broadcast separate from
+the maker that consumed the commitment.
 
-Example:
+### Proof
+
+The proof shows that `P = k * G` and `P2 = k * J` have the same unknown scalar
+`k`:
+
+1. Compute nonce commitments `KG = r * G` and `KJ = r * J`.
+2. Compute `e = SHA256(KG || KJ || P || P2)`.
+3. Compute `s = r + e * k mod n`.
+4. Reveal `(P, P2, s, e)`.
+
+The maker reconstructs:
+
+```text
+KG = s * G - e * P
+KJ = s * J - e * P2
 ```
-mixdepth 0/external: m/84'/0'/0'/0/0 -> bc1q... (receive or explicit CJ destination)
-mixdepth 0/internal: m/84'/0'/0'/1/0 -> bc1q... (change or wrapped INTERNAL output)
-mixdepth 1/internal: m/84'/0'/1'/1/0 -> bc1q... (INTERNAL output from mixdepth 0)
-```
 
-### PoDLE (Proof of Discrete Log Equivalence)
+and checks the challenge hash and `SHA256(P2) = C`.
 
-PoDLE prevents Sybil attacks by requiring takers to commit to UTXO ownership before makers reveal their UTXOs.
+The nonce is derived with a domain-separated RFC 6979-style HMAC-SHA256
+construction keyed by the UTXO private key. Its transcript binds the UTXO
+reference, NUMS index, `P`, and `P2`, preventing nonce reuse across distinct
+proofs. Secret response multiplication and addition are delegated to
+libsecp256k1 key-tweak operations rather than Python bigint arithmetic.
 
-**The Problem:** Without PoDLE, an attacker could request CoinJoins from many makers, collect their UTXO sets, then abort - linking maker UTXOs without cost.
+### NUMS Points And Reuse
 
-**Protocol Flow:**
+`J` is one of 256 deterministic Nothing-Up-My-Sleeve points with no known
+discrete-log relation to Bitcoin's generator `G`. The construction hashes the
+compressed and uncompressed encodings of `G`, the one-byte index, and a counter
+until the result encodes a valid curve point. The implementation and vectors
+live in `jmcore/src/jmcore/podle.py`.
 
-1. **Taker commits**: $C = H(P_2)$ where $P_2 = k \cdot J$ ($J$ is NUMS point)
-2. **Maker accepts**: Sends encryption pubkey
-3. **Taker reveals**: Sends $P$ (pubkey), $P_2$, and Schnorr-like proof
-4. **Maker verifies**: $H(P_2) = C$, proof valid, UTXO exists
-5. **Maker blacklists**: Adds commitment to local blacklist immediately
-6. **Maker broadcasts**: Opens ephemeral connections to all directories with a fresh random nick and isolated Tor circuit, broadcasts `!hp2` publicly, then closes
+One UTXO can produce commitments with multiple NUMS indices:
 
-The broadcast step (6) uses a completely separate identity: a new random nick, a new Tor circuit (via unique SOCKS5 credentials for stream isolation), and short-lived connections. This prevents any party -- directory servers, other peers, or observers -- from linking the `!hp2` broadcast to the maker that consumed the commitment. The broadcast is best-effort and fire-and-forget.
+- index 0 is the first use,
+- indices 1 and 2 cover normal retries,
+- higher indices require a maker configured with a larger
+  `taker_utxo_retries` allowance.
 
-When a maker receives a relay request (`!hp2` via privmsg from a reference implementation peer), it uses the same ephemeral identity approach to re-broadcast, preserving source obfuscation.
+Takers track used commitments in `cmtdata/commitments.json`. Makers maintain
+the relayed blacklist in `cmtdata/commitmentlist`.
 
-**Commitment Broadcast Timing:**
+By default, a PoDLE UTXO needs five confirmations and value of at least 20% of
+the CoinJoin amount. Eligible coins are prioritized by confirmations and then
+value.
 
-The `!hp2` broadcast is sent after `!ioauth` (step 3 of Phase 3), not before. Broadcasting early would risk blacklisting a commitment that other makers participating in the same transaction have not yet processed, causing them to reject the taker's `!auth`.
+## Fidelity Bonds
 
-The proof shows that $P = k \cdot G$ and $P_2 = k \cdot J$ use the same private key $k$ without revealing $k$.
+Fidelity bonds let makers prove that they have locked bitcoin. Takers can use
+the time-value of that locked UTXO when selecting makers, making large-scale
+maker identities costly to create.
 
-**NUMS Point Index System:**
+### Privacy Properties
 
-Each UTXO can generate multiple different commitments using different NUMS points (indices 0-9):
+The bond proof publishes one exact UTXO and associates it with the maker's
+identity. Its transaction history, funding source, amount, and later spend are
+therefore public linkage points.
 
-- Index 0: First use (preferred)
-- Index 1-2: Retry after failed CoinJoins (accepted by default)
-- Index 3+: Only if maker configures higher `taker_utxo_retries`
+Prepare bond funds with coin control and CoinJoin them before locking. Do not
+merge unrelated deposits with funds that a probing taker can cause the maker to
+spend alongside an advertised bond. A bond's timelock protects availability,
+not anonymity.
 
-**UTXO Selection for PoDLE:**
+The locked UTXO cannot participate directly in CoinJoins. After expiry it must
+first be redeemed to a regular output.
 
-| Criterion | Default | Rationale |
-|-----------|---------|-----------|
-| Min confirmations | 5 | Prevents double-spend |
-| Min value | 20% of cj_amount | Economic stake |
+### Script And Bond Value
 
-Selection priority: confirmations (desc) -> value (desc)
+The bond is P2WSH with this witness script:
 
-**Commitment Tracking:**
-
-- **Taker** (`cmtdata/commitments.json`): Tracks locally used commitments
-- **Maker** (`cmtdata/commitmentlist`): Network-wide blacklist via `!hp2`
-
-### Fidelity Bonds
-
-Fidelity bonds allow makers to prove locked bitcoins, improving trust and selection probability.
-
-**Purpose:** Makers lock bitcoin in timelocked UTXOs to gain priority in taker selection. Bond value increases with amount and time until unlock.
-
-**Bond Address Generation:**
-
-Fidelity bonds use P2WSH addresses with a timelock script:
-
-```
+```text
 <locktime> OP_CHECKLOCKTIMEVERIFY OP_DROP <pubkey> OP_CHECKSIG
 ```
 
-Generate a bond address (uses the active wallet configured in `config.toml`,
-falling back to `~/.joinmarket-ng/wallets/default.mnemonic`):
+Bond value increases with amount and the committed interval from confirmation
+to locktime. It remains constant before expiry and decays afterward. One bond
+is one UTXO. If an address receives multiple payments, only the largest UTXO
+is announced as the bond; additional locked UTXOs do not combine with it.
 
-```bash
-jm-wallet generate-bond-address \
-  --locktime-date "2026-01" \
-  --index 0
+CLTV validity follows chain median-time-past. Local wall-clock time alone does
+not make a bond spendable.
+
+### Proof And Certificate Chain
+
+The 252-byte fidelity-bond proof contains:
+
+| Field | Size | Purpose |
+|---|---:|---|
+| Nick signature | 72 | Certificate key signs the taker/maker nick pair |
+| Certificate signature | 72 | Bond key delegates to the certificate key |
+| Certificate public key | 33 | Online key used for nick proofs |
+| Certificate expiry | 2 | Absolute 2016-block period, little-endian |
+| Bond public key | 33 | Key committed by the CLTV script |
+| Transaction ID | 32 | Bond outpoint transaction ID in display order |
+| Output index | 4 | Bond outpoint index, little-endian |
+| Timelock | 4 | CLTV timestamp, little-endian |
+
+DER signatures are left-padded with `0xff` to fixed 72-byte fields. The
+certificate message binds its public key and absolute expiry period:
+
+```text
+fidelity-bond-cert|<certificate-pubkey>|<absolute-expiry-period>
 ```
 
-To target a specific wallet file instead, add `--mnemonic-file <path>` (for
-example `--mnemonic-file ~/.joinmarket-ng/wallets/default.mnemonic`). The
-`--locktime-date` accepts `YYYY-MM` (or `YYYY-MM-DD` on the 1st of a month).
+The trust chain is:
 
-**Bond Registry (`fidelity_bonds_<fingerprint>.json`):**
-
-Scoped per wallet to avoid mixing bonds across wallets that share a data
-directory (issue #492). The `<fingerprint>` is the 8-char hex master-key
-fingerprint shown by `jm-wallet info`. Legacy `fidelity_bonds.json` files from
-older installs are migrated on first wallet open: entries whose pubkey can be
-re-derived from the open wallet are moved into the per-wallet file; the rest
-are left for their owning wallets to claim. Cold-wallet (external pubkey) bonds
-are not derivable, so the cold-wallet commands take an explicit
-`--wallet-fingerprint` to select the target registry. Look the value up by
-running `jm-wallet info --mnemonic-file <wallet>` on the hot JoinMarket wallet
-that will operate the bond; the 8-char hex value is printed on the
-`Wallet fingerprint:` line near the top of the output.
-
-Stores bond metadata including:
-- Address, locktime, derivation path
-- UTXO info of the announced bond: the single largest UTXO at the address
-  (txid, vout, value, confirmations)
-- Any additional UTXOs locked at the same address (`extra_utxos`)
-- Certificate fields for cold storage bonds
-
-A fidelity bond is a single UTXO. Only the largest UTXO at a bond address is
-announced as the bond; sending coins to the address again does not increase
-the bond value. Those extra UTXOs are still recorded (and shown by
-`list-bonds` and `info --extended`) so the locked coins are not invisible,
-but they are clearly marked as not part of the bond.
-
-Entries are not only written by `generate-bond-address`, `import-bond`, and
-`recover-bonds`: a descriptor-wallet sync also self-registers any bond UTXO
-Bitcoin Core already tracks but the registry does not, by re-deriving the
-canonical timenumber address from the seed. This recovers funded bonds left
-behind by a failed/partial legacy-registry migration without requiring a
-manual `recover-bonds` scan.
-
-Commands:
-- `jm-wallet list-bonds` - List all bonds from the registry with status (offline)
-- `jm-wallet sync-bonds` - Refresh funded status of registered bonds from the blockchain (fast)
-- `jm-wallet recover-bonds` - Scan the blockchain to discover bonds and refresh the registry
-- `jm-wallet registry-show <address>` - Show bond details
-
-**Spending an Expired Bond (hot wallet):**
-
-A bond created with `generate-bond-address` is derived from the wallet's own
-seed, so the wallet holds its private key. Once the locktime has passed (the
-bond shows as `Expired` in `jm-wallet list-bonds`), spend it like any other
-UTXO with interactive selection -- no PSBT and no external signing scripts:
-
-```bash
-jm-wallet send <destination_address> --select-utxos
+```text
+bond key (optionally cold) -> certificate key (hot) -> maker nick proof
 ```
 
-Pick the expired bond UTXO in the selection TUI. The wallet automatically sets
-`nLockTime` to the bond's locktime, uses sequence `0xFFFFFFFE`, derives the key,
-and builds the CLTV P2WSH witness. Still-locked bonds cannot be selected, and
-auto-selection (without `--select-utxos`) always skips bonds so they are never
-spent by accident. Use `--amount 0` to sweep the whole bond.
+Separating these keys keeps the bond-spending key offline during normal maker
+operation. Compromise of the hot certificate key can permit impersonation while
+takers accept the bond proof, but does not spend the bond funds. The certificate
+expiry field is authenticated and enforced by reference takers, but current
+JoinMarket NG taker verification does not enforce it against chain height.
 
-The PSBT-based `spend-bond` workflow below is **only** needed for cold-storage
-bonds created with `create-bond-address` from an external public key, where the
-private key lives outside this wallet and must sign offline.
-
-**Bond Proof Structure (252 bytes):**
-
-| Field | Size | Description |
-|-------|------|-------------|
-| nick_sig | 72 | DER signature (padded with 0xff) |
-| cert_sig | 72 | DER signature (padded with 0xff) |
-| cert_pubkey | 33 | Certificate public key |
-| cert_expiry | 2 | Expiry period (2016-block periods, little-endian) |
-| utxo_pubkey | 33 | UTXO public key |
-| txid | 32 | Transaction ID |
-| vout | 4 | Output index (little-endian) |
-| timelock | 4 | Locktime value (little-endian) |
-
-**DER Signature Padding**: Signatures are padded at the start with `0xff` bytes to exactly 72 bytes. The DER header byte `0x30` makes stripping padding straightforward during verification.
-
-**Signature Purposes**:
-
-- **Nick signature**: Proves maker controls certificate key (signs `taker_nick|maker_nick`)
-- **Certificate signature**: Binds cert key to UTXO (signs `fidelity-bond-cert|cert_pub|expiry`)
-
-**Certificate Expiry**:
-
-- Encoding: 2-byte unsigned integer (little-endian)
-- Represents: Difficulty retarget period number (period = block_height / 2016)
-- Calculation: `cert_expiry = ((current_block + 2) // 2016) + 1`
-- Validation: Invalid if `current_block_height > cert_expiry * 2016`
-
-**Certificate Chain:**
-
-```
-UTXO keypair (optionally cold) -> signs -> certificate (hot) -> signs -> nick proofs
-```
-
-Allows cold storage of bond private key while hot wallet handles per-session proofs.
+Certificate issuance chooses an absolute period, often by adding a configured
+number of periods to the current chain period. The signed field is not a
+relative duration on the wire.
 
 ### Cold Wallet Setup
 
-> **IMPORTANT -- HARDWARE WALLET LIMITATIONS:**
->
-> Most hardware wallets **cannot sign** fidelity bond spending transactions. Bond UTXOs are P2WSH outputs with CLTV timelock witness scripts, and most firmware rejects custom witness scripts. **Blockstream Jade** supports this through HWI (see [HWI support matrix](https://hwi.readthedocs.io/en/latest/devices/index.html#support-matrix)). **Ledger** support depends on the installed Bitcoin app: the legacy app (2.0.x and earlier) could sign arbitrary witness scripts, but the current app (2.1+, the only option on newer devices such as Stax and Flex) only signs registered wallet policies and has been reported to reject bond PSBTs with error `0x6a80` ([issue #552](https://github.com/joinmarket-ng/joinmarket-ng/issues/552)). **Specter DIY** also provides a hardware-wallet signing path by scanning the PSBT as a QR code and returning a signed PSBT. This Specter DIY flow is QR-based and does not rely on upstream HWI support. Trezor (all models), Coldcard, BitBox02, and KeepKey **cannot** sign bond redemptions ([Trezor firmware issue #416](https://github.com/trezor/trezor-firmware/issues/416), open since 2019).
->
-> If your hardware wallet cannot sign CLTV scripts through either HWI or a device-native QR PSBT flow, you will need to enter your BIP39 mnemonic into the `sign_bond_mnemonic.py` script to spend the bond. This does not mean funds are lost -- it is an inconvenience that degrades security from "hardware wallet cold storage" to "software signing on a (potentially offline) computer". **Plan ahead**: use a CLTV compatible hardware wallet for full cold storage, or create a dedicated mnemonic/passphrase specifically for the bond so that mnemonic exposure does not risk your main wallet.
->
-> **Before locking real funds**, complete the full workflow end-to-end including a test spend (without broadcasting) to confirm your tooling works. See "Test the full flow" below. If your device model is not in the compatibility table (or you want to confirm it), you can test it without your real wallet using a publicly known test mnemonic -- see "Testing device compatibility with the public test mnemonic" below.
+Cold-key setup, backend use, signer compatibility, certificate renewal,
+redemption, migration, and the public hardware-wallet test vector are
+operational procedures. See [Fidelity Bond Operations](../fidelity-bond-operations.md)
+for the maintained workflow.
 
-For maximum security, keep the bond UTXO private key on a hardware wallet. The bond private key never touches any internet-connected device.
+## Cryptographic Parameters
 
-1. **Get public key from Sparrow Wallet**:
-   - Open Sparrow Wallet with your hardware wallet connected
-   - Go to the **Addresses** tab
-   - Choose any address from the Deposit (`m/84'/0'/0'/0/x`) or Change (`m/84'/0'/0'/1/x`) account -- use index 0 for simplicity
-   - Right-click the address and select **"Copy Output Descriptor Key"**. **Important**: Sparrow may wrap the key as `wpkh(03abcd...)` -- if so, remove the `wpkh(` prefix and trailing `)` to get just the raw hex. The CLI will also strip this automatically.
-   - **Note the derivation path**: double-click the address (or click the receive arrow icon) to see the full derivation path (e.g., `m/84'/0'/0'/0/0`). You will need this later when spending the bond.
-   - **Note the master fingerprint**: go to **Settings** (bottom-left) -> **Keystores** section. The master fingerprint (4 bytes hex, e.g., `aabbccdd`) is shown there. You will need this later when spending the bond.
-   - **Note**: The `/2` fidelity bond derivation path is not available in Sparrow. Using `/0` or `/1` addresses works fine -- the bond address is derived from the public key itself, not the derivation path.
+JoinMarket uses secp256k1, the same curve used by Bitcoin:
 
-2. **Create bond address** (on online machine -- NO private keys needed):
-   ```bash
-   jm-wallet create-bond-address "<pubkey_from_step_1>" \
-     --locktime-date "2026-01" \
-     --wallet-fingerprint <fp_from_jm_wallet_info>
-   ```
-   This saves the bond to the per-wallet registry (`fidelity_bonds_<fp>.json`). Look up `<fp>` with `jm-wallet info --mnemonic-file <wallet>`; it must match the hot wallet that will later advertise the bond. The output shows both the bond P2WSH address (for funding) and the P2WPKH "Signing Address" (used later in Sparrow for message signing). Fund the bond P2WSH address with Bitcoin.
-
-3. **Generate hot wallet keypair** (on online machine):
-   ```bash
-   jm-wallet generate-hot-keypair --bond-address <bond_address> \
-     --wallet-fingerprint <fp_from_step_2>
-   ```
-   This creates a random keypair and saves it to the bond registry automatically. The keypair will be loaded automatically in subsequent steps.
-
-4. **Prepare certificate message** (on online machine):
-   ```bash
-   jm-wallet prepare-certificate-message <bond_address> \
-     --validity-periods 52 \
-     --wallet-fingerprint <fp_from_step_2>  # ~2 years
-   ```
-   This fetches the current block height and outputs the message to sign. **Important**: Note the `Cert Expiry: period XXX` value shown -- you will need this exact number in step 6.
-
-   Example output:
-   ```
-   Current Block:         933047 (period 462)
-   Cert Expiry:           period 514 (block 1036224)   <-- USE THIS NUMBER!
-   Validity:              ~102 weeks (103177 blocks)
-
-   MESSAGE TO SIGN (copy this EXACTLY into Sparrow):
-   fidelity-bond-cert|03250c574fe8a2ea...|514
-   ```
-
-5. **Sign the message in Sparrow**:
-   - Open Sparrow Wallet and connect your hardware wallet
-   - Go to **Tools -> Sign/Verify Message**
-   - In the **Address** field, enter or select the **Signing Address** shown in step 2 (the P2WPKH `bc1q...` address, NOT the bond P2WSH address)
-   - Copy the **entire message** from step 4 (e.g., `fidelity-bond-cert|02abc...|514`) and paste it into the 'Message' field
-   - **Important**: Select **'Standard (Electrum)'** format, NOT BIP322
-   - Click 'Sign Message' -- your hardware wallet will prompt for confirmation
-   - Copy the resulting base64 signature
-
-   **Note on hardware wallets**: Different hardware wallets encode the signature header byte differently. Trezor uses the extended Electrum format that encodes the address type (P2WPKH) in the header byte. This is handled automatically by the import command.
-
-6. **Import certificate** (on online machine):
-   ```bash
-   jm-wallet import-certificate <bond_address> \
-     --cert-signature '<base64_signature_from_sparrow>' \
-     --cert-expiry 514 \
-     --wallet-fingerprint <fp_from_step_2>   # <-- USE THE PERIOD NUMBER FROM STEP 4!
-   ```
-   **Critical**: The `--cert-expiry` value MUST match the period number shown in step 4. This is an ABSOLUTE period number, not a relative duration. Using the wrong value will cause the certificate to be rejected as expired.
-
-   The certificate pubkey and private key are loaded from the registry automatically (from step 3).
-
-7. **Test the full flow** -- generate a test spend PSBT (do NOT broadcast):
-   ```bash
-   jm-wallet spend-bond <bond_address> <any_address_you_control> \
-     --fee-rate 1.0 \
-     --test-unfunded \
-     --master-fingerprint <fingerprint_from_step_1> \
-     --derivation-path "<path_from_step_1>" \
-     --wallet-fingerprint <fp_from_step_2> \
-     --output unsigned-bond-test.psbt
-   ```
-   Then verify you can sign it:
-   ```bash
-   # Jade (and legacy-app Ledger) users -- test HWI signing (HWI >= 3.1.0):
-   python scripts/sign_bond_psbt.py "$(tr -d '\n' < unsigned-bond-test.psbt)"
-
-   # Specter DIY users -- test QR PSBT signing:
-   qrencode -t ANSIUTF8 "$(tr -d '\n' < unsigned-bond-test.psbt)"
-
-   # All other devices -- test mnemonic signing:
-   python scripts/sign_bond_mnemonic.py "$(tr -d '\n' < unsigned-bond-test.psbt)"
-   ```
-   **Do not broadcast** the test transaction -- just confirm that signing succeeds and produces valid output. For the HWI and QR flows, run `python scripts/finalize_bond_psbt.py --file <signed_psbt>` on the signed PSBT: it cryptographically verifies the signature, which is the definitive check (the synthetic input can never be broadcast, so a broken signature would otherwise go unnoticed). `--test-unfunded` uses a synthetic input so you can validate derivation path, signer compatibility, and the full signing toolchain **before funding**. To check a device model without your real wallet first, see "Testing device compatibility with the public test mnemonic" below.
-
-8. **Fund the bond** -- only after confirming the full flow works, send Bitcoin to the bond P2WSH address.
-
-9. **Run maker**: The maker automatically detects certificates and uses them.
-   ```bash
-   jm-maker start
-   ```
-
-**Security benefits:**
-- Bond UTXO private key NEVER leaves the hardware wallet (with CLTV compatible devices)
-- No mnemonic exposure to online systems (when using HWI or QR signing on an offline machine)
-- Certificate expires after configurable period (~2 years default)
-- If hot wallet is compromised, attacker can only impersonate bond until expiry
-- Bond funds remain safe in cold storage
-
-**Certificate expiry explained:**
-
-The `cert_expiry` is an **absolute** period number that indicates when the certificate becomes invalid. The reference implementation validates: `current_block_height < cert_expiry * 2016`.
-
-- **Validity periods**: The `--validity-periods` option (default 52 = ~2 years) specifies how long the certificate should be valid from now
-- **Absolute period**: The command calculates `cert_expiry = current_period + validity_periods`
-- **Protocol limits**: The cert_expiry field is an unsigned 16-bit integer (max 65535)
-- **Practical range**: 1 to 52 periods (2 weeks to 2 years) validity is recommended
-
-**Renewing an expired certificate:**
-
-When your certificate expires, repeat steps 4-6 with a new message. The bond funds remain unaffected -- only the certificate needs re-signing.
-
-**Spending Bonds (cold storage / external pubkey):**
-
-This section applies to bonds created with `create-bond-address`, whose private
-key is held outside this wallet. Hot-wallet bonds (from `generate-bond-address`)
-do not need any of this; spend them directly with `jm-wallet send <dest> --select-utxos`
-(see "Spending an Expired Bond" above).
-
-> **Tested:** Bond creation verified with Sparrow Wallet and a hardware wallet (HWI >= 3.1.0). Bond redemption verified with `sign_bond_mnemonic.py`. Specter DIY can sign through the QR PSBT workflow; this guide does not claim or require Specter DIY support in upstream HWI. Trezor cannot sign the redemption transaction due to the CLTV firmware limitation. Ledger redemption is **unverified** on current firmware: a user report indicates the current Bitcoin app (2.1+) rejects the bond PSBT with `0x6a80` ([issue #552](https://github.com/joinmarket-ng/joinmarket-ng/issues/552)). This is why the "test the full flow" step above exists -- verify your signer works **before** funding the bond.
-
-After locktime expires, generate a PSBT for external signing:
-
-```bash
-jm-wallet spend-bond <bond_address> <destination_address> \
-  --fee-rate 1.0 \
-  --master-fingerprint <4_byte_hex> \
-  --derivation-path "m/84'/0'/0'/0/0" \
-  --wallet-fingerprint <fp_from_jm_wallet_info>
+```text
+y^2 = x^3 + 7 mod p
+p = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F
+n = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
 ```
 
-The `--derivation-path` should match the address whose public key was used in `create-bond-address` (in Sparrow: double-click the address or click the receive arrow to see the path). The `--master-fingerprint` is found in Sparrow under Settings -> Keystores. Both are embedded as BIP32 key origin info in the PSBT, which helps signing tools derive the correct key. The `--wallet-fingerprint` selects which per-wallet registry (`fidelity_bonds_<fp>.json`) to read the bond from.
+Bitcoin's generator point `G` is defined by SEC 2. PoDLE's NUMS points are
+alternative generators derived transparently from `G`; knowing a discrete-log
+relation between a NUMS point and `G` would break the proof's soundness.
 
-Use `--output psbt.txt` to save the PSBT to a file for transfer to a signing tool.
+References:
 
-For pre-funding dry-run signer tests, add `--test-unfunded` (optionally `--test-utxo-value`) to generate a non-broadcastable PSBT with synthetic UTXO metadata.
-
-**Hardware wallet compatibility:**
-
-| Device | Can sign CLTV bonds? | Notes |
-|--------|:--------------------:|-------|
-| Blockstream Jade | Yes | Fully supported |
-| Ledger (legacy Bitcoin app, 2.0.x and earlier) | Yes | Arbitrary witnessScript signing; no longer available on newer devices |
-| Ledger (Bitcoin app 2.1+, incl. Stax/Flex) | **Reported failing** | App only signs registered wallet policies; rejects the bond PSBT with `0x6a80` ([issue #552](https://github.com/joinmarket-ng/joinmarket-ng/issues/552)). HWI >= 3.1.0 is needed just to detect Stax/Flex. Use the mnemonic signing fallback |
-| Specter DIY | Yes | QR PSBT workflow; upstream HWI support is not required or claimed |
-| BitBox01 | Yes | Discontinued; not recommended for new setups |
-| Trezor (all models) | **No** | Firmware rejects non-multisig P2WSH; [issue #416](https://github.com/trezor/trezor-firmware/issues/416) open since 2019 |
-| Coldcard | **No** | Firmware only supports single-key and multisig |
-| BitBox02 | **No** | |
-| KeepKey | **No** | |
-
-**Testing device compatibility with the public test mnemonic:**
-
-You can check whether a specific device model can sign a fidelity bond spend before creating a bond or locking any funds, using only the device and this repository. The test uses the publicly known BIP39 test mnemonic and a bond spend PSBT with a synthetic (nonexistent) UTXO. The device cannot tell the difference from a real bond spend -- same P2WSH CLTV witness script, nLockTime, and BIP143 SIGHASH_ALL signing -- so a successful, cryptographically verified signature proves the model supports fidelity bond redemption. Nothing can ever be broadcast.
-
-> **WARNING**: The test mnemonic is publicly known. NEVER send funds to it and never use it for anything other than testing.
-
-Test wallet (mainnet, no BIP39 passphrase):
-
-```
-Mnemonic:            abandon abandon abandon abandon abandon abandon
-                     abandon abandon abandon abandon abandon about
-Master fingerprint:  73c5da0a
-Signing key path:    m/84'/0'/0'/0/0
-Public key:          0330d54fd0dd420a6e5f8d3624f5f3482cae350f79d5f0753bf5beef9c2d91af3c
-Bond locktime:       2026-02-01 00:00 UTC (1769904000)
-Bond address:        bc1qrd0yehles4ppg66tl823yylw654ksfftsy9y79d2uqk59jtlqjhqd7zpam
-```
-
-The test key deliberately uses the standard BIP84 path: bond addresses are derived from the public key alone, so the reference implementation's non-standard `/2` branch is not needed (see the note in "Cold Wallet Setup" above) and standard-path keys maximize device compatibility.
-
-Save this unsigned test PSBT (it sweeps the synthetic bond UTXO back to the test wallet's first address) to `unsigned-bond-test.psbt`:
-
-```
-cHNidP8BAFICAAAAARERERERERERERERERERERERERERERERERERERERERERAAAAAAD+////ATCGAQAAAAAAFgAUwM681sPTyox13F7GLr5VMw75EOKAl35pAAEBK6CGAQAAAAAAIgAgG15M3/mFQhRrS/nVEhPu1StoJSuBCk8VquAtQsl/BK4BAwQBAAAAAQUqBICXfmmxdSEDMNVP0N1CCm5fjTYk9fNILK41D3nV8HU79b7vnC2RrzysIgYDMNVP0N1CCm5fjTYk9fNILK41D3nV8HU79b7vnC2RrzwYc8XaClQAAIAAAACAAAAAgAAAAAAAAAAAAAA=
-```
-
-1. **Load the test mnemonic on the device** (mainnet). Prefer a temporary or ephemeral wallet mode so your real seed is untouched: Blockstream Jade offers a temporary signer mode ("Recovery Phrase Login"), and most other devices can restore from a recovery phrase on a spare or reset device. The device should report master fingerprint `73c5da0a`.
-
-2. **Sign the PSBT**:
-
-   ```bash
-   # USB devices via HWI (pip install -U hwi):
-   python scripts/sign_bond_psbt.py --no-broadcast \
-     --file unsigned-bond-test.psbt > signed-bond-test.psbt
-
-   # QR devices (e.g. Specter DIY): render the PSBT as a QR code, scan and
-   # sign on the device, then save the signed PSBT the device returns:
-   qrencode -t ANSIUTF8 "$(tr -d '\n' < unsigned-bond-test.psbt)"
-   ```
-
-3. **Verify the signature**:
-
-   ```bash
-   python scripts/finalize_bond_psbt.py --file signed-bond-test.psbt
-   ```
-
-   The finalizer cryptographically verifies the device's signature over the CLTV witness script (BIP143 SIGHASH_ALL) and prints `Signature verified` plus the final transaction hex. Because the input does not exist, the transaction can never be broadcast (do not try; it would be rejected).
-
-If step 3 reports `Signature verified`, your device model can sign fidelity bond spends. If the device rejects the PSBT (typically an error about the witness script or an unsupported policy) or verification fails, the model cannot currently be used for bond cold storage -- plan for the mnemonic signing fallback (Option C below) or a dedicated bond mnemonic. Either way, please [open an issue](https://github.com/joinmarket-ng/joinmarket-ng/issues) with your device model, firmware version, and result so the compatibility table stays accurate.
-
-The vector is deterministic; you can regenerate the exact same PSBT with:
-
-```bash
-jm-wallet create-bond-address 0330d54fd0dd420a6e5f8d3624f5f3482cae350f79d5f0753bf5beef9c2d91af3c \
-  --locktime-date "2026-02" --wallet-fingerprint 73c5da0a
-jm-wallet spend-bond bc1qrd0yehles4ppg66tl823yylw654ksfftsy9y79d2uqk59jtlqjhqd7zpam \
-  bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu \
-  --fee-rate 1.0 --test-unfunded \
-  --master-fingerprint 73c5da0a \
-  --derivation-path "m/84'/0'/0'/0/0" \
-  --wallet-fingerprint 73c5da0a \
-  --output unsigned-bond-test.psbt
-```
-
-This checks the device model only. Before funding a real bond, also run "Test the full flow" above with your own wallet's fingerprint, pubkey, and derivation path to validate your complete setup.
-
-**Option A -- HWI signing (Jade, and Ledger with the legacy app):**
-
-Blockstream Jade supports arbitrary witnessScript inputs, so it can sign CLTV bonds directly via HWI. Ledger devices running the legacy Bitcoin app (2.0.x and earlier) also could; the current Ledger app (2.1+) has been reported to reject bond PSBTs (see the table above).
-
-```bash
-pip install -U hwi  # >= 3.1.0 to detect newer models (Ledger Stax/Flex, Trezor Safe 3/5)
-python scripts/sign_bond_psbt.py <psbt_base64>
-```
-
-Connect and unlock your device first. Close Sparrow or other wallet software that holds the USB connection. The script enumerates devices, signs, and outputs the transaction hex. If your wallet uses a BIP39 passphrase, add `--passphrase` to the script invocation.
-
-**Option B -- Specter DIY QR signing:**
-
-Specter DIY can sign the bond PSBT by QR code exchange. Save the PSBT when generating the spend:
-
-```bash
-jm-wallet spend-bond <bond_address> <destination_address> \
-  --fee-rate 1.0 \
-  --master-fingerprint <4_byte_hex> \
-  --derivation-path "m/84'/0'/0'/0/0" \
-  --wallet-fingerprint <fp_from_jm_wallet_info> \
-  --output unsigned-bond.psbt
-```
-
-Render the unsigned PSBT as a QR code:
-
-```bash
-qrencode -t ANSIUTF8 "$(tr -d '\n' < unsigned-bond.psbt)"
-```
-
-Scan the QR on Specter DIY, inspect the transaction details, and sign it. Then scan or copy the signed PSBT output back to the online machine and save it as `signed-bond.psbt`.
-
-Bitcoin Core's `finalizepsbt` may not finalize this custom CLTV P2WSH witness script even when the PSBT contains a valid partial signature. Use the bond finalizer script to verify the signature and build the final witness transaction:
-
-```bash
-python scripts/finalize_bond_psbt.py --file signed-bond.psbt
-```
-
-The script cryptographically verifies the device's signature (BIP143 SIGHASH_ALL over the CLTV witness script) and outputs the final raw transaction hex. Inspect it before broadcasting:
-
-```bash
-bitcoin-cli decoderawtransaction <signed_hex>
-bitcoin-cli sendrawtransaction <signed_hex>
-```
-
-**Option C -- Mnemonic signing (works with any device):**
-
-For Trezor, Coldcard, BitBox02, KeepKey, Ledger devices on the current Bitcoin app, or if HWI/QR signing fails:
-
-```bash
-python scripts/sign_bond_mnemonic.py <psbt_base64>
-```
-
-The script prompts for your BIP39 mnemonic (hidden input), derives the key from the PSBT's BIP32 derivation info (or a `--derivation-path` argument), signs the CLTV witness script, and outputs the fully signed transaction hex.
-
-If your wallet uses a **BIP39 passphrase**:
-```bash
-python scripts/sign_bond_mnemonic.py --passphrase <psbt_base64>
-```
-
-Broadcast the signed transaction:
-```bash
-bitcoin-cli sendrawtransaction <signed_hex>
-```
-
-**Reducing mnemonic exposure:**
-
-Entering your BIP39 mnemonic into software exposes your entire wallet. The best approach is to **plan ahead** and avoid needing mnemonic signing entirely -- use a CLTV compatible HW wallet. If that is not an option, these strategies limit the blast radius:
-
-- **Dedicated mnemonic**: Generate a fresh 12- or 24-word seed used exclusively for fidelity bonds. This mnemonic holds only bond funds, so exposing it during signing cannot compromise your main wallet. The downside is managing a separate seed backup.
-
-- **[BIP-85](https://github.com/bitcoin/bips/blob/master/bip-0085.mediawiki) derived key** (Coldcard): Coldcard supports BIP-85 on-device, which can deterministically derive a child seed or WIF private key from your master seed. Go to `Advanced/Tools > Derive Seed B85 > WIF (private key)` and choose an index. The derived key cannot be used to recover the master seed. Use the derived public key when creating the bond address, and import the WIF for signing. The key is deterministic and can always be regenerated from the same seed + index. This is the ideal approach when using a Coldcard -- the master mnemonic is never exposed.
-
-- **Air-gapped signing**: Run `sign_bond_mnemonic.py` on an offline machine. A bootable [Tails](https://tails.net/) USB drive is a practical option -- it runs from RAM, routes all traffic through Tor by default, and leaves no trace after shutdown. Copy the PSBT to the Tails machine via a second USB drive, sign, copy the signed hex back. After entering the mnemonic on any machine (even Tails), consider that mnemonic compromised for high-value wallets. This is why a dedicated mnemonic is strongly preferred.
-
-**Note:** Sparrow Wallet cannot sign CLTV timelock scripts (P2WSH with custom witness scripts). It is used for key management, message signing (certificates), and can broadcast finalized transactions.
-
-**Note:** P2WSH fidelity bond UTXOs cannot be used in CoinJoins, just spend it first to a regular P2WPKH address you control, then use those funds in CoinJoins.
-
-**Migrating from the reference implementation:**
-
-If you have an existing fidelity bond in the [reference JoinMarket implementation](https://github.com/JoinMarket-Org/joinmarket-clientserver/) (hot wallet), you can register it in joinmarket-ng by signing a certificate with the bond's private key. Both helper scripts below are self-contained and only require `coincurve` (`pip install coincurve`).
-
-The reference implementation uses derivation path `m/84'/0'/0'/2/<timenumber>` for fidelity bond addresses, where `<timenumber>` is a monthly index (0 = Jan 2020, 1 = Feb 2020, ..., 959 = Dec 2099). Both the branch `/2` and the child `/<timenumber>` are **unhardened**, so the public key can be derived from the account xpub alone -- but signing requires the mnemonic.
-
-**Note:** The reference implementation's `wallet-tool.py signmessage` command **cannot** sign messages with fidelity bond paths. This is a bug in the reference code: `BTC_Timelocked_P2WSH` does not override the inherited `sign_message()` method, causing a type error when the `(privkey_bytes, locktime)` tuple is passed where raw bytes are expected. The `sign_bond_cert_reference.py` script below works around this by deriving the private key directly from the mnemonic.
-
-1. **Extract the fidelity bond xpub** from the reference wallet:
-   ```bash
-   python wallet-tool.py wallet.jmdat display
-   ```
-   Look for the `fbonds-mpk-xpub...` line under mixdepth 0. This is the account xpub at `m/84'/0'/0'`. Alternatively, use the xpub from the `m/84'/0'/0'/2` sub-header (the branch xpub).
-
-   **Note:** `wallet-tool.py display` shows fidelity bond **addresses** but not individual public keys. You need the xpub to derive the pubkey.
-
-2. **Derive the bond public key** using our helper script:
-   ```bash
-   # From the fbonds-mpk line (account xpub):
-   python scripts/derive_bond_pubkey.py \
-     --xpub <account_xpub> \
-     --locktime 2026-02
-
-   # Or from the /2 branch sub-header xpub:
-   python scripts/derive_bond_pubkey.py \
-     --xpub <branch_xpub> \
-     --locktime 2026-02 \
-     --branch-xpub
-
-   # To check the timenumber for a locktime without an xpub:
-   python scripts/derive_bond_pubkey.py --locktime 2026-02 --info
-   ```
-   The script outputs the 33-byte compressed public key hex and the exact `create-bond-address` command to run.
-
-3. **Create the bond address in joinmarket-ng** using the derived pubkey:
-   ```bash
-   jm-wallet create-bond-address <pubkey_hex> --locktime-date YYYY-MM \
-     --wallet-fingerprint <fp_from_jm_wallet_info>
-   ```
-   Use the exact command printed by `derive_bond_pubkey.py`. Verify the generated address matches the bond address shown in the reference wallet.
-
-4. **Generate hot keypair and prepare certificate** (steps 3-4 from the cold wallet setup above).
-
-5. **Sign the certificate** using the bond mnemonic:
-   ```bash
-   python scripts/sign_bond_cert_reference.py \
-     --locktime 2026-02 \
-     --cert-pubkey <cert_pubkey_hex> \
-     --cert-expiry <period_number>
-   ```
-   The script prompts for your BIP39 mnemonic (hidden input), derives the private key at `m/84'/0'/0'/2/<timenumber>`, and signs the certificate message in Electrum recoverable format. If your wallet uses a BIP39 passphrase, add `--passphrase`. The base64 signature is printed to stdout.
-
-   **Security:** Entering your mnemonic into software exposes it. Use a dedicated mnemonic/passphrase for the bond (see "Reducing mnemonic exposure" above), or run the script on an air-gapped machine. After entering the mnemonic on any internet-connected device, consider it compromised.
-
-6. **Import the certificate** in joinmarket-ng:
-   ```bash
-   jm-wallet import-certificate <bond_address> \
-     --cert-signature '<base64_signature>' \
-     --cert-expiry <period_number> \
-     --wallet-fingerprint <fp_from_jm_wallet_info>
-   ```
-   The `import-certificate` command automatically handles recoverable-to-DER signature conversion.
-
-### Cryptographic Foundations
-
-**Introductory Video**: For a visual introduction to elliptic curves and how they work in Bitcoin, watch [Curves which make Bitcoin possible](https://www.youtube.com/watch?v=qCafMW4OG7s) by MetaMaths.
-
-**secp256k1 Elliptic Curve:**
-
-JoinMarket uses the secp256k1 elliptic curve, the same curve used by Bitcoin. The curve is defined by:
-
-$$y^2 = x^3 + 7 \pmod{p}$$
-
-Where:
-- Field prime: `p = 2^256 - 2^32 - 2^9 - 2^8 - 2^7 - 2^6 - 2^4 - 1`
-- In hex: `p = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F`
-- Group order: `n = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141`
-- All arithmetic modulo `n` for scalars, modulo `p` for field elements
-
-**Reference**: [SEC 2: Recommended Elliptic Curve Domain Parameters](https://www.secg.org/sec2-v2.pdf), Section 2.4.1
-
-**Generator Point G:**
-
-The generator point G is a specific point on secp256k1 with known coordinates. All Bitcoin and JoinMarket public keys are derived as scalar multiples of G.
-
-Coordinates (from SEC 2 v2.0 Section 2.4.1):
-```
-Gx = 0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798
-Gy = 0x483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8
-```
-
-Compressed form (33 bytes): `0279BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798`
-
-**NUMS Points:**
-
-NUMS (Nothing Up My Sleeve) points are alternative generator points $J_0, J_1, \ldots, J_{255}$ that have no known discrete logarithm relationship to $G$. This property is crucial - if someone knew $k$ such that $J_i = k \cdot G$, they could forge PoDLE proofs.
-
-The NUMS points are generated deterministically from G using a transparent algorithm that leaves no room for hidden backdoors. Anyone can verify the generation process.
-
-**Generation Algorithm:**
-
-```
-for G in [G_compressed, G_uncompressed]:
-    seed = G || i (as single byte)
-    for counter in [0, 1, ..., 255]:
-        seed_c = seed || counter (as single byte)
-        x = SHA256(seed_c)
-        point = 0x02 || x  (compressed point with even y)
-        if point is valid on curve:
-            return point
-```
-
-Python implementation:
-
-```python
-def generate_nums_point(index: int) -> Point:
-    for G in [G_COMPRESSED, G_UNCOMPRESSED]:
-        seed = G + bytes([index])
-        for counter in range(256):
-            seed_c = seed + bytes([counter])
-            x = sha256(seed_c)
-            claimed_point = b'\x02' + x
-            if is_valid_curve_point(claimed_point):
-                return claimed_point
-```
-
-**Reference**: [PoDLE Specification](https://gist.github.com/AdamISZ/9cbba5e9408d23813ca8) by Adam Gibson (waxwing)
-
-Test vectors (from joinmarket-clientserver):
-
-| Index | NUMS Point (hex) |
-|------:|:-----------------|
-| 0 | `0296f47ec8e6d6a9c3379c2ce983a6752bcfa88d46f2a6ffe0dd12c9ae76d01a1f` |
-| 1 | `023f9976b86d3f1426638da600348d96dc1f1eb0bd5614cc50db9e9a067c0464a2` |
-| 5 | `02bbc5c4393395a38446e2bd4d638b7bfd864afb5ffaf4bed4caf797df0e657434` |
-| 9 | `021b739f21b981c2dcbaf9af4d89223a282939a92aee079e94a46c273759e5b42e` |
-| 100 | `02aacc3145d04972d0527c4458629d328219feda92bef6ef6025878e3a252e105a` |
-| 255 | `02a0a8694820c794852110e5939a2c03f8482f81ed57396042c6b34557f6eb430a` |
-
-**Implementation**: `jmcore/src/jmcore/podle.py`
-
-### PoDLE Mathematics
-
-The PoDLE proves that two public keys $P = k \cdot G$ and $P_2 = k \cdot J$ share the same private key $k$:
-
-1. **Commitment**: Taker computes $C = \textrm{SHA256}(P_2)$ and sends to maker
-
-2. **Revelation**: After maker commits, taker reveals $(P, P_2, s, e)$ where:
-   - $K_G = r \cdot G$, $K_J = r \cdot J$ (commitments using deterministic nonce $r$)
-   - $e = \textrm{SHA256}(K_G \| K_J \| P \| P_2)$ (challenge hash)
-   - $s = r + e \cdot k \pmod{n}$ (Schnorr-like response)
-
-3. **Verification**: Maker checks:
-   - $\textrm{SHA256}(P_2) \stackrel{?}{=} C$ (commitment opens correctly)
-   - $e \stackrel{?}{=} \textrm{SHA256}((s \cdot G - e \cdot P) \| (s \cdot J - e \cdot P_2) \| P \| P_2)$
-
-This ensures the taker controls a real UTXO without revealing which one until makers have committed, preventing costless Sybil attacks on the orderbook.
-
-The nonce $r$ is derived with a domain-separated RFC 6979-style HMAC-SHA256
-construction keyed by $k$. Its transcript binds the UTXO reference, NUMS index,
-$P$, and $P_2$. Verifiers and the wire format are unchanged, while proof
-generation no longer risks key disclosure from a repeated runtime RNG value.
-
----
+- [SEC 2: Recommended Elliptic Curve Domain Parameters](https://www.secg.org/sec2-v2.pdf)
+- [PoDLE specification](https://gist.github.com/AdamISZ/9cbba5e9408d23813ca8)

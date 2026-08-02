@@ -163,18 +163,12 @@ For full documentation, see [jmwallet Documentation](https://joinmarket-ng.githu
  requiring your mnemonic or private keys. Use this for true cold storage
  security.
 
- WORKFLOW:
- 1. Use Sparrow Wallet (or similar) with your hardware wallet
- 2. Navigate to your wallet's receive addresses
- 3. Find or create an address at the fidelity bond derivation path
- (m/84'/0'/0'/2/0)
- 4. Copy the public key from the address details
- 5. Use this command with the public key to create the bond address
- 6. Fund the bond address from any wallet
- 7. Use 'prepare-certificate-message' and hardware wallet signing for
- certificates
+ Use a standard receive or change key supported by your external signer and
+ record its derivation path and master fingerprint for redemption. Test the
+ complete synthetic spend workflow before funding the bond.
 
  Your hardware wallet never needs to be connected to this online tool.
+ See docs/fidelity-bond-operations.md for the maintained workflow.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    pubkey      TEXT  Public key (hex, 33 bytes compressed) [required]      │
@@ -385,7 +379,7 @@ For full documentation, see [jmwallet Documentation](https://joinmarket-ng.githu
 
  SECURITY:
  - The hot wallet private key should be stored securely
- - If compromised, an attacker can impersonate your bond until cert expires
+ - If compromised, an attacker can impersonate your bond while takers accept it
  - But they CANNOT spend your bond funds (those remain in cold storage)
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
@@ -802,8 +796,8 @@ For full documentation, see [jmwallet Documentation](https://joinmarket-ng.githu
 
  Where cert_expiry is the ABSOLUTE period number (current_period +
  validity_periods).
- The reference implementation validates that current_block < cert_expiry *
- 2016.
+ The value is signed for reference compatibility. Reference takers enforce the
+ period, but current JoinMarket NG taker verification does not.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    bond_address      TEXT  Bond P2WSH address [required]                   │
@@ -1198,13 +1192,10 @@ For full documentation, see [jmwallet Documentation](https://joinmarket-ng.githu
 
  SIGNING:
 
- Most hardware wallets (Trezor, Coldcard, BitBox02, KeepKey) CANNOT sign
- CLTV timelock P2WSH scripts -- their firmware rejects custom witness
- scripts. Blockstream Jade DOES support arbitrary witness scripts and may
- work via HWI (scripts/sign_bond_psbt.py). Ledger only supports this with
- the legacy Bitcoin app (2.0.x and earlier); the current app (2.1+) has
- been reported to reject bond PSBTs. Specter DIY signs via QR PSBT
- exchange instead.
+ Hardware-wallet support for custom CLTV P2WSH scripts varies by device,
+ firmware, and Bitcoin app. Test the exact signer with --test-unfunded before
+ funding. HWI signing uses scripts/sign_bond_psbt.py; QR signers can return a
+ signed PSBT; scripts/sign_bond_mnemonic.py is the software fallback.
 
  Option A - Mnemonic signing (works with any device):
  1. Run: python scripts/sign_bond_mnemonic.py <psbt_base64>
@@ -1216,8 +1207,8 @@ For full documentation, see [jmwallet Documentation](https://joinmarket-ng.githu
  2. Connect and unlock your hardware wallet
  3. Run: python scripts/sign_bond_psbt.py <psbt_base64>
 
- See docs/technical/privacy.md for strategies to reduce mnemonic exposure
- (dedicated BIP39 passphrase, BIP-85 derived keys, air-gapped signing).
+ See docs/fidelity-bond-operations.md for signer testing, backups, and the
+ complete redemption workflow.
 
  NOTE: Sparrow Wallet also cannot sign CLTV timelock scripts.
 

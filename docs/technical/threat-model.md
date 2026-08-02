@@ -157,15 +157,16 @@ funds; backups and mnemonic hygiene are out of scope here and live in
 
 ### Hot Bond Key Compromise
 
-- **Threat**: A maker's hot wallet is compromised; the attacker uses the
-  bond key to impersonate the maker.
+- **Threat**: A maker's delegated certificate key is compromised; the attacker
+  uses the active certificate to impersonate the maker.
 - **Mitigations**:
-    - **Bond locktime bounds the damage window**: impersonation lasts
-      only until bond expiry; spending the bond requires the bond's
-      private key, not the hot wallet's signing key alone, when using a
-      dedicated bond mnemonic ([Privacy](privacy.md)).
-    - **Best practice**: use a dedicated mnemonic for hot bonds so a
-      hot-wallet compromise does not expose main-wallet funds.
+    - **Certificate expiry depends on the taker**: reference takers enforce the
+      signed expiry field, but current JoinMarket NG taker verification does not.
+      Renew for interoperability, and assume a stolen key can impersonate the
+      maker while takers accept the bond proof.
+    - **Key separation protects funds**: an external bond key can remain
+      offline; the certificate key alone cannot spend the bond
+      ([Fidelity Bond Operations](../fidelity-bond-operations.md)).
 
 ### Denial of Service
 
@@ -185,8 +186,8 @@ funds; backups and mnemonic hygiene are out of scope here and live in
 - **Mnemonic and bond backup.** The protocol cannot recover funds lost
   to a missing mnemonic. See [Best Practices](best-practices.md).
 - **Hardware wallet firmware.** Where a hardware wallet cannot sign bond
-  redemptions (Trezor, Coldcard, BitBox02, KeepKey today), the bond is
-  effectively a hot bond. See [Privacy](privacy.md) for the support
+  redemptions, software mnemonic signing may be required. See
+  [Fidelity Bond Operations](../fidelity-bond-operations.md) for the support
   matrix.
 - **External services**: mempool.space, neutrino backends, and
   third-party Tor relays. Pick infrastructure you trust and pin TLS where
