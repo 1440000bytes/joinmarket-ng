@@ -133,7 +133,7 @@ def _assert_install_succeeded(result: subprocess.CompletedProcess[str]) -> None:
 
 @pytest.mark.timeout(900)
 def test_install_on_debian_stable() -> None:
-    """The default Debian install includes a working ``jm-tumbler``."""
+    """The default install includes working tumbler and watcher commands."""
     result = _build_and_run("Dockerfile.debian", "debian", "default")
     _assert_install_succeeded(result)
 

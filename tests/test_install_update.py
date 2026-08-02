@@ -286,7 +286,10 @@ print_success() {{ echo "OK: $1"; }}
 print_warning() {{ echo "WARN: $1"; }}
 print_error() {{ echo "ERR: $1"; }}
 
-pip() {{ {pip_body}; }}
+pip() {{
+    [[ "$1" == "show" ]] && return 1
+    {pip_body}
+}}
 python3() {{ return 0; }}
 # Stub curl used by prepare_dep_pinning to fetch lock files.
 curl() {{ {curl_body}; }}
@@ -377,18 +380,75 @@ def test_update_aborts_when_hash_check_fails() -> None:
     )
 
 
-def test_update_falls_back_to_unpinned_when_locks_missing() -> None:
-    """If lock files cannot be fetched, the update still proceeds unpinned."""
+def test_update_aborts_when_locks_are_unavailable() -> None:
+    """A lock-fetch failure must abort before installing selected packages."""
     result = _run_update_with_pinning(pinned_deps=True, fetch_ok=False)
-    assert "EXIT:0" in result.stdout, result.stdout + result.stderr
+    assert "EXIT:1" in result.stdout, result.stdout + result.stderr
     pip_lines = _pip_lines(result.stdout)
     assert not any(" -c " in line for line in pip_lines), (
-        "no constraints should be applied when locks are unavailable:\n"
+        "no constraints should be applied after a lock-fetch failure:\n"
         + "\n".join(pip_lines)
     )
     assert not any("--require-hashes" in line for line in pip_lines), (
-        "no hash-checking when locks are unavailable:\n" + "\n".join(pip_lines)
+        "hash installation should not start with incomplete locks:\n"
+        + "\n".join(pip_lines)
     )
-    assert any("subdirectory=jmcore" in line for line in pip_lines), (
-        "update must still install jmcore:\n" + "\n".join(pip_lines)
+    assert not any("subdirectory=" in line for line in pip_lines), (
+        "package updates must not start with incomplete locks:\n" + "\n".join(pip_lines)
     )
+
+
+@pytest.mark.parametrize(
+    ("pinned_deps", "failed_call", "expected_error"),
+    [
+        (True, 1, "temporary storage for dependency locks"),
+        (False, 2, "temporary storage for dependency constraints"),
+    ],
+)
+def test_lock_preparation_aborts_when_temporary_storage_fails(
+    tmp_path: Path,
+    pinned_deps: bool,
+    failed_call: int,
+    expected_error: str,
+) -> None:
+    """Temporary-file failures must not weaken dependency verification."""
+    script = f'''\
+source "{INSTALL_SH}"
+set +e
+print_error() {{ echo "ERR: $1"; }}
+print_warning() {{ echo "WARN: $1"; }}
+pip() {{ [[ "$1" == "show" ]] && return 1; return 0; }}
+curl() {{ printf 'idna==3.10\n'; }}
+REAL_MKTEMP="$(command -v mktemp)"
+MKTEMP_COUNTER="{tmp_path}/mktemp-calls"
+printf '0\n' > "$MKTEMP_COUNTER"
+mktemp() {{
+    local calls
+    calls=$(<"$MKTEMP_COUNTER")
+    calls=$((calls + 1))
+    printf '%s\n' "$calls" > "$MKTEMP_COUNTER"
+    if [[ "$calls" -eq "{failed_call}" ]]; then
+        return 1
+    fi
+    "$REAL_MKTEMP" "$@"
+}}
+SKIP_VERIFY=false
+PINNED_DEPS="{"true" if pinned_deps else "false"}"
+INSTALL_MAKER=false
+INSTALL_TAKER=false
+INSTALL_TUMBLER=false
+INSTALL_ORDERBOOK_WATCHER=true
+prepare_dep_pinning "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+echo "EXIT:$?"
+cleanup_dep_pinning
+'''
+    result = subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert "EXIT:1" in result.stdout, result.stdout + result.stderr
+    assert expected_error in result.stdout

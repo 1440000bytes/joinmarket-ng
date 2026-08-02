@@ -4,7 +4,19 @@ The orderbook watcher aggregates maker offers from directory servers and exposes
 
 ## Install
 
-From source:
+With the recommended installer:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/joinmarket-ng/joinmarket-ng/main/install.sh | bash
+source ~/.joinmarket-ng/activate.sh
+```
+
+The orderbook watcher is part of the default complete profile. To install only
+the watcher and its core dependencies, pass `--orderbook-watcher`. Rerunning
+the installer repairs existing `0.35.0` installations that are missing the
+watcher entry point.
+
+From a source checkout:
 
 ```bash
 python -m pip install -e ./jmcore
@@ -20,6 +32,9 @@ jm-orderbook-watcher
 
 The former `orderbook-watcher` command still works but is deprecated and
 will be removed in a future release.
+
+The reference JoinMarket implementation's `ob-watcher.py` is a separate
+program. Its presence does not install the JoinMarket NG console script.
 
 ## Configuration
 

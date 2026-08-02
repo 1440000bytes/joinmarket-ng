@@ -733,57 +733,61 @@ prepare_dep_pinning() {
     fi
 
     if ! command -v curl &> /dev/null; then
-        print_warning "SECURITY: curl not found; installing dependencies WITHOUT version"
-        print_warning "pinning or hash verification. Dependency integrity is NOT enforced."
-        return 0
+        print_error "curl is required to fetch verified dependency locks."
+        return 1
     fi
 
     local raw_base="https://raw.githubusercontent.com/${GITHUB_REPO}/${commit}"
 
     local work_file
     work_file=$(mktemp -t jmng-deps.XXXXXX) || {
-        print_warning "Could not create temp file for dependency locks; skipping pinning."
-        return 0
+        print_error "Could not create temporary storage for dependency locks."
+        return 1
     }
 
     # Only the components being installed contribute their locks. jmcore and
-    # jmwallet are always installed; maker/taker/tumbler are conditional.
+    # jmwallet are always installed; the remaining components are conditional.
     local pkgs=("jmcore" "jmwallet")
     [[ "${INSTALL_MAKER:-true}" == "true" ]] && pkgs+=("maker")
     [[ "${INSTALL_TAKER:-true}" == "true" ]] && pkgs+=("taker")
     [[ "${INSTALL_TUMBLER:-false}" == "true" ]] && pkgs+=("tumbler")
+    if [[ "${INSTALL_ORDERBOOK_WATCHER:-false}" == "true" ]] \
+        || pip show joinmarket-orderbook-watcher &> /dev/null; then
+        pkgs+=("orderbook_watcher")
+    fi
 
-    local fetched=0
     local pkg
     for pkg in "${pkgs[@]}"; do
         local url="${raw_base}/${pkg}/requirements.txt"
-        if curl -fsSL "$url" >> "$work_file" 2>/dev/null; then
-            printf '\n' >> "$work_file"
-            fetched=$((fetched + 1))
-        else
+        if ! curl -fsSL "$url" >> "$work_file" 2>/dev/null \
+            || ! printf '\n' >> "$work_file"; then
             print_warning "Could not fetch ${pkg}/requirements.txt from the release commit."
+            print_error "Cannot securely install the selected components without all dependency locks."
+            rm -f "$work_file"
+            return 1
         fi
     done
 
-    if [[ $fetched -eq 0 ]]; then
-        print_warning "SECURITY: no dependency lock files found for this release; installing"
-        print_warning "WITHOUT version pinning or hash verification."
-        rm -f "$work_file"
-        return 0
-    fi
-
     DEP_HASHED_FILE="$work_file"
 
-    # Pre-compute the hash-free constraints view so we can fall back to
-    # version-pinning if hash-checked installation is not possible.
-    local constraints_file
-    constraints_file=$(mktemp -t jmng-constraints.XXXXXX) || {
-        constraints_file=""
-    }
-    if [[ -n "$constraints_file" ]]; then
+    # --no-hash-deps still requires an exact-version constraints view.
+    if [[ "$PINNED_DEPS" != "true" ]]; then
+        local constraints_file
+        constraints_file=$(mktemp -t jmng-constraints.XXXXXX) || {
+            print_error "Could not create temporary storage for dependency constraints."
+            rm -f "$work_file"
+            DEP_HASHED_FILE=""
+            return 1
+        }
         # Keep only "name==version" tokens: drop --hash lines, comments,
         # environment markers, inline comments and line-continuation slashes.
-        sed -n 's/^\([A-Za-z0-9._-]*==[^ ;#\\]*\).*/\1/p' "$work_file" > "$constraints_file"
+        if ! sed -n 's/^\([A-Za-z0-9._-]*==[^ ;#\\]*\).*/\1/p' \
+            "$work_file" > "$constraints_file"; then
+            print_error "Could not prepare dependency version constraints."
+            rm -f "$work_file" "$constraints_file"
+            DEP_HASHED_FILE=""
+            return 1
+        fi
         DEP_CONSTRAINTS_FILE="$constraints_file"
     fi
     return 0
@@ -808,12 +812,12 @@ cleanup_dep_pinning() {
 # Sets DEP_PIN_ARGS to the pip args the package installs should append:
 #   * (--no-deps)           when hashed deps were installed up front
 #   * (-c <constraints>)    when version-pinning (--no-hash-deps)
-#   * ()                    when no locks are available at all
+#   * ()                    when lock pinning was intentionally disabled
 # Returns non-zero only on a hard, non-recoverable failure.
 apply_dep_pinning() {
     DEP_PIN_ARGS=()
 
-    # No locks available (dev install / fetch failure): nothing to pin.
+    # Dev installs intentionally have no verified lock source.
     if [[ -z "$DEP_HASHED_FILE" ]]; then
         return 0
     fi
@@ -897,9 +901,9 @@ install_packages() {
     fi
     # Prepare dependency pinning anchored to the verified commit, then
     # decide how to pin: hash-checked by default (installing the verified
-    # deps up front and resolving packages with --no-deps), with automatic
-    # fallback to version-pinning if hashes cannot be satisfied here.
-    prepare_dep_pinning "$install_commit"
+    # deps up front and resolving packages with --no-deps), or exact-version
+    # constraints when --no-hash-deps was explicitly selected.
+    prepare_dep_pinning "$install_commit" || { cleanup_dep_pinning; exit 1; }
     apply_dep_pinning || { cleanup_dep_pinning; exit 1; }
     local pkg_extra=("${DEP_PIN_ARGS[@]}")
 
@@ -930,6 +934,12 @@ install_packages() {
             "${git_base}#subdirectory=maker" "${git_base}#subdirectory=taker" \
             "${pkg_extra[@]}" --quiet
         print_success "Tumbler installed"
+    fi
+
+    if [[ "${INSTALL_ORDERBOOK_WATCHER:-false}" == "true" ]]; then
+        print_info "Installing orderbook watcher..."
+        pip install "${git_base}#subdirectory=orderbook_watcher" "${pkg_extra[@]}" --quiet
+        print_success "Orderbook watcher installed"
     fi
 
     cleanup_dep_pinning
@@ -991,13 +1001,13 @@ update_packages() {
     local maker_url="${git_base}#subdirectory=maker"
     local taker_url="${git_base}#subdirectory=taker"
     local tumbler_url="${git_base}#subdirectory=tumbler"
+    local orderbook_watcher_url="${git_base}#subdirectory=orderbook_watcher"
 
     # Prepare dependency pinning anchored to the verified commit, then
     # decide how to pin: hash-checked by default (installing verified deps
-    # up front so the resolving installs below become --no-deps), with
-    # automatic fallback to version-pin constraints if hashes cannot be
-    # satisfied here.
-    prepare_dep_pinning "$commit_hash"
+    # up front so the resolving installs below become --no-deps), or
+    # exact-version constraints when --no-hash-deps was explicitly selected.
+    prepare_dep_pinning "$commit_hash" || { cleanup_dep_pinning; exit 1; }
     apply_dep_pinning || { cleanup_dep_pinning; exit 1; }
     local dep_extra=("${DEP_PIN_ARGS[@]}")
 
@@ -1064,6 +1074,22 @@ update_packages() {
         pip install "$tumbler_url" "$core_url" "$wallet_url" "$maker_url" "$taker_url" \
             "${dep_extra[@]}" --quiet
         print_success "Tumbler installed"
+    fi
+
+    # Preserve and update an existing watcher regardless of the selected
+    # role profile. Install it on demand for new watcher-only setups.
+    local should_install_orderbook_watcher="${INSTALL_ORDERBOOK_WATCHER:-false}"
+    if pip show joinmarket-orderbook-watcher &> /dev/null; then
+        print_info "Updating orderbook watcher..."
+        pip install --upgrade --force-reinstall --no-deps "$orderbook_watcher_url" --quiet
+        pip install --upgrade "$orderbook_watcher_url" "$core_url" "$wallet_url" \
+            "${dep_extra[@]}" --quiet
+        print_success "Orderbook watcher updated"
+    elif [[ "$should_install_orderbook_watcher" == "true" ]]; then
+        print_info "Installing orderbook watcher..."
+        pip install "$orderbook_watcher_url" "$core_url" "$wallet_url" \
+            "${dep_extra[@]}" --quiet
+        print_success "Orderbook watcher installed"
     fi
 
     cleanup_dep_pinning
@@ -1369,7 +1395,9 @@ ask_components() {
         return
     fi
 
-    if [[ "$INSTALL_MAKER" == "false" ]] && [[ "$INSTALL_TAKER" == "false" ]]; then
+    if [[ "$INSTALL_MAKER" == "false" ]] \
+        && [[ "$INSTALL_TAKER" == "false" ]] \
+        && [[ "${INSTALL_ORDERBOOK_WATCHER:-false}" == "false" ]]; then
         print_header "Component Selection"
         echo "Which components do you want to install?"
         echo ""
@@ -1445,6 +1473,9 @@ print_completion() {
     if [[ "${INSTALL_TUMBLER:-false}" == "true" ]]; then
         echo "  4. Build a mixing plan: jm-tumbler plan -f $DATA_DIR/wallets/wallet.mnemonic"
     fi
+    if [[ "${INSTALL_ORDERBOOK_WATCHER:-false}" == "true" ]]; then
+        echo "  4. Start the orderbook watcher: jm-orderbook-watcher"
+    fi
 
     echo ""
     echo -e "${BLUE}To update later:${NC}"
@@ -1476,6 +1507,7 @@ Options:
   --update            Update existing installation
   --maker             Install maker component (installed by default)
   --taker             Install taker component (installed by default)
+  --orderbook-watcher Install the orderbook watcher component
   --version VERSION   Install specific version (default: latest)
   --dev               Install from main branch (for development)
   --skip-tor          Skip Tor installation and configuration
@@ -1494,10 +1526,10 @@ Options:
 
 Note: When piped from curl, auto-confirm is enabled by default for Tor
       configuration and other prompts. Use --skip-tor to skip Tor setup.
-      By default, both maker and taker are installed.
+      By default, maker, taker, tumbler, and the orderbook watcher are installed.
 
 Examples:
-  # Install with both maker and taker (default)
+  # Install the complete profile (default)
   curl -sSL https://raw.githubusercontent.com/joinmarket-ng/joinmarket-ng/main/install.sh | bash
 
   # Install maker only
@@ -1505,6 +1537,9 @@ Examples:
 
   # Install taker only
   curl -sSL ... | bash -s -- --taker
+
+  # Install the orderbook watcher
+  curl -sSL ... | bash -s -- --orderbook-watcher
 
   # Update existing installation
   curl -sSL ... | bash -s -- --update
@@ -1524,6 +1559,7 @@ parse_args() {
     MODE="install"
     INSTALL_MAKER=""
     INSTALL_TAKER=""
+    INSTALL_ORDERBOOK_WATCHER=""
     AUTO_YES=false
     SKIP_TOR=false
     INSTALL_VERSION=""
@@ -1554,6 +1590,11 @@ parse_args() {
                 ;;
             --taker)
                 INSTALL_TAKER=true
+                EXPLICIT_COMPONENTS=true
+                shift
+                ;;
+            --orderbook-watcher)
+                INSTALL_ORDERBOOK_WATCHER=true
                 EXPLICIT_COMPONENTS=true
                 shift
                 ;;
@@ -1603,9 +1644,11 @@ parse_args() {
     if [[ "$EXPLICIT_COMPONENTS" == "false" ]]; then
         INSTALL_MAKER=${INSTALL_MAKER:-true}
         INSTALL_TAKER=${INSTALL_TAKER:-true}
+        INSTALL_ORDERBOOK_WATCHER=${INSTALL_ORDERBOOK_WATCHER:-true}
     else
         INSTALL_MAKER=${INSTALL_MAKER:-false}
         INSTALL_TAKER=${INSTALL_TAKER:-false}
+        INSTALL_ORDERBOOK_WATCHER=${INSTALL_ORDERBOOK_WATCHER:-false}
     fi
 
     derive_install_tumbler

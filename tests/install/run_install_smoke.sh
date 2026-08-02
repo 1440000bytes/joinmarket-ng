@@ -3,8 +3,8 @@
 #
 # Steps:
 #   1. Run ``./install.sh`` against a requested profile. The default profile
-#      exercises the recommended maker+taker+tumbler installation; the taker
-#      profile protects the minimal single-role installation.
+#      exercises the recommended maker+taker+tumbler+watcher installation; the
+#      taker profile protects the minimal single-role installation.
 #   2. Source the venv it created and run its expected CLI entry points to
 #      prove they are wired up.
 #   3. Print a clear PASS/FAIL marker so the calling pytest can grep
@@ -23,7 +23,7 @@ echo "=== running install.sh against ref ${INSTALL_REF} ==="
 install_args=(-y --skip-tor --skip-verify --version "${INSTALL_REF}")
 case "${INSTALL_PROFILE}" in
     default)
-        expected_commands=(jm-wallet jm-tumbler)
+        expected_commands=(jm-wallet jm-tumbler jm-orderbook-watcher)
         ;;
     taker)
         install_args+=(--taker)

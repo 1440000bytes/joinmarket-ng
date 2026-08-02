@@ -27,7 +27,8 @@ source ~/.joinmarket-ng/activate.sh
 What this does:
 
 - creates `~/.joinmarket-ng/venv`
-- installs `jmcore`, `jmwallet`, `jm-maker`, `jm-taker`, and `jm-tumbler`
+- installs `jmcore`, `jmwallet`, `jm-maker`, `jm-taker`, `jm-tumbler`, and the
+  orderbook watcher
 - creates `~/.joinmarket-ng/config.toml`
 - installs/configures Tor unless you pass `--skip-tor`
 - installs static shell completion scripts for bash and zsh (near-instant tab completion)
@@ -37,6 +38,9 @@ Common options:
 ```bash
 # taker only
 curl -sSL https://raw.githubusercontent.com/joinmarket-ng/joinmarket-ng/main/install.sh | bash -s -- --taker
+
+# orderbook watcher only
+curl -sSL https://raw.githubusercontent.com/joinmarket-ng/joinmarket-ng/main/install.sh | bash -s -- --orderbook-watcher
 
 # maker only
 curl -sSL https://raw.githubusercontent.com/joinmarket-ng/joinmarket-ng/main/install.sh | bash -s -- --maker
@@ -49,7 +53,8 @@ curl -sSL https://raw.githubusercontent.com/joinmarket-ng/joinmarket-ng/main/ins
 ```
 
 The default complete profile includes `jm-tumbler` because it needs both maker
-and taker. Single-role installs do not include it.
+and taker, plus the orderbook watcher. Maker-only and taker-only installs do
+not include either component. Use `--orderbook-watcher` for a watcher-only installation.
 
 ## Flatpak
 
@@ -238,6 +243,8 @@ python -m pip install -e ./jmcore
 python -m pip install -e ./jmwallet
 python -m pip install -e ./maker
 python -m pip install -e ./taker
+# Optional: installs the jm-orderbook-watcher command
+python -m pip install -e ./orderbook_watcher
 ```
 
 Shell completions are pre-generated and installed automatically by the installer.
@@ -277,6 +284,8 @@ newgrp debian-tor
 ## Troubleshooting
 
 - `jm-wallet: command not found`: run `source ~/.joinmarket-ng/activate.sh`
+- `jm-orderbook-watcher: command not found`: rerun the installer with
+  `--orderbook-watcher`, then run `source ~/.joinmarket-ng/activate.sh`
 - build dependency errors on Linux: install `build-essential libffi-dev libsodium-dev pkg-config`
 - Python venv issues: install `python3-venv`
 - RPC failures: verify Bitcoin Core is reachable and credentials in `config.toml` are correct
@@ -503,6 +512,13 @@ pip install .\maker .\tumbler
 ```
 
 Taker-only and maker-only installations can omit `tumbler`.
+
+To install the optional orderbook watcher and its command:
+
+```powershell
+pip install .\orderbook_watcher
+jm-orderbook-watcher --help
+```
 
 ### 2. Install and start Tor
 
