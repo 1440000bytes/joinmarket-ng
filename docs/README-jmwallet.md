@@ -445,7 +445,7 @@ The full CLI reference below is auto-generated from command `--help` output.
 
  SECURITY:
  - The hot wallet private key should be stored securely
- - If compromised, an attacker can impersonate your bond while takers accept it
+ - If compromised, an attacker can impersonate your bond through cert expiry
  - But they CANNOT spend your bond funds (those remain in cold storage)
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
@@ -862,8 +862,8 @@ The full CLI reference below is auto-generated from command `--help` output.
 
  Where cert_expiry is the ABSOLUTE period number (current_period +
  validity_periods).
- The value is signed for reference compatibility. Reference takers enforce the
- period, but current JoinMarket NG taker verification does not.
+ The value is signed for reference compatibility. Reference and JoinMarket NG
+ takers accept the certificate at its boundary block and reject it afterward.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    bond_address      TEXT  Bond P2WSH address [required]                   │

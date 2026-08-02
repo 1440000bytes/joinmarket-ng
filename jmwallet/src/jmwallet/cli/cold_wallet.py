@@ -290,7 +290,7 @@ def generate_hot_keypair(
 
     SECURITY:
     - The hot wallet private key should be stored securely
-    - If compromised, an attacker can impersonate your bond while takers accept it
+    - If compromised, an attacker can impersonate your bond through cert expiry
     - But they CANNOT spend your bond funds (those remain in cold storage)
     """
     setup_logging(log_level)
@@ -436,8 +436,8 @@ def prepare_certificate_message(
       "fidelity-bond-cert|<cert_pubkey_hex>|<cert_expiry>"
 
     Where cert_expiry is the ABSOLUTE period number (current_period + validity_periods).
-    The value is signed for reference compatibility. Reference takers enforce the
-    period, but current JoinMarket NG taker verification does not.
+    The value is signed for reference compatibility. Reference and JoinMarket NG
+    takers accept the certificate at its boundary block and reject it afterward.
     """
     settings = setup_cli(log_level, data_dir=data_dir_opt, config_file=config_file)
 

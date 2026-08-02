@@ -20,11 +20,10 @@ An external-key bond uses two keypairs:
 - The **bond key** controls the locked UTXO and signs a delegated certificate.
 - The **certificate key** stays with the online maker and signs per-session nick proofs.
 
-Compromise of the certificate key can enable maker impersonation while takers
-continue to accept the bond proof. The expiry period is authenticated metadata.
-Reference takers enforce it, but current JoinMarket NG taker verification does
-not. Spending the bond removes its value; the certificate key does not control
-the bond funds.
+Compromise of the certificate key can enable maker impersonation through the
+signed certificate expiry boundary. Reference and JoinMarket NG takers reject
+the proof once chain height exceeds that boundary. Spending the bond removes its
+value; the certificate key does not control the bond funds.
 
 ## Backend And Identity
 
@@ -240,8 +239,8 @@ absolute period.
 
 The protocol field is an absolute 2016-block period. `--validity-periods`
 controls issuance policy by adding a duration to the current period. The field
-is covered by the bond-key signature. Reference takers reject proofs after the
-absolute boundary; current JoinMarket NG taker verification does not.
+is covered by the bond-key signature. Reference and JoinMarket NG takers accept
+the proof at the exact boundary block and reject it after that block.
 
 ## Redeem An External-Key Bond
 

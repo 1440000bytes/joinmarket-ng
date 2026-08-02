@@ -149,9 +149,9 @@ bond key (optionally cold) -> certificate key (hot) -> maker nick proof
 
 Separating these keys keeps the bond-spending key offline during normal maker
 operation. Compromise of the hot certificate key can permit impersonation while
-takers accept the bond proof, but does not spend the bond funds. The certificate
-expiry field is authenticated and enforced by reference takers, but current
-JoinMarket NG taker verification does not enforce it against chain height.
+takers accept the bond proof, but does not spend the bond funds. Reference and
+JoinMarket NG takers enforce the authenticated certificate expiry field against
+chain height.
 
 Certificate issuance chooses an absolute period, often by adding a configured
 number of periods to the current chain period. The signed field is not a

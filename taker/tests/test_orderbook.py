@@ -272,6 +272,7 @@ class TestDedupeOffersByBond:
                 txfee=1000,
                 cjfee="0.002",  # More expensive
                 fidelity_bond_data=bond_data,
+                fidelity_bond_value=100,
             ),
             Offer(
                 counterparty="maker2",
@@ -282,6 +283,7 @@ class TestDedupeOffersByBond:
                 txfee=1000,
                 cjfee="0.001",  # Cheaper
                 fidelity_bond_data=bond_data,
+                fidelity_bond_value=100,
             ),
         ]
         deduped = dedupe_offers_by_bond(offers, cj_amount=100_000)
@@ -306,6 +308,7 @@ class TestDedupeOffersByBond:
                     "utxo_pub": "pubkey1",
                     "cert_expiry": 1700000000,
                 },
+                fidelity_bond_value=100,
             ),
             Offer(
                 counterparty="maker2",
@@ -322,6 +325,7 @@ class TestDedupeOffersByBond:
                     "utxo_pub": "pubkey2",
                     "cert_expiry": 1700000000,
                 },
+                fidelity_bond_value=100,
             ),
         ]
         deduped = dedupe_offers_by_bond(offers, cj_amount=100_000)
@@ -374,6 +378,7 @@ class TestDedupeOffersByBond:
                 txfee=1000,
                 cjfee="0.002",
                 fidelity_bond_data=bond_data,
+                fidelity_bond_value=100,
             ),
             Offer(
                 counterparty="bonded2",
@@ -384,6 +389,7 @@ class TestDedupeOffersByBond:
                 txfee=1000,
                 cjfee="0.001",  # Cheaper - this one should be kept
                 fidelity_bond_data=bond_data,
+                fidelity_bond_value=100,
             ),
             # Unbonded maker
             Offer(
@@ -421,6 +427,7 @@ class TestDedupeOffersByBond:
                 txfee=1000,
                 cjfee=5000,  # 5000 sats fixed
                 fidelity_bond_data=bond_data,
+                fidelity_bond_value=100,
             ),
             Offer(
                 counterparty="maker_rel",
@@ -431,6 +438,7 @@ class TestDedupeOffersByBond:
                 txfee=1000,
                 cjfee="0.01",  # 1%
                 fidelity_bond_data=bond_data,
+                fidelity_bond_value=100,
             ),
         ]
 
@@ -443,6 +451,42 @@ class TestDedupeOffersByBond:
         deduped_large = dedupe_offers_by_bond(offers, cj_amount=1_000_000)
         assert len(deduped_large) == 1
         assert deduped_large[0].counterparty == "maker_abs"
+
+    def test_unverified_proof_does_not_displace_verified_bond(self) -> None:
+        """An expired or invalid proof is treated as bondless during deduplication."""
+        bond_data = {
+            "utxo_txid": "a" * 64,
+            "utxo_vout": 0,
+            "locktime": 500000,
+            "utxo_pub": "pubkey",
+            "cert_expiry": 1700000000,
+        }
+        unverified = Offer(
+            counterparty="unverified",
+            oid=0,
+            ordertype=OfferType.SW0_RELATIVE,
+            minsize=10_000,
+            maxsize=1_000_000,
+            txfee=0,
+            cjfee="0",
+            fidelity_bond_data=bond_data,
+            fidelity_bond_value=0,
+        )
+        verified = Offer(
+            counterparty="verified",
+            oid=0,
+            ordertype=OfferType.SW0_RELATIVE,
+            minsize=10_000,
+            maxsize=1_000_000,
+            txfee=1000,
+            cjfee="0.001",
+            fidelity_bond_data=bond_data,
+            fidelity_bond_value=100,
+        )
+
+        deduped = dedupe_offers_by_bond([unverified, verified], cj_amount=100_000)
+
+        assert {offer.counterparty for offer in deduped} == {"unverified", "verified"}
 
 
 class TestOrderChoosers:

@@ -217,7 +217,9 @@ def dedupe_offers_by_bond(offers: list[Offer], cj_amount: int) -> list[Offer]:
     Otherwise, an attacker could create multiple nicks backed by the same bond
     and get selected multiple times in the same CoinJoin.
 
-    Offers without a fidelity bond are passed through unchanged.
+    Offers without a verified, positive-value fidelity bond are passed through
+    unchanged. Unverified or expired proofs must not displace a verified offer
+    that uses the same UTXO.
 
     Args:
         offers: List of offers (possibly from different makers using same bond)
@@ -232,7 +234,7 @@ def dedupe_offers_by_bond(offers: list[Offer], cj_amount: int) -> list[Offer]:
 
     for offer in offers:
         bond_key = None
-        if offer.fidelity_bond_data:
+        if offer.fidelity_bond_data and offer.fidelity_bond_value > 0:
             # Use txid:vout as unique key
             bond_key = (
                 f"{offer.fidelity_bond_data['utxo_txid']}:{offer.fidelity_bond_data['utxo_vout']}"

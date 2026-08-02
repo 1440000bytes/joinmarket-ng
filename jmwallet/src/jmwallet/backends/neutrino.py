@@ -1432,7 +1432,9 @@ class NeutrinoBackend(BlockchainBackend):
         """Get current blockchain height from neutrino."""
         try:
             result = await self._api_call("GET", "v1/status")
-            height = result.get("block_height", 0)
+            height = result.get("block_height")
+            if type(height) is not int or height < 0:
+                raise ValueError(f"Invalid neutrino status 'block_height' value: {height!r}")
             logger.debug(f"Current block height: {height}")
             return height
 

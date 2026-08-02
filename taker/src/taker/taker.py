@@ -23,6 +23,7 @@ from jmcore.bond_calc import calculate_timelocked_fidelity_bond_value
 from jmcore.btc_script import derive_bond_address
 from jmcore.commitment_blacklist import set_blacklist_path
 from jmcore.crypto import NickIdentity
+from jmcore.models import Offer
 from jmcore.notifications import get_notifier
 from jmcore.paths import read_nick_state
 from jmcore.protocol import FEATURE_NEUTRINO_COMPAT, JM_VERSION
@@ -421,7 +422,7 @@ class Taker(TakerMonitoringMixin):
             await self.wallet.close()
         logger.info("Taker stopped")
 
-    async def _update_offers_with_bond_values(self, offers: list) -> None:
+    async def _update_offers_with_bond_values(self, offers: list[Offer]) -> None:
         """
         Verify fidelity bonds and calculate their values.
 
@@ -432,94 +433,127 @@ class Taker(TakerMonitoringMixin):
         from the UTXO public key and locktime, then delegates verification to the
         backend which can batch the lookups optimally.
         """
-        # Collect offers that need bond verification, deduplicating by (txid, vout)
-        bond_key_to_request: dict[tuple[str, int], BondVerificationRequest] = {}
-        bond_key_to_locktime: dict[tuple[str, int], int] = {}
-
         for offer in offers:
-            if offer.fidelity_bond_data and offer.fidelity_bond_value == 0:
-                txid = offer.fidelity_bond_data["utxo_txid"]
-                vout = offer.fidelity_bond_data["utxo_vout"]
-                key = (txid, vout)
+            offer.fidelity_bond_value = 0
 
-                if key in bond_key_to_request:
-                    continue
-
-                locktime = offer.fidelity_bond_data["locktime"]
-                utxo_pub = offer.fidelity_bond_data.get("utxo_pub")
-
-                if not utxo_pub:
-                    logger.debug(f"Bond {txid}:{vout} missing utxo_pub, skipping")
-                    continue
-
-                # Ensure utxo_pub is bytes
-                if isinstance(utxo_pub, str):
-                    utxo_pub_bytes = bytes.fromhex(utxo_pub)
-                else:
-                    utxo_pub_bytes = utxo_pub
-
-                try:
-                    bond_addr = derive_bond_address(utxo_pub_bytes, locktime, self.config.network)
-                except Exception as e:
-                    logger.debug(f"Failed to derive bond address for {txid}:{vout}: {e}")
-                    continue
-
-                bond_key_to_request[key] = BondVerificationRequest(
-                    txid=txid,
-                    vout=vout,
-                    utxo_pub=utxo_pub_bytes,
-                    locktime=locktime,
-                    address=bond_addr.address,
-                    scriptpubkey=bond_addr.scriptpubkey.hex(),
-                )
-                bond_key_to_locktime[key] = locktime
-
-        if not bond_key_to_request:
+        bonded_offers = [offer for offer in offers if offer.fidelity_bond_data]
+        if not bonded_offers:
             return
 
-        logger.info(f"Verifying {len(bond_key_to_request)} fidelity bonds...")
+        try:
+            current_block_height = await self.backend.get_block_height()
+        except Exception as e:
+            logger.warning(f"Cannot verify fidelity bond certificate expiry: {e}")
+            return
+        if type(current_block_height) is not int or current_block_height < 0:
+            logger.warning(
+                f"Cannot verify fidelity bond certificate expiry: backend returned "
+                f"invalid block height {current_block_height!r}"
+            )
+            return
+
+        # Deduplicate identical claims while verifying conflicting script claims
+        # independently. A claim is the outpoint plus its proof-derived script.
+        claim_to_request: dict[tuple[str, int, str], BondVerificationRequest] = {}
+        claim_to_offers: dict[tuple[str, int, str], list[Offer]] = {}
+
+        for offer in bonded_offers:
+            bond_data = offer.fidelity_bond_data
+            assert bond_data is not None
+
+            txid = bond_data["utxo_txid"]
+            vout = bond_data["utxo_vout"]
+            cert_expiry_height = bond_data.get("cert_expiry")
+
+            if not isinstance(cert_expiry_height, int):
+                logger.debug(f"Bond {txid}:{vout} missing certificate expiry, skipping")
+                continue
+            if current_block_height > cert_expiry_height:
+                logger.debug(
+                    f"Bond {txid}:{vout} certificate expired at block "
+                    f"{cert_expiry_height} (current block {current_block_height})"
+                )
+                continue
+
+            locktime = bond_data["locktime"]
+            utxo_pub = bond_data.get("utxo_pub")
+
+            if not utxo_pub:
+                logger.debug(f"Bond {txid}:{vout} missing utxo_pub, skipping")
+                continue
+
+            try:
+                utxo_pub_bytes = bytes.fromhex(utxo_pub) if isinstance(utxo_pub, str) else utxo_pub
+                bond_addr = derive_bond_address(utxo_pub_bytes, locktime, self.config.network)
+            except Exception as e:
+                logger.debug(f"Failed to derive bond address for {txid}:{vout}: {e}")
+                continue
+
+            request = BondVerificationRequest(
+                txid=txid,
+                vout=vout,
+                utxo_pub=utxo_pub_bytes,
+                locktime=locktime,
+                address=bond_addr.address,
+                scriptpubkey=bond_addr.scriptpubkey.hex(),
+            )
+            claim_key = (txid, vout, request.scriptpubkey)
+            if claim_key in claim_to_request:
+                claim_to_offers[claim_key].append(offer)
+                continue
+
+            claim_to_request[claim_key] = request
+            claim_to_offers[claim_key] = [offer]
+
+        if not claim_to_request:
+            return
+
+        logger.info(f"Verifying {len(claim_to_request)} fidelity bonds...")
 
         # Bulk verify via the backend (batched for efficiency)
         try:
-            requests = list(bond_key_to_request.values())
+            requests = list(claim_to_request.values())
             results = await self.backend.verify_bonds(requests)
         except Exception as e:
             logger.warning(f"Bond verification failed: {e}")
             return
+        if len(results) != len(requests):
+            logger.warning(
+                f"Bond verification returned {len(results)} results for {len(requests)} requests"
+            )
+            return
 
-        # Build lookup map from results
         current_time = int(time.time())
-        bond_values: dict[tuple[str, int], int] = {}
+        claim_values: dict[tuple[str, int, str], int] = {}
 
-        for result in results:
+        for request, result in zip(requests, results, strict=True):
+            if (result.txid, result.vout) != (request.txid, request.vout):
+                logger.warning(
+                    f"Bond verification result mismatch: requested "
+                    f"{request.txid}:{request.vout}, received {result.txid}:{result.vout}"
+                )
+                continue
             if not result.valid:
                 logger.debug(f"Bond {result.txid}:{result.vout} invalid: {result.error}")
                 continue
 
-            key = (result.txid, result.vout)
-            locktime = bond_key_to_locktime[key]
-
             bond_value = calculate_timelocked_fidelity_bond_value(
                 utxo_value=result.value,
                 confirmation_time=result.block_time,
-                locktime=locktime,
+                locktime=request.locktime,
                 current_time=current_time,
             )
 
             if bond_value > 0:
-                bond_values[key] = bond_value
+                claim_key = (request.txid, request.vout, request.scriptpubkey)
+                claim_values[claim_key] = bond_value
 
-        # Update offers with calculated bond values
+        # Update only offers whose certificate and proof data were eligible.
         updated_count = 0
-        for offer in offers:
-            if offer.fidelity_bond_data and offer.fidelity_bond_value == 0:
-                txid = offer.fidelity_bond_data["utxo_txid"]
-                vout = offer.fidelity_bond_data["utxo_vout"]
-                key = (txid, vout)
-
-                if key in bond_values:
-                    offer.fidelity_bond_value = bond_values[key]
-                    updated_count += 1
+        for claim_key, bond_value in claim_values.items():
+            for offer in claim_to_offers[claim_key]:
+                offer.fidelity_bond_value = bond_value
+                updated_count += 1
 
         logger.info(f"Updated {updated_count} offers with verified fidelity bond values")
 

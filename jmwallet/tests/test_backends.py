@@ -89,6 +89,31 @@ class TestNeutrinoBackend:
         await backend.close()
 
     @pytest.mark.asyncio
+    async def test_get_block_height_accepts_genesis_height(self):
+        """An explicit zero height is valid at chain genesis."""
+        backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="regtest")
+        backend._api_call = AsyncMock(return_value={"block_height": 0})
+        try:
+            assert await backend.get_block_height() == 0
+        finally:
+            await backend.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "response",
+        [{}, {"block_height": None}, {"block_height": "1"}, {"block_height": -1}],
+    )
+    async def test_get_block_height_rejects_invalid_response(self, response):
+        """Missing or malformed neutrino heights fail instead of becoming zero."""
+        backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="regtest")
+        backend._api_call = AsyncMock(return_value=response)
+        try:
+            with pytest.raises(ValueError, match="neutrino status 'block_height'"):
+                await backend.get_block_height()
+        finally:
+            await backend.close()
+
+    @pytest.mark.asyncio
     async def test_list_wallet_transactions_since_maps_records(self):
         """/v1/transactions records map to WalletTxEntry with inline raw hex."""
         from unittest.mock import AsyncMock

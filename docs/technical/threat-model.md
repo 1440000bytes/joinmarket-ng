@@ -160,10 +160,9 @@ funds; backups and mnemonic hygiene are out of scope here and live in
 - **Threat**: A maker's delegated certificate key is compromised; the attacker
   uses the active certificate to impersonate the maker.
 - **Mitigations**:
-    - **Certificate expiry depends on the taker**: reference takers enforce the
-      signed expiry field, but current JoinMarket NG taker verification does not.
-      Renew for interoperability, and assume a stolen key can impersonate the
-      maker while takers accept the bond proof.
+    - **Certificate expiry bounds delegation**: reference and JoinMarket NG
+      takers reject the proof once chain height exceeds the signed expiry
+      boundary. Renew before that boundary to retain bond weight.
     - **Key separation protects funds**: an external bond key can remain
       offline; the certificate key alone cannot spend the bond
       ([Fidelity Bond Operations](../fidelity-bond-operations.md)).

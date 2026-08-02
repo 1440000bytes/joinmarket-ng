@@ -57,6 +57,24 @@ class TestDescriptorWalletBackendUnit:
         assert backend._get_wallet_url() == f"{TEST_RPC_URL}/wallet/my_wallet"
 
     @pytest.mark.asyncio
+    async def test_get_block_height_accepts_genesis_height(self):
+        """An explicit zero height is valid at chain genesis."""
+        backend = DescriptorWalletBackend()
+        backend._rpc_call = AsyncMock(return_value={"blocks": 0})
+
+        assert await backend.get_block_height() == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("response", [{}, {"blocks": None}, {"blocks": "1"}, {"blocks": -1}])
+    async def test_get_block_height_rejects_invalid_response(self, response):
+        """Missing or malformed Core heights fail instead of becoming zero."""
+        backend = DescriptorWalletBackend()
+        backend._rpc_call = AsyncMock(return_value=response)
+
+        with pytest.raises(ValueError, match="getblockchaininfo 'blocks'"):
+            await backend.get_block_height()
+
+    @pytest.mark.asyncio
     async def test_create_wallet_already_loaded(self):
         """Test create_wallet when wallet is already loaded."""
         backend = DescriptorWalletBackend(wallet_name="existing_wallet")
@@ -1869,6 +1887,8 @@ class TestBackgroundRescan:
         ) -> Any:
             if method == "rescanblockchain":
                 raise httpx.TimeoutException("simulated long-running rescan")
+            if method == "getblockchaininfo":
+                return {"blocks": 0}
             if method == "getwalletinfo":
                 return {"scanning": False}
             return {}

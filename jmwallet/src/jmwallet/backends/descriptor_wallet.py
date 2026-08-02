@@ -1964,7 +1964,10 @@ class DescriptorWalletBackend(BlockchainBackend):
     async def get_block_height(self) -> int:
         """Get current blockchain height."""
         info = await self._rpc_call("getblockchaininfo", use_wallet=False)
-        return info.get("blocks", 0)
+        height = info.get("blocks")
+        if type(height) is not int or height < 0:
+            raise ValueError(f"Invalid Bitcoin Core getblockchaininfo 'blocks' value: {height!r}")
+        return height
 
     async def get_block_time(self, block_height: int) -> int:
         """Get block time (unix timestamp) for given height."""
