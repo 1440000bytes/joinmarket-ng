@@ -13,7 +13,8 @@ from __future__ import annotations
 import csv
 import os
 import tempfile
-from collections.abc import Mapping
+from collections import defaultdict, deque
+from collections.abc import Iterable, Mapping
 from dataclasses import fields
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -27,6 +28,7 @@ if TYPE_CHECKING:
     from jmcore.bitcoin import CoinjoinAnalysis
 
     from jmwallet.backends.base import BlockchainBackend
+    from jmwallet.wallet.models import UTXOInfo
 
 
 # Once a pending transaction reaches this many confirmations we stop polling
@@ -1900,6 +1902,143 @@ def get_address_history_types(
                     address_types[entry.change_address] = "flagged"
 
     return address_types
+
+
+def get_coinjoin_lineage_outpoints(
+    current_utxos: Iterable[UTXOInfo],
+    *,
+    network: str,
+    data_dir: Path | None = None,
+    wallet_fingerprint: str | None = None,
+) -> set[str]:
+    """Return current outpoints with CoinJoin-only provenance.
+
+    A successful maker/taker equal output starts a private lineage. Change joins
+    that lineage only when every exact input outpoint in an authoritative
+    protocol row is already private. This excludes deposit-derived and mixed
+    change, imported rows with potentially partial input discovery, and legacy
+    rows without complete input metadata.
+
+    Outpoints, rather than addresses, are tracked so a later payment to a reused
+    CoinJoin address remains warning-eligible.
+    """
+    targets = list(current_utxos)
+    target_outpoints = {utxo.outpoint for utxo in targets}
+    targets_by_outpoint = {utxo.outpoint: utxo for utxo in targets}
+    entries = [
+        entry
+        for entry in read_history(data_dir, wallet_fingerprint=wallet_fingerprint)
+        if entry.network == network
+    ]
+    successful_coinjoins = [
+        entry
+        for entry in entries
+        if entry.success and entry.cj_amount > 0 and entry.role in ("maker", "taker")
+    ]
+
+    # Build an exact outpoint -> address index from current coins and from every
+    # later transaction that recorded the outpoint as one of its wallet inputs.
+    outpoint_addresses = {utxo.outpoint: utxo.address for utxo in targets}
+    ambiguous_outpoints: set[str] = set()
+    entry_inputs: dict[int, list[tuple[str, str]] | None] = {}
+    for index, entry in enumerate(entries):
+        outpoints = [value.strip() for value in entry.utxos_used.split(",") if value.strip()]
+        addresses = [value.strip() for value in entry.source_addresses.split(",") if value.strip()]
+        pairs = (
+            list(zip(outpoints, addresses, strict=True))
+            if len(outpoints) == len(addresses)
+            else None
+        )
+        entry_inputs[index] = pairs if pairs else None
+        if pairs is None:
+            continue
+        for outpoint, address in pairs:
+            existing = outpoint_addresses.get(outpoint)
+            if existing is not None and existing != address:
+                ambiguous_outpoints.add(outpoint)
+                continue
+            outpoint_addresses[outpoint] = address
+
+    for outpoint in ambiguous_outpoints:
+        outpoint_addresses.pop(outpoint, None)
+
+    outputs_by_tx_address: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for outpoint, address in outpoint_addresses.items():
+        txid, separator, _vout = outpoint.rpartition(":")
+        if separator and txid:
+            outputs_by_tx_address[(txid, address)].add(outpoint)
+
+    lineage: set[str] = set()
+    for entry in successful_coinjoins:
+        if entry.txid and entry.destination_address:
+            candidates = outputs_by_tx_address[(entry.txid, entry.destination_address)]
+            if len(candidates) != 1:
+                continue
+            candidate = next(iter(candidates))
+            current = targets_by_outpoint.get(candidate)
+            if current is not None and current.value != entry.cj_amount:
+                continue
+            lineage.add(candidate)
+
+    requirements: dict[str, set[str]] = defaultdict(set)
+    invalid_change_outpoints: set[str] = set()
+    for index, entry in enumerate(entries):
+        if not entry.success or not entry.txid or not entry.change_address:
+            continue
+        change_outpoints = outputs_by_tx_address[(entry.txid, entry.change_address)]
+        if not change_outpoints:
+            continue
+        if len(change_outpoints) != 1:
+            invalid_change_outpoints.update(change_outpoints)
+            continue
+        if entry.destination_address == entry.change_address:
+            invalid_change_outpoints.update(change_outpoints)
+            continue
+        inputs = entry_inputs[index]
+        if (
+            entry.source != "protocol"
+            or entry.role not in ("maker", "taker", "send")
+            or inputs is None
+        ):
+            invalid_change_outpoints.update(change_outpoints)
+            continue
+        input_outpoints = {outpoint for outpoint, _address in inputs}
+        for change_outpoint in change_outpoints:
+            requirements[change_outpoint].update(input_outpoints)
+
+    lineage.difference_update(invalid_change_outpoints)
+
+    # Resolve the dependency graph with a queue. Duplicate/conflicting or
+    # reconstructed change rows fail closed and cannot enter the lineage.
+    unresolved: dict[str, set[str]] = {}
+    dependents: dict[str, set[str]] = defaultdict(set)
+    queue = deque(lineage)
+    for change_outpoint, input_outpoints in requirements.items():
+        if change_outpoint in invalid_change_outpoints or change_outpoint in lineage:
+            continue
+        missing = input_outpoints - lineage
+        if not missing:
+            lineage.add(change_outpoint)
+            queue.append(change_outpoint)
+            continue
+        unresolved[change_outpoint] = missing
+        for input_outpoint in missing:
+            dependents[input_outpoint].add(change_outpoint)
+
+    while queue:
+        private_outpoint = queue.popleft()
+        for change_outpoint in dependents.pop(private_outpoint, set()):
+            remaining_inputs = unresolved.get(change_outpoint)
+            if remaining_inputs is None:
+                continue
+            remaining_inputs.discard(private_outpoint)
+            if remaining_inputs:
+                continue
+            unresolved.pop(change_outpoint)
+            lineage.add(change_outpoint)
+            queue.append(change_outpoint)
+
+    return lineage & target_outpoints
 
 
 def get_utxo_label(

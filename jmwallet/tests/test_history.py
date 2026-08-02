@@ -20,6 +20,8 @@ from jmwallet.history import (
     ORIGIN_DEPOSIT,
     ORIGIN_NON_CJ_CHANGE,
     YIELD_GENERATOR_REPORT_HEADER,
+    HistoryRole,
+    HistorySource,
     HistoryWriteError,
     TransactionHistoryEntry,
     _parse_utxos,
@@ -33,6 +35,7 @@ from jmwallet.history import (
     detect_coinjoin_peer_count,
     format_yield_generator_report,
     get_address_history_types,
+    get_coinjoin_lineage_outpoints,
     get_history_stats,
     get_history_stats_for_period,
     get_pending_transactions,
@@ -48,6 +51,7 @@ from jmwallet.history import (
     update_transaction_confirmation_with_detection,
     update_transaction_peer_count,
 )
+from jmwallet.wallet.models import UTXOInfo
 
 
 def _make_pending_maker_entry(
@@ -2337,6 +2341,283 @@ class TestCleanupStalePendingTransactions:
         # Verify failure reason unchanged
         entries = read_history(temp_data_dir)
         assert entries[0].failure_reason == "Original failure reason"
+
+
+class TestCoinjoinLineageOutpoints:
+    """Tests for privacy lineage used by fidelity-bond warnings."""
+
+    @staticmethod
+    def _entry(
+        *,
+        tx_number: int,
+        destination: str,
+        change: str,
+        inputs: list[tuple[str, str]] | None,
+        role: HistoryRole = "maker",
+        success: bool = True,
+        source: HistorySource = "protocol",
+        network: str = "regtest",
+        wallet_fingerprint: str = "a1b2c3d4",
+        source_addresses_override: str | None = None,
+    ) -> TransactionHistoryEntry:
+        input_pairs = inputs or []
+        return TransactionHistoryEntry(
+            timestamp="2026-01-01T00:00:00",
+            role=role,
+            success=success,
+            txid=f"{tx_number:064x}",
+            cj_amount=100_000,
+            destination_address=destination,
+            change_address=change,
+            utxos_used=",".join(outpoint for outpoint, _address in input_pairs),
+            source_addresses=(
+                source_addresses_override
+                if source_addresses_override is not None
+                else ",".join(address for _outpoint, address in input_pairs)
+            ),
+            wallet_fingerprint=wallet_fingerprint,
+            source=source,
+            network=network,
+        )
+
+    @staticmethod
+    def _outpoint(tx_number: int, vout: int) -> str:
+        return f"{tx_number:064x}:{vout}"
+
+    @classmethod
+    def _utxo(cls, tx_number: int, vout: int, address: str) -> UTXOInfo:
+        return UTXOInfo(
+            txid=f"{tx_number:064x}",
+            vout=vout,
+            value=100_000,
+            address=address,
+            confirmations=10,
+            scriptpubkey="0014" + "11" * 20,
+            path="m/84'/0'/0'/1/0",
+            mixdepth=0,
+        )
+
+    @staticmethod
+    def _append(entries: list[TransactionHistoryEntry], data_dir: Path) -> None:
+        for entry in entries:
+            append_history_entry(entry, data_dir)
+
+    def test_equal_outputs_reset_privacy_and_only_clean_change_propagates(
+        self, temp_data_dir: Path
+    ) -> None:
+        entries = [
+            # A deposit used in a CoinJoin gets a private equal output, but its
+            # change remains linked to the deposit and the fidelity bond.
+            self._entry(
+                tx_number=1,
+                destination="cj-equal-1",
+                change="deposit-change",
+                inputs=[(self._outpoint(0, 0), "external-deposit")],
+            ),
+            # Change sourced only from an equal output is safe, recursively.
+            self._entry(
+                tx_number=2,
+                destination="cj-equal-2",
+                change="clean-change-1",
+                inputs=[(self._outpoint(1, 0), "cj-equal-1")],
+            ),
+            self._entry(
+                tx_number=3,
+                destination="cj-equal-3",
+                change="clean-change-2",
+                inputs=[(self._outpoint(2, 1), "clean-change-1")],
+            ),
+            # One deposit ancestor keeps mixed-input change linkable.
+            self._entry(
+                tx_number=4,
+                destination="cj-equal-4",
+                change="mixed-change",
+                inputs=[
+                    (self._outpoint(3, 0), "cj-equal-3"),
+                    (self._outpoint(9, 0), "external-deposit"),
+                ],
+            ),
+            # Missing legacy source data cannot establish clean change lineage.
+            self._entry(
+                tx_number=5,
+                destination="cj-equal-legacy",
+                change="unknown-change",
+                inputs=None,
+            ),
+            self._entry(
+                tx_number=6,
+                destination="failed-equal",
+                change="failed-change",
+                inputs=[(self._outpoint(1, 0), "cj-equal-1")],
+                success=False,
+            ),
+            # An equal-looking incoming payment is a deposit, not participation.
+            self._entry(
+                tx_number=7,
+                destination="incoming-deposit",
+                change="",
+                inputs=None,
+                role="deposit",
+            ),
+        ]
+        self._append(entries, temp_data_dir)
+        current = [
+            self._utxo(1, 1, "deposit-change"),
+            self._utxo(2, 0, "cj-equal-2"),
+            self._utxo(3, 1, "clean-change-2"),
+            self._utxo(4, 0, "cj-equal-4"),
+            self._utxo(4, 1, "mixed-change"),
+            self._utxo(5, 0, "cj-equal-legacy"),
+            self._utxo(5, 1, "unknown-change"),
+            self._utxo(6, 0, "failed-equal"),
+            self._utxo(7, 0, "incoming-deposit"),
+        ]
+
+        lineage = get_coinjoin_lineage_outpoints(
+            current,
+            network="regtest",
+            data_dir=temp_data_dir,
+            wallet_fingerprint="a1b2c3d4",
+        )
+
+        assert lineage == {
+            self._outpoint(2, 0),
+            self._outpoint(3, 1),
+            self._outpoint(4, 0),
+            self._outpoint(5, 0),
+        }
+
+    def test_protocol_send_change_preserves_clean_lineage(self, temp_data_dir: Path) -> None:
+        entries = [
+            self._entry(
+                tx_number=10,
+                destination="cj-equal",
+                change="deposit-change",
+                inputs=[(self._outpoint(0, 0), "deposit")],
+            ),
+            self._entry(
+                tx_number=11,
+                destination="external-payment",
+                change="send-change",
+                inputs=[(self._outpoint(10, 0), "cj-equal")],
+                role="send",
+            ),
+            self._entry(
+                tx_number=12,
+                destination="next-equal",
+                change="next-clean-change",
+                inputs=[(self._outpoint(11, 1), "send-change")],
+            ),
+        ]
+        self._append(entries, temp_data_dir)
+        current = [
+            self._utxo(12, 0, "next-equal"),
+            self._utxo(12, 1, "next-clean-change"),
+        ]
+
+        assert get_coinjoin_lineage_outpoints(
+            current,
+            network="regtest",
+            data_dir=temp_data_dir,
+            wallet_fingerprint="a1b2c3d4",
+        ) == {self._outpoint(12, 0), self._outpoint(12, 1)}
+
+    def test_reuse_partial_reconstruction_and_wrong_scope_fail_closed(
+        self, temp_data_dir: Path
+    ) -> None:
+        entries = [
+            self._entry(
+                tx_number=20,
+                destination="reused-address",
+                change="deposit-change",
+                inputs=[(self._outpoint(0, 0), "deposit")],
+            ),
+            # Reconstructed change is not trusted for recursive propagation.
+            self._entry(
+                tx_number=21,
+                destination="onchain-equal",
+                change="onchain-change",
+                inputs=[(self._outpoint(20, 0), "reused-address")],
+                source="onchain",
+            ),
+            # Mismatched input/address counts are incomplete and fail closed.
+            self._entry(
+                tx_number=22,
+                destination="partial-equal",
+                change="partial-change",
+                inputs=[
+                    (self._outpoint(20, 0), "reused-address"),
+                    (self._outpoint(8, 0), "deposit"),
+                ],
+                source_addresses_override="reused-address",
+            ),
+            self._entry(
+                tx_number=23,
+                destination="reused-address",
+                change="",
+                inputs=None,
+                role="deposit",
+            ),
+            self._entry(
+                tx_number=24,
+                destination="other-network-equal",
+                change="",
+                inputs=[(self._outpoint(0, 0), "deposit")],
+                network="signet",
+            ),
+            self._entry(
+                tx_number=25,
+                destination="other-wallet-equal",
+                change="",
+                inputs=[(self._outpoint(0, 0), "deposit")],
+                wallet_fingerprint="deadbeef",
+            ),
+            # History cannot distinguish equal/change vouts when both reused
+            # the same address in one reconstructed transaction.
+            self._entry(
+                tx_number=26,
+                destination="same-tx-reuse",
+                change="same-tx-reuse",
+                inputs=[(self._outpoint(20, 0), "reused-address")],
+                source="onchain",
+            ),
+            # Even an authoritative row fails closed when address-only history
+            # claims one intermediate output as both equal output and change.
+            self._entry(
+                tx_number=27,
+                destination="protocol-alias",
+                change="protocol-alias",
+                inputs=[(self._outpoint(0, 0), "deposit")],
+            ),
+            self._entry(
+                tx_number=28,
+                destination="post-alias-equal",
+                change="post-alias-change",
+                inputs=[(self._outpoint(27, 1), "protocol-alias")],
+            ),
+        ]
+        self._append(entries, temp_data_dir)
+        current = [
+            self._utxo(21, 1, "onchain-change"),
+            self._utxo(22, 1, "partial-change"),
+            self._utxo(23, 0, "reused-address"),
+            self._utxo(24, 0, "other-network-equal"),
+            self._utxo(25, 0, "other-wallet-equal"),
+            self._utxo(26, 0, "same-tx-reuse"),
+            self._utxo(26, 1, "same-tx-reuse"),
+            self._utxo(28, 1, "post-alias-change"),
+        ]
+        current[-1].value = 50_000
+
+        assert (
+            get_coinjoin_lineage_outpoints(
+                current,
+                network="regtest",
+                data_dir=temp_data_dir,
+                wallet_fingerprint="a1b2c3d4",
+            )
+            == set()
+        )
 
 
 class TestAddressHistoryTypesAfterConfirmation:

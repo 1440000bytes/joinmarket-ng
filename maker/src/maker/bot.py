@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from pathlib import Path
 
 from jmcore.commitment_blacklist import set_blacklist_path
 from jmcore.crypto import NickIdentity
@@ -33,6 +34,8 @@ from jmcore.tor_control import (
     TorControlError,
 )
 from jmwallet.backends.base import BlockchainBackend
+from jmwallet.history import get_coinjoin_lineage_outpoints
+from jmwallet.wallet.models import UTXOInfo
 from jmwallet.wallet.service import WalletService
 from loguru import logger
 
@@ -57,6 +60,21 @@ from maker.rate_limiting import (
 # Approximately 64MB of memory for str->float mapping (including overhead)
 MAX_LOG_RATE_LIMIT_ENTRIES = 200000
 _DETACHED_SHUTDOWN_GRACE_SEC = 0.5
+
+
+def _get_fidelity_bond_linkable_utxos(
+    wallet: WalletService,
+    data_dir: Path,
+) -> list[UTXOInfo]:
+    """Return spendable md0 coins that could be linked to an advertised bond."""
+    md0_utxos = wallet.get_all_utxos(0, include_fidelity_bonds=False)
+    coinjoin_lineage = get_coinjoin_lineage_outpoints(
+        md0_utxos,
+        network=wallet.network,
+        data_dir=data_dir,
+        wallet_fingerprint=wallet.wallet_fingerprint,
+    )
+    return [utxo for utxo in md0_utxos if utxo.outpoint not in coinjoin_lineage]
 
 
 class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixin):
@@ -546,7 +564,10 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
                     f"value={self.fidelity_bond.value:,} sats, "
                     f"bond_value={self.fidelity_bond.bond_value:,}"
                 )
-                md0_utxos = self.wallet.get_all_utxos(0, include_fidelity_bonds=False)
+                md0_utxos = _get_fidelity_bond_linkable_utxos(
+                    self.wallet,
+                    resolved_data_dir,
+                )
                 if md0_utxos:
                     total_md0 = sum(u.value for u in md0_utxos)
                     logger.warning(

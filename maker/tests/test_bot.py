@@ -9,6 +9,7 @@ import base64
 import json
 import time
 from dataclasses import replace
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -16,8 +17,9 @@ from jmcore.crypto import NickIdentity
 from jmcore.models import NetworkType, Offer, OfferType
 from jmcore.network import ONION_HOSTID, TCPConnection
 from jmcore.protocol import JM_VERSION, MessageType, create_handshake_request
+from jmwallet.wallet.models import UTXOInfo
 
-from maker.bot import MakerBot
+from maker.bot import MakerBot, _get_fidelity_bond_linkable_utxos
 from maker.coinjoin import CoinJoinState
 from maker.config import MakerConfig
 from maker.direct_connection import DirectConnectionState
@@ -286,6 +288,56 @@ class TestBotInitialization:
         assert bot.hidden_service_listener is None
         assert config.onion_host == "test1234567890abcdef.onion"
         assert config.onion_serving_port == 5222
+
+
+class TestFidelityBondPrivacyWarning:
+    """Tests for md0 UTXOs included in the fidelity-bond warning."""
+
+    @staticmethod
+    def _utxo(txid_char: str, address: str, value: int, label: str) -> UTXOInfo:
+        return UTXOInfo(
+            txid=txid_char * 64,
+            vout=0,
+            value=value,
+            address=address,
+            confirmations=10,
+            scriptpubkey="0014" + txid_char * 40,
+            path="m/84'/0'/0'/1/0",
+            mixdepth=0,
+            label=label,
+        )
+
+    def test_excludes_coinjoin_lineage_but_warns_for_deposit_change(self, tmp_path: Path) -> None:
+        wallet = MagicMock()
+        wallet.wallet_fingerprint = "a1b2c3d4"
+        wallet.network = "regtest"
+        wallet.get_all_utxos.return_value = [
+            self._utxo("a", "cj-equal", 100_000, "cj-out"),
+            self._utxo("b", "clean-change", 80_000, "cj-change"),
+            self._utxo("c", "deposit-change", 60_000, "cj-change"),
+            self._utxo("d", "unknown", 40_000, "deposit"),
+        ]
+
+        with patch(
+            "maker.bot.get_coinjoin_lineage_outpoints",
+            return_value={"a" * 64 + ":0", "b" * 64 + ":0"},
+        ) as get_lineage:
+            linkable = _get_fidelity_bond_linkable_utxos(wallet, tmp_path)
+
+        assert [(utxo.address, utxo.value) for utxo in linkable] == [
+            ("deposit-change", 60_000),
+            ("unknown", 40_000),
+        ]
+        wallet.get_all_utxos.assert_called_once_with(
+            0,
+            include_fidelity_bonds=False,
+        )
+        get_lineage.assert_called_once_with(
+            wallet.get_all_utxos.return_value,
+            network="regtest",
+            data_dir=tmp_path,
+            wallet_fingerprint="a1b2c3d4",
+        )
 
 
 class TestHiddenServiceListener:
