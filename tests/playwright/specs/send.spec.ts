@@ -158,12 +158,28 @@ test.describe("Direct Send", () => {
 
     // JAM requires between 4 and 99 collaborators. The Playwright stack
     // runs 5 makers (maker1..maker5) so 4 is always satisfiable.
-    const collaboratorsInput = page
-      .locator('input[type="number"][placeholder="Other"]')
+    const sendingOptions = page.getByRole("region", { name: "Sending options" });
+    const collaboratorsInput = sendingOptions
+      .locator('#send-num-collaborators, input[type="number"][placeholder="Other"]')
       .first();
-    await expect(collaboratorsInput).toBeEnabled({ timeout: 10_000 });
-    await collaboratorsInput.fill("4");
-    await collaboratorsInput.blur();
+    const collaboratorsSlider = sendingOptions.getByRole("slider").first();
+    await expect
+      .poll(
+        async () =>
+          (await collaboratorsInput.count()) + (await collaboratorsSlider.count()),
+        { timeout: 10_000 },
+      )
+      .toBeGreaterThan(0);
+
+    if ((await collaboratorsInput.count()) > 0) {
+      await expect(collaboratorsInput).toBeEnabled();
+      await collaboratorsInput.fill("4");
+      await collaboratorsInput.blur();
+    } else {
+      await expect(collaboratorsSlider).toBeEnabled();
+      await collaboratorsSlider.press("Home");
+    }
+    await expect(page.getByText("Number of collaborators: 4", { exact: true })).toBeVisible();
 
     // Dismiss any overlay (e.g. a navigation Sheet whose full-viewport backdrop
     // would otherwise swallow the force-click on "Send") before submitting.
