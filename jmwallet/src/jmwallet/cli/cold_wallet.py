@@ -886,10 +886,10 @@ def import_certificate(
         logger.error("--cert-signature is required")
         raise typer.Exit(1)
 
-    # Validate cert_expiry is provided
-    if cert_expiry == 0:
-        logger.error("--cert-expiry is required")
-        logger.info("Use the same value shown by 'prepare-certificate-message'")
+    # The wire field is an unsigned 16-bit absolute period.
+    if not 1 <= cert_expiry <= 65535:
+        logger.error("--cert-expiry must be between 1 and 65535")
+        logger.info("Use the same absolute period shown by 'prepare-certificate-message'")
         raise typer.Exit(1)
 
     # Fetch current block height to validate cert_expiry is in the future.
@@ -947,7 +947,7 @@ def import_certificate(
     retarget_interval = 2016
     assert current_block_height is not None
     expiry_block = cert_expiry * retarget_interval
-    if current_block_height >= expiry_block:
+    if current_block_height > expiry_block:
         logger.error("Certificate has ALREADY EXPIRED!")
         logger.error(f"  Current block: {current_block_height}")
         logger.error(f"  Cert expiry:   period {cert_expiry} (block {expiry_block})")

@@ -126,7 +126,7 @@ class FidelityBondInfo(BaseModel):
 
         # cert_expiry is stored in 2016-block periods
         expiry_height = self.cert_expiry * 2016
-        return current_block_height >= expiry_height
+        return current_block_height > expiry_height
 
 
 class BondRegistry(BaseModel):

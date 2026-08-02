@@ -168,8 +168,8 @@ class TestCertificateExpiry:
         # Current block height is before expiry
         assert bond.is_certificate_expired(800000) is False
 
-    def test_is_certificate_expired_true_at_exact_height(self) -> None:
-        """Certificate should be expired at exact expiry height."""
+    def test_is_certificate_expired_false_at_exact_height(self) -> None:
+        """Certificate remains valid at the reference expiry boundary."""
         bond = FidelityBondInfo(
             address="bc1qtest",
             locktime=int(time.time()) + 86400,
@@ -186,7 +186,10 @@ class TestCertificateExpiry:
             cert_expiry=100,  # Expires at block 100 * 2016 = 201600
         )
         # Exactly at expiry height
-        assert bond.is_certificate_expired(201600) is True
+        assert bond.is_certificate_expired(201600) is False
+
+        # The next block is the first expired height
+        assert bond.is_certificate_expired(201601) is True
 
     def test_is_certificate_expired_no_certificate(self) -> None:
         """Bond without certificate should always report as expired."""

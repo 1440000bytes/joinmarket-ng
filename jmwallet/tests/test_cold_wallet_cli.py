@@ -7,6 +7,7 @@ import json
 import tempfile
 from pathlib import Path
 
+import pytest
 from coincurve import PrivateKey
 from jmcore.crypto import bitcoin_message_hash_bytes
 from typer.testing import CliRunner
@@ -91,14 +92,25 @@ def test_prepare_certificate_message_accepts_current_block_override():
     assert "MESSAGE TO SIGN" in result.stdout
 
 
-def test_import_certificate_uses_registry_privkey_with_current_block():
-    """import-certificate should load cert key from registry and verify with --current-block."""
+@pytest.mark.parametrize(
+    ("cert_expiry", "current_block", "expected_success"),
+    [
+        (600, 1000, True),
+        (600, 600 * 2016, True),
+        (600, 600 * 2016 + 1, False),
+        (65535, 1000, True),
+        (0, 1000, False),
+        (-1, 1000, False),
+        (65536, 1000, False),
+    ],
+)
+def test_import_certificate_expiry_validation(cert_expiry, current_block, expected_success):
+    """Import enforces the wire range and reference expiry boundary."""
     with tempfile.TemporaryDirectory() as tmpdir:
         data_dir = Path(tmpdir)
         utxo_key = PrivateKey()
         cert_key = PrivateKey()
         cert_pubkey_hex = cert_key.public_key.format(compressed=True).hex()
-        cert_expiry = 600
 
         message = f"fidelity-bond-cert|{cert_pubkey_hex}|{cert_expiry}".encode()
         msg_hash = bitcoin_message_hash_bytes(message)
@@ -135,15 +147,20 @@ def test_import_certificate_uses_registry_privkey_with_current_block():
                 "--cert-expiry",
                 str(cert_expiry),
                 "--current-block",
-                "1000",
+                str(current_block),
             ],
         )
 
         loaded = load_registry(data_dir, "deadbeef")
         loaded_bond = loaded.get_bond_by_address(bond.address)
 
-    assert result.exit_code == 0
-    assert "CERTIFICATE IMPORTED SUCCESSFULLY" in result.stdout
     assert loaded_bond is not None
-    assert loaded_bond.cert_expiry == cert_expiry
-    assert loaded_bond.cert_signature is not None
+    if expected_success:
+        assert result.exit_code == 0
+        assert "CERTIFICATE IMPORTED SUCCESSFULLY" in result.stdout
+        assert loaded_bond.cert_expiry == cert_expiry
+        assert loaded_bond.cert_signature is not None
+    else:
+        assert result.exit_code == 1
+        assert loaded_bond.cert_expiry is None
+        assert loaded_bond.cert_signature is None
