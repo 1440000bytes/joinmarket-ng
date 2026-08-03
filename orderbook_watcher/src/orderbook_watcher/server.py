@@ -154,26 +154,39 @@ class OrderbookServer:
         # that advertise a fidelity bond yields a sybil-resistant share that
         # reflects committed capital, not raw nick count. See issue #483.
         #
-        # A maker counts as bonded when it advertises a bond
-        # (``fidelity_bond_data``) even if the bond *value* cannot be computed
-        # (no blockchain/mempool backend configured): the advertised bond is
-        # still sybil-resistant, and the value only gates value-weighted views.
+        # An active advertised certificate counts even when the UTXO value has
+        # not been computed. Expired or height-unverified proofs do not provide
+        # sybil-resistant weight.
         feature_stats: dict[str, int] = {}
-        unique_makers: set[str] = set()
         bonded_makers: set[str] = set()
+        offers_by_maker: dict[str, list[dict[str, Any]]] = {}
         for offer_data in grouped_offers.values():
-            counterparty = offer_data["counterparty"]
-            if counterparty in unique_makers:
-                continue
-            unique_makers.add(counterparty)
-            has_bond = (
-                offer_data.get("fidelity_bond_value", 0) > 0
-                or offer_data.get("fidelity_bond_data") is not None
-            )
-            if not has_bond:
+            offers_by_maker.setdefault(offer_data["counterparty"], []).append(offer_data)
+
+        for counterparty, maker_offers in offers_by_maker.items():
+            active_offers: list[dict[str, Any]] = []
+            for offer_data in maker_offers:
+                bond_data = offer_data.get("fidelity_bond_data")
+                if bond_data is not None:
+                    cert_expiry = bond_data.get("cert_expiry")
+                    has_bond = (
+                        orderbook.current_block_height is not None
+                        and isinstance(cert_expiry, int)
+                        and orderbook.current_block_height <= cert_expiry
+                    )
+                else:
+                    has_bond = offer_data.get("fidelity_bond_value", 0) > 0
+                if has_bond:
+                    active_offers.append(offer_data)
+
+            if not active_offers:
                 continue
             bonded_makers.add(counterparty)
-            features = offer_data.get("features", {})
+            features: dict[str, bool] = {}
+            for offer_data in active_offers:
+                for feature, value in offer_data.get("features", {}).items():
+                    if value:
+                        features[feature] = True
             for feature, value in features.items():
                 if value:
                     feature_stats[feature] = feature_stats.get(feature, 0) + 1
@@ -184,6 +197,7 @@ class OrderbookServer:
 
         return {
             "timestamp": orderbook.timestamp.isoformat(),
+            "current_block_height": orderbook.current_block_height,
             "offers": list(grouped_offers.values()),
             "fidelitybonds": [
                 {
@@ -196,6 +210,7 @@ class OrderbookServer:
                     "utxo_confirmations": bond.utxo_confirmations,
                     "utxo_confirmation_timestamp": bond.utxo_confirmation_timestamp,
                     "cert_expiry": bond.cert_expiry,
+                    "utxo_pub": (bond.fidelity_bond_data or {}).get("utxo_pub") or bond.script,
                     "directory_node": bond.directory_node,
                 }
                 for bond in orderbook.fidelity_bonds
@@ -233,28 +248,17 @@ class OrderbookServer:
 
     async def _update_cache_loop(self) -> None:
         await asyncio.sleep(2)
-        last_hash = 0
 
         while True:
             try:
                 orderbook = await self.aggregator.get_live_orderbook()
+                data = self._format_orderbook(orderbook)
+                json_str = json.dumps(data)
 
-                current_hash = hash(
-                    (
-                        tuple((o.counterparty, o.oid, o.directory_node) for o in orderbook.offers),
-                        tuple((b.utxo_txid, b.utxo_vout) for b in orderbook.fidelity_bonds),
-                    )
-                )
-
-                if current_hash != last_hash:
-                    data = self._format_orderbook(orderbook)
-                    json_str = json.dumps(data)
-
-                    async with self._cache_lock:
+                async with self._cache_lock:
+                    if json_str != self._cached_orderbook:
                         self._cached_orderbook = json_str
-
-                    logger.debug(f"Cache updated: {len(orderbook.offers)} offers")
-                    last_hash = current_hash
+                        logger.debug(f"Cache updated: {len(orderbook.offers)} offers")
 
             except Exception as e:
                 logger.error(f"Error updating cache: {e}")

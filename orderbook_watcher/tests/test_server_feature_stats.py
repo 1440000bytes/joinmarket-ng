@@ -134,13 +134,54 @@ def test_feature_stats_counts_advertised_bond_without_value() -> None:
     sybil-resistant and must feed feature stats. See issue #508 follow-up.
     """
     server = _make_server()
-    bond_data = {"utxo_txid": "ab" * 32, "utxo_vout": 0}
+    bond_data = {"utxo_txid": "ab" * 32, "utxo_vout": 0, "cert_expiry": 901_152}
     orderbook = OrderBook(
+        current_block_height=900_000,
         timestamp=datetime.now(UTC),
         offers=[
             _make_offer("J5advertised", bond=0, features={"ping": True}, bond_data=bond_data),
             # Truly bondless maker (no value, no advertised bond) stays excluded.
             _make_offer("J5sybil", bond=0, features={"ping": True}),
+        ],
+    )
+
+    result = server._format_orderbook(orderbook)
+
+    assert result["feature_stats"] == {"ping": 1}
+    assert result["feature_stats_denominator"] == 1
+
+
+def test_feature_stats_excludes_expired_advertised_bond() -> None:
+    """Expired certificate proofs no longer provide sybil-resistant weight."""
+    server = _make_server()
+    bond_data = {"utxo_txid": "ab" * 32, "utxo_vout": 0, "cert_expiry": 899_136}
+    orderbook = OrderBook(
+        current_block_height=900_000,
+        timestamp=datetime.now(UTC),
+        offers=[
+            _make_offer("J5expired", bond=0, features={"ping": True}, bond_data=bond_data),
+        ],
+    )
+
+    result = server._format_orderbook(orderbook)
+
+    assert result["feature_stats"] == {}
+    assert result["feature_stats_denominator"] == 0
+
+
+def test_feature_stats_uses_active_offer_when_expired_offer_comes_first() -> None:
+    """One stale offer cannot hide another active offer from the same maker."""
+    server = _make_server()
+    expired_data = {"utxo_txid": "ab" * 32, "utxo_vout": 0, "cert_expiry": 899_136}
+    active_data = {"utxo_txid": "ab" * 32, "utxo_vout": 0, "cert_expiry": 901_152}
+    orderbook = OrderBook(
+        current_block_height=900_000,
+        timestamp=datetime.now(UTC),
+        offers=[
+            _make_offer(
+                "J5renewed", oid=0, bond=0, features={"ping": True}, bond_data=expired_data
+            ),
+            _make_offer("J5renewed", oid=1, bond=0, features={"ping": True}, bond_data=active_data),
         ],
     )
 

@@ -326,6 +326,7 @@ class FidelityBond(BaseModel):
 class OrderBook(BaseModel):
     offers: list[Offer] = Field(default_factory=list)
     fidelity_bonds: list[FidelityBond] = Field(default_factory=list)
+    current_block_height: int | None = Field(default=None, ge=0)
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     directory_nodes: list[str] = Field(default_factory=list)
 

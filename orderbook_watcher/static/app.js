@@ -278,11 +278,33 @@ function maxsizeForCounterparties(values, n) {
     return { value: sorted[idx], available: sorted.length };
 }
 
-// A maker counts as bonded when it advertises a fidelity bond, even if the bond
-// value cannot be computed here (no blockchain/mempool backend): the advertised
-// bond is still sybil-resistant. The value only feeds the value-weighted total.
+function hasActiveCertificate(bondData) {
+    if (!bondData) return false;
+    const currentBlockHeight = orderbookData.current_block_height;
+    return Number.isSafeInteger(currentBlockHeight) &&
+        Number.isSafeInteger(bondData.cert_expiry) &&
+        currentBlockHeight <= bondData.cert_expiry;
+}
+
+function findMatchingBond(offer) {
+    const bondData = offer.fidelity_bond_data;
+    if (!bondData) return null;
+    return orderbookData.fidelitybonds.find(
+        bond => bond.counterparty === offer.counterparty &&
+            bond.utxo.txid === bondData.utxo_txid &&
+            bond.utxo.vout === bondData.utxo_vout &&
+            bond.locktime === bondData.locktime &&
+            bond.utxo_pub === bondData.utxo_pub
+    ) || null;
+}
+
+// Advertised proof data counts only while its certificate is known to be active.
+// Expired or height-unverified proofs remain visible in the table and modal but
+// do not contribute to sybil-resistant bonded views.
 function hasAdvertisedBond(offer) {
-    return !!offer.fidelity_bond_data || (offer.fidelity_bond_value || 0) > 0;
+    const bondData = offer.fidelity_bond_data;
+    if (!bondData) return (offer.fidelity_bond_value || 0) > 0;
+    return hasActiveCertificate(bondData);
 }
 
 function renderFeeQuantizationChart() {
@@ -706,8 +728,13 @@ let blockHeightFetchTime = 0;
 const BLOCK_HEIGHT_CACHE_MS = 60000; // Cache for 1 minute
 
 async function fetchCurrentBlockHeight() {
+    const serverHeight = orderbookData.current_block_height;
+    if (Number.isSafeInteger(serverHeight) && serverHeight >= 0) {
+        return serverHeight;
+    }
+
     const now = Date.now();
-    if (cachedBlockHeight && (now - blockHeightFetchTime) < BLOCK_HEIGHT_CACHE_MS) {
+    if (cachedBlockHeight !== null && (now - blockHeightFetchTime) < BLOCK_HEIGHT_CACHE_MS) {
         return cachedBlockHeight;
     }
 
@@ -718,7 +745,15 @@ async function fetchCurrentBlockHeight() {
         }
         const response = await fetch(`${mempoolApi}/api/blocks/tip/height`);
         if (response.ok) {
-            cachedBlockHeight = parseInt(await response.text());
+            const heightText = (await response.text()).trim();
+            if (!/^\d+$/.test(heightText)) {
+                throw new Error(`Invalid block height response: ${heightText}`);
+            }
+            const height = Number(heightText);
+            if (!Number.isSafeInteger(height)) {
+                throw new Error(`Invalid block height response: ${heightText}`);
+            }
+            cachedBlockHeight = height;
             blockHeightFetchTime = now;
             return cachedBlockHeight;
         }
@@ -779,8 +814,8 @@ async function showBondModal(bondData, bondAmount, bondValue) {
     let certExpiryStr = `Block ${formatNumber(certExpiryBlock)} (period ${certExpiryPeriod})`;
 
     let certExpired = false;
-    if (currentBlockHeight) {
-        if (currentBlockHeight >= certExpiryBlock) {
+    if (currentBlockHeight !== null) {
+        if (currentBlockHeight > certExpiryBlock) {
             certExpired = true;
             const blocksAgo = currentBlockHeight - certExpiryBlock;
             certExpiryStr += ` - EXPIRED ${formatNumber(blocksAgo)} blocks ago`;
@@ -810,10 +845,14 @@ async function showBondModal(bondData, bondAmount, bondValue) {
     // Remove all status classes
     summaryEl.classList.remove('valid', 'expired', 'invalid', 'pending');
 
-    if (certExpired) {
+    if (currentBlockHeight === null) {
+        summaryEl.classList.add('pending');
+        iconEl.textContent = '?';
+        textEl.textContent = 'Certificate expiry could not be verified';
+    } else if (certExpired) {
         summaryEl.classList.add('expired');
         iconEl.textContent = '!';
-        textEl.textContent = 'Certificate expired - bond value will show as 0 in reference implementation';
+        textEl.textContent = 'Certificate expired - bond value is 0';
     } else if (bondValue > 0) {
         summaryEl.classList.add('valid');
         iconEl.textContent = '\u2713'; // checkmark
@@ -862,16 +901,20 @@ function renderTable() {
 
         let hasBond = '';
         let bondValue;
-        if (offer.fidelity_bond_value > 0) {
+        if (offer.fidelity_bond_value > 0 &&
+            (!offer.fidelity_bond_data || hasActiveCertificate(offer.fidelity_bond_data))) {
             hasBond = 'bond-value-clickable';
             bondValue = formatNumber(Math.round(offer.fidelity_bond_value));
         } else if (offer.fidelity_bond_data) {
             hasBond = 'bond-value-clickable';
-            const bondAmount = orderbookData.fidelitybonds.find(
-                b => b.counterparty === offer.counterparty &&
-                     b.utxo.txid === offer.fidelity_bond_data.utxo_txid
-            )?.amount || 0;
-            bondValue = bondAmount > 0 ? '0' : 'Pending';
+            const bondAmount = findMatchingBond(offer)?.amount || 0;
+            if (!hasActiveCertificate(offer.fidelity_bond_data)) {
+                bondValue = Number.isSafeInteger(orderbookData.current_block_height)
+                    ? 'Expired'
+                    : 'Pending';
+            } else {
+                bondValue = bondAmount > 0 ? '0' : 'Pending';
+            }
         } else {
             bondValue = 'No';
         }
@@ -920,10 +963,7 @@ function renderTable() {
 
         if (offer.fidelity_bond_data) {
             const bondCell = row.querySelector('.bond-value-clickable');
-            const bondAmount = orderbookData.fidelitybonds.find(
-                b => b.counterparty === offer.counterparty &&
-                     b.utxo.txid === offer.fidelity_bond_data.utxo_txid
-            )?.amount || 0;
+            const bondAmount = findMatchingBond(offer)?.amount || 0;
             const bondVal = offer.fidelity_bond_value || 0;
             bondCell.addEventListener('click', () => showBondModal(offer.fidelity_bond_data, bondAmount, bondVal));
         }

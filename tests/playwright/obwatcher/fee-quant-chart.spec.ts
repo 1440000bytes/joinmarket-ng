@@ -40,10 +40,52 @@ interface FixtureOffer {
   cjfee: string | number;
   minsize?: number;
   maxsize?: number;
+  txfee?: number;
   fidelity_bond_value?: number;
   fidelity_bond_data?: Record<string, unknown>;
   directory_nodes?: string[];
   features?: Record<string, boolean>;
+}
+
+const BOND_EXPIRY = 901_152;
+
+function bondPayload(currentBlockHeight: number | null, bondValue = 10_000) {
+  const bondData = {
+    maker_nick: "bondmaker",
+    utxo_txid: "a".repeat(64),
+    utxo_vout: 1,
+    locktime: 2_000_000_000,
+    utxo_pub: "02" + "11".repeat(32),
+    cert_pub: "03" + "22".repeat(32),
+    cert_expiry: BOND_EXPIRY,
+    redeem_script: "00",
+    p2wsh_script: "00",
+  };
+  const offers: FixtureOffer[] = [{
+    counterparty: "bondmaker",
+    oid: 0,
+    ordertype: "sw0reloffer",
+    cjfee: "0.001",
+    minsize: 10_000,
+    maxsize: 1_000_000,
+    txfee: 1000,
+    fidelity_bond_value: bondValue,
+    fidelity_bond_data: bondData,
+    directory_nodes: [],
+    features: {},
+  }];
+  return payload(offers, {
+    current_block_height: currentBlockHeight,
+    fidelitybonds: [{
+      counterparty: "bondmaker",
+      utxo: { txid: bondData.utxo_txid, vout: bondData.utxo_vout },
+      bond_value: bondValue,
+      locktime: bondData.locktime,
+      amount: 100_000_000,
+      cert_expiry: BOND_EXPIRY,
+      utxo_pub: bondData.utxo_pub,
+    }],
+  });
 }
 
 function payload(offers: FixtureOffer[], extra: Record<string, unknown> = {}) {
@@ -56,6 +98,7 @@ function payload(offers: FixtureOffer[], extra: Record<string, unknown> = {}) {
     feature_stats: {},
     feature_stats_denominator: 0,
     fee_quantization: FEE_QUANTIZATION,
+    current_block_height: 900_000,
     mempool_url: null,
     ...extra,
   };
@@ -81,7 +124,7 @@ const DEFAULT_OFFERS: FixtureOffer[] = [
     cjfee: "0.0001",
     maxsize: 1_000_000,
     fidelity_bond_value: 0,
-    fidelity_bond_data: { utxo_txid: "aa", utxo_vout: 0 },
+    fidelity_bond_data: { utxo_txid: "aa", utxo_vout: 0, cert_expiry: BOND_EXPIRY },
   },
   { counterparty: "nobond", ordertype: "sw0reloffer", cjfee: "0.0002", maxsize: 1_000_000 },
 ];
@@ -262,5 +305,63 @@ test.describe("fee quantization chart", () => {
     await expect(page.locator("#fee-quant-chart")).toHaveText("Fee grid unavailable.");
 
     server.close();
+  });
+});
+
+test.describe("fidelity bond certificate expiry", () => {
+  for (const testCase of [
+    { name: "before boundary", height: BOND_EXPIRY - 1, expired: false },
+    { name: "at boundary", height: BOND_EXPIRY, expired: false },
+    { name: "after boundary", height: BOND_EXPIRY + 1, expired: true },
+  ]) {
+    test(testCase.name, async ({ page }) => {
+      const server = await openChart(page, bondPayload(testCase.height));
+      try {
+        await page.locator(".bond-value-clickable").click();
+        const summary = page.locator("#bond-verification-summary");
+        if (testCase.expired) {
+          await expect(summary).toHaveClass(/expired/);
+          await expect(page.locator("#bond-cert-expiry")).toContainText("EXPIRED 1 blocks ago");
+        } else {
+          await expect(summary).toHaveClass(/valid/);
+          await expect(page.locator("#bond-cert-expiry")).not.toContainText("EXPIRED");
+        }
+      } finally {
+        server.close();
+      }
+    });
+  }
+
+  test("unavailable height is not shown as valid", async ({ page }) => {
+    const server = await openChart(page, bondPayload(null));
+    try {
+      await page.locator(".bond-value-clickable").click();
+      await expect(page.locator("#bond-verification-summary")).toHaveClass(/pending/);
+      await expect(page.locator("#bond-verification-text")).toHaveText(
+        "Certificate expiry could not be verified",
+      );
+      await expect(page.locator(".bond-value-clickable")).toHaveText("Pending");
+    } finally {
+      server.close();
+    }
+  });
+
+  test("modal amount matches the complete script claim", async ({ page }) => {
+    const body = bondPayload(BOND_EXPIRY) as any;
+    body.fidelitybonds.unshift({
+      ...body.fidelitybonds[0],
+      amount: 200_000_000,
+      locktime: body.fidelitybonds[0].locktime + 1,
+      utxo_pub: "03" + "33".repeat(32),
+    });
+    const server = await openChart(page, body);
+    try {
+      await page.locator(".bond-value-clickable").click();
+      await expect(page.locator("#bond-amount")).toHaveText(
+        "100,000,000 sats (1.00000000 BTC)",
+      );
+    } finally {
+      server.close();
+    }
   });
 });

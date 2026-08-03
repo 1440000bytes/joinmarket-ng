@@ -305,6 +305,7 @@ class OrderbookAggregator:
                 new_orderbook.add_fidelity_bonds(bonds, node_id)
 
         await self._calculate_bond_values(new_orderbook)
+        self._link_bonds_to_offers(new_orderbook)
 
         async with self._lock:
             self.current_orderbook = new_orderbook
@@ -326,16 +327,7 @@ class OrderbookAggregator:
             try:
                 orderbook = await self._bond_queue.get()
                 await self._calculate_bond_values(orderbook)
-                for offer in orderbook.offers:
-                    if offer.fidelity_bond_data:
-                        matching_bonds = [
-                            b
-                            for b in orderbook.fidelity_bonds
-                            if b.counterparty == offer.counterparty
-                            and b.utxo_txid == offer.fidelity_bond_data.get("utxo_txid")
-                        ]
-                        if matching_bonds and matching_bonds[0].bond_value is not None:
-                            offer.fidelity_bond_value = matching_bonds[0].bond_value
+                self._link_bonds_to_offers(orderbook)
                 logger.debug("Background bond calculation completed")
             except Exception as e:
                 logger.error(f"Error in background bond calculator: {e}")
@@ -876,7 +868,10 @@ class OrderbookAggregator:
     def _deduplicate_bond_backed_offers(
         self, all_offers_with_timestamps: list[tuple[Offer, float, str | None, str]]
     ) -> list[Offer]:
-        bond_oid_to_best_offer: dict[tuple[str, int], tuple[Offer, float, list[str], str]] = {}
+        bond_oid_to_best_offer: dict[
+            tuple[str, int, int | None, str | None],
+            tuple[Offer, float, list[str], str],
+        ] = {}
         offers_without_bond: list[Offer] = []
 
         total_offers_processed = len(all_offers_with_timestamps)
@@ -895,7 +890,13 @@ class OrderbookAggregator:
                 continue
 
             offers_with_bonds += 1
-            dedup_key = (bond_utxo_key, offer.oid)
+            bond_data = offer.fidelity_bond_data or {}
+            dedup_key = (
+                bond_utxo_key,
+                offer.oid,
+                bond_data.get("locktime"),
+                bond_data.get("utxo_pub"),
+            )
             existing = bond_oid_to_best_offer.get(dedup_key)
             if existing is None:
                 directory_nodes = [offer.directory_node] if offer.directory_node else []
@@ -912,9 +913,35 @@ class OrderbookAggregator:
                 continue
 
             old_offer, old_timestamp, directory_nodes, old_counterparty = existing
+            if (
+                old_counterparty == offer.counterparty
+                and offer.directory_node
+                and offer.directory_node not in directory_nodes
+            ):
+                directory_nodes.append(offer.directory_node)
+            old_expiry = (old_offer.fidelity_bond_data or {}).get("cert_expiry", -1)
+            new_expiry = (offer.fidelity_bond_data or {}).get("cert_expiry", -1)
+            if new_expiry != old_expiry:
+                if new_expiry < old_expiry:
+                    continue
+                if old_counterparty == offer.counterparty:
+                    new_directory_nodes = directory_nodes
+                else:
+                    new_directory_nodes = [offer.directory_node] if offer.directory_node else []
+                bond_oid_to_best_offer[dedup_key] = (
+                    offer,
+                    timestamp,
+                    new_directory_nodes,
+                    offer.counterparty,
+                )
+                logger.debug(
+                    f"Bond deduplication: Replaced certificate expiring at {old_expiry} "
+                    f"with renewed certificate expiring at {new_expiry} for "
+                    f"bond {bond_utxo_key[:20]}..."
+                )
+                continue
+
             if old_counterparty == offer.counterparty:
-                if offer.directory_node and offer.directory_node not in directory_nodes:
-                    directory_nodes.append(offer.directory_node)
                 if timestamp > old_timestamp:
                     bond_oid_to_best_offer[dedup_key] = (
                         offer,
@@ -1007,21 +1034,34 @@ class OrderbookAggregator:
     def _deduplicate_bonds(self, orderbook: OrderBook) -> None:
         unique_bonds: dict[str, FidelityBond] = {}
         for bond in orderbook.fidelity_bonds:
-            cache_key = f"{bond.utxo_txid}:{bond.utxo_vout}"
+            cache_key = self._bond_claim_key(bond)
             if cache_key not in unique_bonds:
                 if bond.directory_node:
                     bond.directory_nodes = [bond.directory_node]
                 unique_bonds[cache_key] = bond
                 continue
             existing_bond = unique_bonds[cache_key]
-            if bond.directory_node and bond.directory_node not in existing_bond.directory_nodes:
-                existing_bond.directory_nodes.append(bond.directory_node)
+            directory_nodes = set(existing_bond.directory_nodes)
+            if bond.directory_node:
+                directory_nodes.add(bond.directory_node)
+            directory_nodes.update(bond.directory_nodes)
+            if bond.cert_expiry > existing_bond.cert_expiry:
+                bond.directory_nodes = sorted(directory_nodes)
+                unique_bonds[cache_key] = bond
+            else:
+                existing_bond.directory_nodes = sorted(directory_nodes)
         orderbook.fidelity_bonds = list(unique_bonds.values())
+
+    @staticmethod
+    def _bond_claim_key(bond: FidelityBond) -> str:
+        bond_data = bond.fidelity_bond_data or {}
+        utxo_pub = bond_data.get("utxo_pub") or bond.script
+        return f"{bond.utxo_txid}:{bond.utxo_vout}:{bond.locktime}:{utxo_pub}"
 
     def _apply_bond_cache(self, orderbook: OrderBook) -> None:
         cached_count = 0
         for bond in orderbook.fidelity_bonds:
-            cache_key = f"{bond.utxo_txid}:{bond.utxo_vout}"
+            cache_key = self._bond_claim_key(bond)
             if cache_key not in self._bond_cache:
                 continue
             cached_bond = self._bond_cache[cache_key]
@@ -1033,19 +1073,36 @@ class OrderbookAggregator:
             logger.debug(f"Loaded {cached_count}/{len(orderbook.fidelity_bonds)} bonds from cache")
 
     def _update_bond_cache(self, orderbook: OrderBook) -> None:
+        current_block_height = orderbook.current_block_height
+        if current_block_height is None:
+            return
         for bond in orderbook.fidelity_bonds:
-            if bond.bond_value is not None:
-                cache_key = f"{bond.utxo_txid}:{bond.utxo_vout}"
+            if bond.bond_value is not None and current_block_height <= bond.cert_expiry:
+                cache_key = self._bond_claim_key(bond)
                 self._bond_cache[cache_key] = bond
 
     def _link_bonds_to_offers(self, orderbook: OrderBook) -> None:
         for offer in orderbook.offers:
+            offer.fidelity_bond_value = 0
+
+        current_block_height = orderbook.current_block_height
+        if current_block_height is None:
+            return
+
+        for offer in orderbook.offers:
             if offer.fidelity_bond_data:
+                cert_expiry = offer.fidelity_bond_data.get("cert_expiry")
+                if not isinstance(cert_expiry, int) or current_block_height > cert_expiry:
+                    continue
                 matching_bonds = [
                     bond
                     for bond in orderbook.fidelity_bonds
                     if bond.counterparty == offer.counterparty
                     and bond.utxo_txid == offer.fidelity_bond_data.get("utxo_txid")
+                    and bond.utxo_vout == offer.fidelity_bond_data.get("utxo_vout")
+                    and bond.locktime == offer.fidelity_bond_data.get("locktime")
+                    and ((bond.fidelity_bond_data or {}).get("utxo_pub") or bond.script)
+                    == offer.fidelity_bond_data.get("utxo_pub")
                 ]
                 if matching_bonds and matching_bonds[0].bond_value is not None:
                     offer.fidelity_bond_value = matching_bonds[0].bond_value
@@ -1063,10 +1120,13 @@ class OrderbookAggregator:
                     candidate.bond_value if candidate.bond_value is not None else 0
                 ),
             )
-            if bond.fidelity_bond_data:
+            if (
+                bond.fidelity_bond_data
+                and current_block_height <= bond.cert_expiry
+                and bond.bond_value is not None
+            ):
                 offer.fidelity_bond_data = bond.fidelity_bond_data
-                if bond.bond_value is not None:
-                    offer.fidelity_bond_value = bond.bond_value
+                offer.fidelity_bond_value = bond.bond_value
             logger.debug(
                 f"Linked standalone bond from {bond.counterparty} "
                 f"(txid={bond.utxo_txid[:16]}...) to offer oid={offer.oid}"
@@ -1149,8 +1209,8 @@ class OrderbookAggregator:
 
                 logger.debug(
                     f"Bond {bond.counterparty}: value={bond_value}, "
-                    f"amount={amount}, locktime={datetime.utcfromtimestamp(bond.locktime)}, "
-                    f"confirmed={datetime.utcfromtimestamp(confirmation_time)}"
+                    f"amount={amount}, locktime={datetime.fromtimestamp(bond.locktime, UTC)}, "
+                    f"confirmed={datetime.fromtimestamp(confirmation_time, UTC)}"
                 )
 
             except Exception as e:
@@ -1163,10 +1223,43 @@ class OrderbookAggregator:
 
     async def _calculate_bond_values(self, orderbook: OrderBook) -> None:
         """Calculate bond values, using blockchain backend if available, else mempool API."""
+        current_block_height = await self._get_current_block_height()
+        orderbook.current_block_height = current_block_height
+        if current_block_height is None:
+            for bond in orderbook.fidelity_bonds:
+                bond.bond_value = None
+            return
+
+        for bond in orderbook.fidelity_bonds:
+            if current_block_height > bond.cert_expiry:
+                bond.bond_value = 0
+                self._bond_cache.pop(self._bond_claim_key(bond), None)
+
         if self.blockchain_backend is not None:
             await self._calculate_bond_values_via_backend(orderbook)
         else:
             await self._calculate_bond_values_via_mempool(orderbook)
+
+    async def _get_current_block_height(self) -> int | None:
+        try:
+            if self.blockchain_backend is not None:
+                current_block_height = await self.blockchain_backend.get_block_height()
+            elif self.mempool_api is not None:
+                current_block_height = await self.mempool_api.get_block_height()
+            else:
+                logger.debug("Cannot verify bond certificate expiry: no height source configured")
+                return None
+        except Exception as e:
+            logger.warning(f"Cannot verify bond certificate expiry: {e}")
+            return None
+
+        if type(current_block_height) is not int or current_block_height < 0:
+            logger.warning(
+                f"Cannot verify bond certificate expiry: invalid block height "
+                f"{current_block_height!r}"
+            )
+            return None
+        return current_block_height
 
     async def _calculate_bond_values_via_backend(self, orderbook: OrderBook) -> None:
         """Calculate bond values using the blockchain backend's verify_bonds().
@@ -1231,9 +1324,20 @@ class OrderbookAggregator:
         except Exception as e:
             logger.error(f"Backend bond verification failed: {e}")
             return
+        if len(results) != len(bonds_to_verify):
+            logger.error(
+                f"Backend returned {len(results)} bond results for {len(bonds_to_verify)} requests"
+            )
+            return
 
         # Update bond objects with results
-        for (bond, _request), result in zip(bonds_to_verify, results, strict=True):
+        for (bond, request), result in zip(bonds_to_verify, results, strict=True):
+            if (result.txid, result.vout) != (request.txid, request.vout):
+                logger.error(
+                    f"Bond verification result mismatch: requested "
+                    f"{request.txid}:{request.vout}, received {result.txid}:{result.vout}"
+                )
+                continue
             if not result.valid:
                 logger.debug(f"Bond {bond.utxo_txid}:{bond.utxo_vout} invalid: {result.error}")
                 continue
@@ -1249,8 +1353,8 @@ class OrderbookAggregator:
 
             logger.debug(
                 f"Bond {bond.counterparty}: value={bond_value}, "
-                f"amount={result.value}, locktime={datetime.utcfromtimestamp(bond.locktime)}, "
-                f"confirmed={datetime.utcfromtimestamp(result.block_time)}"
+                f"amount={result.value}, locktime={datetime.fromtimestamp(bond.locktime, UTC)}, "
+                f"confirmed={datetime.fromtimestamp(result.block_time, UTC)}"
             )
 
         valid_count = sum(1 for r in results if r.valid)
