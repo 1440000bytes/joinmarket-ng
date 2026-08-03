@@ -160,7 +160,7 @@ test.describe("Direct Send", () => {
     // runs 5 makers (maker1..maker5) so 4 is always satisfiable.
     const sendingOptions = page.getByRole("region", { name: "Sending options" });
     const collaboratorsInput = sendingOptions
-      .locator('#send-num-collaborators, input[type="number"][placeholder="Other"]')
+      .locator('input#send-num-collaborators, input[type="number"][placeholder="Other"]')
       .first();
     const collaboratorsSlider = sendingOptions.getByRole("slider").first();
     await expect
