@@ -64,6 +64,7 @@ def _make_pending_maker_entry(
     fee_received: int = 250,
     txfee_contribution: int = 50,
     our_utxos: list[tuple[str, int]] | None = None,
+    input_value: int = 0,
     network: str = "mainnet",
 ) -> TransactionHistoryEntry:
     """Create a pending maker history entry with standard defaults."""
@@ -75,6 +76,7 @@ def _make_pending_maker_entry(
         cj_address=cj_address,
         change_address=change_address,
         our_utxos=our_utxos or [("abc123", 0)],
+        input_value=input_value,
         txid=txid,
         network=network,
     )
@@ -781,6 +783,7 @@ class TestHistoryStatsForPeriod:
             cj_address="bc1qtest...",
             change_address="bc1qchange...",
             our_utxos=[("abc123", 0), ("def456", 1)],
+            input_value=1_234_567,
             txid="txid" * 16,
             network="regtest",
         )
@@ -793,6 +796,7 @@ class TestHistoryStatsForPeriod:
         assert entry.counterparty_nicks == "J5testuser123456"
         assert entry.peer_count is None  # Makers don't know peer count
         assert "abc123:0" in entry.utxos_used
+        assert entry.input_value == 1_234_567
         assert entry.network == "regtest"
 
     def test_create_taker_history_entry(self) -> None:
@@ -1446,6 +1450,7 @@ class TestUpdateAwaitingTransactionSigned:
             cj_address="bc1qpreserve12345678",
             change_address="bc1qchangepreserve",
             our_utxos=[("utxo1", 0), ("utxo2", 1)],
+            input_value=5_100_000,
             txid=None,
             network="signet",
         )
@@ -1469,6 +1474,7 @@ class TestUpdateAwaitingTransactionSigned:
         assert entries[0].cj_amount == 5_000_000
         assert entries[0].change_address == "bc1qchangepreserve"
         assert entries[0].network == "signet"
+        assert entries[0].input_value == 5_100_000
         assert "utxo1:0" in entries[0].utxos_used
         assert "utxo2:1" in entries[0].utxos_used
 
@@ -2973,6 +2979,7 @@ class TestLegacyHeaderMigration:
             txid="newtx",
             cj_amount=100_000,
             wallet_fingerprint=self.FP,
+            input_value=123_456,
         )
         append_history_entry(entry, temp_data_dir)
 
@@ -2982,7 +2989,9 @@ class TestLegacyHeaderMigration:
         all_entries = read_history(temp_data_dir)
         by_txid = {e.txid: e for e in all_entries}
         assert by_txid["oldtx"].wallet_fingerprint == ""
+        assert by_txid["oldtx"].input_value == 0
         assert by_txid["newtx"].wallet_fingerprint == self.FP
+        assert by_txid["newtx"].input_value == 123_456
 
         # Filtered read must surface the new entry, not silently drop it.
         scoped = read_history(temp_data_dir, wallet_fingerprint=self.FP)
@@ -3439,6 +3448,7 @@ class TestYieldGeneratorReport:
         confirmed_at: str = "2024-01-01T10:06:00",
         txid: str = "ab",
         fingerprint: str = "deadbeef",
+        input_value: int = 612_345,
     ) -> TransactionHistoryEntry:
         return TransactionHistoryEntry(
             timestamp=timestamp,
@@ -3455,13 +3465,12 @@ class TestYieldGeneratorReport:
             utxos_used=f"{txid * 32}:0,{txid * 32}:1",
             network="regtest",
             wallet_fingerprint=fingerprint,
+            input_value=input_value,
         )
 
-    def test_empty_history_returns_header_and_marker(self, temp_data_dir: Path) -> None:
+    def test_empty_history_returns_header_only(self, temp_data_dir: Path) -> None:
         rows = format_yield_generator_report(temp_data_dir)
-        assert rows[0] == ",".join(YIELD_GENERATOR_REPORT_HEADER)
-        assert rows[1].endswith(",Connected")
-        assert len(rows) == 2
+        assert rows == [",".join(YIELD_GENERATOR_REPORT_HEADER)]
 
     def test_successful_maker_row_mapped_to_reference_format(self, temp_data_dir: Path) -> None:
         append_history_entry(
@@ -3469,12 +3478,12 @@ class TestYieldGeneratorReport:
             temp_data_dir,
         )
         rows = format_yield_generator_report(temp_data_dir)
-        assert len(rows) == 3
+        assert len(rows) == 2
         cols = rows[-1].split(",")
         assert cols[0] == "2024/01/01 10:00:00"  # reference timestamp format
         assert cols[1] == "100000"  # cj amount
         assert cols[2] == "2"  # input count from utxos_used
-        assert cols[3] == "0"  # input value not retained
+        assert cols[3] == "612345"  # aggregate value of our inputs
         assert cols[4] == "2680"  # cjfee == fee_received
         assert cols[5] == str(2_680 - 200)  # earned == net_fee
         assert cols[6] == "6.0"  # confirm minutes (10:00 -> 10:06)
@@ -3492,7 +3501,7 @@ class TestYieldGeneratorReport:
             temp_data_dir,
         )
         rows = format_yield_generator_report(temp_data_dir)
-        assert len(rows) == 2  # header + marker only
+        assert len(rows) == 1  # header only
 
     def test_taker_rows_excluded(self, temp_data_dir: Path) -> None:
         taker = create_taker_history_entry(
@@ -3509,7 +3518,7 @@ class TestYieldGeneratorReport:
         )
         append_history_entry(taker, temp_data_dir)
         rows = format_yield_generator_report(temp_data_dir)
-        assert len(rows) == 2  # no maker earnings
+        assert len(rows) == 1  # no maker earnings
 
     def test_multiple_rows_sorted_chronologically(self, temp_data_dir: Path) -> None:
         append_history_entry(
@@ -3533,10 +3542,10 @@ class TestYieldGeneratorReport:
             temp_data_dir,
         )
         rows = format_yield_generator_report(temp_data_dir)
-        # header + marker + 2 earnings, oldest first
-        assert len(rows) == 4
-        assert rows[2].split(",")[1] == "1"  # Jan row first
-        assert rows[3].split(",")[1] == "2"  # Feb row second
+        # header + 2 earnings, oldest first
+        assert len(rows) == 3
+        assert rows[1].split(",")[1] == "1"  # Jan row first
+        assert rows[2].split(",")[1] == "2"  # Feb row second
 
     def test_wallet_fingerprint_filter(self, temp_data_dir: Path) -> None:
         append_history_entry(
@@ -3560,5 +3569,5 @@ class TestYieldGeneratorReport:
             temp_data_dir,
         )
         rows = format_yield_generator_report(temp_data_dir, wallet_fingerprint="aaaaaaaa")
-        assert len(rows) == 3  # only wallet aaaaaaaa's row
+        assert len(rows) == 2  # only wallet aaaaaaaa's row
         assert rows[-1].split(",")[1] == "1"

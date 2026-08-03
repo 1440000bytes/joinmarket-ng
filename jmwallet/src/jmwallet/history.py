@@ -142,6 +142,13 @@ class TransactionHistoryEntry:
     # migration for legacy headers keeps working.
     source: HistorySource = "protocol"
 
+    # Aggregate value of this wallet's inputs, in satoshis. Live maker flows
+    # populate this for the JAM-compatible yield report. Older history rows
+    # default to zero because their spent input values were not retained.
+    # Keep new fields appended so positional legacy-header migration remains
+    # able to recover rows written against an older header.
+    input_value: int = 0
+
 
 HISTORY_FILENAME = "history.csv"
 LEGACY_HISTORY_FILENAME = "coinjoin_history.csv"
@@ -448,6 +455,7 @@ def _row_to_entry(row: Mapping[str, str | None]) -> TransactionHistoryEntry | No
                 if _get("source", "protocol") in VALID_HISTORY_SOURCES
                 else "protocol",
             ),
+            input_value=int(_get("input_value", "0") or 0),
         )
     except (ValueError, KeyError) as e:
         logger.warning(f"Skipping malformed history row: {e}")
@@ -666,28 +674,23 @@ def format_yield_generator_report(
 ) -> list[str]:
     """Build the yield-generator earnings report as reference-format CSV rows.
 
-    Returns a list of comma-separated strings: a header row, an initial
-    ``Connected`` marker row (kept for parity with the reference, which the
-    Earn report UI discards), and one row per *successful* maker CoinJoin from
-    ``history.csv`` (the row's ``fee_received`` is the cjfee earned, and
-    ``net_fee`` is the amount earned after the mining-fee contribution).
+    Returns a list of comma-separated strings: a header row and one row per
+    *successful* maker CoinJoin from ``history.csv`` (the row's
+    ``fee_received`` is the cjfee earned, and ``net_fee`` is the amount earned
+    after the mining-fee contribution).
     Reconstructed on-chain guesses are excluded because their maker role and
     gross cjfee cannot be established from public transaction data, while this
     compatibility report has no provenance field and promises exact earnings.
 
-    The ``my input value/satoshi`` column is reported as ``0`` because the
-    per-input values are not retained in the history log; the earnings columns
-    (``cjfee``/``earned``) are exact.
+    The ``my input value/satoshi`` column is the aggregate value captured when
+    the maker selected its inputs. Rows written before that value was retained
+    report ``0``; the earnings columns (``cjfee``/``earned``) are exact.
 
     Args:
         data_dir: Data directory holding ``history.csv``.
         wallet_fingerprint: When set, restrict to one wallet's maker rows.
     """
     rows: list[str] = [",".join(YIELD_GENERATOR_REPORT_HEADER)]
-    # A startup marker keeps the response shape identical to the reference,
-    # whose clients filter out rows whose notes contain "Connected".
-    marker_ts = datetime.now().strftime(_YIELD_GENERATOR_TIMESTAMP_FORMAT)
-    rows.append(f"{marker_ts},,,,,,,Connected")
 
     entries = read_history(
         data_dir,
@@ -703,7 +706,7 @@ def format_yield_generator_report(
             _format_yield_generator_timestamp(entry.timestamp),
             str(entry.cj_amount),
             str(input_count),
-            "0",  # per-input values are not retained in history.csv
+            str(entry.input_value),
             str(entry.fee_received),
             str(entry.net_fee),
             _yield_generator_confirm_minutes(entry),
@@ -1000,6 +1003,7 @@ def create_maker_history_entry(
     network: str = "mainnet",
     wallet_fingerprint: str = "",
     source_addresses: list[str] | None = None,
+    input_value: int = 0,
 ) -> TransactionHistoryEntry:
     """
     Create a history entry for a maker CoinJoin (initially marked as pending).
@@ -1018,6 +1022,9 @@ def create_maker_history_entry(
         our_utxos: List of (txid, vout) tuples for our inputs
         txid: Transaction ID (may not be known by maker)
         network: Network name
+        wallet_fingerprint: Fingerprint of the wallet creating the entry
+        source_addresses: Addresses corresponding to ``our_utxos``
+        input_value: Total value of ``our_utxos`` in satoshis
 
     Returns:
         TransactionHistoryEntry ready to be appended (marked as pending)
@@ -1047,6 +1054,7 @@ def create_maker_history_entry(
         source_addresses=",".join(source_addresses) if source_addresses else "",
         network=network,
         wallet_fingerprint=wallet_fingerprint,
+        input_value=input_value,
     )
 
 

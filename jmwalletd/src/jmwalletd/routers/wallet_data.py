@@ -679,7 +679,7 @@ async def yieldgen_report(
     source of truth) rather than the legacy ``yigen-statement.csv`` file, so the
     report is synthesized from the successful maker rows of ``history.csv`` in
     the reference comma-separated format the Earn report UI expects (a header
-    row, a ``Connected`` marker row, then one row per CoinJoin).
+    row followed by one row per CoinJoin).
     """
     from jmwallet.history import format_yield_generator_report
 

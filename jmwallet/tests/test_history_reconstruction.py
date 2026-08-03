@@ -863,6 +863,6 @@ class TestHistorySourceColumn:
         append_history_entry(protocol, tmp_path)
 
         rows = format_yield_generator_report(tmp_path, wallet_fingerprint=FINGERPRINT)
-        assert len(rows) == 3
+        assert len(rows) == 2
         assert "999999" not in rows[-1]
         assert ",500,450," in rows[-1]

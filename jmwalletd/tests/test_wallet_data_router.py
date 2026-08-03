@@ -864,6 +864,7 @@ class TestYieldGenReport:
         cj_amount: int,
         fee_received: int,
         txfee_contribution: int,
+        input_value: int = 612_345,
         success: bool = True,
         txid: str = "ab" * 32,
     ) -> None:
@@ -889,13 +890,12 @@ class TestYieldGenReport:
             utxos_used=f"{txid}:0,{txid}:1",
             network="regtest",
             wallet_fingerprint="deadbeef",
+            input_value=input_value,
         )
         append_history_entry(entry, data_dir=data_dir)
 
-    def test_empty_report_returns_header_and_marker(
-        self, authed_client: tuple[TestClient, str]
-    ) -> None:
-        """With no maker history the report is still returned (header + marker)."""
+    def test_empty_report_returns_header_only(self, authed_client: tuple[TestClient, str]) -> None:
+        """With no maker history the report is still returned with its header."""
         client, token = authed_client
         resp = client.get(
             "/api/v1/wallet/yieldgen/report",
@@ -903,10 +903,8 @@ class TestYieldGenReport:
         )
         assert resp.status_code == 200
         rows = resp.json()["yigen_data"]
-        # Header row + a single "Connected" startup marker, no earnings rows.
         assert rows[0].startswith("timestamp,cj amount/satoshi,")
-        assert any("Connected" in r for r in rows)
-        assert len(rows) == 2
+        assert len(rows) == 1
 
     def test_report_synthesized_from_maker_history(
         self, authed_client: tuple[TestClient, str], data_dir: Path
@@ -923,12 +921,12 @@ class TestYieldGenReport:
         )
         assert resp.status_code == 200
         rows = resp.json()["yigen_data"]
-        # header + Connected marker + one earnings row
-        assert len(rows) == 3
+        assert len(rows) == 2
         earning = rows[-1].split(",")
         # cj amount, input count, input value, cjfee, earned
         assert earning[1] == "100000"
         assert earning[2] == "2"  # two utxos_used
+        assert earning[3] == "612345"
         assert earning[4] == "2680"  # cjfee = fee_received
         assert earning[5] == str(2_680 - 200)  # earned = net_fee
 
@@ -952,8 +950,8 @@ class TestYieldGenReport:
         )
         assert resp.status_code == 200
         rows = resp.json()["yigen_data"]
-        # Only header + Connected marker (the pending row is excluded).
-        assert len(rows) == 2
+        # Only the header remains (the pending row is excluded).
+        assert len(rows) == 1
 
     def test_requires_auth(self, authed_client: tuple[TestClient, str]) -> None:
         # Without a bearer token the endpoint must reject the request to avoid

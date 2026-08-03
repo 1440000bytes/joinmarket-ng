@@ -355,6 +355,7 @@ class MakerSession:
                 try:
                     our_utxos = list(self.our_utxos.keys())
                     our_input_addresses = [u.address for u in self.our_utxos.values()]
+                    input_value = sum(u.value for u in self.our_utxos.values())
                     history_entry = create_maker_history_entry(
                         taker_nick=taker_nick,
                         cj_amount=self.amount,
@@ -367,6 +368,7 @@ class MakerSession:
                         network=bot.config.network.value,
                         wallet_fingerprint=bot.wallet.wallet_fingerprint,
                         source_addresses=our_input_addresses,
+                        input_value=input_value,
                     )
                     history_entry.failure_reason = "Awaiting transaction"
                     append_history_entry(history_entry, data_dir=bot.config.data_dir)
@@ -520,6 +522,7 @@ class MakerSession:
                         )
                         our_utxos = list(self.our_utxos.keys())
                         our_input_addresses = [u.address for u in self.our_utxos.values()]
+                        input_value = sum(u.value for u in self.our_utxos.values())
                         history_entry = create_maker_history_entry(
                             taker_nick=taker_nick,
                             cj_amount=self.amount,
@@ -532,6 +535,7 @@ class MakerSession:
                             network=bot.config.network.value,
                             wallet_fingerprint=bot.wallet.wallet_fingerprint,
                             source_addresses=our_input_addresses,
+                            input_value=input_value,
                         )
                         append_history_entry(history_entry, data_dir=bot.config.data_dir)
                         logger.debug(f"Created new CoinJoin history: net fee {net} sats")
