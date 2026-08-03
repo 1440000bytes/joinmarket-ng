@@ -152,6 +152,22 @@ class MempoolAPI:
             )
             raise MempoolAPIError(f"API request failed: {e}") from e
 
+    async def _get_list(self, endpoint: str) -> list[dict[str, Any]]:
+        if not self.base_url:
+            raise MempoolAPIError("Mempool API URL is not configured")
+
+        url = f"{self.base_url}/{endpoint}"
+        try:
+            response = await self.client.get(url)
+            response.raise_for_status()
+            data = response.json()
+        except httpx.HTTPError as e:
+            logger.error(f"MempoolAPI error: {e}")
+            raise MempoolAPIError(f"API request failed: {e}") from e
+        if not isinstance(data, list) or not all(isinstance(item, dict) for item in data):
+            raise MempoolAPIError(f"API returned invalid list data for {endpoint}")
+        return data
+
     async def get_address_info(self, address: str) -> AddressInfo:
         data = await self._get(f"address/{address}")
         return AddressInfo(**data)
@@ -161,8 +177,10 @@ class MempoolAPI:
         return Transaction(**data)
 
     async def get_outspend(self, txid: str, vout: int) -> Outspend:
-        data = await self._get(f"tx/{txid}/outspend/{vout}")
-        return Outspend(**data)
+        outspends = await self._get_list(f"tx/{txid}/outspends")
+        if vout < 0 or vout >= len(outspends):
+            raise MempoolAPIError(f"Output index {vout} is missing from outspend response")
+        return Outspend(**outspends[vout])
 
     async def get_block_height(self) -> int:
         response = await self.client.get(f"{self.base_url}/blocks/tip/height")

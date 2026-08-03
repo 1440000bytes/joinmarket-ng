@@ -68,12 +68,24 @@ def test_tor_transport_construction_failure_prevents_direct_client() -> None:
 @pytest.mark.asyncio
 async def test_get_outspend_parses_spent_state() -> None:
     api = MempoolAPI("https://mempool.example/api", trust_env=False)
-    with patch.object(api, "_get", new=AsyncMock(return_value={"spent": True})) as get:
+    outspends = [{"spent": False}, {"spent": False}, {"spent": False}, {"spent": True}]
+    with patch.object(api, "_get_list", new=AsyncMock(return_value=outspends)) as get_list:
         outspend = await api.get_outspend("ab" * 32, 3)
     await api.close()
 
     assert outspend.spent is True
-    get.assert_awaited_once_with(f"tx/{'ab' * 32}/outspend/3")
+    get_list.assert_awaited_once_with(f"tx/{'ab' * 32}/outspends")
+
+
+@pytest.mark.asyncio
+async def test_get_outspend_rejects_missing_output() -> None:
+    api = MempoolAPI("https://mempool.example/api", trust_env=False)
+    with (
+        patch.object(api, "_get_list", new=AsyncMock(return_value=[{"spent": False}])),
+        pytest.raises(MempoolAPIError, match="Output index 3"),
+    ):
+        await api.get_outspend("ab" * 32, 3)
+    await api.close()
 
 
 @pytest.mark.asyncio
