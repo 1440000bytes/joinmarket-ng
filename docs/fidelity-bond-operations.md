@@ -149,6 +149,7 @@ sign. The helper prompts without echo when both options are supplied:
 
 ```bash
 python scripts/sign_bond_psbt.py \
+  --chain <main|test|signet|regtest> \
   --device-type digitalbitbox \
   --device-password \
   --no-broadcast \
@@ -310,6 +311,11 @@ jm-wallet spend-bond <bond-address> <destination> \
   --wallet-fingerprint <hot-wallet-fingerprint> \
   --output unsigned-bond.psbt
 ```
+
+Before using a blind signer such as BitBox01, decode `unsigned-bond.psbt` on a
+separate trusted system and verify the destination, amount, fee, and locktime.
+The finalizer verifies the signature and script key, but it cannot determine
+whether those transaction details match your intent.
 
 HWI flow:
 

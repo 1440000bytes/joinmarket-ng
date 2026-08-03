@@ -41,19 +41,19 @@ Requirements:
 
 Usage:
     # Interactive mode (enumerates devices, prompts for confirmation):
-    python scripts/sign_bond_psbt.py <psbt_base64>
+    python scripts/sign_bond_psbt.py --chain main <psbt_base64>
 
     # Or from a file:
-    python scripts/sign_bond_psbt.py --file bond.psbt
+    python scripts/sign_bond_psbt.py --chain main --file bond.psbt
 
     # Specify device type explicitly:
-    python scripts/sign_bond_psbt.py --device-type trezor <psbt_base64>
+    python scripts/sign_bond_psbt.py --chain main --device-type trezor <psbt_base64>
 
     # Digital BitBox / BitBox01 (prompts without echo for its host password):
-    python scripts/sign_bond_psbt.py --device-type digitalbitbox --device-password <psbt_base64>
+    python scripts/sign_bond_psbt.py --chain main --device-type digitalbitbox --device-password <psbt_base64>
 
     # Output signed transaction hex (ready for broadcast):
-    python scripts/sign_bond_psbt.py <psbt_base64> | bitcoin-cli sendrawtransaction -
+    python scripts/sign_bond_psbt.py --chain main <psbt_base64> | bitcoin-cli sendrawtransaction -
 
 The script will:
     1. Enumerate connected hardware wallets
@@ -264,7 +264,7 @@ def sign_psbt(
         password: Optional host password required by devices such as BitBox01.
 
     Returns:
-        Dict with 'psbt' key containing the signed PSBT base64.
+        Dict with 'psbt' and 'signed' keys from HWI.
 
     Raises:
         RuntimeError: If signing fails.
@@ -358,9 +358,10 @@ def main() -> None:
         description="Sign a fidelity bond spending PSBT with a hardware wallet via HWI.",
         epilog=(
             "Examples:\n"
-            "  %(prog)s cHNidP8BAF4...\n"
-            "  %(prog)s --file bond.psbt\n"
-            "  %(prog)s --device-type digitalbitbox --device-password cHNidP8BAF4...\n"
+            "  %(prog)s --chain main cHNidP8BAF4...\n"
+            "  %(prog)s --chain main --file bond.psbt\n"
+            "  %(prog)s --chain main --device-type digitalbitbox "
+            "--device-password cHNidP8BAF4...\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -386,8 +387,8 @@ def main() -> None:
         "-c",
         type=str,
         choices=["main", "test", "signet", "regtest"],
-        default=None,
-        help="Bitcoin network (default: auto-detect from PSBT)",
+        required=True,
+        help="Bitcoin network",
     )
     parser.add_argument(
         "--no-broadcast",
@@ -451,8 +452,7 @@ def main() -> None:
     print(f"HWI version: {hwi_version or 'unknown'}", file=sys.stderr)
     print(f"cbor2 version: {cbor2_version or 'unknown'}", file=sys.stderr)
 
-    # Auto-detect network if not specified
-    chain = args.chain or detect_network_from_psbt(psbt_b64)
+    chain = args.chain
     print(f"Network: {chain}", file=sys.stderr)
 
     # HWI enumeration opens every supported device type. Avoid touching Jade's
@@ -547,6 +547,13 @@ def main() -> None:
     signed_psbt = result.get("psbt", "")
     if not signed_psbt:
         print("ERROR: No signed PSBT returned from device", file=sys.stderr)
+        sys.exit(1)
+    if result.get("signed") is not True:
+        print(
+            "ERROR: Hardware wallet returned the PSBT without adding a signature. "
+            "Check the selected device, wallet fingerprint, and derivation path.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     print("PSBT signed successfully!", file=sys.stderr)

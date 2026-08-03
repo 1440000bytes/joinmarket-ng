@@ -149,7 +149,9 @@ class TestMainJadeCborHandling:
     def _patch_environment(
         self, monkeypatch: pytest.MonkeyPatch, cbor2_version: str, sign_psbt: Mock
     ) -> None:
-        monkeypatch.setattr(sys, "argv", ["sign_bond_psbt.py", self.PSBT])
+        monkeypatch.setattr(
+            sys, "argv", ["sign_bond_psbt.py", self.PSBT, "--chain", "main"]
+        )
         monkeypatch.setattr("sign_bond_psbt.check_hwi_installed", lambda: None)
         monkeypatch.setattr("sign_bond_psbt.get_installed_hwi_version", lambda: "3.2.0")
         monkeypatch.setattr(
@@ -204,7 +206,7 @@ class TestMainJadeCborHandling:
             "fingerprint": "73c5da0a",
         }
         enumerate_devices = Mock(return_value=[bitbox])
-        sign_psbt = Mock(return_value={"psbt": "signed-psbt"})
+        sign_psbt = Mock(return_value={"psbt": "signed-psbt", "signed": True})
         monkeypatch.setattr(
             sys,
             "argv",
@@ -215,6 +217,8 @@ class TestMainJadeCborHandling:
                 "digitalbitbox",
                 "--device-password",
                 "--no-broadcast",
+                "--chain",
+                "main",
             ],
         )
         monkeypatch.setattr("sign_bond_psbt.check_hwi_installed", lambda: None)
@@ -240,6 +244,18 @@ class TestMainJadeCborHandling:
             password="test-password",
         )
         assert capsys.readouterr().out.strip() == "signed-psbt"
+
+    def test_unchanged_psbt_is_not_reported_as_signed(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        sign_psbt = Mock(return_value={"psbt": self.PSBT, "signed": False})
+        self._patch_environment(monkeypatch, "5.9.0", sign_psbt)
+
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+
+        assert exc_info.value.code == 1
+        assert "without adding a signature" in capsys.readouterr().err
 
 
 class TestDeviceSpecificEnumeration:

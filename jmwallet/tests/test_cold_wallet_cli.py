@@ -92,6 +92,30 @@ def test_prepare_certificate_message_accepts_current_block_override():
     assert "MESSAGE TO SIGN" in result.stdout
 
 
+@pytest.mark.parametrize("validity_periods", [0, -1])
+def test_prepare_certificate_message_rejects_nonpositive_validity(
+    validity_periods: int,
+) -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        data_dir = Path(tmpdir)
+        result = runner.invoke(
+            app,
+            [
+                "prepare-certificate-message",
+                "bc1qinvalid",
+                "--data-dir",
+                str(data_dir),
+                "--validity-periods",
+                str(validity_periods),
+                "--current-block",
+                "850000",
+            ],
+        )
+
+        assert result.exit_code == 1
+        assert not (data_dir / "certificate_message.txt").exists()
+
+
 @pytest.mark.parametrize(
     ("cert_expiry", "current_block", "expected_success"),
     [
