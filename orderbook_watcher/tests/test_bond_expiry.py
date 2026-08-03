@@ -118,19 +118,20 @@ async def test_certificate_expiry_does_not_zero_economic_value(
 async def test_invalid_height_fails_closed(invalid_height: object) -> None:
     backend = AsyncMock()
     backend.get_block_height.return_value = invalid_height
-    bond = _bond(bond_value=123)
+    bond = _bond()
+    backend.verify_bonds.return_value = [_valid_result(bond)]
     aggregator = _aggregator(backend)
     orderbook = OrderBook(fidelity_bonds=[bond])
 
     await aggregator._calculate_bond_values(orderbook)
 
     assert orderbook.current_block_height is None
-    assert bond.bond_value is None
-    backend.verify_bonds.assert_not_awaited()
+    assert bond.bond_value is not None and bond.bond_value > 0
+    backend.verify_bonds.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_height_failure_clears_cached_value() -> None:
+async def test_height_failure_preserves_economic_value() -> None:
     backend = AsyncMock()
     backend.get_block_height.side_effect = RuntimeError("backend unavailable")
     bond = _bond(bond_value=123)
@@ -139,7 +140,7 @@ async def test_height_failure_clears_cached_value() -> None:
 
     await aggregator._calculate_bond_values(orderbook)
 
-    assert bond.bond_value is None
+    assert bond.bond_value == 123
     backend.verify_bonds.assert_not_awaited()
 
 
@@ -184,13 +185,12 @@ async def test_stale_cache_entry_is_reverified() -> None:
         cached_bond,
         time.monotonic() - BOND_CACHE_TTL_SECONDS,
     )
-    bond = _bond()
-    orderbook = OrderBook(fidelity_bonds=[bond])
+    orderbook = OrderBook(fidelity_bonds=[cached_bond])
 
     aggregator._apply_bond_cache(orderbook)
     await aggregator._calculate_bond_values(orderbook)
 
-    assert bond.bond_value is not None and bond.bond_value > 0
+    assert cached_bond.bond_value is not None and cached_bond.bond_value > 0
     backend.verify_bonds.assert_awaited_once()
 
 
@@ -349,6 +349,22 @@ def test_expired_offer_retains_underlying_bond_value() -> None:
 
     assert expired_offer.fidelity_bond_value == 123
     assert valid_offer.fidelity_bond_value == 123
+
+
+def test_height_unavailable_offer_retains_underlying_bond_value() -> None:
+    backend = AsyncMock()
+    aggregator = _aggregator(backend)
+    bond = _bond(bond_value=123)
+    offer = _offer(bond, oid=0)
+    orderbook = OrderBook(
+        offers=[offer],
+        fidelity_bonds=[bond],
+        current_block_height=None,
+    )
+
+    aggregator._link_bonds_to_offers(orderbook)
+
+    assert offer.fidelity_bond_value == 123
 
 
 @pytest.mark.asyncio

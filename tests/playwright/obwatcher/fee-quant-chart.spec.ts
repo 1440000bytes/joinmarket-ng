@@ -352,14 +352,28 @@ test.describe("fidelity bond certificate expiry", () => {
   }
 
   test("unavailable height is not shown as valid", async ({ page }) => {
-    const server = await openChart(page, bondPayload(null));
+    const body = bondPayload(null) as any;
+    body.mempool_url = "http://127.0.0.1:1";
+    let tipRequests = 0;
+    page.on("request", request => {
+      if (request.url().includes("/blocks/tip/height")) tipRequests += 1;
+    });
+    const server = await openChart(page, body);
     try {
       await page.locator(".bond-value-clickable").click();
       await expect(page.locator("#bond-verification-summary")).toHaveClass(/pending/);
-      await expect(page.locator("#bond-verification-text")).toHaveText(
-        "Certificate expiry could not be verified",
+      await expect(page.locator("#bond-verification-text")).toContainText(
+        "Underlying bond value: 10,000.",
       );
-      await expect(page.locator(".bond-value-clickable")).toHaveText("Pending");
+      await expect(page.locator(".bond-value-clickable")).toContainText("10,000");
+      await expect(page.locator(".bond-unverified-indicator")).toHaveAttribute(
+        "title",
+        /takers treat this maker as unbonded until block height is available/,
+      );
+      await expect(page.locator(".fq-summary")).toHaveText(
+        "No bonded makers in the orderbook yet.",
+      );
+      expect(tipRequests).toBe(0);
     } finally {
       server.close();
     }

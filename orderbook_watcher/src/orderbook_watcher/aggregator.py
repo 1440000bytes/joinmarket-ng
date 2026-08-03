@@ -1067,10 +1067,18 @@ class OrderbookAggregator:
         for bond in orderbook.fidelity_bonds:
             cache_key = self._bond_claim_key(bond)
             if cache_key not in self._bond_cache:
+                bond.bond_value = None
+                bond.amount = 0
+                bond.utxo_confirmation_timestamp = 0
+                bond.utxo_confirmations = 0
                 continue
             cached_bond, verified_at = self._bond_cache[cache_key]
             if time.monotonic() - verified_at >= BOND_CACHE_TTL_SECONDS:
                 del self._bond_cache[cache_key]
+                bond.bond_value = None
+                bond.amount = 0
+                bond.utxo_confirmation_timestamp = 0
+                bond.utxo_confirmations = 0
                 continue
             bond.amount = cached_bond.amount
             bond.utxo_confirmation_timestamp = cached_bond.utxo_confirmation_timestamp
@@ -1097,10 +1105,6 @@ class OrderbookAggregator:
     def _link_bonds_to_offers(self, orderbook: OrderBook) -> None:
         for offer in orderbook.offers:
             offer.fidelity_bond_value = 0
-
-        current_block_height = orderbook.current_block_height
-        if current_block_height is None:
-            return
 
         for offer in orderbook.offers:
             if offer.fidelity_bond_data:
@@ -1258,10 +1262,6 @@ class OrderbookAggregator:
         """Calculate bond values, using blockchain backend if available, else mempool API."""
         current_block_height = await self._get_current_block_height()
         orderbook.current_block_height = current_block_height
-        if current_block_height is None:
-            for bond in orderbook.fidelity_bonds:
-                bond.bond_value = None
-            return
 
         if self.blockchain_backend is not None:
             await self._calculate_bond_values_via_backend(orderbook)

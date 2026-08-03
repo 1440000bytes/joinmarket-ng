@@ -305,6 +305,13 @@ function formatExpiredBondValue(value) {
         `<span class="bond-expired-indicator" title="${warning}" aria-label="${warning}">!</span>`;
 }
 
+function formatUnverifiedCertificateValue(value) {
+    const warning = 'Certificate expiry could not be verified; takers treat this maker as ' +
+        'unbonded until block height is available.';
+    return `${formatNumber(Math.round(value))} ` +
+        `<span class="bond-unverified-indicator" title="${warning}" aria-label="${warning}">?</span>`;
+}
+
 // Advertised proof data counts only while its certificate is known to be active.
 // Expired or height-unverified proofs remain visible in the table and modal but
 // do not contribute to sybil-resistant bonded views.
@@ -739,6 +746,9 @@ async function fetchCurrentBlockHeight() {
     if (Number.isSafeInteger(serverHeight) && serverHeight >= 0) {
         return serverHeight;
     }
+    if (Object.prototype.hasOwnProperty.call(orderbookData, 'current_block_height')) {
+        return null;
+    }
 
     const now = Date.now();
     if (cachedBlockHeight !== null && (now - blockHeightFetchTime) < BLOCK_HEIGHT_CACHE_MS) {
@@ -855,7 +865,11 @@ async function showBondModal(bondData, bondAmount, bondValue) {
     if (currentBlockHeight === null) {
         summaryEl.classList.add('pending');
         iconEl.textContent = '?';
-        textEl.textContent = 'Certificate expiry could not be verified';
+        const economicValue = bondValue > 0
+            ? ` Underlying bond value: ${formatNumber(Math.round(bondValue))}.`
+            : '';
+        textEl.textContent = 'Certificate expiry could not be verified; takers treat this ' +
+            `maker as unbonded until block height is available.${economicValue}`;
     } else if (certExpired) {
         summaryEl.classList.add('expired');
         iconEl.textContent = '!';
@@ -927,7 +941,9 @@ function renderTable() {
                         ? formatExpiredBondValue(economicBondValue)
                         : 'Expired';
                 } else {
-                    bondValue = 'Pending';
+                    bondValue = economicBondValue > 0
+                        ? formatUnverifiedCertificateValue(economicBondValue)
+                        : 'Pending';
                 }
             } else {
                 bondValue = bondAmount > 0 ? '0' : 'Pending';
