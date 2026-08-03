@@ -604,6 +604,42 @@ class TestStartMaker:
         mock_write_nick.assert_called_once_with(state.data_dir, "maker", "J5TestNickWalletd")
         mock_remove_nick.assert_called_once_with(state.data_dir, "maker")
 
+    @patch("jmwalletd._backend.get_backend", new_callable=AsyncMock)
+    @patch("maker.bot.MakerBot")
+    @patch("maker.config.MakerConfig")
+    def test_failed_maker_is_stopped_before_state_is_cleared(
+        self,
+        mock_config: Mock,
+        mock_maker_cls: Mock,
+        mock_backend: AsyncMock,
+        authed_client: tuple[TestClient, str],
+    ) -> None:
+        client, token = authed_client
+        state = get_daemon_state()
+        mock_maker = AsyncMock()
+        mock_maker.nick = "J5ExpiredMaker"
+        mock_maker.start.side_effect = RuntimeError("certificate expired")
+        mock_maker_cls.return_value = mock_maker
+
+        resp = client.post(
+            "/api/v1/wallet/test_wallet.jmdat/maker/start",
+            json={
+                "txfee": "1000",
+                "cjfee_a": "500",
+                "cjfee_r": "0.002",
+                "ordertype": "sw0reloffer",
+                "minsize": "100000",
+            },
+            headers=_auth_headers(token),
+        )
+        assert resp.status_code == 202
+
+        time.sleep(0.1)
+
+        mock_maker.stop.assert_awaited_once()
+        assert state._maker_ref is None
+        assert state.coinjoin_state == CoinjoinState.NOT_RUNNING
+
 
 class TestStopMaker:
     def test_stop_maker(self, authed_client: tuple[TestClient, str]) -> None:

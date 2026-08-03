@@ -291,6 +291,7 @@ async def start_maker(
         state.activate_coinjoin_state(CoinjoinState.MAKER_RUNNING)
 
         async def _run_maker() -> None:
+            maker: MakerBot | None = None
             try:
                 ws = state.wallet_service
                 backend = await get_backend(
@@ -333,6 +334,11 @@ async def start_maker(
             except Exception:
                 logger.exception("Maker failed")
             finally:
+                if maker is not None:
+                    try:
+                        await maker.stop()
+                    except Exception:
+                        logger.exception("Error stopping maker after its run ended")
                 state.activate_coinjoin_state(CoinjoinState.NOT_RUNNING)
                 state.offer_list = None
                 state.nickname = None
