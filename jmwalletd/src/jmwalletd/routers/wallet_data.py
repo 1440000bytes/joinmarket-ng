@@ -18,6 +18,7 @@ from jmwalletd.errors import (
     ActionNotAllowed,
     ConfigNotPresent,
     InvalidRequestFormat,
+    NoWalletFound,
     YieldGeneratorDataUnreadable,
 )
 from jmwalletd.models import (
@@ -683,8 +684,14 @@ async def yieldgen_report(
     """
     from jmwallet.history import format_yield_generator_report
 
+    if state.wallet_service is None:
+        raise NoWalletFound("No wallet loaded.")
+
     try:
-        rows = format_yield_generator_report(state.data_dir)
+        rows = format_yield_generator_report(
+            state.data_dir,
+            wallet_fingerprint=state.wallet_service.wallet_fingerprint,
+        )
     except Exception as exc:
         raise YieldGeneratorDataUnreadable(str(exc)) from exc
 

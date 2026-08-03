@@ -378,7 +378,14 @@ class MakerSession:
                         f"change={self.change_address[:12]}...)"
                     )
                 except Exception as e:
-                    logger.warning(f"Failed to record revealed addresses in history: {e}")
+                    logger.error(
+                        f"Refusing to reveal addresses because history persistence failed: {e}"
+                    )
+                    if bot.active_sessions.get(taker_nick) is self:
+                        bot.active_sessions.pop(taker_nick)
+                        self.release_input_locks()
+                        bot._release_commitment_reservation(commitment)
+                    return
 
                 if not self.is_active(bot):
                     return

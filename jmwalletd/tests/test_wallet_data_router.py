@@ -911,6 +911,7 @@ class TestYieldGenReport:
     ) -> None:
         """A successful maker CoinJoin appears as a reference-format earnings row."""
         client, token = authed_client
+        get_daemon_state().wallet_service.wallet_fingerprint = "deadbeef"
         self._append_maker_entry(
             data_dir, cj_amount=100_000, fee_received=2_680, txfee_contribution=200
         )
@@ -929,6 +930,47 @@ class TestYieldGenReport:
         assert earning[3] == "612345"
         assert earning[4] == "2680"  # cjfee = fee_received
         assert earning[5] == str(2_680 - 200)  # earned = net_fee
+
+    def test_report_scoped_to_active_wallet(
+        self, authed_client: tuple[TestClient, str], data_dir: Path
+    ) -> None:
+        client, token = authed_client
+        state = get_daemon_state()
+        state.wallet_service.wallet_fingerprint = "deadbeef"
+        self._append_maker_entry(
+            data_dir,
+            txid="aa" * 32,
+            cj_amount=100_000,
+            fee_received=2_680,
+            txfee_contribution=200,
+        )
+
+        from jmwallet.history import TransactionHistoryEntry, append_history_entry
+
+        append_history_entry(
+            TransactionHistoryEntry(
+                timestamp="2024-01-02T10:00:00",
+                role="maker",
+                success=True,
+                confirmations=1,
+                txid="bb" * 32,
+                cj_amount=200_000,
+                fee_received=5_000,
+                wallet_fingerprint="cafebabe",
+            ),
+            data_dir=data_dir,
+        )
+
+        resp = client.get(
+            "/api/v1/wallet/yieldgen/report",
+            headers=_auth_headers(token),
+        )
+
+        assert resp.status_code == 200
+        rows = resp.json()["yigen_data"]
+        assert len(rows) == 2
+        assert "100000" in rows[1]
+        assert "200000" not in rows[1]
 
     def test_pending_maker_entry_excluded(
         self, authed_client: tuple[TestClient, str], data_dir: Path

@@ -1028,6 +1028,58 @@ async def test_on_auth_releases_reservation_only_after_persistence(
 
 
 @pytest.mark.asyncio
+async def test_on_auth_history_failure_prevents_address_reveal():
+    """A failed privacy-critical history write must stop before !ioauth."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from jmwallet.history import HistoryWriteError
+
+    from maker.coinjoin import CoinJoinState
+    from maker.maker_session import MakerSession
+
+    commitment = "ba" * 32
+    taker_nick = "J5HistoryFailureTaker"
+    outpoint = ("ce" * 32, 1)
+    inner = MagicMock()
+    inner.taker_nick = taker_nick
+    inner.state = CoinJoinState.PUBKEY_SENT
+    inner.commitment = bytes.fromhex(commitment)
+    inner.crypto.is_encrypted = True
+    inner.crypto.decrypt.return_value = f"{'bb' * 32}:0|02{'cc' * 32}|02{'dd' * 32}|11|22"
+    inner.our_utxos = {outpoint: MagicMock(address="bcrt1qmakerinput", value=612_345)}
+    inner.amount = 500_000
+    inner.cj_address = "bcrt1qcoinjoin"
+    inner.change_address = "bcrt1qchange"
+    inner.handle_auth = AsyncMock(return_value=(True, {"cj_addr": inner.cj_address}))
+    session = MakerSession(inner)
+    session.send_response = AsyncMock(return_value=True)
+
+    bot = MagicMock()
+    bot.active_sessions = {taker_nick: session}
+    bot.config.network.value = "regtest"
+    bot.wallet.wallet_fingerprint = "fingerprint"
+    bot._broadcast_commitment = AsyncMock(return_value=True)
+
+    with (
+        patch("maker.maker_session.UTXOMetadata.from_str"),
+        patch("maker.maker_session.create_maker_history_entry", return_value=MagicMock()),
+        patch(
+            "maker.maker_session.append_history_entry",
+            side_effect=HistoryWriteError("disk full"),
+        ),
+    ):
+        await session.on_auth(bot, "auth ciphertext", "dir:test")
+
+    session.send_response.assert_not_awaited()
+    bot._broadcast_commitment.assert_not_awaited()
+    bot._release_commitment_reservation.assert_called_once_with(commitment)
+    inner.wallet.release_coinjoin_inputs.assert_called_once_with(
+        {outpoint}, owner=inner.input_lock_owner
+    )
+    assert taker_nick not in bot.active_sessions
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("tx_success", [True, False])
 async def test_stale_on_tx_terminal_callback_keeps_replacement(tx_success):
     """A stale terminal tx callback cannot remove a replacement or release its input lock."""

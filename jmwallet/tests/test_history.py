@@ -1986,6 +1986,57 @@ class TestClassifyImportedOutput:
         assert entries[0].success is True
         assert entries[0].peer_count == 4
 
+    @pytest.mark.asyncio
+    async def test_confirmation_detection_preserves_concurrent_append(
+        self, temp_data_dir: Path
+    ) -> None:
+        entry = create_maker_history_entry(
+            taker_nick="J5taker",
+            cj_amount=30_000,
+            fee_received=100,
+            txfee_contribution=50,
+            cj_address="bc1qfirst",
+            change_address="bc1qchangefirst",
+            our_utxos=[("abc123", 0)],
+            txid="test_tx_detection",
+        )
+        append_history_entry(entry, temp_data_dir)
+
+        concurrent = create_maker_history_entry(
+            taker_nick="J5other",
+            cj_amount=40_000,
+            fee_received=0,
+            txfee_contribution=0,
+            cj_address="bc1qsecond",
+            change_address="bc1qchangesecond",
+            our_utxos=[("def456", 1)],
+        )
+
+        async def detect_and_append(*_args: object) -> int:
+            append_history_entry(concurrent, temp_data_dir)
+            return 4
+
+        with patch(
+            "jmwallet.history.detect_coinjoin_peer_count",
+            side_effect=detect_and_append,
+        ):
+            result = await update_transaction_confirmation_with_detection(
+                "test_tx_detection",
+                1,
+                backend=MagicMock(),
+                data_dir=temp_data_dir,
+            )
+
+        assert result is True
+        entries = read_history(temp_data_dir)
+        assert {item.destination_address for item in entries} == {
+            "bc1qfirst",
+            "bc1qsecond",
+        }
+        confirmed = next(item for item in entries if item.txid == "test_tx_detection")
+        assert confirmed.success is True
+        assert confirmed.peer_count == 4
+
 
 class TestMarkPendingTransactionFailed:
     """Tests for marking pending transactions as failed (timeout scenarios)."""

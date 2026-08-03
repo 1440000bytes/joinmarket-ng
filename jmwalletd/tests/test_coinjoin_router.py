@@ -637,6 +637,7 @@ class TestStartMaker:
         time.sleep(0.1)
 
         mock_maker.stop.assert_awaited_once()
+        mock_backend.return_value.close.assert_awaited_once()
         assert state._maker_ref is None
         assert state.coinjoin_state == CoinjoinState.NOT_RUNNING
 

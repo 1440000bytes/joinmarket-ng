@@ -1266,6 +1266,27 @@ async def update_transaction_confirmation_with_detection(
     if not history_path.exists():
         return False
 
+    initial_entries = read_history(data_dir)
+    initial_target = _select_entry_for_confirmation_update(
+        initial_entries, txid, wallet_fingerprint
+    )
+    if initial_target is None:
+        return False
+
+    detected_count: int | None = None
+    if (
+        confirmations > 0
+        and not initial_target.success
+        and initial_target.role == "maker"
+        and initial_target.peer_count is None
+        and backend is not None
+        and initial_target.cj_amount > 0
+    ):
+        detected_count = await detect_coinjoin_peer_count(backend, txid, initial_target.cj_amount)
+
+    # Peer detection performs network I/O. Reload after that await so a maker
+    # session that appended a pre-reveal row in the meantime is not erased by
+    # rewriting the stale snapshot read above.
     entries = read_history(data_dir)
     target = _select_entry_for_confirmation_update(entries, txid, wallet_fingerprint)
     if target is None:
@@ -1280,21 +1301,13 @@ async def update_transaction_confirmation_with_detection(
         target.completed_at = target.confirmed_at
         logger.info(f"Transaction {txid[:16]}... confirmed with {confirmations} confirmations")
 
-        # Detect peer count for makers
-        if (
-            target.role == "maker"
-            and target.peer_count is None
-            and backend is not None
-            and target.cj_amount > 0
-        ):
-            detected_count = await detect_coinjoin_peer_count(backend, txid, target.cj_amount)
-            if detected_count is not None:
-                target.peer_count = detected_count
-                logger.info(f"Detected {detected_count} participants in CoinJoin {txid[:16]}...")
-
     elif confirmations > 0:
         # Already marked as successful, just update confirmation count
         logger.debug(f"Updated confirmations for {txid[:16]}...: {confirmations}")
+
+    if detected_count is not None and target.role == "maker" and target.peer_count is None:
+        target.peer_count = detected_count
+        logger.info(f"Detected {detected_count} participants in CoinJoin {txid[:16]}...")
 
     return _write_history_entries_atomic(entries, history_path)
 
