@@ -279,6 +279,11 @@ retain interoperability with reference takers: repeat `prepare-certificate-messa
 sign the new message with the bond key, and run `import-certificate` with the new
 absolute period.
 
+The maker refuses to start with an expired certificate. A running maker shuts
+down when its next chain-state rescan observes certificate expiry. After
+importing the renewed certificate, restart the maker so it loads the new
+certificate from the registry.
+
 The protocol field is an absolute 2016-block period. `--validity-periods`
 controls issuance policy by adding a duration to the current period. The field
 is covered by the bond-key signature. Reference and JoinMarket NG takers accept

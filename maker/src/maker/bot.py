@@ -44,8 +44,10 @@ from maker.config import MakerConfig
 from maker.direct_connection import DirectConnectionMixin, DirectConnectionState
 from maker.directory_pool import MakerDirectoryPool
 from maker.fidelity import (
+    ExpiredFidelityBondCertificateError,
     FidelityBondInfo,
     create_fidelity_bond_proof,
+    ensure_fidelity_bond_certificate_valid,
     find_fidelity_bonds,
     get_best_fidelity_bond,
 )
@@ -123,6 +125,7 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
         self._detached_handler_tasks: set[asyncio.Task[None]] = set()
         self._pending_signed_rounds: dict[tuple[str, str], PendingSignedRound] = {}
         self._pending_signed_rounds_lock = asyncio.Lock()
+        self._fatal_error: Exception | None = None
 
         # Session locks now live on each `MakerSession` (one asyncio.Lock per
         # taker_nick) so we no longer keep a parallel dict on the bot.
@@ -559,6 +562,10 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
                 # Auto-select the best (largest bond value) fidelity bond
                 self.fidelity_bond = await get_best_fidelity_bond(self.wallet)
             if self.fidelity_bond:
+                ensure_fidelity_bond_certificate_valid(
+                    self.fidelity_bond,
+                    self.current_block_height,
+                )
                 logger.info(
                     f"Fidelity bond found: {self.fidelity_bond.txid[:16]}..., "
                     f"value={self.fidelity_bond.value:,} sats, "
@@ -706,7 +713,11 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
 
             # Wait for all listening tasks to complete
             await asyncio.gather(*self.listen_tasks, return_exceptions=True)
+            if self._fatal_error is not None:
+                raise self._fatal_error
 
+        except ExpiredFidelityBondCertificateError:
+            raise
         except Exception as e:
             logger.error(f"Failed to start maker bot: {e}")
             raise
@@ -803,6 +814,17 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
         )
         self.listen_tasks.append(self._session_cleanup_task)
 
+    def _abort_for_fatal_error(self, error: Exception) -> None:
+        """Stop listener tasks so ``start`` can propagate a fatal background error."""
+        if self._fatal_error is None:
+            self._fatal_error = error
+        self.running = False
+
+        current_task = asyncio.current_task()
+        for listener_task in self.listen_tasks:
+            if listener_task is not current_task:
+                listener_task.cancel()
+
     def _log_rate_limited(
         self, key: str, message: str, level: str = "warning", interval: float = 10.0
     ) -> None:
@@ -878,6 +900,11 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
         # Update current block height
         self.current_block_height = await self.backend.get_block_height()
         logger.debug(f"Updated block height: {self.current_block_height}")
+        if self.fidelity_bond is not None:
+            ensure_fidelity_bond_certificate_valid(
+                self.fidelity_bond,
+                self.current_block_height,
+            )
 
         # Update pending history immediately after sync (in case of restart)
         await self._update_pending_history()

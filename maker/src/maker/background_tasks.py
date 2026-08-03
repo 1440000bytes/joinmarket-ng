@@ -19,6 +19,7 @@ from jmwallet.backends.base import BlockchainBackend
 from loguru import logger
 
 from maker.config import MakerConfig
+from maker.fidelity import ExpiredFidelityBondCertificateError
 from maker.protocols import MakerBotProtocol
 from maker.rate_limiting import DirectConnectionRateLimiter, OrderbookRateLimiter
 
@@ -98,6 +99,9 @@ class BackgroundTasksMixin:
 
             except asyncio.CancelledError:
                 logger.info("Periodic rescan task cancelled")
+                break
+            except ExpiredFidelityBondCertificateError as e:
+                self._abort_for_fatal_error(e)
                 break
             except Exception as e:
                 logger.error(f"Error in periodic rescan: {e}")
@@ -601,6 +605,8 @@ class BackgroundTasksMixin:
             await asyncio.sleep(2)
             logger.info("Performing deferred wallet resync after CoinJoin...")
             await self._resync_wallet_and_update_offers()
+        except ExpiredFidelityBondCertificateError as e:
+            self._abort_for_fatal_error(e)
         except Exception as e:
             logger.error(f"Error in deferred wallet resync: {e}")
 

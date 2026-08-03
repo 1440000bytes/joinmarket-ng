@@ -31,6 +31,7 @@ from pydantic import SecretStr
 
 from maker.bot import MakerBot
 from maker.config import MakerConfig, MergeAlgorithm, OfferConfig
+from maker.fidelity import ExpiredFidelityBondCertificateError
 
 app = SortedTyper(no_args_is_help=True)
 
@@ -761,6 +762,9 @@ def start(
 
     try:
         run_async(run_bot())
+    except ExpiredFidelityBondCertificateError as e:
+        logger.error(str(e))
+        raise typer.Exit(1)
     except KeyboardInterrupt:
         logger.info("Shutting down maker bot...")
         run_async(bot.stop())

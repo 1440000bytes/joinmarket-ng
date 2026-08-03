@@ -47,6 +47,38 @@ class FidelityBondInfo:
     cert_expiry: int | None = None  # Certificate expiry in 2016-block periods
 
 
+class ExpiredFidelityBondCertificateError(Exception):
+    """Raised when a maker's pre-signed fidelity bond certificate has expired."""
+
+
+def _has_presigned_certificate(bond: FidelityBondInfo) -> bool:
+    return (
+        bond.cert_pubkey is not None
+        and bond.cert_privkey is not None
+        and bond.cert_signature is not None
+        and bond.cert_expiry is not None
+    )
+
+
+def ensure_fidelity_bond_certificate_valid(
+    bond: FidelityBondInfo,
+    current_block_height: int,
+) -> None:
+    """Reject an expired pre-signed certificate while preserving hot-bond behavior."""
+    if not _has_presigned_certificate(bond):
+        return
+
+    assert bond.cert_expiry is not None
+    expiry_height = bond.cert_expiry * RETARGET_INTERVAL
+    if current_block_height > expiry_height:
+        raise ExpiredFidelityBondCertificateError(
+            f"Fidelity bond certificate for {bond.txid}:{bond.vout} expired after block "
+            f"{expiry_height} (current block: {current_block_height}). Renew the certificate "
+            "with jm-wallet prepare-certificate-message and import-certificate, then restart "
+            "jm-maker."
+        )
+
+
 def _parse_locktime_from_path(path: str) -> int | None:
     """
     Extract locktime from a fidelity bond path.
@@ -330,12 +362,7 @@ def create_fidelity_bond_proof(
 
     try:
         # Determine if we're using a certificate (cold wallet) or self-signing (hot wallet)
-        use_certificate = (
-            bond.cert_pubkey is not None
-            and bond.cert_privkey is not None
-            and bond.cert_signature is not None
-            and bond.cert_expiry is not None
-        )
+        use_certificate = _has_presigned_certificate(bond)
 
         if use_certificate:
             # COLD WALLET MODE: Use pre-signed certificate

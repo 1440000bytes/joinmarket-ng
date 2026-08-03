@@ -23,7 +23,7 @@ from maker.bot import MakerBot, _get_fidelity_bond_linkable_utxos
 from maker.coinjoin import CoinJoinState
 from maker.config import MakerConfig
 from maker.direct_connection import DirectConnectionState
-from maker.fidelity import FidelityBondInfo
+from maker.fidelity import ExpiredFidelityBondCertificateError, FidelityBondInfo
 
 
 class TestOfferAnnouncement:
@@ -1218,6 +1218,108 @@ class TestWalletRescanAndOfferUpdate:
         # Offers should NOT have been updated (balance unchanged)
         maker_bot.offer_manager.create_offers.assert_not_called()
         maker_bot._announce_offers.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_resync_rejects_expired_presigned_certificate(
+        self,
+        maker_bot,
+        test_private_key,
+        test_pubkey,
+    ):
+        maker_bot.fidelity_bond = FidelityBondInfo(
+            txid="c" * 64,
+            vout=2,
+            value=50_000_000,
+            locktime=2_000_000_000,
+            confirmation_time=1_700_000_000,
+            bond_value=25_000,
+            pubkey=test_pubkey,
+            cert_pubkey=test_pubkey,
+            cert_privkey=test_private_key,
+            cert_signature=b"certificate-signature",
+            cert_expiry=400,
+        )
+
+        with pytest.raises(ExpiredFidelityBondCertificateError):
+            await maker_bot._resync_wallet_and_update_offers()
+
+        assert maker_bot.current_block_height == 930000
+
+    @pytest.mark.asyncio
+    async def test_start_rejects_expired_certificate_before_offer_creation(
+        self,
+        maker_bot,
+        mock_wallet,
+        test_private_key,
+        test_pubkey,
+        tmp_path,
+    ):
+        from jmwallet.wallet.bond_registry import BondRegistry
+
+        maker_bot.config.data_dir = tmp_path
+        mock_wallet.data_dir = tmp_path
+        mock_wallet.wallet_fingerprint = "deadbeef"
+        expired_bond = FidelityBondInfo(
+            txid="c" * 64,
+            vout=2,
+            value=50_000_000,
+            locktime=2_000_000_000,
+            confirmation_time=1_700_000_000,
+            bond_value=25_000,
+            pubkey=test_pubkey,
+            cert_pubkey=test_pubkey,
+            cert_privkey=test_private_key,
+            cert_signature=b"certificate-signature",
+            cert_expiry=400,
+        )
+        maker_bot.offer_manager.create_offers = AsyncMock()
+
+        with (
+            patch(
+                "jmwallet.wallet.bond_registry.load_registry",
+                return_value=BondRegistry(),
+            ),
+            patch(
+                "maker.bot.get_best_fidelity_bond",
+                new=AsyncMock(return_value=expired_bond),
+            ),
+        ):
+            with pytest.raises(ExpiredFidelityBondCertificateError):
+                await maker_bot.start()
+
+        maker_bot.offer_manager.create_offers.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_periodic_rescan_aborts_on_expired_certificate(self, maker_bot):
+        error = ExpiredFidelityBondCertificateError("renew the certificate")
+        maker_bot._resync_wallet_and_update_offers = AsyncMock(side_effect=error)
+        maker_bot.running = True
+        blocked_listener = asyncio.create_task(asyncio.Event().wait())
+        maker_bot.listen_tasks = [blocked_listener]
+
+        with patch("maker.background_tasks.asyncio.sleep", new=AsyncMock()):
+            await maker_bot._periodic_rescan()
+        await asyncio.gather(blocked_listener, return_exceptions=True)
+
+        assert maker_bot.running is False
+        assert maker_bot._fatal_error is error
+        assert blocked_listener.cancelled()
+
+    @pytest.mark.asyncio
+    async def test_deferred_rescan_aborts_on_expired_certificate(self, maker_bot):
+        error = ExpiredFidelityBondCertificateError("renew the certificate")
+        maker_bot._resync_wallet_and_update_offers = AsyncMock(side_effect=error)
+        maker_bot.running = True
+        blocked_listener = asyncio.create_task(asyncio.Event().wait())
+        maker_bot.listen_tasks = [blocked_listener]
+
+        with patch("maker.background_tasks.asyncio.sleep", new=AsyncMock()):
+            await maker_bot._deferred_wallet_resync()
+        await asyncio.gather(blocked_listener, return_exceptions=True)
+
+        assert maker_bot.running is False
+        assert maker_bot._fatal_error is error
+        assert blocked_listener.cancelled()
 
     @pytest.mark.asyncio
     async def test_resync_wallet_log_levels(self, maker_bot, mock_wallet):

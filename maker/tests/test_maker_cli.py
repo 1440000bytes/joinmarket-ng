@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import click
 import pytest
 from typer.testing import CliRunner
 
 from maker.cli import app
+from maker.config import MakerConfig
+from maker.fidelity import ExpiredFidelityBondCertificateError
 
 runner = CliRunner()
 
@@ -80,3 +84,50 @@ def test_config_init_creates_config_at_config_file_path(
     assert "[tor]" in config_file.read_text()
     # The data directory must not receive its own config.toml.
     assert not (data_dir / "config.toml").exists()
+
+
+def test_start_expired_certificate_exits_and_cleans_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from maker import cli as cli_module
+
+    settings = MagicMock()
+    settings.get_data_dir.return_value = tmp_path
+    config = MakerConfig(
+        mnemonic="test " * 12,
+        directory_servers=["localhost:5222"],
+        data_dir=tmp_path,
+    )
+    wallet = MagicMock()
+    wallet.backend = MagicMock()
+    bot = MagicMock()
+    bot.nick = "J5ExpiredMaker"
+    bot.start = AsyncMock(side_effect=ExpiredFidelityBondCertificateError("renew the certificate"))
+    bot.stop = AsyncMock()
+    notifier = MagicMock()
+    notifier.notify_startup = AsyncMock()
+    remove_nick_state = MagicMock()
+
+    monkeypatch.setattr(cli_module, "setup_cli", lambda *_args, **_kwargs: settings)
+    monkeypatch.setattr(cli_module, "ensure_config_file", lambda _data_dir: None)
+    monkeypatch.setattr(
+        cli_module,
+        "resolve_mnemonic",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            mnemonic="test " * 12,
+            bip39_passphrase="",
+            creation_height=None,
+        ),
+    )
+    monkeypatch.setattr(cli_module, "build_maker_config", lambda **_kwargs: config)
+    monkeypatch.setattr(cli_module, "create_wallet_service", lambda _config: wallet)
+    monkeypatch.setattr(cli_module, "MakerBot", lambda *_args: bot)
+    monkeypatch.setattr(cli_module, "get_notifier", lambda *_args, **_kwargs: notifier)
+    monkeypatch.setattr(cli_module, "write_nick_state", MagicMock())
+    monkeypatch.setattr(cli_module, "remove_nick_state", remove_nick_state)
+
+    result = runner.invoke(app, ["start"], prog_name="jm-maker")
+
+    assert result.exit_code == 1
+    bot.stop.assert_awaited_once()
+    remove_nick_state.assert_called_once_with(tmp_path, "maker")

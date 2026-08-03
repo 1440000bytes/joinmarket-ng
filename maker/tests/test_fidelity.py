@@ -13,12 +13,14 @@ from maker.fidelity import (
     CERT_EXPIRY_BLOCKS,
     FIDELITY_BOND_INTERNAL_BRANCH,
     FIDELITY_BOND_MIXDEPTH,
+    ExpiredFidelityBondCertificateError,
     FidelityBondInfo,
     _bitcoin_message_hash,
     _pad_signature,
     _parse_locktime_from_path,
     _sign_message_bitcoin,
     create_fidelity_bond_proof,
+    ensure_fidelity_bond_certificate_valid,
     find_fidelity_bonds,
     get_best_fidelity_bond,
 )
@@ -56,6 +58,54 @@ class TestFidelityBondInfo:
         )
         assert bond.pubkey == test_pubkey
         assert bond.private_key == test_private_key
+
+
+class TestCertificateValidity:
+    @staticmethod
+    def _presigned_bond(test_private_key, test_pubkey) -> FidelityBondInfo:
+        return FidelityBondInfo(
+            txid="c" * 64,
+            vout=2,
+            value=50_000_000,
+            locktime=2_000_000_000,
+            confirmation_time=1_700_000_000,
+            bond_value=25_000,
+            pubkey=test_pubkey,
+            cert_pubkey=test_pubkey,
+            cert_privkey=test_private_key,
+            cert_signature=b"certificate-signature",
+            cert_expiry=500,
+        )
+
+    def test_exact_expiry_boundary_remains_valid(self, test_private_key, test_pubkey):
+        bond = self._presigned_bond(test_private_key, test_pubkey)
+
+        ensure_fidelity_bond_certificate_valid(bond, 500 * 2016)
+
+    def test_first_block_after_expiry_is_rejected(self, test_private_key, test_pubkey):
+        bond = self._presigned_bond(test_private_key, test_pubkey)
+
+        with pytest.raises(
+            ExpiredFidelityBondCertificateError,
+            match=r"expired after block 1008000.*Renew the certificate",
+        ):
+            ensure_fidelity_bond_certificate_valid(bond, 500 * 2016 + 1)
+
+    def test_wallet_derived_hot_bond_does_not_have_fixed_expiry(
+        self, test_private_key, test_pubkey
+    ):
+        bond = FidelityBondInfo(
+            txid="d" * 64,
+            vout=0,
+            value=50_000_000,
+            locktime=2_000_000_000,
+            confirmation_time=1_700_000_000,
+            bond_value=25_000,
+            pubkey=test_pubkey,
+            private_key=test_private_key,
+        )
+
+        ensure_fidelity_bond_certificate_valid(bond, 10_000_000)
 
 
 class TestParseLocktime:
