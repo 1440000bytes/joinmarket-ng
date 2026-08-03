@@ -3,8 +3,8 @@
 # Update build pinning for reproducible builds
 #
 # This script updates base image digests, pinned apt package versions,
-# selected build-time dependency pins in Dockerfiles, and Flatpak manifest
-# dependency sources/checksums to ensure reproducible builds.
+# selected build-time dependency pins in Dockerfiles, JAM Docker sources, and
+# Flatpak manifest dependency sources/checksums to ensure reproducible builds.
 # Run this periodically to get security updates while maintaining reproducibility.
 #
 # Usage:
@@ -52,7 +52,7 @@ update_flatpak_deps() {
     fi
 
     echo ""
-    log_info "Phase 4: Checking Flatpak dependencies..."
+    log_info "Phase 4: Checking external and Flatpak dependencies..."
 
     local output
     set +e

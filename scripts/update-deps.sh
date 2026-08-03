@@ -120,7 +120,7 @@ if [ "$UPDATE_DEV" = true ]; then
 fi
 
 if [ "$UPDATE_PROD" = true ]; then
-    echo "Updating Flatpak dependencies..."
+    echo "Updating external and Flatpak dependencies..."
     echo ""
 
     if [ -f "$FLATPAK_UPDATER" ]; then
@@ -141,7 +141,7 @@ echo "All dependencies updated successfully"
 echo "========================================="
 echo ""
 echo "Next steps:"
-echo "  1. Review changes: git diff */requirements*.txt requirements-docs.txt flatpak/org.joinmarketng.JamNG.yml"
+echo "  1. Review changes: git diff */requirements*.txt requirements-docs.txt flatpak/org.joinmarketng.JamNG.yml docker-compose.yml"
 echo "  2. Test locally: pip install -r <package>/requirements-dev.txt"
 echo "  3. Run tests: pytest"
-echo "  4. Commit: git add */requirements*.txt requirements-docs.txt flatpak/org.joinmarketng.JamNG.yml && git commit"
+echo "  4. Commit: git add */requirements*.txt requirements-docs.txt flatpak/org.joinmarketng.JamNG.yml docker-compose.yml && git commit"

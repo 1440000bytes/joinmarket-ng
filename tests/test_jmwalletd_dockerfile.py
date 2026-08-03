@@ -23,9 +23,9 @@ RELEASE_SCRIPTS = (
     REPO_ROOT / "scripts" / "verify-release.sh",
 )
 STANDALONE_NG_IMAGE = "ghcr.io/joinmarket-webui/jam-dev-standalone-ng:master"
-STANDALONE_NG_CONTEXT = (
-    "https://github.com/joinmarket-webui/jam-docker.git#master:standalone-ng"
-)
+JAM_DOCKER_COMMIT = "bfdc7f85f244bbcf4bce93d62f5d7da260c4d552"
+STANDALONE_NG_CONTEXT = f"https://github.com/joinmarket-webui/jam-docker.git#{JAM_DOCKER_COMMIT}:standalone-ng"
+JAM_REPO_REF = "v2.0.0-beta.2"
 
 
 def test_jmwalletd_dockerfile_only_builds_the_standalone_daemon() -> None:
@@ -44,6 +44,9 @@ def test_playwright_uses_jam_docker_standalone_ng() -> None:
     assert service["image"] == f"${{JAM_NG_IMAGE:-{STANDALONE_NG_IMAGE}}}"
     assert service["build"]["context"] == (
         f"${{JAM_DOCKER_CONTEXT:-{STANDALONE_NG_CONTEXT}}}"
+    )
+    assert service["build"]["args"]["JAM_REPO_REF"] == (
+        f"${{JAM_REPO_REF:-{JAM_REPO_REF}}}"
     )
     assert service["build"]["args"]["JM_NG_REPO_REF"] == "${JM_NG_REPO_REF:-main}"
     assert service["build"]["args"]["SKIP_RELEASE_VERIFICATION"] == (

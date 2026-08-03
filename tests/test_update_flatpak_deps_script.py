@@ -55,6 +55,175 @@ def test_replace_jam_commit_updates_commit() -> None:
     assert f"commit: {current_commit}" not in updated_text
 
 
+def test_replace_jam_compose_pins_updates_both_dependencies() -> None:
+    module = _load_update_flatpak_deps_module()
+    compose_path = Path(__file__).resolve().parents[1] / "docker-compose.yml"
+    compose_text = compose_path.read_text(encoding="utf-8")
+
+    current_ref, current_docker_commit = module.extract_jam_compose_pins(compose_text)
+    assert current_ref.startswith("v")
+    assert len(current_docker_commit) == 40
+
+    new_ref = "v9.8.7-beta.6"
+    new_docker_commit = "d" * 40
+    updated_text = module.replace_jam_compose_pins(
+        compose_text,
+        new_ref,
+        new_docker_commit,
+    )
+
+    assert module.extract_jam_compose_pins(updated_text) == (
+        new_ref,
+        new_docker_commit,
+    )
+    assert current_ref not in updated_text
+    assert current_docker_commit not in updated_text
+
+
+def test_replace_jam_compose_pins_only_updates_playwright_service() -> None:
+    module = _load_update_flatpak_deps_module()
+    old_commit = "a" * 40
+    other_commit = "b" * 40
+    compose_text = f"""services:
+  other:
+    build:
+      context: ${{JAM_DOCKER_CONTEXT:-https://github.com/joinmarket-webui/jam-docker.git#{other_commit}:standalone-ng}}
+      args:
+        JAM_REPO_REF: ${{JAM_REPO_REF:-v1.0.0}}
+  jam-playwright:
+    build:
+      context: ${{JAM_DOCKER_CONTEXT:-https://github.com/joinmarket-webui/jam-docker.git#{old_commit}:standalone-ng}}
+      args:
+        JAM_REPO_REF: ${{JAM_REPO_REF:-v2.0.0-beta.2}}
+  following-service:
+    image: example
+"""
+
+    updated_text = module.replace_jam_compose_pins(
+        compose_text,
+        "v2.0.0",
+        "c" * 40,
+    )
+
+    assert "${JAM_REPO_REF:-v1.0.0}" in updated_text
+    assert other_commit in updated_text
+    assert module.extract_jam_compose_pins(updated_text) == ("v2.0.0", "c" * 40)
+
+
+def test_extract_jam_compose_pins_rejects_duplicate_pin() -> None:
+    module = _load_update_flatpak_deps_module()
+    commit = "a" * 40
+    compose_text = f"""services:
+  jam-playwright:
+    build:
+      context: ${{JAM_DOCKER_CONTEXT:-https://github.com/joinmarket-webui/jam-docker.git#{commit}:standalone-ng}}
+      args:
+        JAM_REPO_REF: ${{JAM_REPO_REF:-v2.0.0-beta.2}}
+        JAM_REPO_REF: ${{JAM_REPO_REF:-v2.0.0-beta.1}}
+"""
+
+    try:
+        module.extract_jam_compose_pins(compose_text)
+    except module.UpdateError as error:
+        assert "found 2" in str(error)
+    else:
+        raise AssertionError("Expected duplicate JAM refs to be rejected")
+
+
+def test_latest_jam_release_includes_prereleases(monkeypatch) -> None:
+    module = _load_update_flatpak_deps_module()
+    stable_commit = "a" * 40
+    beta_tag_object = "b" * 40
+    beta_commit = "c" * 40
+    output = (
+        f"{stable_commit}\trefs/tags/v0.4.1\n"
+        f"{beta_tag_object}\trefs/tags/v2.0.0-beta.2\n"
+        f"{beta_commit}\trefs/tags/v2.0.0-beta.2^{{}}\n"
+        f"{'d' * 40}\trefs/tags/not-a-version\n"
+    )
+    monkeypatch.setattr(
+        module.subprocess, "check_output", lambda *_args, **_kwargs: output
+    )
+
+    assert module.latest_jam_release() == (
+        "v2.0.0-beta.2",
+        beta_commit,
+    )
+
+
+def test_parse_jam_remote_tags_prefers_peeled_commit() -> None:
+    module = _load_update_flatpak_deps_module()
+    tag_object = "a" * 40
+    commit = "b" * 40
+    output = (
+        f"{tag_object}\trefs/tags/v2.0.0-beta.2\n"
+        f"{commit}\trefs/tags/v2.0.0-beta.2^{{}}\n"
+    )
+    assert module.parse_jam_remote_tags(output)["v2.0.0-beta.2"] == commit
+
+
+def test_parse_jam_remote_tags_keeps_lightweight_commit() -> None:
+    module = _load_update_flatpak_deps_module()
+    commit = "a" * 40
+
+    assert module.parse_jam_remote_tags(f"{commit}\trefs/tags/v2.0.0-beta.2\n") == {
+        "v2.0.0-beta.2": commit
+    }
+
+
+def test_jam_release_sort_key_orders_numeric_prereleases() -> None:
+    module = _load_update_flatpak_deps_module()
+    tags = ["v2.0.0-beta.2", "v2.0.0-beta.10", "v2.0.0-beta.9"]
+
+    assert max(tags, key=module.jam_release_sort_key) == "v2.0.0-beta.10"
+
+
+def test_jam_release_sort_key_follows_semver_precedence() -> None:
+    module = _load_update_flatpak_deps_module()
+    tags = [
+        "v2.0.0-beta",
+        "v2.0.0-beta.2",
+        "v2.0.0-rc.1",
+        "v2.0.0",
+        "v2.0.1-beta.1",
+    ]
+
+    assert sorted(tags, key=module.jam_release_sort_key) == tags
+    assert module.jam_release_sort_key("v2.0.0+build.2") == (
+        module.jam_release_sort_key("v2.0.0+build.1")
+    )
+
+
+def test_jam_release_pattern_rejects_invalid_semver() -> None:
+    module = _load_update_flatpak_deps_module()
+
+    for tag in (
+        "v02.0.0",
+        "v2.0.0-beta.02",
+        "v2.0.0-beta..2",
+        "v2.0.0-beta.",
+        "v2.0.0+build..2",
+    ):
+        assert module.JAM_RELEASE_TAG_RE.fullmatch(tag) is None
+
+
+def test_latest_remote_commit_rejects_multiple_refs(monkeypatch) -> None:
+    module = _load_update_flatpak_deps_module()
+    output = f"{'a' * 40}\trefs/heads/main\n{'b' * 40}\trefs/heads/other\n"
+    monkeypatch.setattr(
+        module.subprocess, "check_output", lambda *_args, **_kwargs: output
+    )
+
+    try:
+        module.latest_remote_commit(
+            "https://example.com/repo.git", "refs/heads/main", "test"
+        )
+    except module.UpdateError as error:
+        assert "Expected one test ref" in str(error)
+    else:
+        raise AssertionError("Expected multiple remote refs to be rejected")
+
+
 def test_latest_tor_version_selects_highest(monkeypatch) -> None:
     module = _load_update_flatpak_deps_module()
     html = """

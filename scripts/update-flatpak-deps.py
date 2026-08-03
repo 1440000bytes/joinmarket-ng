@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Update Flatpak manifest source versions and checksums."""
+"""Update Flatpak sources and pinned JAM Docker dependencies."""
 
 from __future__ import annotations
 
@@ -15,7 +15,14 @@ from typing import Any
 from urllib.request import Request, urlopen
 
 
-USER_AGENT = "joinmarket-ng-flatpak-updater/1.0"
+USER_AGENT = "joinmarket-ng-dependency-updater/1.0"
+JAM_REPO_URL = "https://github.com/joinmarket-webui/jam.git"
+JAM_DOCKER_REPO_URL = "https://github.com/joinmarket-webui/jam-docker.git"
+SEMVER_NUMBER = r"(?:0|[1-9]\d*)"
+SEMVER_PRERELEASE_IDENTIFIER = (
+    rf"(?:{SEMVER_NUMBER}|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
+)
+SEMVER_BUILD_IDENTIFIER = r"[0-9A-Za-z-]+"
 
 LIBEVENT_RE = re.compile(
     r"(?ms)(- name: libevent\b.*?url:\s*)(\S+)(\s*\n\s*sha256:\s*)([a-f0-9]+)"
@@ -35,6 +42,24 @@ NEUTRINO_ARM64_RE = re.compile(
     r"neutrinod-linux-arm64)(\s*\n\s*sha256:\s*)([a-f0-9]+)"
 )
 JAM_COMMIT_RE = re.compile(r"(?ms)(- name: jam-frontend\b.*?commit:\s*)([a-f0-9]+)")
+JAM_PLAYWRIGHT_SERVICE_RE = re.compile(
+    r"(?ms)^  jam-playwright:\s*\n.*?(?=^  [A-Za-z0-9][A-Za-z0-9_-]*:\s*$|\Z)"
+)
+JAM_DOCKER_CONTEXT_RE = re.compile(
+    r"(\$\{JAM_DOCKER_CONTEXT:-https://github\.com/joinmarket-webui/"
+    r"jam-docker\.git#)([a-f0-9]{40})(:standalone-ng\})"
+)
+JAM_REPO_REF_RE = re.compile(
+    r"(?m)(^\s*JAM_REPO_REF:\s*\$\{JAM_REPO_REF:-)([^}\s]+)(\}[ \t]*$)"
+)
+JAM_RELEASE_TAG_RE = re.compile(
+    rf"^v(?P<major>{SEMVER_NUMBER})\."
+    rf"(?P<minor>{SEMVER_NUMBER})\."
+    rf"(?P<patch>{SEMVER_NUMBER})"
+    rf"(?:-(?P<prerelease>{SEMVER_PRERELEASE_IDENTIFIER}"
+    rf"(?:\.{SEMVER_PRERELEASE_IDENTIFIER})*))?"
+    rf"(?:\+{SEMVER_BUILD_IDENTIFIER}(?:\.{SEMVER_BUILD_IDENTIFIER})*)?$"
+)
 
 
 class UpdateError(RuntimeError):
@@ -140,22 +165,88 @@ def latest_tor_version() -> str:
     )
 
 
-def latest_jam_commit() -> str:
+def _validate_commit(commit: str, description: str) -> str:
+    if not re.fullmatch(r"[a-f0-9]{40}", commit):
+        raise UpdateError(f"Unexpected {description} commit format: {commit}")
+    return commit
+
+
+def latest_remote_commit(repo_url: str, ref: str, description: str) -> str:
     output = subprocess.check_output(
-        [
-            "git",
-            "ls-remote",
-            "https://github.com/joinmarket-webui/jam.git",
-            "refs/heads/devel",
-        ],
+        ["git", "ls-remote", repo_url, ref],
         text=True,
     ).strip()
     if not output:
-        raise UpdateError("Could not fetch latest JAM devel commit")
-    commit = output.split()[0]
-    if not re.fullmatch(r"[a-f0-9]{40}", commit):
-        raise UpdateError(f"Unexpected JAM commit format: {commit}")
-    return commit
+        raise UpdateError(f"Could not fetch latest {description} commit")
+    lines = output.splitlines()
+    if len(lines) != 1:
+        raise UpdateError(f"Expected one {description} ref, received {len(lines)}")
+    return _validate_commit(lines[0].split()[0], description)
+
+
+def parse_jam_remote_tags(output: str) -> dict[str, str]:
+    refs: dict[str, str] = {}
+    for line in output.splitlines():
+        parts = line.split()
+        if len(parts) != 2:
+            raise UpdateError(f"Unexpected JAM tag ref: {line}")
+        commit, remote_ref = parts
+        refs[remote_ref] = _validate_commit(commit, "JAM tag")
+
+    tags: dict[str, str] = {}
+    for remote_ref, commit in refs.items():
+        if not remote_ref.startswith("refs/tags/") or remote_ref.endswith("^{}"):
+            continue
+        tag = remote_ref.removeprefix("refs/tags/")
+        tags[tag] = refs.get(f"{remote_ref}^{{}}", commit)
+    return tags
+
+
+def jam_release_sort_key(
+    tag: str,
+) -> tuple[int, int, int, int, tuple[tuple[int, int | str], ...]]:
+    match = JAM_RELEASE_TAG_RE.fullmatch(tag)
+    if match is None:
+        raise UpdateError(f"Unexpected JAM release tag format: {tag}")
+
+    prerelease = match.group("prerelease")
+    prerelease_key: tuple[tuple[int, int | str], ...] = ()
+    if prerelease is not None:
+        prerelease_key = tuple(
+            (0, int(part)) if part.isdigit() else (1, part)
+            for part in prerelease.split(".")
+        )
+    return (
+        int(match.group("major")),
+        int(match.group("minor")),
+        int(match.group("patch")),
+        1 if prerelease is None else 0,
+        prerelease_key,
+    )
+
+
+def latest_jam_release() -> tuple[str, str]:
+    output = subprocess.check_output(
+        ["git", "ls-remote", "--tags", JAM_REPO_URL],
+        text=True,
+    ).strip()
+    tags = {
+        tag: commit
+        for tag, commit in parse_jam_remote_tags(output).items()
+        if JAM_RELEASE_TAG_RE.fullmatch(tag) is not None
+    }
+    if not tags:
+        raise UpdateError("Could not find a versioned JAM release tag")
+    latest_tag = max(tags, key=jam_release_sort_key)
+    return latest_tag, tags[latest_tag]
+
+
+def latest_jam_docker_commit() -> str:
+    return latest_remote_commit(
+        JAM_DOCKER_REPO_URL,
+        "refs/heads/master",
+        "jam-docker master",
+    )
 
 
 def extract_url_sha(pattern: re.Pattern[str], text: str, name: str) -> tuple[str, str]:
@@ -194,6 +285,51 @@ def replace_jam_commit(text: str, commit: str) -> str:
     return updated
 
 
+def extract_jam_compose_pins(text: str) -> tuple[str, str]:
+    service_matches = list(JAM_PLAYWRIGHT_SERVICE_RE.finditer(text))
+    if len(service_matches) != 1:
+        raise UpdateError(
+            "Expected one jam-playwright service in Compose file, "
+            f"found {len(service_matches)}"
+        )
+    service_text = service_matches[0].group(0)
+
+    context_matches = list(JAM_DOCKER_CONTEXT_RE.finditer(service_text))
+    context_match = context_matches[0] if len(context_matches) == 1 else None
+    if context_match is None:
+        raise UpdateError(
+            "Expected one pinned jam-docker context in jam-playwright service, "
+            f"found {len(context_matches)}"
+        )
+    ref_matches = list(JAM_REPO_REF_RE.finditer(service_text))
+    ref_match = ref_matches[0] if len(ref_matches) == 1 else None
+    if ref_match is None:
+        raise UpdateError(
+            "Expected one pinned JAM repository ref in jam-playwright service, "
+            f"found {len(ref_matches)}"
+        )
+    return ref_match.group(2), context_match.group(2)
+
+
+def replace_jam_compose_pins(text: str, jam_ref: str, jam_docker_commit: str) -> str:
+    extract_jam_compose_pins(text)
+    service_match = JAM_PLAYWRIGHT_SERVICE_RE.search(text)
+    if service_match is None:  # Guaranteed by extract_jam_compose_pins.
+        raise UpdateError("Could not find jam-playwright service in Compose file")
+    service_text = service_match.group(0)
+    updated, ref_count = JAM_REPO_REF_RE.subn(
+        lambda match: f"{match.group(1)}{jam_ref}{match.group(3)}",
+        service_text,
+    )
+    updated, context_count = JAM_DOCKER_CONTEXT_RE.subn(
+        lambda match: f"{match.group(1)}{jam_docker_commit}{match.group(3)}",
+        updated,
+    )
+    if ref_count != 1 or context_count != 1:
+        raise UpdateError("Failed to update pinned JAM dependencies in Compose file")
+    return f"{text[: service_match.start()]}{updated}{text[service_match.end() :]}"
+
+
 def report_url_sha(
     name: str, current_url: str, current_sha: str, latest_url: str, latest_sha: str
 ) -> bool:
@@ -222,12 +358,24 @@ def report_commit(name: str, current: str, latest: str) -> bool:
     return changed
 
 
+def report_version(name: str, current: str, latest: str) -> bool:
+    changed = current != latest
+    if changed:
+        print(f"[UPDATE] {name}")
+        print(f"  Version: {current}")
+        print(f"  New:     {latest}")
+    else:
+        print(f"[OK] {name} is up to date")
+    return changed
+
+
 def main() -> int:
     project_root = Path(__file__).resolve().parent.parent
     default_manifest_path = project_root / "flatpak" / "org.joinmarketng.JamNG.yml"
+    default_compose_path = project_root / "docker-compose.yml"
 
     parser = argparse.ArgumentParser(
-        description="Update Flatpak manifest dependency versions and hashes"
+        description="Update Flatpak sources and pinned JAM Docker dependencies"
     )
     parser.add_argument(
         "--check",
@@ -240,13 +388,23 @@ def main() -> int:
         default=default_manifest_path,
         help="Path to Flatpak manifest (default: flatpak/org.joinmarketng.JamNG.yml)",
     )
+    parser.add_argument(
+        "--compose",
+        type=Path,
+        default=default_compose_path,
+        help="Path to Compose file containing JAM pins (default: docker-compose.yml)",
+    )
     args = parser.parse_args()
 
     manifest_path = args.manifest
     if not manifest_path.is_file():
         raise UpdateError(f"Flatpak manifest not found: {manifest_path}")
+    compose_path = args.compose
+    if not compose_path.is_file():
+        raise UpdateError(f"Compose file not found: {compose_path}")
 
     manifest_text = manifest_path.read_text(encoding="utf-8")
+    compose_text = compose_path.read_text(encoding="utf-8")
 
     current_libevent_url, current_libevent_sha = extract_url_sha(
         LIBEVENT_RE, manifest_text, "libevent"
@@ -266,6 +424,7 @@ def main() -> int:
         "neutrino-api (arm64)",
     )
     current_jam_commit = extract_jam_commit(manifest_text)
+    current_jam_ref, current_jam_docker_commit = extract_jam_compose_pins(compose_text)
 
     libevent_release = latest_release("libevent/libevent")
     latest_libevent_url = pick_asset_url(
@@ -297,7 +456,8 @@ def main() -> int:
     latest_neutrino_amd64_sha = sha256_url(latest_neutrino_amd64_url)
     latest_neutrino_arm64_sha = sha256_url(latest_neutrino_arm64_url)
 
-    latest_commit = latest_jam_commit()
+    latest_jam_ref, latest_jam_commit = latest_jam_release()
+    latest_jam_docker = latest_jam_docker_commit()
 
     changed = [
         report_url_sha(
@@ -331,19 +491,21 @@ def main() -> int:
             latest_neutrino_arm64_url,
             latest_neutrino_arm64_sha,
         ),
-        report_commit("jam-frontend", current_jam_commit, latest_commit),
+        report_version("JAM release", current_jam_ref, latest_jam_ref),
+        report_commit("JAM Flatpak source", current_jam_commit, latest_jam_commit),
+        report_commit("jam-docker", current_jam_docker_commit, latest_jam_docker),
     ]
     updates_needed = sum(1 for item in changed if item)
 
     if args.check:
         if updates_needed:
-            print(f"[WARN] {updates_needed} Flatpak dependency update(s) available")
+            print(f"[WARN] {updates_needed} external dependency update(s) available")
             return 1
-        print("[INFO] Flatpak dependencies are up to date")
+        print("[INFO] External dependencies are up to date")
         return 0
 
     if updates_needed == 0:
-        print("[INFO] No Flatpak dependency updates needed")
+        print("[INFO] No external dependency updates needed")
         return 0
 
     updated_manifest = manifest_text
@@ -378,10 +540,16 @@ def main() -> int:
         latest_neutrino_arm64_sha,
         "neutrino-api (arm64)",
     )
-    updated_manifest = replace_jam_commit(updated_manifest, latest_commit)
+    updated_manifest = replace_jam_commit(updated_manifest, latest_jam_commit)
+    updated_compose = replace_jam_compose_pins(
+        compose_text,
+        latest_jam_ref,
+        latest_jam_docker,
+    )
 
     manifest_path.write_text(updated_manifest, encoding="utf-8")
-    print(f"[INFO] Applied {updates_needed} Flatpak dependency update(s)")
+    compose_path.write_text(updated_compose, encoding="utf-8")
+    print(f"[INFO] Applied {updates_needed} external dependency update(s)")
     return 0
 
 

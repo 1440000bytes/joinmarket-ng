@@ -225,6 +225,10 @@ so it is not included in JoinMarket NG release manifests. Historical manifests
 that included `jam-ng` still skip its non-deterministic frontend layers during
 verification.
 
+Playwright builds pin both the JAM release and the `jam-docker` build context in
+`docker-compose.yml`. Update those pins together with the Flatpak JAM source by
+running `scripts/update-flatpak-deps.py`; do not advance them manually.
+
 #### How reproducibility is achieved
 
 Three inputs must match between local builds and CI builds for layer digests

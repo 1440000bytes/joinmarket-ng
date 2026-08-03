@@ -23,7 +23,7 @@ Utility scripts for JoinMarket NG development and operations.
 - **update_readme_help.py** - Update module READMEs and `docs/README-*.md` pages with CLI command help sections (run manually when CLI changes)
 - **update-base-images.sh** - Update Docker base image digests
 - **update-deps.sh** - Update project dependencies
-- **update-flatpak-deps.py** - Update Flatpak manifest dependency versions and checksums
+- **update-flatpak-deps.py** - Update Flatpak sources and pinned JAM Docker dependencies
 - **verify-release.sh** - Verify release signatures and optionally reproduce builds
 - **build-release.sh** - Build Docker images locally and generate a release manifest for local-first signing
 

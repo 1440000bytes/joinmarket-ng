@@ -311,8 +311,9 @@ services:
   jam-playwright:
     image: ${JAM_NG_IMAGE:-ghcr.io/joinmarket-webui/jam-dev-standalone-ng:master}
     build:
-      context: ${JAM_DOCKER_CONTEXT:-https://github.com/joinmarket-webui/jam-docker.git#master:standalone-ng}
+      context: ${JAM_DOCKER_CONTEXT:-https://github.com/joinmarket-webui/jam-docker.git#bfdc7f85f244bbcf4bce93d62f5d7da260c4d552:standalone-ng}
       args:
+        JAM_REPO_REF: ${JAM_REPO_REF:-v2.0.0-beta.2}
         JM_NG_REPO: ${JM_NG_REPO:-https://github.com/joinmarket-ng/joinmarket-ng}
         JM_NG_REPO_REF: ${JM_NG_REPO_REF:-main}
         # Development branches are not guaranteed to have signed tip commits.
