@@ -31,7 +31,7 @@ Utility scripts for JoinMarket NG development and operations.
 
 These scripts support the cold storage fidelity bond workflow. See [`docs/fidelity-bond-operations.md`](../docs/fidelity-bond-operations.md) for the full guide.
 
-- **sign_bond_psbt.py** - Sign a fidelity bond spending PSBT using a hardware wallet (via HWI, >= 3.1.0 to detect newer device models). Supports Blockstream Jade, and Ledger devices running the legacy Bitcoin app (2.0.x and earlier); the current Ledger app (2.1+) has been reported to reject bond PSBTs. Trezor/Coldcard/BitBox02/KeepKey cannot sign CLTV scripts.
+- **sign_bond_psbt.py** - Sign a fidelity bond spending PSBT using a hardware wallet (via HWI, >= 3.1.0 to detect newer device models). Classic Blockstream Jade signing is verified with HWI 3.2.0 and cbor2 5.9.0; cbor2 5.8.0 is blocked because it breaks Jade serial responses. Original Digital BitBox / BitBox01 support is expected but untested; use `--device-type digitalbitbox --device-password` for its required hidden password prompt. Ledger devices require the legacy Bitcoin app (2.0.x and earlier); the current app has been reported to reject bond PSBTs. Trezor/Coldcard/BitBox02/KeepKey cannot sign CLTV scripts.
 
 - **finalize_bond_psbt.py** - Verify and finalize a signed fidelity bond spending PSBT, such as one returned by Specter DIY's QR signing flow or `sign_bond_psbt.py --no-broadcast`. Cryptographically verifies the partial signature (BIP143 SIGHASH_ALL over the CLTV witness script) and builds the final P2WSH witness transaction when Bitcoin Core's `finalizepsbt` cannot finalize the custom witness script. Standard library only, so it also serves as the verification step of the hardware wallet compatibility test in the operations guide.
 

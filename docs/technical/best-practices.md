@@ -46,10 +46,12 @@ technical pages for more depth.
   It is safer but requires a separate backup; see
   [Fidelity Bond Operations](../fidelity-bond-operations.md#backups-and-compromise).
 - **Prefer hardware-wallet-signed bonds when possible.** Blockstream Jade
-  and Specter DIY can sign bond redemptions; Ledger only with the legacy
-  Bitcoin app (2.0.x and earlier -- the current app has been reported to
-  reject bond PSBTs). Trezor, Coldcard, BitBox02, and KeepKey currently
-  cannot. Always test the full create-and-spend flow before funding a bond;
+  and Specter DIY can sign bond redemptions. Original Digital BitBox / BitBox01
+  support is expected from its raw-digest signing design but is untested and
+  the device is EOL. Ledger works only with the legacy Bitcoin app (2.0.x and
+  earlier -- the current app has been reported to reject bond PSBTs). Trezor,
+  Coldcard, BitBox02, and KeepKey currently cannot. Always test the full
+  create-and-spend flow before funding a bond;
   you can check any device model risk-free with the public test mnemonic
   described in [Fidelity Bond Operations](../fidelity-bond-operations.md#testing-device-compatibility-with-the-public-test-mnemonic).
 

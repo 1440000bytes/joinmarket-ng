@@ -1268,10 +1268,11 @@ The full CLI reference below is auto-generated from command `--help` output.
  2. Enter your BIP39 mnemonic when prompted (hidden input)
  3. Broadcast: bitcoin-cli sendrawtransaction <signed_hex>
 
- Option B - HWI signing (Jade; Ledger legacy app only):
- 1. Install HWI: pip install -U hwi  (>= 3.1.0 for newer device models)
+ Option B - HWI signing (Jade; BitBox01 expected; Ledger legacy app only):
+ 1. Install HWI >= 3.1.0. Jade must not use cbor2 5.8.0; see the guide.
  2. Connect and unlock your hardware wallet
  3. Run: python scripts/sign_bond_psbt.py <psbt_base64>
+    BitBox01: add --device-type digitalbitbox --device-password
 
  See docs/fidelity-bond-operations.md for signer testing, backups, and the
  complete redemption workflow.

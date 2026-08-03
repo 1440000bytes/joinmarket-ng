@@ -1155,10 +1155,11 @@ def spend_bond(
     2. Enter your BIP39 mnemonic when prompted (hidden input)
     3. Broadcast: bitcoin-cli sendrawtransaction <signed_hex>
 
-    Option B - HWI signing (Jade; Ledger legacy app only):
-    1. Install HWI: pip install -U hwi  (>= 3.1.0 for newer device models)
+    Option B - HWI signing (Jade; BitBox01 expected; Ledger legacy app only):
+    1. Install HWI >= 3.1.0. Jade must not use cbor2 5.8.0; see the guide.
     2. Connect and unlock your hardware wallet
     3. Run: python scripts/sign_bond_psbt.py <psbt_base64>
+       BitBox01: add --device-type digitalbitbox --device-password
 
     See docs/fidelity-bond-operations.md for signer testing, backups, and the
     complete redemption workflow.
@@ -1405,8 +1406,8 @@ def spend_bond(
         print("  Use this only to validate your signing workflow before funding the bond.")
         print()
     print("NOTE: Most hardware wallets (Trezor, Coldcard, BitBox02, KeepKey)")
-    print("  CANNOT sign CLTV timelock P2WSH scripts. Blockstream Jade supports")
-    print("  arbitrary witness scripts and may work via HWI. Ledger only with")
+    print("  CANNOT sign CLTV timelock P2WSH scripts. Classic Jade signing is")
+    print("  verified via HWI; BitBox01 is expected but untested. Ledger only with")
     print("  the legacy Bitcoin app (2.0.x and earlier); the current app (2.1+)")
     print("  has been reported to reject bond PSBTs. Specter DIY signs via QR.")
     print()
@@ -1420,10 +1421,12 @@ def spend_bond(
     print("  3. Broadcast: bitcoin-cli sendrawtransaction <signed_hex>")
     print()
     if bip32_derivations:
-        print("Option B - HWI signing (Jade; Ledger legacy app only):")
-        print("  1. Install HWI: pip install -U hwi  (>= 3.1.0 for newer devices)")
+        print("Option B - HWI signing (Jade; BitBox01 expected; Ledger legacy app only):")
+        print("  1. Install HWI >= 3.1.0. Jade must not use cbor2 5.8.0;")
+        print("     see docs/fidelity-bond-operations.md for the working version matrix.")
         print("  2. Connect and unlock your hardware wallet")
         print("  3. Run: python scripts/sign_bond_psbt.py <psbt_base64>")
+        print("     BitBox01: add --device-type digitalbitbox --device-password")
         print()
     if not bip32_derivations:
         print("TIP: Re-run with --master-fingerprint and --derivation-path to")

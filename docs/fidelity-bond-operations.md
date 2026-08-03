@@ -111,10 +111,52 @@ Known paths include:
 
 | Signer | Status |
 |---|---|
-| Blockstream Jade via HWI | Expected to support arbitrary witness scripts; verify your versions |
+| Blockstream Jade via HWI | **Verified signing** on the classic Jade with HWI 3.2.0 and cbor2 5.9.0; always run the finalizer to verify the returned signature |
 | Specter DIY | QR PSBT exchange; does not depend on HWI support |
 | Ledger legacy Bitcoin app | Historically supported; current apps have been reported to reject bond PSBTs with `0x6a80` ([issue #552](https://github.com/joinmarket-ng/joinmarket-ng/issues/552)) |
+| Digital BitBox / BitBox01 | **Expected, untested**: [HWI supports arbitrary witness scripts](https://hwi.readthedocs.io/en/latest/devices/index.html#support-matrix) and computes BIP143 `SIGHASH_ALL` host-side; the [EOL device](https://blog.bitbox.swiss/en/the-end-of-the-road-for-the-bitbox01/) signs raw digests but cannot display transaction details |
 | Trezor, Coldcard, BitBox02, KeepKey | Known to reject or not support this custom script path; plan for mnemonic signing |
+
+For Jade, the HWI host environment matters. `cbor2` 5.8.0 changed buffered
+stream reads in a way that breaks Jade serial responses ([HWI issue
+#817](https://github.com/bitcoin-core/HWI/issues/817)). A device may complete
+confirmation and signing, then HWI fails with `error decoding unicode string`
+before returning the signed PSBT. This is a host transport failure, not a
+firmware policy rejection; retry the original unsigned PSBT after fixing the
+environment. `sign_bond_psbt.py` reports the installed version and refuses this
+known-broken combination before signing.
+
+HWI 3.2.0 with `cbor2` 5.9.0 successfully returned the signed test PSBT from a
+classic Jade. HWI 3.2.0's published metadata still requires `cbor2<5.8`, so a
+normal install selects 5.7.1; that version works with Jade but has a known
+[security issue](https://github.com/advisories/GHSA-3c37-wwvx-h642). Until upstream [PR #832](https://github.com/bitcoin-core/HWI/pull/832)
+is released, use a dedicated Python 3.9 through 3.12 environment and knowingly
+override only this dependency:
+
+```bash
+python3.12 -m venv .hwi-venv
+. .hwi-venv/bin/activate
+python -m pip install 'hwi==3.2.0'
+python -m pip install --no-deps 'cbor2>=5.9,<6'
+```
+
+This override conflicts with HWI 3.2.0's stale package metadata, but 5.9.0 is
+covered by upstream hardware-in-the-loop testing and the classic Jade test
+above. Recheck upstream constraints when a newer HWI release is available.
+
+BitBox01 requires its host-side device password before HWI can enumerate or
+sign. The helper prompts without echo when both options are supplied:
+
+```bash
+python scripts/sign_bond_psbt.py \
+  --device-type digitalbitbox \
+  --device-password \
+  --no-broadcast \
+  --file unsigned-bond-test.psbt > signed-bond-test.psbt
+```
+
+This makes the expected path testable but does not change its evidence level;
+the physical device and this CLTV script combination have not been tested.
 
 Sparrow is useful for key management and certificate message signing, but it
 does not finalize this CLTV witness script. The repository finalizer handles a
@@ -370,6 +412,9 @@ cHNidP8BAFICAAAAARERERERERERERERERERERERERERERERERERERERERERAAAAAAD+////ATCGAQAA
 ```
 
 Sign and verify it with the HWI or QR flow above. For HWI use `--chain main`.
+The classic Jade has completed this exact HWI signing flow with HWI 3.2.0 and
+`cbor2` 5.9.0. With 5.8.0 the device completed its confirmation screens, but
+HWI lost the returned signed PSBT while decoding the chunked serial response.
 You can regenerate the exact vector with:
 
 ```bash
