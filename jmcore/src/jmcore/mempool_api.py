@@ -61,6 +61,10 @@ class Transaction(BaseModel):
     status: TxStatus
 
 
+class Outspend(BaseModel):
+    spent: bool
+
+
 class MempoolAPIError(Exception):
     pass
 
@@ -155,6 +159,10 @@ class MempoolAPI:
     async def get_transaction(self, txid: str) -> Transaction:
         data = await self._get(f"tx/{txid}")
         return Transaction(**data)
+
+    async def get_outspend(self, txid: str, vout: int) -> Outspend:
+        data = await self._get(f"tx/{txid}/outspend/{vout}")
+        return Outspend(**data)
 
     async def get_block_height(self) -> int:
         response = await self.client.get(f"{self.base_url}/blocks/tip/height")

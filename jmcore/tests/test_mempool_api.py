@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -63,6 +63,17 @@ def test_tor_transport_construction_failure_prevents_direct_client() -> None:
         MempoolAPI("https://mempool.example/api", socks_proxy="socks5h://127.0.0.1:9050")
 
     client_cls.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_get_outspend_parses_spent_state() -> None:
+    api = MempoolAPI("https://mempool.example/api", trust_env=False)
+    with patch.object(api, "_get", new=AsyncMock(return_value={"spent": True})) as get:
+        outspend = await api.get_outspend("ab" * 32, 3)
+    await api.close()
+
+    assert outspend.spent is True
+    get.assert_awaited_once_with(f"tx/{'ab' * 32}/outspend/3")
 
 
 @pytest.mark.asyncio

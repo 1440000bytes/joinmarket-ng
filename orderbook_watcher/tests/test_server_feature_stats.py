@@ -159,7 +159,7 @@ def test_feature_stats_excludes_expired_advertised_bond() -> None:
         current_block_height=900_000,
         timestamp=datetime.now(UTC),
         offers=[
-            _make_offer("J5expired", bond=0, features={"ping": True}, bond_data=bond_data),
+            _make_offer("J5expired", bond=123, features={"ping": True}, bond_data=bond_data),
         ],
     )
 

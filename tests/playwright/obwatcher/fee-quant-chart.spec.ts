@@ -317,11 +317,30 @@ test.describe("fidelity bond certificate expiry", () => {
     test(testCase.name, async ({ page }) => {
       const server = await openChart(page, bondPayload(testCase.height));
       try {
-        await page.locator(".bond-value-clickable").click();
+        const bondCell = page.locator(".bond-value-clickable");
+        if (testCase.expired) {
+          await bondCell.focus();
+          await page.keyboard.press("Enter");
+        } else {
+          await bondCell.click();
+        }
         const summary = page.locator("#bond-verification-summary");
         if (testCase.expired) {
           await expect(summary).toHaveClass(/expired/);
           await expect(page.locator("#bond-cert-expiry")).toContainText("EXPIRED 1 blocks ago");
+          await expect(page.locator("#bond-verification-text")).toContainText(
+            "Underlying bond value: 10,000. Restart the maker to renew the certificate.",
+          );
+          await expect(page.locator(".bond-value-clickable")).toContainText("10,000");
+          const warning = page.locator(".bond-expired-indicator");
+          await expect(warning).toHaveText("!");
+          await expect(warning).toHaveAttribute(
+            "title",
+            /takers treat this maker as unbonded.*Restart the maker/,
+          );
+          await expect(page.locator(".fq-summary")).toHaveText(
+            "No bonded makers in the orderbook yet.",
+          );
         } else {
           await expect(summary).toHaveClass(/valid/);
           await expect(page.locator("#bond-cert-expiry")).not.toContainText("EXPIRED");

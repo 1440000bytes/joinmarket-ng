@@ -298,6 +298,13 @@ function findMatchingBond(offer) {
     ) || null;
 }
 
+function formatExpiredBondValue(value) {
+    const warning = 'Certificate expired; takers treat this maker as unbonded. ' +
+        'Restart the maker to renew the certificate.';
+    return `${formatNumber(Math.round(value))} ` +
+        `<span class="bond-expired-indicator" title="${warning}" aria-label="${warning}">!</span>`;
+}
+
 // Advertised proof data counts only while its certificate is known to be active.
 // Expired or height-unverified proofs remain visible in the table and modal but
 // do not contribute to sybil-resistant bonded views.
@@ -852,7 +859,11 @@ async function showBondModal(bondData, bondAmount, bondValue) {
     } else if (certExpired) {
         summaryEl.classList.add('expired');
         iconEl.textContent = '!';
-        textEl.textContent = 'Certificate expired - bond value is 0';
+        const economicValue = bondValue > 0
+            ? ` Underlying bond value: ${formatNumber(Math.round(bondValue))}.`
+            : '';
+        textEl.textContent = 'Certificate expired; takers treat this maker as unbonded.' +
+            `${economicValue} Restart the maker to renew the certificate.`;
     } else if (bondValue > 0) {
         summaryEl.classList.add('valid');
         iconEl.textContent = '\u2713'; // checkmark
@@ -901,17 +912,23 @@ function renderTable() {
 
         let hasBond = '';
         let bondValue;
-        if (offer.fidelity_bond_value > 0 &&
+        const matchingBond = findMatchingBond(offer);
+        const economicBondValue = offer.fidelity_bond_value || matchingBond?.bond_value || 0;
+        if (economicBondValue > 0 &&
             (!offer.fidelity_bond_data || hasActiveCertificate(offer.fidelity_bond_data))) {
             hasBond = 'bond-value-clickable';
-            bondValue = formatNumber(Math.round(offer.fidelity_bond_value));
+            bondValue = formatNumber(Math.round(economicBondValue));
         } else if (offer.fidelity_bond_data) {
             hasBond = 'bond-value-clickable';
-            const bondAmount = findMatchingBond(offer)?.amount || 0;
+            const bondAmount = matchingBond?.amount || 0;
             if (!hasActiveCertificate(offer.fidelity_bond_data)) {
-                bondValue = Number.isSafeInteger(orderbookData.current_block_height)
-                    ? 'Expired'
-                    : 'Pending';
+                if (Number.isSafeInteger(orderbookData.current_block_height)) {
+                    bondValue = economicBondValue > 0
+                        ? formatExpiredBondValue(economicBondValue)
+                        : 'Expired';
+                } else {
+                    bondValue = 'Pending';
+                }
             } else {
                 bondValue = bondAmount > 0 ? '0' : 'Pending';
             }
@@ -963,9 +980,22 @@ function renderTable() {
 
         if (offer.fidelity_bond_data) {
             const bondCell = row.querySelector('.bond-value-clickable');
-            const bondAmount = findMatchingBond(offer)?.amount || 0;
-            const bondVal = offer.fidelity_bond_value || 0;
-            bondCell.addEventListener('click', () => showBondModal(offer.fidelity_bond_data, bondAmount, bondVal));
+            const matchingBond = findMatchingBond(offer);
+            const bondAmount = matchingBond?.amount || 0;
+            const bondVal = offer.fidelity_bond_value || matchingBond?.bond_value || 0;
+            const showDetails = () => showBondModal(
+                offer.fidelity_bond_data, bondAmount, bondVal
+            );
+            bondCell.tabIndex = 0;
+            bondCell.setAttribute('role', 'button');
+            bondCell.setAttribute('aria-label', 'Show fidelity bond details');
+            bondCell.addEventListener('click', showDetails);
+            bondCell.addEventListener('keydown', event => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    showDetails();
+                }
+            });
         }
 
         fragment.appendChild(row);

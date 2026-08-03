@@ -6,12 +6,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from jmcore.bond_calc import calculate_timelocked_fidelity_bond_value
 from jmcore.btc_script import derive_bond_address
-from jmcore.mempool_api import MempoolAPI
+from jmcore.mempool_api import MempoolAPI, TxOut
 from jmcore.models import FidelityBond, Offer, OrderBook
 from loguru import logger
 
@@ -22,6 +23,8 @@ from jmwallet.backends.base import BondVerificationRequest
 
 from orderbook_watcher.directory_client import DirectoryClient
 from orderbook_watcher.health_checker import MakerHealthChecker
+
+BOND_CACHE_TTL_SECONDS = 60.0
 
 
 class DirectoryNodeStatus:
@@ -210,7 +213,7 @@ class OrderbookAggregator:
         self.listener_tasks: list[asyncio.Task[Any]] = []
         self._bond_calculation_task: asyncio.Task[Any] | None = None
         self._bond_queue: asyncio.Queue[OrderBook] = asyncio.Queue()
-        self._bond_cache: dict[str, FidelityBond] = {}
+        self._bond_cache: dict[str, tuple[FidelityBond, float]] = {}
         self._last_offers_hash: int = 0
         self._mempool_semaphore = asyncio.Semaphore(5)
         self.node_statuses: dict[str, DirectoryNodeStatus] = {}
@@ -1060,26 +1063,36 @@ class OrderbookAggregator:
 
     def _apply_bond_cache(self, orderbook: OrderBook) -> None:
         cached_count = 0
+        current_time = int(datetime.now(UTC).timestamp())
         for bond in orderbook.fidelity_bonds:
             cache_key = self._bond_claim_key(bond)
             if cache_key not in self._bond_cache:
                 continue
-            cached_bond = self._bond_cache[cache_key]
-            bond.bond_value = cached_bond.bond_value
+            cached_bond, verified_at = self._bond_cache[cache_key]
+            if time.monotonic() - verified_at >= BOND_CACHE_TTL_SECONDS:
+                del self._bond_cache[cache_key]
+                continue
             bond.amount = cached_bond.amount
             bond.utxo_confirmation_timestamp = cached_bond.utxo_confirmation_timestamp
+            bond.utxo_confirmations = cached_bond.utxo_confirmations
+            if cached_bond.utxo_confirmation_timestamp is not None:
+                bond.bond_value = calculate_timelocked_fidelity_bond_value(
+                    cached_bond.amount,
+                    cached_bond.utxo_confirmation_timestamp,
+                    bond.locktime,
+                    current_time,
+                )
+            else:
+                bond.bond_value = cached_bond.bond_value
             cached_count += 1
         if cached_count > 0:
             logger.debug(f"Loaded {cached_count}/{len(orderbook.fidelity_bonds)} bonds from cache")
 
     def _update_bond_cache(self, orderbook: OrderBook) -> None:
-        current_block_height = orderbook.current_block_height
-        if current_block_height is None:
-            return
         for bond in orderbook.fidelity_bonds:
-            if bond.bond_value is not None and current_block_height <= bond.cert_expiry:
+            if bond.bond_value is not None:
                 cache_key = self._bond_claim_key(bond)
-                self._bond_cache[cache_key] = bond
+                self._bond_cache.setdefault(cache_key, (bond, time.monotonic()))
 
     def _link_bonds_to_offers(self, orderbook: OrderBook) -> None:
         for offer in orderbook.offers:
@@ -1091,9 +1104,6 @@ class OrderbookAggregator:
 
         for offer in orderbook.offers:
             if offer.fidelity_bond_data:
-                cert_expiry = offer.fidelity_bond_data.get("cert_expiry")
-                if not isinstance(cert_expiry, int) or current_block_height > cert_expiry:
-                    continue
                 matching_bonds = [
                     bond
                     for bond in orderbook.fidelity_bonds
@@ -1120,11 +1130,7 @@ class OrderbookAggregator:
                     candidate.bond_value if candidate.bond_value is not None else 0
                 ),
             )
-            if (
-                bond.fidelity_bond_data
-                and current_block_height <= bond.cert_expiry
-                and bond.bond_value is not None
-            ):
+            if bond.fidelity_bond_data and bond.bond_value is not None:
                 offer.fidelity_bond_data = bond.fidelity_bond_data
                 offer.fidelity_bond_value = bond.bond_value
             logger.debug(
@@ -1172,6 +1178,30 @@ class OrderbookAggregator:
                 if value:
                     offer.features[feature] = value
 
+    async def _is_valid_mempool_bond_output(self, bond: FidelityBond, utxo: TxOut) -> bool:
+        assert self.mempool_api is not None
+        bond_data = bond.fidelity_bond_data or {}
+        utxo_pub_hex = bond_data.get("utxo_pub") or bond.script
+        if not utxo_pub_hex:
+            logger.debug(f"Bond {bond.utxo_txid}:{bond.utxo_vout} missing utxo_pub, skipping")
+            return False
+        try:
+            bond_address = derive_bond_address(
+                bytes.fromhex(utxo_pub_hex), bond.locktime, self.network
+            )
+        except (ValueError, TypeError) as e:
+            logger.debug(f"Failed to derive bond script for {bond.utxo_txid}:{bond.utxo_vout}: {e}")
+            return False
+        if utxo.scriptpubkey != bond_address.scriptpubkey.hex():
+            logger.debug(f"Bond {bond.utxo_txid}:{bond.utxo_vout} scriptPubKey mismatch")
+            return False
+
+        outspend = await self.mempool_api.get_outspend(bond.utxo_txid, bond.utxo_vout)
+        if outspend.spent:
+            logger.debug(f"Bond {bond.utxo_txid}:{bond.utxo_vout} is spent")
+            return False
+        return True
+
     async def _calculate_bond_value_single(
         self, bond: FidelityBond, current_time: int
     ) -> FidelityBond:
@@ -1196,6 +1226,9 @@ class OrderbookAggregator:
                     return bond
 
                 utxo = tx_data.vout[bond.utxo_vout]
+                if not await self._is_valid_mempool_bond_output(bond, utxo):
+                    return bond
+
                 amount = utxo.value
                 confirmation_time = tx_data.status.block_time or current_time
 
@@ -1229,11 +1262,6 @@ class OrderbookAggregator:
             for bond in orderbook.fidelity_bonds:
                 bond.bond_value = None
             return
-
-        for bond in orderbook.fidelity_bonds:
-            if current_block_height > bond.cert_expiry:
-                bond.bond_value = 0
-                self._bond_cache.pop(self._bond_claim_key(bond), None)
 
         if self.blockchain_backend is not None:
             await self._calculate_bond_values_via_backend(orderbook)
