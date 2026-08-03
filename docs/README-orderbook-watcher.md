@@ -77,6 +77,8 @@ docker compose up -d
 ```
 
 UI is exposed on `http://localhost:8000` by default.
+Set `orderbook_watcher.http_host = "0.0.0.0"` only when remote access is intentional and
+protected by an appropriate firewall or reverse proxy.
 
 ## API Endpoints
 

@@ -225,6 +225,7 @@ services:
       - NETWORK_CONFIG__NETWORK=testnet
       - LOGGING__LEVEL=DEBUG
       - DIRECTORY_NODES=jm-directory:5222
+      - ORDERBOOK_WATCHER__HTTP_HOST=0.0.0.0
     ports:
       - "8080:8000"
     networks:

@@ -1190,7 +1190,7 @@ class OrderbookWatcherSettings(BaseModel):
     """Orderbook watcher specific settings."""
 
     http_host: str = Field(
-        default="0.0.0.0",
+        default="127.0.0.1",
         description="HTTP server bind address",
     )
     http_port: int = Field(

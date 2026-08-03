@@ -463,6 +463,9 @@ mempool_api_use_tor = false
         monkeypatch.setenv("ORDERBOOK_WATCHER__MEMPOOL_API_USE_TOR", "true")
         assert JoinMarketSettings().orderbook_watcher.mempool_api_use_tor is True
 
+    def test_orderbook_watcher_defaults_to_loopback(self) -> None:
+        assert JoinMarketSettings().orderbook_watcher.http_host == "127.0.0.1"
+
     def test_env_overrides_toml(self, temp_data_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test that environment variables override TOML config."""
         config_path = temp_data_dir / "config.toml"
