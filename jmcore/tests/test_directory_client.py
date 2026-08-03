@@ -6,8 +6,64 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from jmcore.directory_client import DirectoryClient, MessageType
+from jmcore.directory_client import DirectoryClient, MessageType, _fidelity_bond_claim_key
+from jmcore.models import Offer, OfferType
 from jmcore.protocol import FEATURE_PEERLIST_FEATURES
+
+
+def _bond_offer(counterparty: str, oid: int) -> Offer:
+    return Offer(
+        counterparty=counterparty,
+        oid=oid,
+        ordertype=OfferType.SW0_RELATIVE,
+        minsize=10_000,
+        maxsize=1_000_000,
+        txfee=1000,
+        cjfee="0.001",
+    )
+
+
+def test_conflicting_script_claims_survive_directory_cache() -> None:
+    client = DirectoryClient("directory-a", 5222, "mainnet")
+    base_data = {
+        "utxo_txid": "ab" * 32,
+        "utxo_vout": 0,
+        "locktime": 2_000_000_000,
+        "utxo_pub": "02" + "11" * 32,
+        "cert_expiry": 901_152,
+    }
+    conflicting_data = {**base_data, "utxo_pub": "03" + "22" * 32}
+    first_key = _fidelity_bond_claim_key(base_data)
+    conflicting_key = _fidelity_bond_claim_key(conflicting_data)
+
+    client._store_offer(("Maker1", 0), _bond_offer("Maker1", 0), first_key)
+    client._store_offer(
+        ("ConflictingMaker", 0),
+        _bond_offer("ConflictingMaker", 0),
+        conflicting_key,
+    )
+
+    assert first_key != conflicting_key
+    assert set(client.offers) == {("Maker1", 0), ("ConflictingMaker", 0)}
+
+
+def test_renewed_certificate_replaces_same_directory_claim() -> None:
+    client = DirectoryClient("directory-a", 5222, "mainnet")
+    bond_data = {
+        "utxo_txid": "ab" * 32,
+        "utxo_vout": 0,
+        "locktime": 2_000_000_000,
+        "utxo_pub": "02" + "11" * 32,
+        "cert_expiry": 901_152,
+    }
+    renewed_data = {**bond_data, "cert_expiry": 903_168}
+
+    claim_key = _fidelity_bond_claim_key(bond_data)
+    assert _fidelity_bond_claim_key(renewed_data) == claim_key
+    client._store_offer(("OldMaker", 0), _bond_offer("OldMaker", 0), claim_key)
+    client._store_offer(("NewMaker", 0), _bond_offer("NewMaker", 0), claim_key)
+
+    assert set(client.offers) == {("NewMaker", 0)}
 
 
 def test_directory_client_default_timeout():

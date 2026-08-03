@@ -58,12 +58,19 @@ class OfferWithTimestamp:
     def __init__(self, offer: Offer, received_at: float, bond_utxo_key: str | None = None) -> None:
         self.offer = offer
         self.received_at = received_at
-        # Bond UTXO key (txid:vout) for deduplication across nick changes
+        # Full bond claim key for deduplication across nick changes.
         self.bond_utxo_key = bond_utxo_key
 
 
 class DirectoryClientError(Exception):
     """Error raised by DirectoryClient operations."""
+
+
+def _fidelity_bond_claim_key(bond_data: dict[str, Any]) -> str:
+    return (
+        f"{bond_data['utxo_txid']}:{bond_data['utxo_vout']}:"
+        f"{bond_data['locktime']}:{bond_data['utxo_pub']}"
+    )
 
 
 def parse_fidelity_bond_proof(
@@ -220,9 +227,9 @@ class DirectoryClient:
         self.hostid = host
         # Offers indexed by (counterparty, oid) with timestamp metadata
         self.offers: dict[tuple[str, int], OfferWithTimestamp] = {}
-        # Bonds indexed by UTXO key (txid:vout)
+        # Bonds indexed by outpoint, locktime, and UTXO public key claim.
         self.bonds: dict[str, FidelityBond] = {}
-        # Reverse index: bond UTXO key -> set of (counterparty, oid) keys that use this bond
+        # Reverse index: bond claim key -> set of (counterparty, oid) keys that use this bond
         # Used for deduplication when same bond is used by different nicks
         self._bond_to_offers: dict[str, set[tuple[str, int]]] = {}
         self.peer_features: dict[str, dict[str, bool]] = {}  # nick -> features dict
@@ -886,7 +893,7 @@ class DirectoryClient:
         peers_with_features = await self.get_peerlist_with_features()
         offers: list[Offer] = []
         bonds: list[FidelityBond] = []
-        bond_utxo_set: set[str] = set()
+        bond_claim_set: set[str] = set()
 
         # Log peer count for visibility (but don't filter based on peerlist)
         if peers_with_features:
@@ -1013,9 +1020,9 @@ class DirectoryClient:
                     offers.append(offer)
 
                     if bond_data:
-                        utxo_str = f"{bond_data['utxo_txid']}:{bond_data['utxo_vout']}"
-                        if utxo_str not in bond_utxo_set:
-                            bond_utxo_set.add(utxo_str)
+                        claim_key = _fidelity_bond_claim_key(bond_data)
+                        if claim_key not in bond_claim_set:
+                            bond_claim_set.add(claim_key)
                             bond = FidelityBond(
                                 counterparty=from_nick,
                                 utxo_txid=bond_data["utxo_txid"],
@@ -1320,9 +1327,7 @@ class DirectoryClient:
 
                                     # Store bond in bonds cache
                                     if bond_data:
-                                        utxo_str = (
-                                            f"{bond_data['utxo_txid']}:{bond_data['utxo_vout']}"
-                                        )
+                                        claim_key = _fidelity_bond_claim_key(bond_data)
                                         bond = FidelityBond(
                                             counterparty=from_nick,
                                             utxo_txid=bond_data["utxo_txid"],
@@ -1333,14 +1338,12 @@ class DirectoryClient:
                                             cert_expiry=bond_data["cert_expiry"],
                                             fidelity_bond_data=bond_data,
                                         )
-                                        self.bonds[utxo_str] = bond
+                                        self.bonds[claim_key] = bond
 
                                     # Extract bond UTXO key for deduplication
                                     bond_utxo_key: str | None = None
                                     if bond_data:
-                                        bond_utxo_key = (
-                                            f"{bond_data['utxo_txid']}:{bond_data['utxo_vout']}"
-                                        )
+                                        bond_utxo_key = _fidelity_bond_claim_key(bond_data)
 
                                     # Update cache using tuple key
                                     offer_key = (from_nick, offer.oid)
@@ -1497,11 +1500,11 @@ class DirectoryClient:
         Args:
             offer_key: Tuple of (counterparty, oid)
             offer: The offer to store
-            bond_utxo_key: Bond UTXO key (txid:vout) if offer has a fidelity bond
+            bond_utxo_key: Full claim key if the offer has a fidelity bond
         """
         current_time = time.time()
 
-        # If this offer has a fidelity bond, check for and remove old offers with same bond
+        # Remove old offers only when they use the same complete script claim.
         if bond_utxo_key:
             # Get all offer keys that previously used this bond
             old_offer_keys = self._bond_to_offers.get(bond_utxo_key, set()).copy()
