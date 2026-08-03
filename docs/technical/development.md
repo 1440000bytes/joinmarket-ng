@@ -227,7 +227,9 @@ verification.
 
 Playwright builds pin both the JAM release and the `jam-docker` build context in
 `docker-compose.yml`. Update those pins together with the Flatpak JAM source by
-running `scripts/update-flatpak-deps.py`; do not advance them manually.
+running `scripts/update-flatpak-deps.py`; do not advance them manually. The E2E
+service builds these sources by default. Set `JAM_NG_PULL_POLICY` explicitly only
+when testing a pre-built `JAM_NG_IMAGE` override.
 
 #### How reproducibility is achieved
 

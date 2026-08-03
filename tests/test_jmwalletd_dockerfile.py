@@ -42,6 +42,7 @@ def test_playwright_uses_jam_docker_standalone_ng() -> None:
     service = compose["services"]["jam-playwright"]
 
     assert service["image"] == f"${{JAM_NG_IMAGE:-{STANDALONE_NG_IMAGE}}}"
+    assert service["pull_policy"] == "${JAM_NG_PULL_POLICY:-build}"
     assert service["build"]["context"] == (
         f"${{JAM_DOCKER_CONTEXT:-{STANDALONE_NG_CONTEXT}}}"
     )
