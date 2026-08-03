@@ -462,7 +462,9 @@ def create_fidelity_bond_proof(
 
 
 async def get_best_fidelity_bond(
-    wallet: WalletService, mixdepth: int = FIDELITY_BOND_MIXDEPTH
+    wallet: WalletService,
+    mixdepth: int = FIDELITY_BOND_MIXDEPTH,
+    current_block_height: int | None = None,
 ) -> FidelityBondInfo | None:
     """
     Get the best (highest value) fidelity bond from the wallet.
@@ -470,11 +472,28 @@ async def get_best_fidelity_bond(
     Args:
         wallet: WalletService instance
         mixdepth: Mixdepth to search
+        current_block_height: When provided, exclude expired pre-signed certificates.
 
     Returns:
         Best FidelityBondInfo or None if no bonds found
     """
     bonds = await find_fidelity_bonds(wallet, mixdepth)
+    if current_block_height is not None:
+        valid_bonds: list[FidelityBondInfo] = []
+        expiry_error: ExpiredFidelityBondCertificateError | None = None
+        for bond in bonds:
+            try:
+                ensure_fidelity_bond_certificate_valid(bond, current_block_height)
+            except ExpiredFidelityBondCertificateError as exc:
+                expiry_error = exc
+                logger.warning(
+                    f"Skipping expired fidelity bond certificate for {bond.txid}:{bond.vout}"
+                )
+                continue
+            valid_bonds.append(bond)
+        if bonds and not valid_bonds and expiry_error is not None:
+            raise expiry_error
+        bonds = valid_bonds
     if not bonds:
         return None
 

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from jmcore.models import Offer, OfferType
 
 from taker.multi_directory import ChannelBinding, MultiDirectoryClient
 
@@ -24,6 +25,40 @@ def _make_client(
     mdc._pending_connect_tasks = {}
     mdc.prefer_direct_connections = prefer_direct
     return mdc
+
+
+def _offer(cert_expiry: int) -> Offer:
+    return Offer(
+        counterparty="J5maker",
+        oid=0,
+        ordertype=OfferType.SW0_RELATIVE,
+        minsize=100_000,
+        maxsize=1_000_000,
+        txfee=1_000,
+        cjfee="0.001",
+        fidelity_bond_data={
+            "utxo_txid": "ab" * 32,
+            "utxo_vout": 0,
+            "locktime": 2_000_000_000,
+            "utxo_pub": "02" + "11" * 32,
+            "cert_expiry": cert_expiry,
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_fetch_orderbook_prefers_renewed_certificate_across_directories():
+    stale_client = MagicMock()
+    stale_client.fetch_orderbooks = AsyncMock(return_value=([_offer(901_152)], []))
+    renewed_client = MagicMock()
+    renewed_client.fetch_orderbooks = AsyncMock(return_value=([_offer(903_168)], []))
+    mdc = _make_client(clients={"stale": stale_client, "renewed": renewed_client})
+
+    offers = await mdc.fetch_orderbook(max_wait=0, min_wait=0, quiet_period=0)
+
+    assert len(offers) == 1
+    assert offers[0].fidelity_bond_data is not None
+    assert offers[0].fidelity_bond_data["cert_expiry"] == 903_168
 
 
 def test_bind_session_returns_none_when_no_directories():

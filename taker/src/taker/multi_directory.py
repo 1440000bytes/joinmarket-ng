@@ -516,8 +516,7 @@ class MultiDirectoryClient(DirectoryClientPool):
             min_wait: Minimum seconds before early exit is allowed (default: 30s).
             quiet_period: Seconds of silence before exiting early (default: 15s).
         """
-        all_offers: list[Offer] = []
-        seen_offers: set[tuple[str, int]] = set()
+        offers_by_key: dict[tuple[str, int], Offer] = {}
 
         async def fetch_from_server(
             server: str, client: DirectoryClient
@@ -536,15 +535,21 @@ class MultiDirectoryClient(DirectoryClientPool):
         tasks = [fetch_from_server(server, client) for server, client in self.clients.items()]
         results = await asyncio.gather(*tasks)
 
-        # Aggregate and deduplicate offers
+        # Aggregate and deduplicate offers. A delayed directory response must
+        # not let an older certificate suppress a renewal for the same offer.
         for server, offers in results:
             for offer in offers:
                 key = (offer.counterparty, offer.oid)
-                if key not in seen_offers:
-                    seen_offers.add(key)
-                    all_offers.append(offer)
+                existing = offers_by_key.get(key)
+                if existing is None:
+                    offers_by_key[key] = offer
+                    continue
+                existing_expiry = (existing.fidelity_bond_data or {}).get("cert_expiry", -1)
+                new_expiry = (offer.fidelity_bond_data or {}).get("cert_expiry", -1)
+                if new_expiry > existing_expiry:
+                    offers_by_key[key] = offer
 
-        return all_offers
+        return list(offers_by_key.values())
 
     async def send_privmsg(
         self,

@@ -20,8 +20,17 @@ from orderbook_watcher.server import OrderbookServer
 BOND_TXID = "a" * 64
 BOND_TXID_2 = "b" * 64
 
-BOND_DATA = {"utxo_txid": BOND_TXID, "utxo_vout": 0}
-BOND_DATA_2 = {"utxo_txid": BOND_TXID_2, "utxo_vout": 0}
+CURRENT_BLOCK_HEIGHT = 1_000_000
+BOND_DATA = {
+    "utxo_txid": BOND_TXID,
+    "utxo_vout": 0,
+    "cert_expiry": 2_000_000,
+}
+BOND_DATA_2 = {
+    "utxo_txid": BOND_TXID_2,
+    "utxo_vout": 0,
+    "cert_expiry": 2_000_000,
+}
 
 DUMMY_SCRIPT = "0020" + "ab" * 32
 
@@ -82,6 +91,7 @@ def test_dual_offers_same_bond_counted_once() -> None:
     orderbook = OrderBook(
         offers=offers,
         fidelity_bonds=bonds,
+        current_block_height=CURRENT_BLOCK_HEIGHT,
         timestamp=datetime.now(UTC),
         directory_nodes=["dir1.onion:5222"],
     )
@@ -112,6 +122,7 @@ def test_two_makers_different_bonds_counted_separately() -> None:
     orderbook = OrderBook(
         offers=offers,
         fidelity_bonds=bonds,
+        current_block_height=CURRENT_BLOCK_HEIGHT,
         timestamp=datetime.now(UTC),
         directory_nodes=["dir1.onion:5222"],
     )
@@ -136,6 +147,7 @@ def test_offers_without_bonds_not_counted() -> None:
     orderbook = OrderBook(
         offers=offers,
         fidelity_bonds=bonds,
+        current_block_height=CURRENT_BLOCK_HEIGHT,
         timestamp=datetime.now(UTC),
         directory_nodes=["dir1.onion:5222"],
     )
@@ -165,6 +177,7 @@ def test_dual_offers_two_makers_same_directory() -> None:
     orderbook = OrderBook(
         offers=offers,
         fidelity_bonds=bonds,
+        current_block_height=CURRENT_BLOCK_HEIGHT,
         timestamp=datetime.now(UTC),
         directory_nodes=["dir1.onion:5222"],
     )

@@ -557,10 +557,14 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
                         f"Selected fidelity bond {sel_txid[:16]}...:{sel_vout} not found, "
                         "falling back to best available"
                     )
-                    self.fidelity_bond = await get_best_fidelity_bond(self.wallet)
+                    self.fidelity_bond = await get_best_fidelity_bond(
+                        self.wallet, current_block_height=self.current_block_height
+                    )
             else:
                 # Auto-select the best (largest bond value) fidelity bond
-                self.fidelity_bond = await get_best_fidelity_bond(self.wallet)
+                self.fidelity_bond = await get_best_fidelity_bond(
+                    self.wallet, current_block_height=self.current_block_height
+                )
             if self.fidelity_bond:
                 ensure_fidelity_bond_certificate_valid(
                     self.fidelity_bond,

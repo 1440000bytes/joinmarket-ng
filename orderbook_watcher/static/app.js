@@ -318,7 +318,9 @@ function formatUnverifiedCertificateValue(value) {
 function hasAdvertisedBond(offer) {
     const bondData = offer.fidelity_bond_data;
     if (!bondData) return (offer.fidelity_bond_value || 0) > 0;
-    return hasActiveCertificate(bondData);
+    return offer.fidelity_bond_verified !== false &&
+        offer.fidelity_bond_verification_stale !== true &&
+        hasActiveCertificate(bondData);
 }
 
 function renderFeeQuantizationChart() {

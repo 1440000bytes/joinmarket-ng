@@ -11,7 +11,7 @@ from jmcore.models import Offer, OfferType
 from jmcore.protocol import FEATURE_PEERLIST_FEATURES
 
 
-def _bond_offer(counterparty: str, oid: int) -> Offer:
+def _bond_offer(counterparty: str, oid: int, bond_data: dict[str, Any] | None = None) -> Offer:
     return Offer(
         counterparty=counterparty,
         oid=oid,
@@ -20,6 +20,7 @@ def _bond_offer(counterparty: str, oid: int) -> Offer:
         maxsize=1_000_000,
         txfee=1000,
         cjfee="0.001",
+        fidelity_bond_data=bond_data,
     )
 
 
@@ -64,6 +65,50 @@ def test_renewed_certificate_replaces_same_directory_claim() -> None:
     client._store_offer(("NewMaker", 0), _bond_offer("NewMaker", 0), claim_key)
 
     assert set(client.offers) == {("NewMaker", 0)}
+
+
+def test_stale_certificate_cannot_replace_renewed_offer() -> None:
+    client = DirectoryClient("directory-a", 5222, "mainnet")
+    stale_data = {
+        "utxo_txid": "ab" * 32,
+        "utxo_vout": 0,
+        "locktime": 2_000_000_000,
+        "utxo_pub": "02" + "11" * 32,
+        "cert_expiry": 901_152,
+    }
+    renewed_data = {**stale_data, "cert_expiry": 903_168}
+    claim_key = _fidelity_bond_claim_key(stale_data)
+    offer_key = ("Maker1", 0)
+
+    assert client._store_offer(offer_key, _bond_offer("Maker1", 0, renewed_data), claim_key)
+    assert not client._store_offer(offer_key, _bond_offer("Maker1", 0, stale_data), claim_key)
+
+    stored = client.offers[offer_key].offer.fidelity_bond_data
+    assert stored is not None
+    assert stored["cert_expiry"] == 903_168
+
+
+def test_offer_bond_rotation_removes_old_reverse_index() -> None:
+    client = DirectoryClient("directory-a", 5222, "mainnet")
+    first_data = {
+        "utxo_txid": "ab" * 32,
+        "utxo_vout": 0,
+        "locktime": 2_000_000_000,
+        "utxo_pub": "02" + "11" * 32,
+        "cert_expiry": 901_152,
+    }
+    second_data = {**first_data, "utxo_txid": "cd" * 32}
+    first_key = _fidelity_bond_claim_key(first_data)
+    second_key = _fidelity_bond_claim_key(second_data)
+    maker_offer_key = ("Maker1", 0)
+
+    client._store_offer(maker_offer_key, _bond_offer("Maker1", 0, first_data), first_key)
+    client._store_offer(maker_offer_key, _bond_offer("Maker1", 0, second_data), second_key)
+    client._store_offer(("Maker2", 0), _bond_offer("Maker2", 0, first_data), first_key)
+
+    assert set(client.offers) == {maker_offer_key, ("Maker2", 0)}
+    assert maker_offer_key not in client._bond_to_offers[first_key]
+    assert maker_offer_key in client._bond_to_offers[second_key]
 
 
 def test_directory_client_default_timeout():

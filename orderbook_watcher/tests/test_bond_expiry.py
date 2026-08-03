@@ -181,16 +181,51 @@ async def test_stale_cache_entry_is_reverified() -> None:
     backend.verify_bonds.return_value = [result]
     aggregator = _aggregator(backend)
     cache_key = aggregator._bond_claim_key(cached_bond)
+    stale_verified_at = time.monotonic() - BOND_CACHE_TTL_SECONDS
     aggregator._bond_cache[cache_key] = (
         cached_bond,
-        time.monotonic() - BOND_CACHE_TTL_SECONDS,
+        stale_verified_at,
     )
     orderbook = OrderBook(fidelity_bonds=[cached_bond])
 
     aggregator._apply_bond_cache(orderbook)
     await aggregator._calculate_bond_values(orderbook)
+    aggregator._update_bond_cache(orderbook)
 
     assert cached_bond.bond_value is not None and cached_bond.bond_value > 0
+    backend.verify_bonds.assert_awaited_once()
+    assert aggregator._bond_cache[cache_key][1] > stale_verified_at
+
+
+@pytest.mark.asyncio
+async def test_stale_value_survives_backend_outage() -> None:
+    backend = AsyncMock()
+    backend.get_block_height.side_effect = RuntimeError("height unavailable")
+    backend.verify_bonds.side_effect = RuntimeError("verification unavailable")
+    cached_bond = _bond(bond_value=123)
+    cached_bond.amount = 1_000_000_000
+    cached_bond.utxo_confirmation_timestamp = int(time.time()) - 600
+    cached_bond.verification_valid = True
+    aggregator = _aggregator(backend)
+    cache_key = aggregator._bond_claim_key(cached_bond)
+    aggregator._bond_cache[cache_key] = (
+        cached_bond,
+        time.monotonic() - BOND_CACHE_TTL_SECONDS,
+    )
+    current = _bond()
+    offer = _offer(current, oid=0)
+    orderbook = OrderBook(offers=[offer], fidelity_bonds=[current])
+
+    aggregator._apply_bond_cache(orderbook)
+    await aggregator._calculate_bond_values(orderbook)
+    aggregator._update_bond_cache(orderbook)
+    aggregator._link_bonds_to_offers(orderbook)
+
+    assert current.bond_value is not None and current.bond_value > 0
+    assert current.verification_stale is True
+    assert offer.fidelity_bond_verified is True
+    assert offer.fidelity_bond_verification_stale is True
+    assert cache_key in aggregator._bond_cache
     backend.verify_bonds.assert_awaited_once()
 
 
@@ -395,7 +430,9 @@ async def test_conflicting_script_claims_are_verified_independently() -> None:
     assert len(requests) == 2
     assert requests[0].scriptpubkey != requests[1].scriptpubkey
     assert invalid_bond.bond_value is None
+    assert invalid_bond.verification_valid is False
     assert valid_bond.bond_value is not None and valid_bond.bond_value > 0
+    assert valid_bond.verification_valid is True
 
 
 def _mempool_transaction(scriptpubkey: str) -> SimpleNamespace:
@@ -423,6 +460,7 @@ async def test_mempool_values_exact_unspent_bond_claim() -> None:
     await aggregator._calculate_bond_value_single(bond, int(time.time()))
 
     assert bond.bond_value is not None and bond.bond_value > 0
+    assert bond.verification_valid is True
     aggregator.mempool_api.get_outspend.assert_awaited_once_with(bond.utxo_txid, bond.utxo_vout)
 
 
@@ -437,6 +475,7 @@ async def test_mempool_rejects_script_mismatch() -> None:
     await aggregator._calculate_bond_value_single(bond, int(time.time()))
 
     assert bond.bond_value is None
+    assert bond.verification_valid is False
     aggregator.mempool_api.get_outspend.assert_not_awaited()
 
 
@@ -455,6 +494,7 @@ async def test_mempool_rejects_spent_bond() -> None:
     await aggregator._calculate_bond_value_single(bond, int(time.time()))
 
     assert bond.bond_value is None
+    assert bond.verification_valid is False
 
 
 @pytest.mark.asyncio

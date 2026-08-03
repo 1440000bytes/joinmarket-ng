@@ -246,6 +246,14 @@ class Offer(BaseModel):
     txfee: int = Field(..., ge=0)
     cjfee: str | int
     fidelity_bond_value: int = Field(default=0, ge=0)
+    fidelity_bond_verified: bool | None = Field(
+        default=None,
+        description="Whether the watcher definitively verified or rejected the advertised bond",
+    )
+    fidelity_bond_verification_stale: bool = Field(
+        default=False,
+        description="Whether watcher verification exceeded its revalidation TTL",
+    )
     directory_node: str | None = None
     directory_nodes: list[str] = Field(
         default_factory=list,
@@ -309,6 +317,14 @@ class FidelityBond(BaseModel):
     utxo_txid: str = Field(..., pattern=r"^[0-9a-fA-F]{64}$")
     utxo_vout: int = Field(..., ge=0)
     bond_value: int | None = Field(default=None, ge=0)
+    verification_valid: bool | None = Field(
+        default=None,
+        description="Whether backend verification definitively accepted or rejected this bond",
+    )
+    verification_stale: bool = Field(
+        default=False,
+        description="Whether the displayed value is retained past its verification TTL",
+    )
     locktime: int = Field(..., ge=0)
     amount: int = Field(default=0, ge=0)
     script: str

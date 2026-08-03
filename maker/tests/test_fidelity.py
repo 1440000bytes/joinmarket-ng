@@ -797,6 +797,65 @@ class TestGetBestFidelityBond:
         # utxo2: 200M * (1780272000 - 1600000000) / 1B = 200M * 0.180272 = 36,054,400
         assert best.bond_value > 36_000_000
 
+    @pytest.mark.asyncio
+    async def test_skips_expired_highest_value_certificate(self, test_private_key, test_pubkey):
+        expired = FidelityBondInfo(
+            txid="a" * 64,
+            vout=0,
+            value=200_000_000,
+            locktime=2_000_000_000,
+            confirmation_time=1_700_000_000,
+            bond_value=100_000,
+            cert_pubkey=test_pubkey,
+            cert_privkey=test_private_key,
+            cert_signature=b"signature",
+            cert_expiry=400,
+        )
+        valid = FidelityBondInfo(
+            txid="b" * 64,
+            vout=1,
+            value=100_000_000,
+            locktime=2_000_000_000,
+            confirmation_time=1_700_000_000,
+            bond_value=50_000,
+            cert_pubkey=test_pubkey,
+            cert_privkey=test_private_key,
+            cert_signature=b"signature",
+            cert_expiry=500,
+        )
+
+        with patch(
+            "maker.fidelity.find_fidelity_bonds",
+            new=AsyncMock(return_value=[expired, valid]),
+        ):
+            best = await get_best_fidelity_bond(MagicMock(), current_block_height=450 * 2016)
+
+        assert best is valid
+
+    @pytest.mark.asyncio
+    async def test_raises_when_all_certificates_are_expired(self, test_private_key, test_pubkey):
+        expired = FidelityBondInfo(
+            txid="a" * 64,
+            vout=0,
+            value=200_000_000,
+            locktime=2_000_000_000,
+            confirmation_time=1_700_000_000,
+            bond_value=100_000,
+            cert_pubkey=test_pubkey,
+            cert_privkey=test_private_key,
+            cert_signature=b"signature",
+            cert_expiry=400,
+        )
+
+        with (
+            patch(
+                "maker.fidelity.find_fidelity_bonds",
+                new=AsyncMock(return_value=[expired]),
+            ),
+            pytest.raises(ExpiredFidelityBondCertificateError),
+        ):
+            await get_best_fidelity_bond(MagicMock(), current_block_height=450 * 2016)
+
 
 class TestConstants:
     """Verify module constants are sensible."""

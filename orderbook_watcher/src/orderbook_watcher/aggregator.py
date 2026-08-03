@@ -214,6 +214,7 @@ class OrderbookAggregator:
         self._bond_calculation_task: asyncio.Task[Any] | None = None
         self._bond_queue: asyncio.Queue[OrderBook] = asyncio.Queue()
         self._bond_cache: dict[str, tuple[FidelityBond, float]] = {}
+        self._bond_claims_reverified: set[str] = set()
         self._last_offers_hash: int = 0
         self._mempool_semaphore = asyncio.Semaphore(5)
         self.node_statuses: dict[str, DirectoryNodeStatus] = {}
@@ -1073,16 +1074,11 @@ class OrderbookAggregator:
                 bond.utxo_confirmations = 0
                 continue
             cached_bond, verified_at = self._bond_cache[cache_key]
-            if time.monotonic() - verified_at >= BOND_CACHE_TTL_SECONDS:
-                del self._bond_cache[cache_key]
-                bond.bond_value = None
-                bond.amount = 0
-                bond.utxo_confirmation_timestamp = 0
-                bond.utxo_confirmations = 0
-                continue
+            bond.verification_stale = time.monotonic() - verified_at >= BOND_CACHE_TTL_SECONDS
             bond.amount = cached_bond.amount
             bond.utxo_confirmation_timestamp = cached_bond.utxo_confirmation_timestamp
             bond.utxo_confirmations = cached_bond.utxo_confirmations
+            bond.verification_valid = cached_bond.verification_valid
             if cached_bond.utxo_confirmation_timestamp is not None:
                 bond.bond_value = calculate_timelocked_fidelity_bond_value(
                     cached_bond.amount,
@@ -1098,13 +1094,21 @@ class OrderbookAggregator:
 
     def _update_bond_cache(self, orderbook: OrderBook) -> None:
         for bond in orderbook.fidelity_bonds:
-            if bond.bond_value is not None:
-                cache_key = self._bond_claim_key(bond)
-                self._bond_cache.setdefault(cache_key, (bond, time.monotonic()))
+            cache_key = self._bond_claim_key(bond)
+            if bond.verification_valid is False:
+                self._bond_cache.pop(cache_key, None)
+            elif (
+                bond.bond_value is not None
+                and not bond.verification_stale
+                and (cache_key not in self._bond_cache or cache_key in self._bond_claims_reverified)
+            ):
+                self._bond_cache[cache_key] = (bond, time.monotonic())
 
     def _link_bonds_to_offers(self, orderbook: OrderBook) -> None:
         for offer in orderbook.offers:
             offer.fidelity_bond_value = 0
+            offer.fidelity_bond_verified = None
+            offer.fidelity_bond_verification_stale = False
 
         for offer in orderbook.offers:
             if offer.fidelity_bond_data:
@@ -1120,6 +1124,9 @@ class OrderbookAggregator:
                 ]
                 if matching_bonds and matching_bonds[0].bond_value is not None:
                     offer.fidelity_bond_value = matching_bonds[0].bond_value
+                if matching_bonds:
+                    offer.fidelity_bond_verified = matching_bonds[0].verification_valid
+                    offer.fidelity_bond_verification_stale = matching_bonds[0].verification_stale
                 continue
 
             matching_bonds = [
@@ -1209,7 +1216,7 @@ class OrderbookAggregator:
     async def _calculate_bond_value_single(
         self, bond: FidelityBond, current_time: int
     ) -> FidelityBond:
-        if bond.bond_value is not None:
+        if bond.bond_value is not None and not bond.verification_stale:
             return bond
 
         if self.mempool_api is None:
@@ -1220,6 +1227,9 @@ class OrderbookAggregator:
                 tx_data = await self.mempool_api.get_transaction(bond.utxo_txid)
                 if not tx_data or not tx_data.status.confirmed:
                     logger.debug(f"Bond {bond.utxo_txid}:{bond.utxo_vout} not confirmed")
+                    bond.bond_value = None
+                    bond.verification_valid = False
+                    bond.verification_stale = False
                     return bond
 
                 if bond.utxo_vout >= len(tx_data.vout):
@@ -1227,10 +1237,16 @@ class OrderbookAggregator:
                         f"Invalid vout {bond.utxo_vout} for tx {bond.utxo_txid} "
                         f"(only {len(tx_data.vout)} outputs)"
                     )
+                    bond.bond_value = None
+                    bond.verification_valid = False
+                    bond.verification_stale = False
                     return bond
 
                 utxo = tx_data.vout[bond.utxo_vout]
                 if not await self._is_valid_mempool_bond_output(bond, utxo):
+                    bond.bond_value = None
+                    bond.verification_valid = False
+                    bond.verification_stale = False
                     return bond
 
                 amount = utxo.value
@@ -1243,6 +1259,9 @@ class OrderbookAggregator:
                 bond.bond_value = bond_value
                 bond.amount = amount
                 bond.utxo_confirmation_timestamp = confirmation_time
+                bond.verification_valid = True
+                bond.verification_stale = False
+                self._bond_claims_reverified.add(self._bond_claim_key(bond))
 
                 logger.debug(
                     f"Bond {bond.counterparty}: value={bond_value}, "
@@ -1260,6 +1279,7 @@ class OrderbookAggregator:
 
     async def _calculate_bond_values(self, orderbook: OrderBook) -> None:
         """Calculate bond values, using blockchain backend if available, else mempool API."""
+        self._bond_claims_reverified.clear()
         current_block_height = await self._get_current_block_height()
         orderbook.current_block_height = current_block_height
 
@@ -1301,7 +1321,7 @@ class OrderbookAggregator:
         bonds_to_verify: list[tuple[FidelityBond, BondVerificationRequest]] = []
 
         for bond in orderbook.fidelity_bonds:
-            if bond.bond_value is not None:
+            if bond.bond_value is not None and not bond.verification_stale:
                 continue
 
             # Get utxo_pub and locktime from bond data
@@ -1368,6 +1388,12 @@ class OrderbookAggregator:
                 continue
             if not result.valid:
                 logger.debug(f"Bond {bond.utxo_txid}:{bond.utxo_vout} invalid: {result.error}")
+                bond.bond_value = None
+                bond.amount = 0
+                bond.utxo_confirmation_timestamp = 0
+                bond.utxo_confirmations = 0
+                bond.verification_valid = False
+                bond.verification_stale = False
                 continue
 
             bond_value = calculate_timelocked_fidelity_bond_value(
@@ -1378,6 +1404,9 @@ class OrderbookAggregator:
             bond.amount = result.value
             bond.utxo_confirmation_timestamp = result.block_time
             bond.utxo_confirmations = result.confirmations
+            bond.verification_valid = True
+            bond.verification_stale = False
+            self._bond_claims_reverified.add(self._bond_claim_key(bond))
 
             logger.debug(
                 f"Bond {bond.counterparty}: value={bond_value}, "

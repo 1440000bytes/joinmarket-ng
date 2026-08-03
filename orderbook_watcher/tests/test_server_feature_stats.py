@@ -26,6 +26,7 @@ def _make_offer(
     features: dict[str, bool] | None = None,
     oid: int = 0,
     bond_data: dict[str, object] | None = None,
+    bond_verified: bool | None = None,
 ) -> Offer:
     return Offer(
         counterparty=nick,
@@ -37,6 +38,7 @@ def _make_offer(
         cjfee="0.0003",
         fidelity_bond_value=bond,
         fidelity_bond_data=bond_data,
+        fidelity_bond_verified=bond_verified,
         features=features if features is not None else {},
     )
 
@@ -184,6 +186,54 @@ def test_feature_stats_excludes_height_unverified_bond_with_value() -> None:
 
     assert result["feature_stats"] == {}
     assert result["feature_stats_denominator"] == 0
+
+
+def test_feature_stats_excludes_known_invalid_advertised_bond() -> None:
+    server = _make_server()
+    bond_data = {"utxo_txid": "ab" * 32, "utxo_vout": 0, "cert_expiry": 901_152}
+    orderbook = OrderBook(
+        current_block_height=900_000,
+        timestamp=datetime.now(UTC),
+        offers=[
+            _make_offer(
+                "J5invalid",
+                bond=123,
+                features={"ping": True},
+                bond_data=bond_data,
+                bond_verified=False,
+            ),
+        ],
+    )
+
+    result = server._format_orderbook(orderbook)
+
+    assert result["feature_stats"] == {}
+    assert result["feature_stats_denominator"] == 0
+    assert result["directory_stats"]["unknown"]["bond_offer_count"] == 0
+
+
+def test_feature_stats_excludes_stale_bond_verification() -> None:
+    server = _make_server()
+    bond_data = {"utxo_txid": "ab" * 32, "utxo_vout": 0, "cert_expiry": 901_152}
+    offer = _make_offer(
+        "J5stale",
+        bond=123,
+        features={"ping": True},
+        bond_data=bond_data,
+        bond_verified=True,
+    )
+    offer.fidelity_bond_verification_stale = True
+    orderbook = OrderBook(
+        current_block_height=900_000,
+        timestamp=datetime.now(UTC),
+        offers=[offer],
+    )
+
+    result = server._format_orderbook(orderbook)
+
+    assert result["feature_stats"] == {}
+    assert result["feature_stats_denominator"] == 0
+    assert result["directory_stats"]["unknown"]["bond_offer_count"] == 0
 
 
 def test_feature_stats_uses_active_offer_when_expired_offer_comes_first() -> None:

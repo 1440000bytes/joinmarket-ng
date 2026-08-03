@@ -1324,42 +1324,10 @@ class DirectoryClient:
                                 )
                                 if result is not None:
                                     offer, bond_data, _neutrino_compat = result
-
-                                    # Store bond in bonds cache
-                                    if bond_data:
-                                        claim_key = _fidelity_bond_claim_key(bond_data)
-                                        bond = FidelityBond(
-                                            counterparty=from_nick,
-                                            utxo_txid=bond_data["utxo_txid"],
-                                            utxo_vout=bond_data["utxo_vout"],
-                                            locktime=bond_data["locktime"],
-                                            script=bond_data["utxo_pub"],
-                                            utxo_confirmations=0,
-                                            cert_expiry=bond_data["cert_expiry"],
-                                            fidelity_bond_data=bond_data,
-                                        )
-                                        self.bonds[claim_key] = bond
-
-                                    # Extract bond UTXO key for deduplication
-                                    bond_utxo_key: str | None = None
-                                    if bond_data:
-                                        bond_utxo_key = _fidelity_bond_claim_key(bond_data)
-
-                                    # Update cache using tuple key
-                                    offer_key = (from_nick, offer.oid)
-                                    self._store_offer(offer_key, offer, bond_utxo_key)
-
-                                    # Track this peer as "known" even if peerlist didn't
-                                    # return features. This prevents re-triggering new peer
-                                    # logic for every message from this peer.
-                                    if from_nick not in self.peer_features:
-                                        self.peer_features[from_nick] = {}
-
-                                    logger.debug(
-                                        f"Updated offer cache: {from_nick} "
-                                        f"{offer.ordertype.value} oid={offer.oid}"
-                                        + (" (with bond)" if bond_data else "")
-                                    )
+                                    if not self._cache_offer_announcement(
+                                        from_nick, offer, bond_data
+                                    ):
+                                        continue
                     except Exception as e:
                         logger.debug(f"Failed to process PUBMSG: {e}")
 
@@ -1377,6 +1345,36 @@ class DirectoryClient:
         self.running = False
         self._listen_loop_active = False
         logger.info(f"Stopped continuous listening on {self.host}:{self.port}")
+
+    def _cache_offer_announcement(
+        self,
+        from_nick: str,
+        offer: Offer,
+        bond_data: dict[str, Any] | None,
+    ) -> bool:
+        """Store one parsed offer while preserving monotonic bond renewals."""
+        bond_claim_key = _fidelity_bond_claim_key(bond_data) if bond_data else None
+        if not self._store_offer((from_nick, offer.oid), offer, bond_claim_key):
+            return False
+
+        if bond_data and bond_claim_key:
+            self.bonds[bond_claim_key] = FidelityBond(
+                counterparty=from_nick,
+                utxo_txid=bond_data["utxo_txid"],
+                utxo_vout=bond_data["utxo_vout"],
+                locktime=bond_data["locktime"],
+                script=bond_data["utxo_pub"],
+                utxo_confirmations=0,
+                cert_expiry=bond_data["cert_expiry"],
+                fidelity_bond_data=bond_data,
+            )
+
+        self.peer_features.setdefault(from_nick, {})
+        logger.debug(
+            f"Updated offer cache: {from_nick} {offer.ordertype.value} oid={offer.oid}"
+            + (" (with bond)" if bond_data else "")
+        )
+        return True
 
     def _parse_offer_from_message(
         self,
@@ -1490,7 +1488,7 @@ class DirectoryClient:
         offer_key: tuple[str, int],
         offer: Offer,
         bond_utxo_key: str | None = None,
-    ) -> None:
+    ) -> bool:
         """
         Store an offer with timestamp and handle bond-based deduplication.
 
@@ -1503,6 +1501,36 @@ class DirectoryClient:
             bond_utxo_key: Full claim key if the offer has a fidelity bond
         """
         current_time = time.time()
+        old_offer_data = self.offers.get(offer_key)
+        new_expiry = (offer.fidelity_bond_data or {}).get("cert_expiry", -1)
+
+        if bond_utxo_key:
+            for old_key in self._bond_to_offers.get(bond_utxo_key, set()):
+                existing = self.offers.get(old_key)
+                if existing is None:
+                    continue
+                old_expiry = (existing.offer.fidelity_bond_data or {}).get("cert_expiry", -1)
+                if isinstance(old_expiry, int) and old_expiry > new_expiry:
+                    logger.debug(
+                        f"Ignoring stale certificate expiring at {new_expiry}; "
+                        f"claim already has certificate expiring at {old_expiry}"
+                    )
+                    return False
+
+        # An offer can rotate from one bond claim to another. Remove its old
+        # reverse index before processing deduplication for the replacement.
+        if (
+            old_offer_data
+            and old_offer_data.bond_utxo_key
+            and old_offer_data.bond_utxo_key != bond_utxo_key
+        ):
+            old_bond_key = old_offer_data.bond_utxo_key
+            old_bond_offers = self._bond_to_offers.get(old_bond_key)
+            if old_bond_offers is not None:
+                old_bond_offers.discard(offer_key)
+                if not old_bond_offers:
+                    self._bond_to_offers.pop(old_bond_key, None)
+                    self.bonds.pop(old_bond_key, None)
 
         # Remove old offers only when they use the same complete script claim.
         if bond_utxo_key:
@@ -1522,6 +1550,7 @@ class DirectoryClient:
                         f"same bond UTXO now used by {offer_key[0]}"
                     )
                     del self.offers[old_key]
+                    self._bond_to_offers[bond_utxo_key].discard(old_key)
 
             # Update bond -> offers mapping: add this offer to the set
             if bond_utxo_key not in self._bond_to_offers:
@@ -1529,16 +1558,19 @@ class DirectoryClient:
             self._bond_to_offers[bond_utxo_key].add(offer_key)
         else:
             # Remove this offer from any previous bond mapping
-            old_offer_data = self.offers.get(offer_key)
             if old_offer_data and old_offer_data.bond_utxo_key:
                 old_bond_key = old_offer_data.bond_utxo_key
                 if old_bond_key in self._bond_to_offers:
                     self._bond_to_offers[old_bond_key].discard(offer_key)
+                    if not self._bond_to_offers[old_bond_key]:
+                        self._bond_to_offers.pop(old_bond_key, None)
+                        self.bonds.pop(old_bond_key, None)
 
         # Store the new offer with timestamp
         self.offers[offer_key] = OfferWithTimestamp(
             offer=offer, received_at=current_time, bond_utxo_key=bond_utxo_key
         )
+        return True
 
     def _update_offer_features(self, nick: str, features: dict[str, bool]) -> int:
         """

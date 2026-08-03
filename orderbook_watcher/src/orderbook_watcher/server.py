@@ -13,7 +13,7 @@ from typing import Any
 from aiohttp import web
 from aiohttp.typedefs import Handler
 from jmcore.fee_quantization import QUANT_ABS, QUANT_REL
-from jmcore.models import OrderBook
+from jmcore.models import Offer, OrderBook
 from jmcore.settings import OrderbookWatcherSettings
 from loguru import logger
 
@@ -91,7 +91,9 @@ class OrderbookServer:
             # Count unique bonds per directory (deduplicate by UTXO)
             unique_bond_utxos: set[str] = set()
             for o in offers:
-                if o.fidelity_bond_data:
+                if o.fidelity_bond_data and self._has_active_bond(
+                    o, orderbook.current_block_height
+                ):
                     utxo_key = (
                         f"{o.fidelity_bond_data['utxo_txid']}:{o.fidelity_bond_data['utxo_vout']}"
                     )
@@ -138,6 +140,8 @@ class OrderbookServer:
                     "txfee": offer.txfee,
                     "cjfee": offer.cjfee,
                     "fidelity_bond_value": offer.fidelity_bond_value,
+                    "fidelity_bond_verified": offer.fidelity_bond_verified,
+                    "fidelity_bond_verification_stale": (offer.fidelity_bond_verification_stale),
                     "directory_nodes": offer.directory_nodes.copy(),
                     "fidelity_bond_data": offer.fidelity_bond_data,
                     "features": offer.features.copy(),
@@ -166,17 +170,7 @@ class OrderbookServer:
         for counterparty, maker_offers in offers_by_maker.items():
             active_offers: list[dict[str, Any]] = []
             for offer_data in maker_offers:
-                bond_data = offer_data.get("fidelity_bond_data")
-                if bond_data is not None:
-                    cert_expiry = bond_data.get("cert_expiry")
-                    has_bond = (
-                        orderbook.current_block_height is not None
-                        and isinstance(cert_expiry, int)
-                        and orderbook.current_block_height <= cert_expiry
-                    )
-                else:
-                    has_bond = offer_data.get("fidelity_bond_value", 0) > 0
-                if has_bond:
+                if self._has_active_bond_data(offer_data, orderbook.current_block_height):
                     active_offers.append(offer_data)
 
             if not active_offers:
@@ -210,6 +204,8 @@ class OrderbookServer:
                     "utxo_confirmations": bond.utxo_confirmations,
                     "utxo_confirmation_timestamp": bond.utxo_confirmation_timestamp,
                     "cert_expiry": bond.cert_expiry,
+                    "verification_valid": bond.verification_valid,
+                    "verification_stale": bond.verification_stale,
                     "utxo_pub": (bond.fidelity_bond_data or {}).get("utxo_pub") or bond.script,
                     "directory_node": bond.directory_node,
                 }
@@ -233,6 +229,32 @@ class OrderbookServer:
                 else None
             ),
         }
+
+    @staticmethod
+    def _has_active_bond(offer: Offer, current_block_height: int | None) -> bool:
+        return OrderbookServer._has_active_bond_data(
+            {
+                "fidelity_bond_data": offer.fidelity_bond_data,
+                "fidelity_bond_value": offer.fidelity_bond_value,
+                "fidelity_bond_verified": offer.fidelity_bond_verified,
+                "fidelity_bond_verification_stale": (offer.fidelity_bond_verification_stale),
+            },
+            current_block_height,
+        )
+
+    @staticmethod
+    def _has_active_bond_data(offer_data: dict[str, Any], current_block_height: int | None) -> bool:
+        bond_data = offer_data.get("fidelity_bond_data")
+        if bond_data is None:
+            return offer_data.get("fidelity_bond_value", 0) > 0
+        cert_expiry = bond_data.get("cert_expiry")
+        return (
+            offer_data.get("fidelity_bond_verified") is not False
+            and offer_data.get("fidelity_bond_verification_stale") is not True
+            and current_block_height is not None
+            and isinstance(cert_expiry, int)
+            and current_block_height <= cert_expiry
+        )
 
     async def _handle_health(self, _request: web.Request) -> web.Response:
         orderbook = await self.aggregator.get_orderbook()
