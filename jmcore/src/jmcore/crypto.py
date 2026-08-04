@@ -62,6 +62,34 @@ def mnemonic_to_seed(mnemonic: str, passphrase: str = "") -> bytes:
     return Mnemonic.to_seed(mnemonic, passphrase=passphrase)
 
 
+# Lazily instantiated BIP39 validators, one per language wordlist. Checking
+# every language (not just English) avoids false "invalid checksum" warnings
+# for users with e.g. Spanish or Japanese seed phrases.
+_bip39_validators: dict[str, Mnemonic] = {}
+
+
+def validate_bip39_checksum(mnemonic: str) -> bool:
+    """Check whether a BIP39 mnemonic has a valid checksum.
+
+    The phrase is tested against every language wordlist supported by the
+    ``mnemonic`` library, so valid non-English seed phrases are accepted.
+
+    Args:
+        mnemonic: Space-separated mnemonic words
+
+    Returns:
+        True if the checksum is valid in any supported language
+    """
+    for language in Mnemonic.list_languages():
+        validator = _bip39_validators.get(language)
+        if validator is None:
+            validator = Mnemonic(language)
+            _bip39_validators[language] = validator
+        if validator.check(mnemonic):
+            return True
+    return False
+
+
 def generate_jm_nick(version: int = JM_VERSION) -> str:
     privkey_bytes = secrets.token_bytes(32)
     private_key = PrivateKey(privkey_bytes)

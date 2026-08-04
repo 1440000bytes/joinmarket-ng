@@ -859,6 +859,57 @@ class TestResolveMnemonic:
         assert result.mnemonic == mnemonic
         assert "MNEMONIC_FILE env" in result.source
 
+    def test_resolve_mnemonic_invalid_checksum_errors_but_resolves(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A mnemonic with a bad BIP39 checksum logs at ERROR.
+
+        It must still resolve (not raise): users may intentionally keep a
+        non-checksummed phrase that already holds funds. ERROR severity keeps
+        the diagnostic visible when warning logs are filtered.
+        """
+        from jmcore.cli_common import resolve_mnemonic
+        from jmcore.settings import JoinMarketSettings
+
+        # 12 valid BIP39 words whose checksum bits do not match (this is what
+        # a one-word typo in a real phrase looks like).
+        bad_checksum = "abandon " * 12
+        monkeypatch.setenv("JOINMARKET_DATA_DIR", str(tmp_path))
+        settings = JoinMarketSettings(data_dir=tmp_path)
+
+        logs: list[str] = []
+        sink_id = logger.add(lambda msg: logs.append(str(msg)), level="ERROR")
+        try:
+            result = resolve_mnemonic(settings, mnemonic=bad_checksum)
+        finally:
+            logger.remove(sink_id)
+
+        assert result is not None
+        assert result.mnemonic == bad_checksum
+        assert any("INVALID BIP39 checksum" in entry for entry in logs)
+
+    def test_resolve_mnemonic_valid_checksum_no_warning(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A mnemonic with a valid checksum must not trigger the warning."""
+        from jmcore.cli_common import resolve_mnemonic
+        from jmcore.settings import JoinMarketSettings
+
+        valid = "abandon " * 11 + "about"
+        monkeypatch.setenv("JOINMARKET_DATA_DIR", str(tmp_path))
+        settings = JoinMarketSettings(data_dir=tmp_path)
+
+        logs: list[str] = []
+        sink_id = logger.add(lambda msg: logs.append(str(msg)), level="WARNING")
+        try:
+            result = resolve_mnemonic(settings, mnemonic=valid)
+        finally:
+            logger.remove(sink_id)
+
+        assert result is not None
+        assert result.mnemonic == valid
+        assert not any("INVALID BIP39 checksum" in entry for entry in logs)
+
 
 class TestCreateBackendCreationHeight:
     """Tests for create_backend() with creation_height parameter."""

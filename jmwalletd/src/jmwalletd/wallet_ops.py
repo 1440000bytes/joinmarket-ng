@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
+from jmcore.crypto import validate_bip39_checksum
 from jmcore.secure_files import atomic_write_private, ensure_private_directory, read_private_file
 
 if TYPE_CHECKING:
@@ -178,13 +179,10 @@ async def recover_wallet(
         FileExistsError: If the wallet file already exists.
         ValueError: If the seed phrase or wallet type is invalid.
     """
-    from mnemonic import Mnemonic
-
     if wallet_path.exists():
         raise FileExistsError(f"Wallet file already exists: {wallet_path}")
 
-    mnemo = Mnemonic("english")
-    if not mnemo.check(seedphrase):
+    if not validate_bip39_checksum(seedphrase):
         msg = "Invalid BIP39 mnemonic seed phrase."
         raise ValueError(msg)
 
@@ -306,6 +304,20 @@ async def open_wallet_with_mnemonic(
         raise FileNotFoundError(f"Wallet file not found: {wallet_path}")
 
     seedphrase, creation_height = _load_wallet_file(wallet_path=wallet_path, password=password)
+
+    # Legacy or manually migrated wallet data may contain a phrase with an
+    # invalid BIP39 checksum. Such a phrase still derives a wallet and may
+    # already hold funds, so keep it accessible but report the problem at
+    # ERROR so warning-filtering log configurations cannot hide it.
+    if not validate_bip39_checksum(seedphrase):
+        logger.error(
+            "Wallet {} contains a mnemonic with an INVALID BIP39 checksum. "
+            "This usually means a word is misspelled, missing, or in the wrong "
+            "order, and the derived wallet is NOT the one the words were "
+            "intended to encode. Do not deposit funds until the seed phrase "
+            "has been verified.",
+            wallet_path.name,
+        )
 
     backend = await get_backend(
         data_dir=data_dir,

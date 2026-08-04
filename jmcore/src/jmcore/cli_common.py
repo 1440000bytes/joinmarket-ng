@@ -46,6 +46,7 @@ from typing import Any, NoReturn
 from loguru import logger
 from pydantic import SecretStr, ValidationError
 
+from jmcore.crypto import validate_bip39_checksum
 from jmcore.models import NetworkType
 from jmcore.settings import JoinMarketSettings, get_config_path, get_settings, reset_settings
 
@@ -869,6 +870,25 @@ def resolve_mnemonic(
                 "MNEMONIC env, or set wallet.mnemonic_file in config."
             )
         return None
+
+    # Report an invalid BIP39 checksum at ERROR so the diagnostic remains
+    # visible even when the configured log level suppresses warnings. A typo
+    # (wrong, missing, or reordered word) still derives a wallet, just a *different*
+    # one than intended; depositing into it without noticing would strand
+    # funds. We deliberately do not hard-fail: users may intentionally keep a
+    # non-checksummed phrase (e.g. imported via `jm-wallet import` with
+    # "Continue anyway", possibly already holding funds), and locking them out
+    # would be worse.
+    if not validate_bip39_checksum(resolved_mnemonic):
+        logger.error(
+            f"SECURITY WARNING: the mnemonic from {source} has an INVALID BIP39 "
+            "checksum. This usually means a word is misspelled, missing, or in "
+            "the wrong order. The wallet will still load, but it derives a "
+            "DIFFERENT wallet than the words were intended to encode. Do NOT "
+            "deposit funds until you have verified the seed phrase (e.g. with "
+            "'jm-wallet validate'). Ignore this only if you intentionally use "
+            "a phrase without a valid checksum."
+        )
 
     # Resolve BIP39 passphrase
     # Priority: CLI arg > env var > config > prompt > empty

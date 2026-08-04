@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 
 import typer
+from jmcore.crypto import validate_bip39_checksum
 from jmcore.secure_files import atomic_write_private
 from loguru import logger
 
@@ -51,10 +52,7 @@ def validate_mnemonic(mnemonic: str) -> bool:
     Returns:
         True if valid, False otherwise
     """
-    from mnemonic import Mnemonic
-
-    m = Mnemonic("english")
-    return m.check(mnemonic)
+    return validate_bip39_checksum(mnemonic)
 
 
 def encrypt_mnemonic(mnemonic: str, password: str) -> bytes:

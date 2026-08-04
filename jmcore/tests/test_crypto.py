@@ -733,6 +733,57 @@ class TestMnemonicToSeed:
         assert seed_nfc == seed_nfd
 
 
+class TestValidateBip39Checksum:
+    """Tests for validate_bip39_checksum."""
+
+    def test_valid_english_mnemonic(self):
+        """Standard BIP39 test vector passes."""
+        from jmcore.crypto import validate_bip39_checksum
+
+        assert validate_bip39_checksum("abandon " * 11 + "about")
+
+    def test_valid_24_word_mnemonic(self):
+        """A freshly generated 24-word phrase passes."""
+        from mnemonic import Mnemonic
+
+        from jmcore.crypto import validate_bip39_checksum
+
+        phrase = Mnemonic("english").generate(strength=256)
+        assert validate_bip39_checksum(phrase)
+
+    def test_invalid_checksum_rejected(self):
+        """12 valid BIP39 words with a bad checksum fail."""
+        from jmcore.crypto import validate_bip39_checksum
+
+        # "abandon" x12: all words are in the wordlist but the checksum
+        # bits do not match (one-word typo in a real phrase looks like this).
+        assert not validate_bip39_checksum("abandon " * 12)
+
+    def test_wrong_word_count_rejected(self):
+        """A word count that is not 12/15/18/21/24 fails."""
+        from jmcore.crypto import validate_bip39_checksum
+
+        assert not validate_bip39_checksum("abandon " * 13)
+        assert not validate_bip39_checksum("")
+
+    def test_unknown_word_rejected(self):
+        """A word outside every BIP39 wordlist fails."""
+        from jmcore.crypto import validate_bip39_checksum
+
+        phrase = "notaword " * 11 + "about"
+        assert not validate_bip39_checksum(phrase)
+
+    def test_non_english_mnemonic_accepted(self):
+        """Valid phrases in other BIP39 languages must not warn."""
+        from mnemonic import Mnemonic
+
+        from jmcore.crypto import validate_bip39_checksum
+
+        for language in ("spanish", "french", "japanese"):
+            phrase = Mnemonic(language).generate(strength=128)
+            assert validate_bip39_checksum(phrase), language
+
+
 class TestStripSignaturePaddingEdgeCases:
     """Additional edge cases for strip_signature_padding."""
 

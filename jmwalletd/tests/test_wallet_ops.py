@@ -556,6 +556,37 @@ class TestGetNetwork:
 
 
 class TestRecoverWallet:
+    async def test_recovery_accepts_supported_non_english_mnemonic(self, tmp_path: Path) -> None:
+        wallet_path = tmp_path / "wallets" / "spanish.jmdat"
+        seedphrase = Mnemonic("spanish").to_mnemonic(bytes(16))
+        recovered_wallet = object()
+
+        with patch(
+            "jmwalletd.wallet_ops._recover_reserved_wallet",
+            new_callable=AsyncMock,
+            return_value=recovered_wallet,
+        ) as recover_reserved:
+            result = await recover_wallet(
+                wallet_path=wallet_path,
+                password="password",
+                wallet_type="sw",
+                seedphrase=seedphrase,
+                data_dir=tmp_path,
+            )
+
+        assert result is recovered_wallet
+        recover_reserved.assert_awaited_once()
+
+    async def test_recovery_rejects_invalid_checksum(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="Invalid BIP39 mnemonic"):
+            await recover_wallet(
+                wallet_path=tmp_path / "wallets" / "invalid.jmdat",
+                password="password",
+                wallet_type="sw",
+                seedphrase="abandon " * 12,
+                data_dir=tmp_path,
+            )
+
     @patch("jmwalletd.wallet_ops._get_network", return_value="mainnet")
     @patch("jmwalletd._backend.get_backend", new_callable=AsyncMock)
     @patch("jmwallet.wallet.service.WalletService")
@@ -952,6 +983,55 @@ class TestOpenWallet:
 
         assert ws is mock_ws
         assert seedphrase == mnemonic
+
+    @patch("jmwalletd.wallet_ops._get_network", return_value="mainnet")
+    @patch("jmwalletd._backend.get_backend", new_callable=AsyncMock)
+    @patch("jmwallet.wallet.service.WalletService")
+    async def test_open_wallet_with_invalid_checksum_errors_but_opens(
+        self,
+        mock_ws_cls: MagicMock,
+        mock_get_backend: AsyncMock,
+        mock_get_network: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """A stored phrase with a bad BIP39 checksum logs at ERROR.
+
+        The wallet must still open because legacy or manually migrated data
+        could already hold funds.
+        """
+        from loguru import logger
+
+        wallet_path = tmp_path / "wallets" / "bad_checksum.jmdat"
+        wallet_path.parent.mkdir(parents=True, exist_ok=True)
+        bad_checksum = "abandon " * 12
+        _save_wallet_file(
+            wallet_path=wallet_path,
+            mnemonic=bad_checksum,
+            password="password",
+            wallet_type="sw",
+        )
+
+        mock_ws = MagicMock()
+        mock_ws.sync = AsyncMock()
+        mock_ws.setup_descriptor_wallet = AsyncMock()
+        mock_ws_cls.return_value = mock_ws
+        mock_get_backend.return_value = _make_descriptor_backend()
+
+        logs: list[str] = []
+        sink_id = logger.add(lambda msg: logs.append(str(msg)), level="ERROR")
+        try:
+            ws, seedphrase = await open_wallet_with_mnemonic(
+                wallet_path=wallet_path,
+                password="password",
+                data_dir=tmp_path,
+                sync_on_open=False,
+            )
+        finally:
+            logger.remove(sink_id)
+
+        assert ws is mock_ws
+        assert seedphrase == bad_checksum
+        assert any("INVALID BIP39 checksum" in entry for entry in logs)
 
 
 class TestCreationHeight:

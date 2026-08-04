@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import click
 import pytest
 import typer
+from mnemonic import Mnemonic
 from typer.testing import CliRunner
 
 from jmwallet.backends.descriptor_wallet import DescriptorWalletBackend
@@ -255,6 +256,15 @@ def test_generate_and_validate_mnemonic():
         result = runner.invoke(app, ["validate", "--mnemonic-file", str(output_file)])
         assert result.exit_code == 0, f"validate failed: {result.stdout}"
         assert "Mnemonic is VALID" in result.stdout
+
+
+def test_validate_accepts_supported_non_english_mnemonic() -> None:
+    mnemonic = Mnemonic("spanish").to_mnemonic(bytes(16))
+
+    result = runner.invoke(app, ["validate"], env={"MNEMONIC": mnemonic})
+
+    assert result.exit_code == 0, result.stdout
+    assert "Mnemonic is VALID" in result.stdout
 
 
 def test_validate_invalid_mnemonic():
