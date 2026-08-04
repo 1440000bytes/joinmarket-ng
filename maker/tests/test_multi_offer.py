@@ -11,6 +11,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from jmcore.constants import DUST_THRESHOLD
 from jmcore.models import NetworkType, Offer, OfferType
 
 from maker.bot import MakerBot
@@ -231,6 +232,20 @@ class TestOfferManagerMultiOffer:
         assert offers[0].oid == 0
         assert offers[0].ordertype == OfferType.SW0_RELATIVE
         assert offers[0].cjfee == "0.001"
+
+    @pytest.mark.asyncio
+    async def test_offer_reserve_ignores_mutated_legacy_threshold(
+        self, mock_wallet, config_single_offer
+    ):
+        """Offer liquidity always reserves the fixed coordination threshold."""
+        config_single_offer.dust_threshold = 1
+        manager = OfferManager(mock_wallet, config_single_offer, "J5TestMaker")
+
+        with patch("maker.offers.get_best_fidelity_bond", new=AsyncMock(return_value=None)):
+            offers = await manager.create_offers()
+
+        assert len(offers) == 1
+        assert offers[0].maxsize == 1_000_000 - DUST_THRESHOLD
 
     @pytest.mark.asyncio
     async def test_create_dual_offers(self, mock_wallet, config_dual_offers):

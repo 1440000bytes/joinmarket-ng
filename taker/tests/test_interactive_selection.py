@@ -153,6 +153,49 @@ async def test_one_mixdepth_internal_destination_and_change_are_distinct(tmp_pat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("taker_change", "expected_kept"),
+    [(2730, False), (2731, True), (3_000, True)],
+)
+async def test_build_tx_uses_taker_change_threshold(
+    tmp_path: Path, taker_change: int, expected_kept: bool
+) -> None:
+    """Address allocation and tx building share the taker change cutoff."""
+    cj_amount = 1_000_000
+    tx_fee = 141  # One P2WPKH input, two outputs, at 1 sat/vB.
+    selected_utxo = make_utxo(
+        txid_char="a",
+        value=cj_amount + tx_fee + taker_change,
+        mixdepth=0,
+        confirmations=10,
+    )
+    wallet = _make_wallet({0: [selected_utxo]})
+    change_address = "bcrt1qqgpqyqszqgpqyqszqgpqyqszqgpqyqszazmwwa"
+    wallet.get_new_internal_address.return_value = change_address
+
+    taker = Taker(wallet, _backend(), _make_config(tmp_path, fee_rate=1.0))
+    taker._session.preselected_utxos = [selected_utxo]
+    taker._session.cj_amount = cj_amount
+    taker._session.is_sweep = False
+    taker._session._fee_rate = 1.0
+    taker._session._randomized_fee_rate = 1.0
+    taker._session.maker_sessions = {}
+
+    result = await taker._session._phase_build_tx(
+        destination="bcrt1qqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcruj60yu",
+        mixdepth=0,
+    )
+
+    assert result is True
+    assert (taker._session.taker_change_address == change_address) is expected_kept
+    assert (("taker", "change") in taker._session.tx_metadata["output_owners"]) is expected_kept
+    if expected_kept:
+        wallet.get_new_internal_address.assert_called_once_with(0)
+    else:
+        wallet.get_new_internal_address.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_do_coinjoin_cancelled_selection_stops_before_network(tmp_path: Path) -> None:
     """A cancelled selection aborts before any orderbook fetch."""
     utxos_by_md = {0: [make_utxo(txid_char="a", confirmations=10)]}

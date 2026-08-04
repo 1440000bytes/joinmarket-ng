@@ -20,6 +20,7 @@ from jmcore.bitcoin import (
     parse_transaction_bytes,
     serialize_transaction,
 )
+from jmcore.constants import BITCOIN_DUST_THRESHOLD, DUST_THRESHOLD
 from jmcore.randomness import secure_random
 from pydantic.dataclasses import dataclass
 
@@ -266,7 +267,7 @@ def build_coinjoin_tx(
     cj_amount: int,
     tx_fee: int,
     network: str = "mainnet",
-    dust_threshold: int = 27300,  # Default to DUST_THRESHOLD from jmcore.constants
+    dust_threshold: int = DUST_THRESHOLD,
 ) -> tuple[bytes, dict[str, Any]]:
     """
     Build a complete CoinJoin transaction.
@@ -280,11 +281,17 @@ def build_coinjoin_tx(
         cj_amount: Equal CoinJoin output amount
         tx_fee: Total transaction fee
         network: Network name
-        dust_threshold: Minimum output value in satoshis (default: 27300)
+        dust_threshold: Backward-compatible maker threshold argument. JoinMarket
+            coordination requires this to remain 27300.
 
     Returns:
         (tx_bytes, metadata)
     """
+    if dust_threshold != DUST_THRESHOLD:
+        raise ValueError(
+            f"Maker change threshold is fixed at {DUST_THRESHOLD} sats for peer compatibility"
+        )
+
     builder = CoinJoinTxBuilder(network)
 
     # Build taker inputs
@@ -309,7 +316,7 @@ def build_coinjoin_tx(
 
     # Taker change output (if any)
     taker_change_output = None
-    if taker_change > dust_threshold and taker_change_address:
+    if taker_change > BITCOIN_DUST_THRESHOLD and taker_change_address:
         taker_change_output = TxOutput.from_address(taker_change_address, taker_change)
     elif taker_change > 0:
         logger.warning(
@@ -317,7 +324,7 @@ def build_coinjoin_tx(
             + (
                 "has no change address"
                 if not taker_change_address
-                else f"is below dust threshold ({dust_threshold})"
+                else f"is at or below the taker change threshold ({BITCOIN_DUST_THRESHOLD})"
             )
             + ", no change output will be created (added to the mining fee)"
         )
@@ -353,7 +360,7 @@ def build_coinjoin_tx(
             f"Maker {nick} change calculation: "
             f"inputs={maker_total_input}, cj_amount={cj_amount}, "
             f"cjfee={data['cjfee']}, txfee={maker_txfee}, change={maker_change}, "
-            f"dust_threshold={dust_threshold}"
+            f"dust_threshold={DUST_THRESHOLD}"
         )
 
         if maker_change < 0:
@@ -364,12 +371,12 @@ def build_coinjoin_tx(
                 f"required={cj_amount + maker_txfee - data['cjfee']} sats, "
                 f"change={maker_change} sats. Maker's UTXOs may have been spent."
             )
-        elif maker_change > dust_threshold:
+        elif maker_change >= DUST_THRESHOLD:
             maker_change_outputs[nick] = TxOutput.from_address(data["change_addr"], maker_change)
         else:
             logger.warning(
                 f"Maker {nick} change {maker_change} sats is below dust threshold "
-                f"({dust_threshold}), "
+                f"({DUST_THRESHOLD}), "
                 "no change output will be created"
             )
 

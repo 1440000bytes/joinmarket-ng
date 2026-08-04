@@ -89,7 +89,7 @@ Additional per-maker checks at this stage (all cause the offending maker to be d
 
 - Every declared outpoint must exist in the UTXO set and be confirmed (matching the reference taker); spent, missing, or unconfirmed inputs would make the final transaction invalid or unconfirmable.
 - No outpoint may appear twice: neither within one maker's list, nor across makers, nor equal to one of the taker's own preselected inputs (which makers learn from the `!auth` PoDLE revelation). Duplicate inputs are consensus-invalid.
-- The maker's inputs must cover its CoinJoin output and leave a non-dust change output. Otherwise the maker's change would be omitted and the maker would refuse to sign, killing the round after commitments were burned.
+- The maker's inputs must cover its CoinJoin output and leave change at or above the fixed JoinMarket coordination threshold of 27,300 sats. Otherwise the maker's change would be omitted and the maker would refuse to sign, killing the round after commitments were burned. This maker threshold is distinct from the reference-compatible 2,730-sat cutoff used when a taker decides whether to keep its own change output.
 
 **Commitment Broadcast (`!hp2`) Timing and Privacy:**
 

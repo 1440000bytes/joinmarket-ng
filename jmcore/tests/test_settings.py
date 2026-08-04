@@ -8,7 +8,7 @@ from collections.abc import Generator
 from pathlib import Path
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from jmcore.models import NetworkType
 from jmcore.settings import (
@@ -191,6 +191,10 @@ class TestSettingsDefaults:
         assert settings.wallet.mixdepth_count == 5
         assert settings.wallet.gap_limit == 20
         assert settings.wallet.dust_threshold == 27300
+
+    def test_maker_change_threshold_is_fixed(self) -> None:
+        with pytest.raises(ValidationError):
+            JoinMarketSettings(wallet={"dust_threshold": 27301})
 
     def test_default_maker_settings(self) -> None:
         """Test default maker settings."""

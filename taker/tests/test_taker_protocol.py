@@ -21,6 +21,7 @@ from _taker_test_helpers import (
     make_taker_config,
     make_utxo,
 )
+from jmcore.constants import DUST_THRESHOLD
 from jmcore.crypto import NickIdentity
 from jmcore.encryption import CryptoSession
 from jmcore.models import Offer, OfferType
@@ -2294,6 +2295,27 @@ class TestPhaseAuthMakerAuthentication:
         )
         assert result.success is True
         assert nick in session_state.maker_sessions
+
+    @pytest.mark.parametrize(
+        ("maker_change", "expected_success"),
+        [(DUST_THRESHOLD - 1, False), (DUST_THRESHOLD, True), (DUST_THRESHOLD + 1, True)],
+    )
+    @pytest.mark.asyncio
+    async def test_maker_change_threshold_boundary(
+        self, maker_change: int, expected_success: bool
+    ) -> None:
+        """Authentication uses the fixed reference maker-change boundary."""
+        cj_amount = 1_000_000
+        cj_fee = 1000
+        result, session_state, nick = await self._drive_phase_auth(
+            auth_owns_utxo=True,
+            valid_btc_sig=True,
+            cj_amount=cj_amount,
+            utxo_value=cj_amount - cj_fee + maker_change,
+        )
+
+        assert result.success is expected_success
+        assert (nick in session_state.maker_sessions) is expected_success
 
 
 # --- Tests for neutrino-incompatible maker replacement (auth phase) ---

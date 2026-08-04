@@ -1,9 +1,10 @@
-"""
-Bitcoin and JoinMarket protocol constants.
+"""Bitcoin and JoinMarket protocol constants.
 
-Following the reference implementation's approach to dust thresholds:
-- BITCOIN_DUST_THRESHOLD: 5x the standard P2PKH dust limit (546 sats)
-- DUST_THRESHOLD: 10x BITCOIN_DUST_THRESHOLD for CoinJoin safety
+The reference implementation uses separate thresholds for two CoinJoin
+decisions:
+
+- ``BITCOIN_DUST_THRESHOLD`` controls whether takers keep their own change.
+- ``DUST_THRESHOLD`` controls whether maker change is accepted.
 """
 
 from __future__ import annotations
@@ -17,23 +18,16 @@ SATS_PER_BTC = 100_000_000
 MAX_MONEY = 21_000_000 * SATS_PER_BTC
 BTC_PER_SAT = 1.0 / SATS_PER_BTC  # For display only, never for calculations
 
-# Bitcoin dust threshold: 5x the standard P2PKH dust limit
-# This matches the reference implementation's btc.DUST_THRESHOLD
+# Taker change discard threshold: 5x the standard P2PKH dust limit.
+# This matches the reference implementation's btc.DUST_THRESHOLD and is an
+# economic policy, rather than Bitcoin Core's script-specific relay dust limit.
 BITCOIN_DUST_THRESHOLD = 5 * STANDARD_DUST_LIMIT  # 2730 satoshis
 
-# JoinMarket dust threshold for CoinJoin operations
-# Set to 10x BITCOIN_DUST_THRESHOLD to provide safety margin for:
-# 1. Fee estimation uncertainties in collaborative transactions
-# 2. Ensuring outputs remain economically spendable
-# 3. Avoiding rejection by peers due to changing network conditions
-#
-# This is a JoinMarket policy, not a Bitcoin protocol rule.
-# Reference: JoinMarket sets this to 27300 sats (0.000273 BTC)
+# Maker change coordination threshold. Takers reject makers whose inputs do not
+# leave change at or above this amount, matching the reference JoinMarket policy.
 DUST_THRESHOLD = 10 * BITCOIN_DUST_THRESHOLD  # 27300 satoshis
 
-# Default dust threshold for non-CoinJoin operations
-# Can use the lower BITCOIN_DUST_THRESHOLD for direct payments
-# This allows flexibility while maintaining safety for CoinJoin outputs
+# Backward-compatible alias for callers that imported the old default.
 DEFAULT_DUST_THRESHOLD = DUST_THRESHOLD  # 27300 satoshis (conservative default)
 
 # secp256k1 elliptic curve constants

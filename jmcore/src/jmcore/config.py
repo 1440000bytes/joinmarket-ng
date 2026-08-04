@@ -261,11 +261,12 @@ class WalletConfig(BaseModel):
         ),
     )
 
-    # Dust threshold
+    # Maker change threshold
     dust_threshold: int = Field(
         default=DUST_THRESHOLD,
-        ge=0,
-        description="Dust threshold in satoshis for change outputs (default: 27300)",
+        ge=DUST_THRESHOLD,
+        le=DUST_THRESHOLD,
+        description="Fixed JoinMarket maker change threshold in satoshis",
     )
 
     # Forced address-reuse defense

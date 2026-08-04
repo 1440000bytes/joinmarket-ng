@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import pytest
 from jmcore.bitcoin import address_to_scriptpubkey, serialize_outpoint
+from jmcore.constants import BITCOIN_DUST_THRESHOLD, DUST_THRESHOLD
 
 from taker.tx_builder import (
     CoinJoinTxBuilder,
@@ -395,7 +396,6 @@ class TestBuildCoinjoinTx:
             cj_amount=1_000_000,
             tx_fee=500,
             network="regtest",
-            dust_threshold=27300,  # Use default JoinMarket dust threshold
         )
 
         # Taker change: 1_001_500 - 1_000_000 - 500 - 500 = 500 (dust, excluded)
@@ -441,76 +441,128 @@ class TestBuildCoinjoinTx:
                 network="regtest",
             )
 
-    def test_build_coinjoin_configurable_dust_threshold(self) -> None:
-        """Test that dust threshold is configurable and enforced correctly."""
+    def test_build_coinjoin_keeps_taker_change_below_maker_threshold(self) -> None:
+        """The maker threshold must not discard economical taker change."""
         taker_utxos = [
             {
                 "txid": "a" * 64,
                 "vout": 0,
-                "value": 1_050_000,
+                "value": 1_004_500,
             },
         ]
         maker_data = {
             "maker1": {
-                "utxos": [{"txid": "b" * 64, "vout": 1, "value": 1_030_000}],
+                "utxos": [{"txid": "b" * 64, "vout": 1, "value": 1_026_799}],
                 "cj_addr": "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080",
                 "change_addr": "bcrt1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3qzf4jry",
                 "cjfee": 500,
             },
         }
 
-        # Test with low dust threshold (546 sats) - change outputs should be included
-        tx_bytes, metadata = build_coinjoin_tx(
+        _, metadata = build_coinjoin_tx(
             taker_utxos=taker_utxos,
             taker_cj_address="bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080",
             taker_change_address="bcrt1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3qzf4jry",
-            taker_total_input=1_050_000,
+            taker_total_input=1_004_500,
             maker_data=maker_data,
             cj_amount=1_000_000,
             tx_fee=1000,
             network="regtest",
-            dust_threshold=546,  # Standard Bitcoin dust threshold
         )
 
-        # Taker change: 1_050_000 - 1_000_000 - 500 - 1000 = 48_500 (above 546)
-        # Maker change: 1_030_000 - 1_000_000 + 500 = 30_500 (above 546)
-        # So 4 outputs: 2 CJ + 2 change
+        # Taker change is 3,000 sats and maker change is 27,299 sats. The taker
+        # output remains because it uses the lower 2,730-sat cutoff, while the
+        # maker output is below the fixed 27,300-sat coordination threshold.
         change_outputs = [o for o in metadata["output_owners"] if o[1] == "change"]
-        assert len(change_outputs) == 2
+        assert change_outputs == [("taker", "change")]
 
-        # Test with high dust threshold (27300 sats) - change outputs should still be included
-        tx_bytes, metadata = build_coinjoin_tx(
-            taker_utxos=taker_utxos,
+    @pytest.mark.parametrize(
+        ("change_value", "expected_change_outputs"),
+        [
+            (BITCOIN_DUST_THRESHOLD, 0),
+            (BITCOIN_DUST_THRESHOLD + 1, 1),
+            (DUST_THRESHOLD, 1),
+        ],
+    )
+    def test_build_coinjoin_taker_change_boundary(
+        self, change_value: int, expected_change_outputs: int
+    ) -> None:
+        """Taker change follows the reference implementation's 2,730-sat cutoff."""
+        _, metadata = build_coinjoin_tx(
+            taker_utxos=[
+                {
+                    "txid": "a" * 64,
+                    "vout": 0,
+                    "value": 1_000_000 + 1000 + change_value,
+                }
+            ],
             taker_cj_address="bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080",
-            taker_change_address="bcrt1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3qzf4jry",
-            taker_total_input=1_050_000,
-            maker_data=maker_data,
+            taker_change_address=(
+                "bcrt1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3qzf4jry"
+            ),
+            taker_total_input=1_000_000 + 1000 + change_value,
+            maker_data={},
             cj_amount=1_000_000,
             tx_fee=1000,
             network="regtest",
-            dust_threshold=27300,  # JoinMarket default dust threshold
         )
 
-        # Both changes are above 27300, so still 2 change outputs
         change_outputs = [o for o in metadata["output_owners"] if o[1] == "change"]
-        assert len(change_outputs) == 2
+        assert len(change_outputs) == expected_change_outputs
 
-        # Test with dust threshold higher than change - outputs should be excluded
-        tx_bytes, metadata = build_coinjoin_tx(
-            taker_utxos=taker_utxos,
+    def test_build_coinjoin_rejects_nonstandard_maker_threshold(self) -> None:
+        """The legacy builder keyword cannot change the coordination constant."""
+        with pytest.raises(ValueError, match="fixed at 27300"):
+            build_coinjoin_tx(
+                taker_utxos=[{"txid": "a" * 64, "vout": 0, "value": 1_001_000}],
+                taker_cj_address="bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080",
+                taker_change_address="",
+                taker_total_input=1_001_000,
+                maker_data={},
+                cj_amount=1_000_000,
+                tx_fee=1000,
+                network="regtest",
+                dust_threshold=DUST_THRESHOLD + 1,
+            )
+
+    @pytest.mark.parametrize(
+        ("change_value", "expected_change_outputs"),
+        [(DUST_THRESHOLD - 1, 0), (DUST_THRESHOLD, 1), (DUST_THRESHOLD + 1, 1)],
+    )
+    def test_build_coinjoin_maker_change_boundary(
+        self, change_value: int, expected_change_outputs: int
+    ) -> None:
+        """Maker change follows the fixed reference coordination threshold."""
+        _, metadata = build_coinjoin_tx(
+            taker_utxos=[{"txid": "a" * 64, "vout": 0, "value": 1_001_500}],
             taker_cj_address="bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080",
-            taker_change_address="bcrt1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3qzf4jry",
-            taker_total_input=1_050_000,
-            maker_data=maker_data,
+            taker_change_address="",
+            taker_total_input=1_001_500,
+            maker_data={
+                "maker1": {
+                    "utxos": [
+                        {
+                            "txid": "b" * 64,
+                            "vout": 1,
+                            "value": 1_000_000 - 500 + change_value,
+                        }
+                    ],
+                    "cj_addr": "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080",
+                    "change_addr": (
+                        "bcrt1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3qzf4jry"
+                    ),
+                    "cjfee": 500,
+                }
+            },
             cj_amount=1_000_000,
             tx_fee=1000,
             network="regtest",
-            dust_threshold=50000,  # Higher than both change amounts
         )
 
-        # Both changes are below 50000, so no change outputs
-        change_outputs = [o for o in metadata["output_owners"] if o[1] == "change"]
-        assert len(change_outputs) == 0
+        maker_change_outputs = [
+            owner for owner in metadata["output_owners"] if owner == ("maker1", "change")
+        ]
+        assert len(maker_change_outputs) == expected_change_outputs
 
 
 class TestAddSignaturesValidation:

@@ -217,6 +217,10 @@ class TestWalletConfig:
         assert config.mixdepth_count == 5
         assert config.gap_limit == 20
 
+    def test_maker_change_threshold_is_fixed(self):
+        with pytest.raises(ValidationError):
+            WalletConfig(mnemonic="test " * 12, dust_threshold=27301)
+
     def test_mixdepth_count_bounds(self):
         # Valid range: 1-10
         config = WalletConfig(mnemonic="test " * 12, mixdepth_count=1)

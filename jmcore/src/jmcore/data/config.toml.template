@@ -188,8 +188,10 @@
 # See docs/technical/wallet-scanning.md.
 # scan_range = 1000
 
-# Dust threshold in satoshis
-# dust_threshold = 27300
+# JoinMarket fixes minimum maker change at 27300 sats so makers and takers
+# coordinate on the same value. Taker-owned change uses a separate fixed
+# threshold of 2730 sats, matching the reference implementation.
+# dust_threshold = 27300  # Protocol constant, do not change
 
 # Forced address-reuse defense (privacy). When a UTXO arrives on a wallet
 # address that was previously used and is now empty, it is AUTOMATICALLY frozen

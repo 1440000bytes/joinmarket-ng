@@ -23,6 +23,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from jmcore.bitcoin import get_txid, pubkey_to_p2wpkh_script
+from jmcore.constants import BITCOIN_DUST_THRESHOLD, DUST_THRESHOLD
 from jmcore.encryption import CryptoSession
 from jmcore.protocol import FEATURE_NEUTRINO_COMPAT, UTXOMetadata, parse_utxo_list
 from jmcore.randomness import secure_random
@@ -833,12 +834,12 @@ class CoinJoinSession:
                     maker_change = (
                         maker_total_input - self.cj_amount - session.offer.txfee + maker_cjfee
                     )
-                    if maker_change <= self.config.dust_threshold:
+                    if maker_change < DUST_THRESHOLD:
                         logger.warning(
                             f"Dropping maker {nick}: inputs total {maker_total_input} sats "
                             f"leaves change of {maker_change} sats (cj_amount={self.cj_amount}, "
-                            f"txfee={session.offer.txfee}, cjfee={maker_cjfee}), at or below "
-                            f"the dust threshold ({self.config.dust_threshold})"
+                            f"txfee={session.offer.txfee}, cjfee={maker_cjfee}), below "
+                            f"the maker change threshold ({DUST_THRESHOLD})"
                         )
                         failed_makers.append(nick)
                         del self.maker_sessions[nick]
@@ -1159,7 +1160,7 @@ class CoinJoinSession:
 
             # Only generate change address if we'll actually have a change output
             # This avoids recording unused addresses in history
-            if expected_change > self.config.dust_threshold:
+            if expected_change > BITCOIN_DUST_THRESHOLD:
                 taker_change_address = self.wallet.get_new_internal_address(mixdepth)
                 self.taker_change_address = taker_change_address
                 logger.debug(f"Generated change address (expected: {expected_change} sats)")
@@ -1170,7 +1171,8 @@ class CoinJoinSession:
                 if expected_change > 0:
                     logger.debug(
                         f"No change address needed: change {expected_change} sats "
-                        f"is below dust threshold ({self.config.dust_threshold})"
+                        f"is at or below the taker change threshold "
+                        f"({BITCOIN_DUST_THRESHOLD})"
                     )
                 else:
                     logger.debug("No change address needed: sweep mode (exact spend)")
@@ -1210,7 +1212,6 @@ class CoinJoinSession:
                 cj_amount=self.cj_amount,
                 tx_fee=tx_fee,
                 network=network,
-                dust_threshold=self.config.dust_threshold,
             )
 
             logger.info(f"Built unsigned tx: {len(self.unsigned_tx)} bytes")

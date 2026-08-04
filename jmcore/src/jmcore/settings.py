@@ -53,6 +53,7 @@ from pydantic_settings import (
     SettingsConfigDict,
 )
 
+from jmcore.constants import DUST_THRESHOLD
 from jmcore.models import (
     DIRECTORY_NODES_MAINNET,
     DIRECTORY_NODES_SIGNET,
@@ -408,9 +409,10 @@ class WalletSettings(BaseModel):
         ),
     )
     dust_threshold: int = Field(
-        default=27300,
-        ge=0,
-        description="Dust threshold in satoshis",
+        default=DUST_THRESHOLD,
+        ge=DUST_THRESHOLD,
+        le=DUST_THRESHOLD,
+        description="Fixed JoinMarket maker change threshold in satoshis",
     )
     max_sats_freeze_reuse: int = Field(
         default=-1,

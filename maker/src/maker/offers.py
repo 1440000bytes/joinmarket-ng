@@ -307,7 +307,7 @@ class OfferManager:
         # ``(max_available, max_balance]`` and produce an unfillable rel
         # offer with ``min_size > max_available``.
         rel_randomized_txfee = randomized_fees[rel_idx][1]
-        rel_max_ceiling = max_balance - max(self.config.dust_threshold, rel_randomized_txfee)
+        rel_max_ceiling = max_balance - max(DUST_THRESHOLD, rel_randomized_txfee)
 
         overrides: dict[int, tuple[int | None, int | None]] = {}
         suppressed: set[int] = set()
@@ -392,7 +392,7 @@ class OfferManager:
                 return None
 
             # Reserve dust threshold + randomized tx fee contribution.
-            max_available = max_balance - max(self.config.dust_threshold, randomized_txfee)
+            max_available = max_balance - max(DUST_THRESHOLD, randomized_txfee)
             # Apply dual-offer ceiling (caps the abs offer at the intersection).
             if max_size_override is not None:
                 max_available = min(max_available, max_size_override)
@@ -405,7 +405,7 @@ class OfferManager:
                 logger.warning(
                     f"Offer {offer_id}: Insufficient balance: "
                     f"max_available={max_available} <= min_size={effective_min_size} "
-                    f"(max_balance={max_balance}, dust_threshold={self.config.dust_threshold})"
+                    f"(max_balance={max_balance}, dust_threshold={DUST_THRESHOLD})"
                 )
                 return None
 

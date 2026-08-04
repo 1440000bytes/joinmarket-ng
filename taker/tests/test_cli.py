@@ -89,7 +89,7 @@ class TestBuildTakerConfig:
         settings.wallet.mixdepth_count = 5
         settings.wallet.gap_limit = 6
         settings.wallet.scan_range = 1000
-        settings.wallet.dust_threshold = 546
+        settings.wallet.dust_threshold = 27300
         settings.wallet.max_sats_freeze_reuse = -1
         settings.wallet.smart_scan = True
         settings.wallet.background_full_rescan = False
