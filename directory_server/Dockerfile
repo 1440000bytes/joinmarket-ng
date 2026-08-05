@@ -4,8 +4,8 @@
 # Base image digests for reproducible builds
 # Update with: ./scripts/update-base-images.sh
 ARG PYTHON_VERSION=3.14
-ARG PYTHON_SLIM_DIGEST=sha256:cea0e6040540fb2b965b6e7fb5ffa00871e632eef63719f0ea54bca189ce14a6
-ARG PYTHON_FULL_DIGEST=sha256:5f1cdbcab9a50594a79502dd73e885456d2a2fc31f1a1fa18484815b37ee9152
+ARG PYTHON_SLIM_DIGEST=sha256:7bec7ddcddeff7975d6ba9b4be7dd6f6b2f55e7491539145e2978f7f97ce9144
+ARG PYTHON_FULL_DIGEST=sha256:51570a50616289f78f340811c34ca4384985f9e891819cbe7620f738d6ca8525
 # Pin build tools for reproducible builds
 # setuptools version is stamped into WHEEL metadata (Generator: setuptools (x.y.z))
 # Different versions produce different WHEEL/RECORD files, breaking layer reproducibility
