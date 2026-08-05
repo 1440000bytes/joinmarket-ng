@@ -13,6 +13,8 @@ const FEATURE_DISPLAY_NAMES = {
     'neutrino_compat': 'NEU',
     'push_encrypted': 'PEN',
     'peerlist_features': 'PLF',
+    'nick_auth': 'NAU',
+    'ping': 'PNG',
     'legacy': 'REF'
 };
 
@@ -20,8 +22,14 @@ const FEATURE_COLORS = {
     'neutrino_compat': '#3fb950',
     'push_encrypted': '#a371f7',
     'peerlist_features': '#58a6ff',
+    'nick_auth': '#f85149',
+    'ping': '#d29922',
     'legacy': '#6e7681'
 };
+
+function getFeatureDisplayName(feature) {
+    return FEATURE_DISPLAY_NAMES[feature] || feature.replaceAll('_', '-').substring(0, 8);
+}
 
 const DIRECTORY_COLORS = [
     '#3498db', '#e74c3c', '#2ecc71', '#f39c12', '#9b59b6',
@@ -200,9 +208,7 @@ function updateDirectoryBreakdown() {
                 if (featureKeys.length > 0) {
                     const features = document.createElement('span');
                     features.className = 'directory-features';
-                    features.textContent = featureKeys.map(f =>
-                        f.replace('_', '-').substring(0, 8)
-                    ).join(', ');
+                    features.textContent = featureKeys.map(getFeatureDisplayName).join(', ');
                     features.title = `Directory features: ${featureKeys.join(', ')}`;
                     metadataContainer.appendChild(features);
                 }
@@ -588,7 +594,7 @@ function updateFeatureBreakdown() {
         const badge = document.createElement('span');
         badge.className = 'feature-badge';
         badge.style.backgroundColor = FEATURE_COLORS[feature] || '#6e7681';
-        badge.textContent = FEATURE_DISPLAY_NAMES[feature] || feature;
+        badge.textContent = getFeatureDisplayName(feature);
         badge.title = feature;
 
         nameContainer.appendChild(badge);
@@ -968,7 +974,7 @@ function renderTable() {
             featureBadges = `<span class="feature-badge feature-legacy" title="Reference implementation (no features)">Ref</span>`;
         } else {
             featureBadges = featureKeys.map(feature => {
-                const displayName = FEATURE_DISPLAY_NAMES[feature] || feature.substring(0, 8);
+                const displayName = getFeatureDisplayName(feature);
                 const color = FEATURE_COLORS[feature] || '#6e7681';
                 return `<span class="feature-badge" style="background-color: ${color}" title="${feature}">${displayName}</span>`;
             }).join('');

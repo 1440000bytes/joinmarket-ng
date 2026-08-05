@@ -308,6 +308,64 @@ test.describe("fee quantization chart", () => {
   });
 });
 
+test.describe("feature display names", () => {
+  test("uses stable shortnames for maker and directory features", async ({ page }) => {
+    const directory = "directory.example:5222";
+    const offers: FixtureOffer[] = [{
+      counterparty: "featuremaker",
+      oid: 0,
+      ordertype: "sw0reloffer",
+      cjfee: "0.0001",
+      minsize: 100_000,
+      maxsize: 1_000_000,
+      txfee: 0,
+      fidelity_bond_value: 10_000,
+      directory_nodes: [directory],
+      features: { nick_auth: true, ping: true },
+    }];
+    const body = payload(offers, {
+      directory_nodes: [directory],
+      directory_stats: {
+        [directory]: {
+          offer_count: 1,
+          bond_offer_count: 1,
+          connected: true,
+          connection_attempts: 1,
+          successful_connections: 1,
+          uptime_percentage: 100,
+          proto_ver_min: 5,
+          proto_ver_max: 5,
+          features: { peerlist_features: true, ping: true, nick_auth: true },
+        },
+      },
+      feature_stats: { nick_auth: 1, ping: 1 },
+      feature_stats_denominator: 1,
+    });
+    const server = await openChart(page, body);
+
+    try {
+      const featureStats = page.locator("#feature-breakdown .feature-badge");
+      await expect(featureStats).toHaveText(["NAU", "PNG"]);
+      await expect(featureStats.nth(0)).toHaveAttribute("title", "nick_auth");
+      await expect(featureStats.nth(1)).toHaveAttribute("title", "ping");
+
+      const offerBadges = page.locator("#orderbook-tbody .feature-badge");
+      await expect(offerBadges).toHaveText(["NAU", "PNG"]);
+      await expect(offerBadges.nth(0)).toHaveAttribute("title", "nick_auth");
+      await expect(offerBadges.nth(1)).toHaveAttribute("title", "ping");
+
+      const directoryFeatures = page.locator(".directory-features");
+      await expect(directoryFeatures).toHaveText("PLF, PNG, NAU");
+      await expect(directoryFeatures).toHaveAttribute(
+        "title",
+        "Directory features: peerlist_features, ping, nick_auth",
+      );
+    } finally {
+      server.close();
+    }
+  });
+});
+
 test.describe("fidelity bond certificate expiry", () => {
   for (const testCase of [
     { name: "before boundary", height: BOND_EXPIRY - 1, expired: false },
