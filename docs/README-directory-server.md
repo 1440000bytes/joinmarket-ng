@@ -22,13 +22,25 @@ network with no direct internet access; only the Tor container bridges both inte
 external networks.
 
 1. Go to the `directory_server` directory.
-2. Run `docker compose up` (or `docker compose up -d` for non-interactive run)
-
-Retrieve your `.onion` address:
+2. Start Tor first with `docker compose up -d tor`.
+3. Retrieve your `.onion` address:
 
 ```bash
 cat tor/data/hostname
 ```
+
+4. Create or update `.env` in the current `directory_server/` directory with the complete
+   endpoint so the directory can advertise the nick authentication extension and perform nick
+   ownership authentication:
+
+```dotenv
+DIRECTORY_SERVER__NICK_AUTH_DIRECTORY_ID=your56characterhostname.onion:5222
+```
+
+5. Start the directory with `docker compose up -d directory_server`.
+
+Running the whole stack before this variable is set leaves nick authentication disabled. The
+directory logs a warning and its handshake does not advertise `nick_auth` in that state.
 
 #### Docker Notes
 
