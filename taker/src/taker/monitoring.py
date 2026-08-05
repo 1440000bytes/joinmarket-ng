@@ -196,6 +196,7 @@ class TakerMonitoringMixin:
             vout=0,  # CJ outputs are typically first, but this is a guess
             address=entry.destination_address,
             start_height=current_height,
+            include_mempool=False,
         )
 
         if verified:
@@ -260,36 +261,33 @@ class TakerMonitoringMixin:
             destination_address: Optional destination address (needed for Neutrino)
         """
         try:
-            has_mempool = self.backend.has_mempool_access()
+            can_confirm_by_txid = self.backend.can_get_confirmations_by_txid()
 
-            if has_mempool:
-                # Full node: can check mempool directly.
+            if can_confirm_by_txid:
+                # Full node / mempool API: check confirmation depth directly.
                 # Wait a few seconds before the first check — the tx cannot be in the
                 # mempool immediately after broadcast due to network propagation delay.
                 await asyncio.sleep(5)
                 tx_info = await self.backend.get_transaction(txid)
-                if tx_info is not None:
+                if tx_info is not None and tx_info.confirmations > 0:
                     confirmations = tx_info.confirmations
-                    if confirmations >= 0:
-                        # Transaction is in mempool (0 confs) or confirmed (>0 confs)
-                        # Mark as success even with 0 confs (mempool visible)
-                        update_transaction_confirmation(
-                            txid=txid,
-                            confirmations=max(confirmations, 1),
-                            data_dir=self.config.data_dir,
-                            wallet_fingerprint=self.wallet.wallet_fingerprint,
-                        )
-                        if confirmations > 0:
-                            logger.info(
-                                f"CoinJoin {txid[:16]}... already confirmed "
-                                f"({confirmations} confirmation{'s' if confirmations != 1 else ''})"
-                            )
-                        else:
-                            logger.info(f"CoinJoin {txid[:16]}... visible in mempool")
+                    update_transaction_confirmation(
+                        txid=txid,
+                        confirmations=confirmations,
+                        data_dir=self.config.data_dir,
+                        wallet_fingerprint=self.wallet.wallet_fingerprint,
+                    )
+                    logger.info(
+                        f"CoinJoin {txid[:16]}... already confirmed "
+                        f"({confirmations} confirmation{'s' if confirmations != 1 else ''})"
+                    )
+                elif tx_info is not None:
+                    logger.info(
+                        f"CoinJoin {txid[:16]}... visible in mempool, awaiting confirmation"
+                    )
             else:
-                # Neutrino: can only check confirmed blocks, not mempool
-                # For Neutrino, we need to wait for block confirmation
-                # This will be handled by the background monitor on next startup
+                # Neutrino cannot report confirmation depth by txid. Its UTXO
+                # endpoint can explicitly exclude the mempool overlay.
                 if destination_address:
                     try:
                         current_height = await self.backend.get_block_height()
@@ -301,6 +299,7 @@ class TakerMonitoringMixin:
                         vout=0,  # CJ outputs are typically first
                         address=destination_address,
                         start_height=current_height,
+                        include_mempool=False,
                     )
 
                     if verified:

@@ -1416,14 +1416,15 @@ class TestUpdatePendingTransactionNow:
         """Create a taker with a mock backend and temp data dir."""
         mock_config.data_dir = tmp_path
         mock_backend.has_mempool_access = Mock(return_value=True)
+        mock_backend.can_get_confirmations_by_txid = Mock(return_value=True)
         return Taker(mock_wallet, mock_backend, mock_config)
 
     @pytest.mark.asyncio
     @patch("asyncio.sleep")
-    async def test_update_pending_tx_with_mempool_access(
+    async def test_update_pending_tx_in_mempool_stays_pending(
         self, mock_sleep, taker_with_backend, tmp_path
     ):
-        """Test that pending transaction is updated when mempool access is available."""
+        """A transaction visible in the mempool is not yet confirmed."""
         from jmwallet.backends.base import Transaction
         from jmwallet.history import (
             append_history_entry,
@@ -1468,15 +1469,16 @@ class TestUpdatePendingTransactionNow:
         # Call the update method
         await taker._update_pending_transaction_now(txid, destination)
 
-        # Verify transaction is no longer pending
+        # The transaction remains pending until it is included in a block.
         pending = get_pending_transactions(data_dir=tmp_path)
-        assert len(pending) == 0
+        assert len(pending) == 1
 
-        # Verify history shows it as confirmed
         history = read_history(data_dir=tmp_path)
         assert len(history) == 1
-        assert history[0].success is True
-        assert history[0].confirmations >= 1
+        assert history[0].success is False
+        assert history[0].confirmations == 0
+        assert history[0].confirmed_at == ""
+        assert history[0].completed_at == ""
 
     @pytest.mark.asyncio
     @patch("asyncio.sleep")
@@ -1541,6 +1543,7 @@ class TestUpdatePendingTransactionNow:
 
         mock_config.data_dir = tmp_path
         mock_backend.has_mempool_access = Mock(return_value=False)
+        mock_backend.can_get_confirmations_by_txid = Mock(return_value=False)
         mock_backend.get_block_height = AsyncMock(return_value=100)
         # Simulate unconfirmed transaction (verify_tx_output returns False)
         mock_backend.verify_tx_output = AsyncMock(return_value=False)
@@ -1585,6 +1588,7 @@ class TestUpdatePendingTransactionNow:
 
         mock_config.data_dir = tmp_path
         mock_backend.has_mempool_access = Mock(return_value=False)
+        mock_backend.can_get_confirmations_by_txid = Mock(return_value=False)
         mock_backend.get_block_height = AsyncMock(return_value=100)
         # Simulate confirmed transaction (verify_tx_output returns True)
         mock_backend.verify_tx_output = AsyncMock(return_value=True)
@@ -1620,6 +1624,13 @@ class TestUpdatePendingTransactionNow:
         assert len(history) == 1
         assert history[0].success is True
         assert history[0].confirmations == 1
+        mock_backend.verify_tx_output.assert_awaited_once_with(
+            txid=txid,
+            vout=0,
+            address=destination,
+            start_height=100,
+            include_mempool=False,
+        )
 
 
 class TestHistoryMiningFeeRecording:
@@ -1749,8 +1760,11 @@ class TestTakerHistoryHardening:
         self, mock_wallet, mock_backend, mock_config, sample_offer
     ):
         """Verify that _phase_collect_signatures aborts if history recording fails."""
+        from jmcore.models import NetworkType
         from jmwallet.history import HistoryWriteError
 
+        mock_config.network = NetworkType.TESTNET
+        mock_config.bitcoin_network = NetworkType.REGTEST
         taker = Taker(mock_wallet, mock_backend, mock_config)
 
         nick = "J5maker1"
@@ -1775,6 +1789,8 @@ class TestTakerHistoryHardening:
 
             assert result is False
             mock_append.assert_called_once()
+            history_entry = mock_append.call_args.args[0]
+            assert history_entry.network == "regtest"
 
             for call in taker.directory_client.send_privmsg.call_args_list:
                 assert call.args[1] != "tx"

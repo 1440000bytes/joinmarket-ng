@@ -1265,6 +1265,7 @@ class NeutrinoBackend(BlockchainBackend):
         vout: int,
         address: str,
         start_height: int | None = None,
+        include_mempool: bool = True,
     ) -> bool:
         """
         Verify that a specific transaction output exists using neutrino's UTXO endpoint.
@@ -1278,6 +1279,7 @@ class NeutrinoBackend(BlockchainBackend):
             vout: Output index to check
             address: The address that should own this output
             start_height: Block height hint for efficient scanning (recommended)
+            include_mempool: Whether an unconfirmed output counts as verified
 
         Returns:
             True if the output exists, False otherwise
@@ -1286,9 +1288,9 @@ class NeutrinoBackend(BlockchainBackend):
             params: dict[str, str | int] = {"address": address}
             if start_height is not None:
                 params["start_height"] = start_height
-            # Honour the client-side opt-out. The server defaults to
-            # include_mempool=true, so we only need to disable explicitly.
-            if not self.include_mempool:
+            # The server defaults to include_mempool=true. Disable it when the
+            # caller needs proof of block inclusion or the operator opted out.
+            if not include_mempool or not self.include_mempool:
                 params["include_mempool"] = "false"
 
             result = await self._api_call(

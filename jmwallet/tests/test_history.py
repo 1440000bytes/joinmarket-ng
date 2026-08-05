@@ -1104,6 +1104,38 @@ class TestPendingConfirmationRefresh:
         assert entries[0].confirmations == 3
 
     @pytest.mark.asyncio
+    async def test_confirmation_update_remains_wallet_scoped(self, temp_data_dir: Path) -> None:
+        txid = "shared_txid"
+        first = _make_pending_maker_entry(txid=txid)
+        first.wallet_fingerprint = "first"
+        second = _make_pending_maker_entry(txid=txid)
+        second.wallet_fingerprint = "second"
+        append_history_entry(first, temp_data_dir)
+        append_history_entry(second, temp_data_dir)
+
+        mock_backend = MagicMock()
+        mock_backend.can_get_confirmations_by_txid.return_value = True
+        mock_backend.get_transaction = AsyncMock(
+            return_value=Transaction(
+                txid=txid,
+                raw="00",
+                confirmations=1,
+                block_height=123,
+            )
+        )
+
+        updated = await update_all_pending_transactions(
+            mock_backend,
+            data_dir=temp_data_dir,
+            wallet_fingerprint="second",
+        )
+
+        assert updated == 1
+        entries = {entry.wallet_fingerprint: entry for entry in read_history(temp_data_dir)}
+        assert entries["first"].success is False
+        assert entries["second"].success is True
+
+    @pytest.mark.asyncio
     async def test_neutrino_confirms_via_verify_tx_output(self, temp_data_dir: Path) -> None:
         """Light clients (Neutrino) confirm via verify_tx_output, not get_transaction.
 
@@ -1132,7 +1164,13 @@ class TestPendingConfirmationRefresh:
         assert entries[0].txid == "neutrino_txid"
         assert entries[0].success is True
         assert entries[0].confirmations == 1
-        mock_backend.verify_tx_output.assert_awaited_once()
+        mock_backend.verify_tx_output.assert_awaited_once_with(
+            txid="neutrino_txid",
+            vout=0,
+            address=entry.destination_address,
+            start_height=200,
+            include_mempool=False,
+        )
 
 
 class TestUsedAddressTracking:

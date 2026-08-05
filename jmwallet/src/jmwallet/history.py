@@ -2287,6 +2287,7 @@ async def update_all_pending_transactions(
                             txid=entry.txid,
                             confirmations=tx_info.confirmations,
                             data_dir=data_dir,
+                            wallet_fingerprint=wallet_fingerprint,
                         )
                         updated_count += 1
                         logger.debug(
@@ -2309,6 +2310,7 @@ async def update_all_pending_transactions(
                     vout=0,  # CJ outputs are typically first
                     address=entry.destination_address,
                     start_height=current_height,
+                    include_mempool=False,
                 )
 
                 if verified:
@@ -2316,6 +2318,7 @@ async def update_all_pending_transactions(
                         txid=entry.txid,
                         confirmations=1,
                         data_dir=data_dir,
+                        wallet_fingerprint=wallet_fingerprint,
                     )
                     updated_count += 1
                     logger.debug(f"Updated pending tx {entry.txid[:16]}... via Neutrino")

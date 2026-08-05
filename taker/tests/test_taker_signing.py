@@ -726,6 +726,7 @@ class TestPhaseCollectSignaturesCompleteness:
             taker.backend = AsyncMock()
             taker.config = MagicMock()
             taker.config.network.value = "regtest"
+            taker.config.bitcoin_network.value = "regtest"
             taker.config.tx_broadcast.value = "self"
             taker.config.maker_timeout_sec = 5
             taker.config.minimum_makers = 1  # Low threshold -- should NOT matter

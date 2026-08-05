@@ -194,6 +194,7 @@ class TestDoCoinjoin:
         mock_settings = JoinMarketSettings()
         mock_settings.data_dir = Path("/tmp/jm-test")
         mock_settings.network_config.network = NetworkType.SIGNET
+        mock_settings.network_config.bitcoin_network = NetworkType.REGTEST
         mock_settings.network_config.directory_servers = expected_dirs
         mock_settings.bitcoin.backend_type = "descriptor_wallet"
         mock_settings.tor.socks_host = "127.0.0.1"
@@ -218,6 +219,7 @@ class TestDoCoinjoin:
         _, kwargs = mock_config.call_args
         assert kwargs["mnemonic"].get_secret_value() == state.wallet_mnemonic
         assert kwargs["network"] == NetworkType.SIGNET
+        assert kwargs["bitcoin_network"] == NetworkType.REGTEST
         assert kwargs["directory_servers"] == expected_dirs
         assert kwargs["socks_host"] == "127.0.0.1"
         assert kwargs["socks_port"] == 9050
@@ -227,6 +229,8 @@ class TestDoCoinjoin:
         assert kwargs["counterparty_count"] == 3
         assert kwargs["minimum_makers"] == 3
         assert kwargs["bondless_makers_allowance_require_zero_fee"] is True
+        assert mock_backend.await_args is not None
+        assert mock_backend.await_args.kwargs["network"] == "regtest"
 
 
 class TestBuildCoinjoinTakerConfig:

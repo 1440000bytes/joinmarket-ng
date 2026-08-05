@@ -468,9 +468,10 @@ class BlockchainBackend(ABC):
         vout: int,
         address: str,
         start_height: int | None = None,
+        include_mempool: bool = True,
     ) -> bool:
         """
-        Verify that a specific transaction output exists (was broadcast and confirmed).
+        Verify that a specific transaction output exists.
 
         This is useful for verifying a transaction was successfully broadcast when
         we know at least one of its output addresses (e.g., our coinjoin destination).
@@ -483,13 +484,14 @@ class BlockchainBackend(ABC):
             vout: Output index to check
             address: The address that should own this output
             start_height: Optional block height hint for light clients (improves performance)
+            include_mempool: Whether an unconfirmed output counts as verified
 
         Returns:
-            True if the output exists (transaction was broadcast), False otherwise
+            True if the output exists in the requested chain/mempool scope, False otherwise
         """
         # Default implementation for full node backends
         tx = await self.get_transaction(txid)
-        return tx is not None
+        return tx is not None and (include_mempool or tx.confirmations > 0)
 
     async def verify_bonds(
         self,

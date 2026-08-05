@@ -1481,7 +1481,7 @@ class CoinJoinSession:
                 selected_utxos=[(utxo.txid, utxo.vout) for utxo in self.selected_utxos],
                 txid="",  # Will be updated after broadcast
                 broadcast_method=self.config.tx_broadcast.value,
-                network=self.config.network.value,
+                network=(self.config.bitcoin_network or self.config.network).value,
                 failure_reason="Awaiting transaction",
                 wallet_fingerprint=self.wallet.wallet_fingerprint,
                 source_addresses=[utxo.address for utxo in self.selected_utxos],
@@ -1817,7 +1817,7 @@ class CoinJoinSession:
                 selected_utxos=[(utxo.txid, utxo.vout) for utxo in self.selected_utxos],
                 txid=txid,
                 broadcast_method=broadcast_method,
-                network=self.config.network.value,
+                network=(self.config.bitcoin_network or self.config.network).value,
                 failure_reason="User declined broadcast (manual broadcast pending)",
                 wallet_fingerprint=self.wallet.wallet_fingerprint,
                 source_addresses=[utxo.address for utxo in self.selected_utxos],

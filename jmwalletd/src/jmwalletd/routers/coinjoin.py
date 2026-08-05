@@ -171,13 +171,16 @@ async def do_coinjoin(
         async def _run_coinjoin() -> None:
             taker: Any | None = None
             try:
+                jm_settings = get_settings()
+                bitcoin_network = (
+                    jm_settings.network_config.bitcoin_network or jm_settings.network_config.network
+                )
                 backend = await get_backend(
                     state.data_dir,
                     force_new=True,
                     mnemonic=state.wallet_mnemonic,
-                    network=get_settings().network_config.network.value,
+                    network=bitcoin_network.value,
                 )
-                jm_settings = get_settings()
                 config = build_coinjoin_taker_config(
                     body=body,
                     mnemonic=state.wallet_mnemonic,

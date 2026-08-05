@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from jmwallet.backends.base import BondVerificationRequest
+from jmwallet.backends.base import BlockchainBackend, BondVerificationRequest, Transaction
 from jmwallet.backends.neutrino import (
     GENESIS_BLOCK_HASHES,
     NeutrinoBackend,
@@ -61,6 +61,33 @@ class TestBackendCloseReuse:
         assert backend._synced is False
 
         await backend.close()
+
+
+class TestBlockchainBackend:
+    """Tests for shared backend behavior."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("confirmations", "include_mempool", "expected"),
+        [(0, True, True), (0, False, False), (1, False, True)],
+    )
+    async def test_verify_tx_output_respects_confirmation_scope(
+        self, confirmations: int, include_mempool: bool, expected: bool
+    ) -> None:
+        backend = MagicMock(spec=BlockchainBackend)
+        backend.get_transaction = AsyncMock(
+            return_value=Transaction(txid="a" * 64, raw="00", confirmations=confirmations)
+        )
+
+        verified = await BlockchainBackend.verify_tx_output(
+            backend,
+            txid="a" * 64,
+            vout=0,
+            address="bcrt1qdest",
+            include_mempool=include_mempool,
+        )
+
+        assert verified is expected
 
 
 class TestNeutrinoBackend:
@@ -2160,6 +2187,33 @@ class TestNeutrinoBackend:
             assert backend.can_get_confirmations_by_txid() is False
             backend._server_capabilities.has_mempool_tracker = True
             assert backend.can_get_confirmations_by_txid() is False
+        finally:
+            await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_verify_tx_output_can_exclude_mempool_overlay(self):
+        """Confirmation checks must explicitly request chain-only UTXOs."""
+        backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="regtest")
+        backend._api_call = AsyncMock(return_value={"unspent": True, "block_height": 100})
+
+        try:
+            verified = await backend.verify_tx_output(
+                txid="a" * 64,
+                vout=2,
+                address="bcrt1qdest",
+                start_height=90,
+                include_mempool=False,
+            )
+            assert verified is True
+            backend._api_call.assert_awaited_once_with(
+                "GET",
+                f"v1/utxo/{'a' * 64}/2",
+                params={
+                    "address": "bcrt1qdest",
+                    "start_height": 90,
+                    "include_mempool": "false",
+                },
+            )
         finally:
             await backend.close()
 
