@@ -106,6 +106,24 @@ class DirectSendResult:
     outputs: list[dict[str, object]] = field(default_factory=list)
 
 
+@dataclass
+class SignedDirectTx:
+    """Intermediate result from :func:`_prepare_direct_send`."""
+
+    tx_hex: str
+    fee: int
+    fee_rate: float
+    send_amount: int
+    change_amount: int
+    num_inputs: int
+    num_outputs: int
+    destination: str
+    change_address: str = ""
+    source_addresses: list[str] = field(default_factory=list)
+    inputs: list[dict[str, object]] = field(default_factory=list)
+    outputs: list[dict[str, object]] = field(default_factory=list)
+
+
 # Map of wallet networks to python-bitcointx chain parameter names. Used so
 # CCoinAddress can both verify the bech32/base58 checksum AND reject
 # addresses from a different network than the wallet is configured for.
@@ -348,7 +366,7 @@ def _assemble_signed_tx(
     return bytes(signed)
 
 
-async def direct_send(
+async def _prepare_direct_send(
     *,
     wallet: WalletService,
     backend: BlockchainBackend,
@@ -359,40 +377,12 @@ async def direct_send(
     fee_target_blocks: int = 6,
     tx_fee_factor: float = 0.0,
     max_fee_rate_sat_vb: float = DEFAULT_MAX_FEE_RATE_SAT_VB,
-) -> DirectSendResult:
-    """Build, sign, and broadcast a direct (non-CoinJoin) transaction.
+) -> SignedDirectTx:
+    """Build and sign a direct-send transaction WITHOUT broadcasting.
 
-    Parameters
-    ----------
-    wallet:
-        An initialised and synced :class:`WalletService`.
-    backend:
-        The blockchain backend for fee estimation and broadcasting.
-    mixdepth:
-        The mixdepth (account) to spend from.
-    amount_sats:
-        Amount in satoshis to send.  ``0`` means sweep the entire mixdepth.
-    destination:
-        Destination Bitcoin address (bech32 only).
-    fee_rate:
-        Explicit fee rate in sat/vB.  When *None*, the rate is estimated
-        from the backend using *fee_target_blocks*.
-    fee_target_blocks:
-        Number of blocks for fee estimation (ignored when *fee_rate* is set).
-    tx_fee_factor:
-        Privacy randomization factor. The final rate is selected between the
-        resolved rate and that rate multiplied by ``1 + tx_fee_factor``, with
-        the upper end limited by *max_fee_rate_sat_vb*.
-    max_fee_rate_sat_vb:
-        Safety cap on the fee rate (sat/vB).  The resolved rate (manual or
-        from backend estimation) is rejected with
-        :class:`ExcessiveFeeRateError` when it exceeds this value.  Defaults
-        to :data:`DEFAULT_MAX_FEE_RATE_SAT_VB`; daemon and CLI callers wire
-        this from ``settings.wallet.max_fee_rate_sat_vb``.
-
-    Returns
-    -------
-    DirectSendResult
+    Returns a :class:`SignedDirectTx` containing the signed hex and all
+    metadata needed to broadcast and record a history entry. Callers that want
+    the full build+sign+broadcast flow should use :func:`direct_send` instead.
     """
     if not destination.startswith(("bc1", "tb1", "bcrt1")):
         msg = "Only bech32 addresses are currently supported"
@@ -486,6 +476,7 @@ async def direct_send(
 
     # --- Change output ---
     change_script: bytes | None = None
+    change_addr: str = ""
     if change_amount > 0:
         change_index = wallet.get_next_address_index(mixdepth, 1)
         change_addr = wallet.get_change_address(mixdepth, change_index)
@@ -517,14 +508,19 @@ async def direct_send(
     )
     tx_hex = signed_tx.hex()
 
-    # --- Broadcast ---
-    logger.info("Broadcasting direct-send transaction ({} bytes)", len(signed_tx))
-    broadcast_txid = await backend.broadcast_transaction(tx_hex)
-    txid = broadcast_txid or ""
+    outputs_list: list[dict[str, object]] = [
+        {"value_sats": send_amount, "scriptPubKey": dest_script.hex(), "address": destination},
+    ]
+    if change_amount > 0 and change_script is not None:
+        outputs_list.append(
+            {
+                "value_sats": change_amount,
+                "scriptPubKey": change_script.hex(),
+                "address": change_addr,
+            }
+        )
 
-    logger.info("Broadcast OK: {}", txid)
-    return DirectSendResult(
-        txid=txid,
+    return SignedDirectTx(
         tx_hex=tx_hex,
         fee=fee,
         fee_rate=fee_rate,
@@ -532,6 +528,9 @@ async def direct_send(
         change_amount=change_amount,
         num_inputs=len(utxos),
         num_outputs=num_outputs,
+        destination=destination,
+        change_address=change_addr if change_amount > 0 else "",
+        source_addresses=[u.address for u in utxos],
         inputs=[
             {
                 "outpoint": f"{u.txid}:{u.vout}",
@@ -543,7 +542,83 @@ async def direct_send(
             }
             for u in utxos
         ],
-        outputs=[
-            {"value_sats": send_amount, "scriptPubKey": dest_script.hex(), "address": destination},
-        ],
+        outputs=outputs_list,
+    )
+
+
+async def direct_send(
+    *,
+    wallet: WalletService,
+    backend: BlockchainBackend,
+    mixdepth: int,
+    amount_sats: int,
+    destination: str,
+    fee_rate: float | None = None,
+    fee_target_blocks: int = 6,
+    tx_fee_factor: float = 0.0,
+    max_fee_rate_sat_vb: float = DEFAULT_MAX_FEE_RATE_SAT_VB,
+) -> DirectSendResult:
+    """Build, sign, and broadcast a direct (non-CoinJoin) transaction.
+
+    Parameters
+    ----------
+    wallet:
+        An initialised and synced :class:`WalletService`.
+    backend:
+        The blockchain backend for fee estimation and broadcasting.
+    mixdepth:
+        The mixdepth (account) to spend from.
+    amount_sats:
+        Amount in satoshis to send.  ``0`` means sweep the entire mixdepth.
+    destination:
+        Destination Bitcoin address (bech32 only).
+    fee_rate:
+        Explicit fee rate in sat/vB.  When *None*, the rate is estimated
+        from the backend using *fee_target_blocks*.
+    fee_target_blocks:
+        Number of blocks for fee estimation (ignored when *fee_rate* is set).
+    tx_fee_factor:
+        Privacy randomization factor. The final rate is selected between the
+        resolved rate and that rate multiplied by ``1 + tx_fee_factor``, with
+        the upper end limited by *max_fee_rate_sat_vb*.
+    max_fee_rate_sat_vb:
+        Safety cap on the fee rate (sat/vB).  The resolved rate (manual or
+        from backend estimation) is rejected with
+        :class:`ExcessiveFeeRateError` when it exceeds this value.  Defaults
+        to :data:`DEFAULT_MAX_FEE_RATE_SAT_VB`; daemon and CLI callers wire
+        this from ``settings.wallet.max_fee_rate_sat_vb``.
+
+    Returns
+    -------
+    DirectSendResult
+    """
+    prepared = await _prepare_direct_send(
+        wallet=wallet,
+        backend=backend,
+        mixdepth=mixdepth,
+        amount_sats=amount_sats,
+        destination=destination,
+        fee_rate=fee_rate,
+        fee_target_blocks=fee_target_blocks,
+        tx_fee_factor=tx_fee_factor,
+        max_fee_rate_sat_vb=max_fee_rate_sat_vb,
+    )
+
+    tx_bytes_len = len(bytes.fromhex(prepared.tx_hex))
+    logger.info("Broadcasting direct-send transaction ({} bytes)", tx_bytes_len)
+    broadcast_txid = await backend.broadcast_transaction(prepared.tx_hex)
+    txid = broadcast_txid or ""
+
+    logger.info("Broadcast OK: {}", txid)
+    return DirectSendResult(
+        txid=txid,
+        tx_hex=prepared.tx_hex,
+        fee=prepared.fee,
+        fee_rate=prepared.fee_rate,
+        send_amount=prepared.send_amount,
+        change_amount=prepared.change_amount,
+        num_inputs=prepared.num_inputs,
+        num_outputs=prepared.num_outputs,
+        inputs=prepared.inputs,
+        outputs=prepared.outputs,
     )

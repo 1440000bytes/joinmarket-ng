@@ -728,7 +728,7 @@ class TestDirectSend:
         assert result.num_inputs == 1
         assert result.num_outputs == 2  # send + change
         assert len(result.inputs) == 1
-        assert len(result.outputs) >= 1
+        assert len(result.outputs) == 2
         assert result.inputs[0]["outpoint"] == f"{'aa' * 32}:0"
 
     @pytest.mark.anyio
@@ -916,3 +916,54 @@ class TestDirectSendFeeRateCap:
             )
 
         assert result.fee_rate == 1_000.0
+
+
+class TestPrepareDirectSend:
+    """Unit tests for _prepare_direct_send."""
+
+    @pytest.mark.anyio
+    async def test_prepare_returns_signed_tx_without_broadcasting(self) -> None:
+        """_prepare_direct_send builds and signs but does NOT call broadcast_transaction."""
+        from jmwallet.wallet.spend import SignedDirectTx, _prepare_direct_send
+
+        utxos = [_make_utxo(value=200_000, address="bcrt1qinput")]
+        wallet = _make_mock_wallet(utxos, change_addr=REGTEST_P2WPKH_ADDR)
+        backend = _make_mock_backend()
+
+        result = await _prepare_direct_send(
+            wallet=wallet,
+            backend=backend,
+            mixdepth=0,
+            amount_sats=50_000,
+            destination=REGTEST_P2WPKH_ADDR,
+            fee_rate=1.0,
+        )
+
+        assert isinstance(result, SignedDirectTx)
+        assert result.tx_hex
+        assert result.change_address == REGTEST_P2WPKH_ADDR
+        assert result.source_addresses == ["bcrt1qinput"]
+        assert len(result.outputs) == 2
+        backend.broadcast_transaction.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_prepare_sweep_has_empty_change_address(self) -> None:
+        """Sweep (amount_sats=0) produces no change output; change_address must be empty."""
+        from jmwallet.wallet.spend import _prepare_direct_send
+
+        utxos = [_make_utxo(value=100_000, address="bcrt1qinput")]
+        wallet = _make_mock_wallet(utxos)
+        backend = _make_mock_backend()
+
+        result = await _prepare_direct_send(
+            wallet=wallet,
+            backend=backend,
+            mixdepth=0,
+            amount_sats=0,
+            destination=REGTEST_P2WPKH_ADDR,
+            fee_rate=1.0,
+        )
+
+        assert result.change_address == ""
+        assert result.source_addresses == ["bcrt1qinput"]
+        backend.broadcast_transaction.assert_not_awaited()

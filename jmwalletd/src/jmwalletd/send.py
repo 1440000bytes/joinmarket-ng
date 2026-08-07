@@ -1,7 +1,7 @@
 """Direct-send helper for jmwalletd.
 
-Thin wrapper around :func:`jmwallet.wallet.spend.direct_send` that adapts the
-result for the jmwalletd HTTP API response format.
+Builds, signs, broadcasts, and records direct (non-coinjoin) transactions
+in history.csv following the two-phase history persistence pattern.
 """
 
 from __future__ import annotations
@@ -11,10 +11,15 @@ from typing import TYPE_CHECKING
 
 from loguru import logger
 
+from jmwallet.history import (
+    append_history_entry,
+    create_send_history_entry,
+    update_send_awaiting_broadcast,
+)
 from jmwallet.wallet.spend import (
     DEFAULT_MAX_FEE_RATE_SAT_VB,
     DirectSendResult,
-    direct_send,
+    _prepare_direct_send,
 )
 
 if TYPE_CHECKING:
@@ -32,13 +37,24 @@ async def do_direct_send(
     tx_fee_factor: float = 0.0,
     max_fee_rate_sat_vb: float = DEFAULT_MAX_FEE_RATE_SAT_VB,
 ) -> DirectSendResult:
-    """Build and broadcast a direct (non-coinjoin) transaction.
+    """Build, sign, broadcast, and record a direct (non-coinjoin) transaction.
 
-    Delegates entirely to :func:`jmwallet.wallet.spend.direct_send`.
     ``fee_rate`` (sat/vB) takes priority; otherwise ``fee_target_blocks``
     drives backend estimation (``None`` keeps the spend module's default
     target). ``tx_fee_factor`` applies the reference fee-rate randomization,
     and ``max_fee_rate_sat_vb`` applies the operator's configured hard cap.
+
+    Follows the same two-phase history-write pattern as the CLI send command:
+
+    1. A ``role="send"`` row is written to ``history.csv`` with
+       ``failure_reason="awaiting broadcast"`` **before** the broadcast call.
+       This permanently marks destination and change addresses as used,
+       even if broadcast fails — the signed bytes are already outside
+       the wallet's control.
+    2. After broadcast resolves (success or failure) the row is patched
+       in-place via :func:`~jmwallet.history.update_send_awaiting_broadcast`.
+
+    Persistence failures are logged as warnings and never block the broadcast.
     """
     from jmcore.paths import get_default_data_dir
     from jmwalletd._backend import get_backend
@@ -63,7 +79,8 @@ async def do_direct_send(
     if fee_target_blocks is not None:
         extra_kwargs["fee_target_blocks"] = fee_target_blocks
 
-    return await direct_send(
+    # --- Phase 1: build + sign (no broadcast yet) ---
+    prepared = await _prepare_direct_send(
         wallet=wallet_service,
         backend=backend,
         mixdepth=mixdepth,
@@ -73,4 +90,74 @@ async def do_direct_send(
         tx_fee_factor=tx_fee_factor,
         max_fee_rate_sat_vb=max_fee_rate_sat_vb,
         **extra_kwargs,
+    )
+
+    # --- Phase 1b: persist pending history row BEFORE broadcast ---
+    network: str = getattr(wallet_service, "network", "mainnet")
+    wallet_fingerprint: str = getattr(wallet_service, "wallet_fingerprint", "") or getattr(
+        wallet_service, "fingerprint", ""
+    )
+    selected_utxos = [
+        (str(inp["outpoint"]).split(":")[0], int(str(inp["outpoint"]).split(":")[1]))
+        for inp in prepared.inputs
+    ]
+    send_entry = create_send_history_entry(
+        destination=destination,
+        change_address=prepared.change_address,
+        amount=prepared.send_amount,
+        mining_fee=prepared.fee,
+        source_mixdepth=mixdepth,
+        selected_utxos=selected_utxos,
+        txid="",
+        success=False,
+        failure_reason="awaiting broadcast",
+        network=network,
+        wallet_fingerprint=wallet_fingerprint,
+        source_addresses=prepared.source_addresses,
+    )
+    try:
+        append_history_entry(send_entry, data_dir=data_dir)
+    except Exception as exc:
+        logger.warning("Failed to persist pre-broadcast send history entry: {}", exc)
+
+    # --- Phase 2: broadcast ---
+    txid = ""
+    broadcast_exc: Exception | None = None
+    try:
+        logger.info(
+            "Broadcasting direct-send transaction ({} bytes)",
+            len(bytes.fromhex(prepared.tx_hex)),
+        )
+        txid = (await backend.broadcast_transaction(prepared.tx_hex)) or ""
+        logger.info("Broadcast OK: {}", txid)
+    except Exception as exc:
+        broadcast_exc = exc
+        logger.error("Broadcast failed: {}", exc)
+
+    # --- Phase 3: finalize history row (success or failure) ---
+    try:
+        update_send_awaiting_broadcast(
+            send_entry,
+            txid=txid,
+            success=broadcast_exc is None,
+            failure_reason="" if broadcast_exc is None else f"broadcast failed: {broadcast_exc}",
+            data_dir=data_dir,
+        )
+    except Exception as exc:
+        logger.warning("Failed to finalize send history entry: {}", exc)
+
+    if broadcast_exc is not None:
+        raise broadcast_exc
+
+    return DirectSendResult(
+        txid=txid,
+        tx_hex=prepared.tx_hex,
+        fee=prepared.fee,
+        fee_rate=prepared.fee_rate,
+        send_amount=prepared.send_amount,
+        change_amount=prepared.change_amount,
+        num_inputs=prepared.num_inputs,
+        num_outputs=prepared.num_outputs,
+        inputs=prepared.inputs,
+        outputs=prepared.outputs,
     )
