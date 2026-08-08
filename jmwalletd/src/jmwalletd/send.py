@@ -19,7 +19,7 @@ from jmwallet.history import (
 from jmwallet.wallet.spend import (
     DEFAULT_MAX_FEE_RATE_SAT_VB,
     DirectSendResult,
-    _prepare_direct_send,
+    prepare_direct_send,
 )
 
 if TYPE_CHECKING:
@@ -80,7 +80,7 @@ async def do_direct_send(
         extra_kwargs["fee_target_blocks"] = fee_target_blocks
 
     # --- Phase 1: build + sign (no broadcast yet) ---
-    prepared = await _prepare_direct_send(
+    prepared = await prepare_direct_send(
         wallet=wallet_service,
         backend=backend,
         mixdepth=mixdepth,
@@ -97,17 +97,13 @@ async def do_direct_send(
     wallet_fingerprint: str = getattr(wallet_service, "wallet_fingerprint", "") or getattr(
         wallet_service, "fingerprint", ""
     )
-    selected_utxos = [
-        (str(inp["outpoint"]).split(":")[0], int(str(inp["outpoint"]).split(":")[1]))
-        for inp in prepared.inputs
-    ]
     send_entry = create_send_history_entry(
         destination=destination,
         change_address=prepared.change_address,
         amount=prepared.send_amount,
         mining_fee=prepared.fee,
         source_mixdepth=mixdepth,
-        selected_utxos=selected_utxos,
+        selected_utxos=prepared.selected_utxos,
         txid="",
         success=False,
         failure_reason="awaiting broadcast",
@@ -115,8 +111,10 @@ async def do_direct_send(
         wallet_fingerprint=wallet_fingerprint,
         source_addresses=prepared.source_addresses,
     )
+    history_persisted = False
     try:
         append_history_entry(send_entry, data_dir=data_dir)
+        history_persisted = True
     except Exception as exc:
         logger.warning("Failed to persist pre-broadcast send history entry: {}", exc)
 
@@ -128,23 +126,28 @@ async def do_direct_send(
             "Broadcasting direct-send transaction ({} bytes)",
             len(bytes.fromhex(prepared.tx_hex)),
         )
-        txid = (await backend.broadcast_transaction(prepared.tx_hex)) or ""
+        txid = (await backend.broadcast_transaction(prepared.tx_hex)) or prepared.txid
         logger.info("Broadcast OK: {}", txid)
     except Exception as exc:
         broadcast_exc = exc
         logger.error("Broadcast failed: {}", exc)
 
     # --- Phase 3: finalize history row (success or failure) ---
-    try:
-        update_send_awaiting_broadcast(
-            send_entry,
-            txid=txid,
-            success=broadcast_exc is None,
-            failure_reason="" if broadcast_exc is None else f"broadcast failed: {broadcast_exc}",
-            data_dir=data_dir,
-        )
-    except Exception as exc:
-        logger.warning("Failed to finalize send history entry: {}", exc)
+    if history_persisted:
+        try:
+            updated = update_send_awaiting_broadcast(
+                send_entry,
+                txid=txid,
+                success=broadcast_exc is None,
+                failure_reason=""
+                if broadcast_exc is None
+                else f"broadcast failed: {broadcast_exc}",
+                data_dir=data_dir,
+            )
+            if not updated:
+                logger.warning("Could not find pre-broadcast send history entry to finalize")
+        except Exception as exc:
+            logger.warning("Failed to finalize send history entry: {}", exc)
 
     if broadcast_exc is not None:
         raise broadcast_exc

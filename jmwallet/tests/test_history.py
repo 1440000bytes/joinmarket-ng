@@ -3460,6 +3460,71 @@ class TestSendHistoryEntry:
         used = get_used_addresses(temp_data_dir)
         assert pending.destination_address in used
 
+    def test_update_send_awaiting_broadcast_is_scoped_to_exact_send(
+        self, temp_data_dir: Path
+    ) -> None:
+        destination = "bc1qdest1234567890abcdef1234567890abcdef1234"
+        change = "bc1qchg1234567890abcdef1234567890abcdef1234"
+        shared_args = {
+            "destination": destination,
+            "change_address": change,
+            "amount": 666,
+            "mining_fee": 178,
+            "source_mixdepth": 4,
+            "selected_utxos": [("aa" * 32, 0)],
+            "txid": "",
+            "success": False,
+            "failure_reason": "awaiting broadcast",
+        }
+        other_wallet = create_send_history_entry(
+            **shared_args,
+            wallet_fingerprint="11111111",
+        )
+        target_wallet = create_send_history_entry(
+            **shared_args,
+            wallet_fingerprint="22222222",
+        )
+        same_wallet_other_send = create_send_history_entry(
+            **{
+                **shared_args,
+                "change_address": "bc1qother1234567890abcdef1234567890abcdef123",
+                "selected_utxos": [("bb" * 32, 1)],
+            },
+            wallet_fingerprint="22222222",
+        )
+        target_wallet.timestamp = other_wallet.timestamp
+        same_wallet_other_send.timestamp = other_wallet.timestamp
+        append_history_entry(other_wallet, temp_data_dir)
+        append_history_entry(same_wallet_other_send, temp_data_dir)
+        append_history_entry(target_wallet, temp_data_dir)
+
+        ok = update_send_awaiting_broadcast(
+            target_wallet,
+            txid="dd" * 32,
+            success=True,
+            failure_reason="",
+            data_dir=temp_data_dir,
+        )
+
+        assert ok is True
+        rows = read_history(temp_data_dir)
+        other_wallet_row = next(row for row in rows if row.wallet_fingerprint == "11111111")
+        same_wallet_other_row = next(
+            row for row in rows if row.change_address == same_wallet_other_send.change_address
+        )
+        target_row = next(
+            row
+            for row in rows
+            if row.wallet_fingerprint == "22222222"
+            and row.change_address == target_wallet.change_address
+        )
+        assert other_wallet_row.failure_reason == "awaiting broadcast"
+        assert other_wallet_row.txid == ""
+        assert same_wallet_other_row.failure_reason == "awaiting broadcast"
+        assert same_wallet_other_row.txid == ""
+        assert target_row.success is True
+        assert target_row.txid == "dd" * 32
+
     def test_send_addresses_not_classified_as_coinjoin(self, temp_data_dir: Path) -> None:
         """Regression for issue #517.
 

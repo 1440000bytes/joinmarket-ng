@@ -1499,8 +1499,8 @@ def update_send_awaiting_broadcast(
     or failure) the same row is updated in place with the final outcome.
 
     Args:
-        pending_entry: The in-memory entry that was just appended. Its
-            ``timestamp`` and ``destination_address`` identify the row.
+        pending_entry: The in-memory entry that was just appended. Its wallet,
+            timestamp, addresses, and selected UTXOs identify the row.
         txid: Final transaction ID (empty string if broadcast failed).
         success: True if the transaction was broadcast successfully.
         failure_reason: Final failure reason (empty string on success).
@@ -1518,8 +1518,11 @@ def update_send_awaiting_broadcast(
     for entry in entries:
         if (
             entry.role == "send"
+            and entry.wallet_fingerprint == pending_entry.wallet_fingerprint
             and entry.timestamp == pending_entry.timestamp
             and entry.destination_address == pending_entry.destination_address
+            and entry.change_address == pending_entry.change_address
+            and entry.utxos_used == pending_entry.utxos_used
             and entry.failure_reason == "awaiting broadcast"
             and not entry.txid
         ):

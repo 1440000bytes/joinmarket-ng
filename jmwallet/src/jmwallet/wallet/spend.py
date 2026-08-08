@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from hashlib import sha256
 from typing import TYPE_CHECKING
 
-from jmcore.bitcoin import estimate_vsize, get_address_type
+from jmcore.bitcoin import estimate_vsize, get_address_type, get_txid
 from jmcore.btc_script import mk_freeze_script
 from jmcore.randomness import secure_random
 from loguru import logger
@@ -108,8 +108,9 @@ class DirectSendResult:
 
 @dataclass
 class SignedDirectTx:
-    """Intermediate result from :func:`_prepare_direct_send`."""
+    """Intermediate result from :func:`prepare_direct_send`."""
 
+    txid: str
     tx_hex: str
     fee: int
     fee_rate: float
@@ -119,6 +120,7 @@ class SignedDirectTx:
     num_outputs: int
     destination: str
     change_address: str = ""
+    selected_utxos: list[tuple[str, int]] = field(default_factory=list)
     source_addresses: list[str] = field(default_factory=list)
     inputs: list[dict[str, object]] = field(default_factory=list)
     outputs: list[dict[str, object]] = field(default_factory=list)
@@ -366,7 +368,7 @@ def _assemble_signed_tx(
     return bytes(signed)
 
 
-async def _prepare_direct_send(
+async def prepare_direct_send(
     *,
     wallet: WalletService,
     backend: BlockchainBackend,
@@ -521,6 +523,7 @@ async def _prepare_direct_send(
         )
 
     return SignedDirectTx(
+        txid=get_txid(tx_hex),
         tx_hex=tx_hex,
         fee=fee,
         fee_rate=fee_rate,
@@ -530,6 +533,7 @@ async def _prepare_direct_send(
         num_outputs=num_outputs,
         destination=destination,
         change_address=change_addr if change_amount > 0 else "",
+        selected_utxos=[(u.txid, u.vout) for u in utxos],
         source_addresses=[u.address for u in utxos],
         inputs=[
             {
@@ -592,7 +596,7 @@ async def direct_send(
     -------
     DirectSendResult
     """
-    prepared = await _prepare_direct_send(
+    prepared = await prepare_direct_send(
         wallet=wallet,
         backend=backend,
         mixdepth=mixdepth,
@@ -607,7 +611,7 @@ async def direct_send(
     tx_bytes_len = len(bytes.fromhex(prepared.tx_hex))
     logger.info("Broadcasting direct-send transaction ({} bytes)", tx_bytes_len)
     broadcast_txid = await backend.broadcast_transaction(prepared.tx_hex)
-    txid = broadcast_txid or ""
+    txid = broadcast_txid or prepared.txid
 
     logger.info("Broadcast OK: {}", txid)
     return DirectSendResult(

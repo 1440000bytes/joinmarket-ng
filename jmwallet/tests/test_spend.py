@@ -8,6 +8,7 @@ from hashlib import sha256
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from jmcore.bitcoin import get_txid
 from jmcore.btc_script import mk_freeze_script
 
 from jmwallet.backends.base import BlockchainBackend
@@ -16,11 +17,13 @@ from jmwallet.wallet.spend import (
     DUST_THRESHOLD,
     DirectSendResult,
     ExcessiveFeeRateError,
+    SignedDirectTx,
     _build_unsigned_tx,
     _decode_bech32_scriptpubkey,
     direct_send,
     enforce_fee_rate_cap,
     estimate_fee,
+    prepare_direct_send,
     select_spendable_utxos,
 )
 
@@ -919,18 +922,17 @@ class TestDirectSendFeeRateCap:
 
 
 class TestPrepareDirectSend:
-    """Unit tests for _prepare_direct_send."""
+    """Unit tests for prepare_direct_send."""
 
     @pytest.mark.anyio
     async def test_prepare_returns_signed_tx_without_broadcasting(self) -> None:
-        """_prepare_direct_send builds and signs but does NOT call broadcast_transaction."""
-        from jmwallet.wallet.spend import SignedDirectTx, _prepare_direct_send
+        """prepare_direct_send builds and signs but does not broadcast."""
 
         utxos = [_make_utxo(value=200_000, address="bcrt1qinput")]
         wallet = _make_mock_wallet(utxos, change_addr=REGTEST_P2WPKH_ADDR)
         backend = _make_mock_backend()
 
-        result = await _prepare_direct_send(
+        result = await prepare_direct_send(
             wallet=wallet,
             backend=backend,
             mixdepth=0,
@@ -941,7 +943,9 @@ class TestPrepareDirectSend:
 
         assert isinstance(result, SignedDirectTx)
         assert result.tx_hex
+        assert result.txid == get_txid(result.tx_hex)
         assert result.change_address == REGTEST_P2WPKH_ADDR
+        assert result.selected_utxos == [(utxos[0].txid, utxos[0].vout)]
         assert result.source_addresses == ["bcrt1qinput"]
         assert len(result.outputs) == 2
         backend.broadcast_transaction.assert_not_awaited()
@@ -949,13 +953,11 @@ class TestPrepareDirectSend:
     @pytest.mark.anyio
     async def test_prepare_sweep_has_empty_change_address(self) -> None:
         """Sweep (amount_sats=0) produces no change output; change_address must be empty."""
-        from jmwallet.wallet.spend import _prepare_direct_send
-
         utxos = [_make_utxo(value=100_000, address="bcrt1qinput")]
         wallet = _make_mock_wallet(utxos)
         backend = _make_mock_backend()
 
-        result = await _prepare_direct_send(
+        result = await prepare_direct_send(
             wallet=wallet,
             backend=backend,
             mixdepth=0,
