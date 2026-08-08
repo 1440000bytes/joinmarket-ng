@@ -1117,3 +1117,62 @@ class TestWalletHistory:
         client, token = authed_client
         resp = client.get("/api/v1/wallet/other_wallet.jmdat/history", headers=_auth_headers(token))
         assert resp.status_code in (401, 404)
+
+    def test_deposit_and_send_history_omits_coinjoin_fields(
+        self, authed_client: tuple[TestClient, str], data_dir: Path
+    ) -> None:
+        """Regression test for deposit/send history rows must surface neutral
+        transfer `amount` and omit CoinJoin fields (`cj_amount`, `source_mixdepth`) for deposit.
+        """
+        client, token = authed_client
+        get_daemon_state().wallet_service.wallet_fingerprint = "deadbeef"
+        from jmwallet.history import TransactionHistoryEntry, append_history_entry
+
+        deposit = TransactionHistoryEntry(
+            timestamp="2026-07-29T00:09:13",
+            completed_at="2026-07-29T00:09:13",
+            confirmed_at="2026-07-29T00:09:13",
+            role="deposit",
+            success=True,
+            confirmations=310,
+            txid="9a74a1b0a651ed48fb92e0f31323191f1c46b235eb2d706750335be2e2d63691",
+            amount=5_000_000_000,
+            cj_amount=0,
+            source_mixdepth=0,
+            destination_address="bcrt1qt8nd5dwmagnyppf3u5n9tah5xe9phqrxl5cs8x",
+            wallet_fingerprint="deadbeef",
+            source="onchain",
+        )
+        send = TransactionHistoryEntry(
+            timestamp="2026-07-29T01:00:00",
+            completed_at="2026-07-29T01:00:00",
+            role="send",
+            success=True,
+            txid="11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff",
+            amount=500_000,
+            cj_amount=0,
+            source_mixdepth=1,
+            destination_address="bcrt1qexternaldest",
+            wallet_fingerprint="deadbeef",
+            source="protocol",
+        )
+        append_history_entry(deposit, data_dir=data_dir)
+        append_history_entry(send, data_dir=data_dir)
+
+        resp = client.get("/api/v1/wallet/test_wallet.jmdat/history", headers=_auth_headers(token))
+        assert resp.status_code == 200
+        history = {h["role"]: h for h in resp.json()["history"]}
+
+        dep_entry = history["deposit"]
+        assert dep_entry["amount"] == 5_000_000_000
+        assert dep_entry["cj_amount"] is None
+        assert dep_entry["source_mixdepth"] is None
+        assert dep_entry["peer_count"] is None
+        assert dep_entry["counterparty_nicks"] == ""
+
+        snd_entry = history["send"]
+        assert snd_entry["amount"] == 500_000
+        assert snd_entry["cj_amount"] is None
+        assert snd_entry["source_mixdepth"] == 1
+        assert snd_entry["peer_count"] is None
+        assert snd_entry["counterparty_nicks"] == ""

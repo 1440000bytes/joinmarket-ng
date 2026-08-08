@@ -420,3 +420,57 @@ class TestMiscModels:
     def test_wallet_history_response_defaults_empty(self) -> None:
         resp = WalletHistoryResponse()
         assert resp.history == []
+
+
+class TestHistoryEntryFields:
+    def test_deposit_entry_omits_cj_fields(self) -> None:
+        entry = HistoryEntry(
+            timestamp="2026-08-08T10:00:00",
+            role="deposit",
+            amount=500_000,
+            cj_amount=None,
+            source_mixdepth=None,
+            txid="ab" * 32,
+        )
+        data = entry.model_dump()
+        assert data["role"] == "deposit"
+        assert data["amount"] == 500_000
+        assert data["cj_amount"] is None
+        assert data["source_mixdepth"] is None
+
+    def test_send_entry_has_amount_and_mixdepth_but_no_cj_amount(self) -> None:
+        entry = HistoryEntry(
+            timestamp="2026-08-08T10:00:00",
+            role="send",
+            amount=100_000,
+            cj_amount=None,
+            source_mixdepth=0,
+            txid="cd" * 32,
+        )
+        data = entry.model_dump()
+        assert data["role"] == "send"
+        assert data["amount"] == 100_000
+        assert data["cj_amount"] is None
+        assert data["source_mixdepth"] == 0
+
+    def test_coinjoin_roles_include_cj_amount(self) -> None:
+        maker = HistoryEntry(
+            timestamp="2026-08-08T10:00:00",
+            role="maker",
+            amount=100_000,
+            cj_amount=100_000,
+            source_mixdepth=0,
+            txid="ef" * 32,
+        )
+        taker = HistoryEntry(
+            timestamp="2026-08-08T10:00:00",
+            role="taker",
+            amount=100_000,
+            cj_amount=100_000,
+            source_mixdepth=1,
+            txid="fe" * 32,
+        )
+        assert maker.amount == 100_000
+        assert maker.cj_amount == 100_000
+        assert taker.amount == 100_000
+        assert taker.cj_amount == 100_000

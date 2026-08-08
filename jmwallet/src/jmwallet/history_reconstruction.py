@@ -87,7 +87,8 @@ class ClassifiedTransaction:
     """Result of classifying a single wallet transaction from chain data."""
 
     role: HistoryRole
-    cj_amount: int
+    amount: int
+    cj_amount: int | None
     peer_count: int | None
     fee_received: int
     total_maker_fees_paid: int
@@ -155,7 +156,8 @@ def classify_wallet_transaction(
         )
         return ClassifiedTransaction(
             role="deposit",
-            cj_amount=our_output_value,
+            amount=our_output_value,
+            cj_amount=None,
             peer_count=analysis.cj_count if analysis.is_coinjoin else None,
             fee_received=0,
             total_maker_fees_paid=0,
@@ -178,6 +180,7 @@ def classify_wallet_transaction(
             # is net of our mining-fee contribution (inseparable on-chain).
             return ClassifiedTransaction(
                 role="maker",
+                amount=analysis.cj_amount,
                 cj_amount=analysis.cj_amount,
                 # Matches the equal-output count that the maker confirmation
                 # monitor backfills via ``detect_coinjoin_peer_count``.
@@ -206,6 +209,7 @@ def classify_wallet_transaction(
             cost = max(0, cost - analysis.cj_amount)
         return ClassifiedTransaction(
             role="taker",
+            amount=analysis.cj_amount,
             cj_amount=analysis.cj_amount,
             # Protocol taker rows record the number of *makers*; one of the
             # equal outputs is our own, so exclude it from the count.
@@ -264,7 +268,8 @@ def classify_wallet_transaction(
         )
     return ClassifiedTransaction(
         role="send",
-        cj_amount=amount,
+        amount=amount,
+        cj_amount=None,
         peer_count=None,
         fee_received=0,
         total_maker_fees_paid=0,
@@ -472,7 +477,7 @@ async def reconstruct_history_from_chain(
             confirmations=entry.confirmations,
             confirmed_at=timestamp,
             txid=entry.txid,
-            cj_amount=classified.cj_amount,
+            cj_amount=classified.cj_amount or 0,
             peer_count=classified.peer_count,
             counterparty_nicks="",
             fee_received=classified.fee_received,
@@ -489,6 +494,7 @@ async def reconstruct_history_from_chain(
             network=network,
             wallet_fingerprint=wallet_fingerprint,
             source="onchain",
+            amount=classified.amount,
         )
         append_history_entry(history_entry, data_dir)
         result.created += 1

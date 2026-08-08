@@ -219,6 +219,7 @@ async def wallet_history(
         wallet_fingerprint=ws.wallet_fingerprint,
     )
 
+    _cj_roles = {"maker", "taker"}
     history = [
         HistoryEntry(
             timestamp=e.timestamp,
@@ -229,15 +230,16 @@ async def wallet_history(
             failure_reason=e.failure_reason,
             confirmations=e.confirmations,
             txid=e.txid,
-            cj_amount=e.cj_amount,
-            peer_count=e.peer_count,
-            counterparty_nicks=e.counterparty_nicks,
+            amount=e.amount if e.amount != 0 else e.cj_amount,
+            cj_amount=e.cj_amount if (e.role in _cj_roles and e.cj_amount > 0) else None,
+            peer_count=e.peer_count if e.role in _cj_roles else None,
+            counterparty_nicks=e.counterparty_nicks if e.role in _cj_roles else "",
             fee_received=e.fee_received,
             txfee_contribution=e.txfee_contribution,
             total_maker_fees_paid=e.total_maker_fees_paid,
             mining_fee_paid=e.mining_fee_paid,
             net_fee=e.net_fee,
-            source_mixdepth=e.source_mixdepth,
+            source_mixdepth=e.source_mixdepth if e.role != "deposit" else None,
             destination_address=e.destination_address,
             change_address=e.change_address,
             utxos_used=e.utxos_used,

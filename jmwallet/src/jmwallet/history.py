@@ -154,6 +154,10 @@ class TransactionHistoryEntry:
     # Neutrino needs the exact vout to verify a confirmed output by address.
     destination_vout: int = -1
 
+    # Neutral transfer amount (in satoshis) across all roles (maker/taker CJ denomination,
+    # send output amount, deposit input amount). Appended last for legacy CSV migration.
+    amount: int = 0
+
 
 HISTORY_FILENAME = "history.csv"
 LEGACY_HISTORY_FILENAME = "coinjoin_history.csv"
@@ -503,6 +507,11 @@ def _row_to_entry(row: Mapping[str, str | None]) -> TransactionHistoryEntry | No
             ),
             input_value=int(_get("input_value", "0") or 0),
             destination_vout=destination_vout,
+            amount=(
+                int(_get("amount"))
+                if _get("amount") and _get("amount") not in ("", "None")
+                else int(_get("cj_amount", "0") or 0)
+            ),
         )
     except (ValueError, KeyError) as e:
         logger.warning(f"Skipping malformed history row: {e}")
@@ -1105,6 +1114,7 @@ def create_maker_history_entry(
         wallet_fingerprint=wallet_fingerprint,
         input_value=input_value,
         destination_vout=destination_vout,
+        amount=cj_amount,
     )
 
 
@@ -1798,6 +1808,7 @@ def create_taker_history_entry(
         network=network,
         wallet_fingerprint=wallet_fingerprint,
         destination_vout=destination_vout,
+        amount=cj_amount,
     )
 
 
@@ -1860,7 +1871,8 @@ def create_send_history_entry(
         confirmations=0,
         confirmed_at="",
         txid=txid,
-        cj_amount=amount,
+        cj_amount=0,
+        amount=amount,
         peer_count=None,
         counterparty_nicks="",
         mining_fee_paid=mining_fee,

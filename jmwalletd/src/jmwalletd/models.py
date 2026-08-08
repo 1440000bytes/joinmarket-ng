@@ -265,7 +265,8 @@ class HistoryEntry(BaseModel):
     failure_reason: str = ""
     confirmations: int = 0
     txid: str = ""
-    cj_amount: int = 0
+    amount: int = 0
+    cj_amount: int | None = None
     peer_count: int | None = None
     counterparty_nicks: str = ""
     fee_received: int = 0
@@ -273,7 +274,7 @@ class HistoryEntry(BaseModel):
     total_maker_fees_paid: int = 0
     mining_fee_paid: int = 0
     net_fee: int = 0
-    source_mixdepth: int = 0
+    source_mixdepth: int | None = None
     destination_address: str = ""
     change_address: str = ""
     utxos_used: str = ""

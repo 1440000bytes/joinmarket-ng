@@ -259,7 +259,8 @@ class TestClassifyWalletTransaction:
         result = classify_wallet_transaction(parsed, owned_inputs, owned_outputs, True, NETWORK)
         assert result is not None
         assert result.role == "send"
-        assert result.cj_amount == 50_000
+        assert result.amount == 50_000
+        assert result.cj_amount is None
         assert result.mining_fee_paid == 500
         assert result.net_fee == -500
         assert result.destination_address == _addr(FOREIGN_A)
@@ -287,7 +288,8 @@ class TestClassifyWalletTransaction:
         result = classify_wallet_transaction(parsed, owned_inputs, owned_outputs, True, NETWORK)
         assert result is not None
         assert result.role == "send"
-        assert result.cj_amount == 40_000
+        assert result.amount == 40_000
+        assert result.cj_amount is None
         assert result.destination_address == _addr(OUR_DEPOSIT)
         assert result.mining_fee_paid == 500
 
@@ -304,7 +306,8 @@ class TestClassifyWalletTransaction:
         result = classify_wallet_transaction(parsed, owned_inputs, owned_outputs, True, NETWORK)
         assert result is not None
         assert result.role == "send"
-        assert result.cj_amount == 24_890
+        assert result.amount == 24_890
+        assert result.cj_amount is None
         assert result.destination_address == _addr(OUR_M1_INTERNAL)
         assert result.change_address == ""
         assert result.mining_fee_paid == 110
@@ -325,7 +328,8 @@ class TestClassifyWalletTransaction:
         result = classify_wallet_transaction(parsed, owned_inputs, owned_outputs, True, NETWORK)
         assert result is not None
         assert result.role == "send"
-        assert result.cj_amount == 20_000
+        assert result.amount == 20_000
+        assert result.cj_amount is None
         assert result.destination_address == _addr(OUR_M1_INTERNAL)
         assert result.change_address == _addr(OUR_CHANGE)
         assert result.mining_fee_paid == 459
@@ -337,7 +341,8 @@ class TestClassifyWalletTransaction:
         result = classify_wallet_transaction(parsed, [], owned_outputs, False, NETWORK)
         assert result is not None
         assert result.role == "deposit"
-        assert result.cj_amount == 100_000
+        assert result.amount == 100_000
+        assert result.cj_amount is None
         assert result.destination_address == _addr(OUR_DEPOSIT)
         assert result.net_fee == 0
 
@@ -348,7 +353,8 @@ class TestClassifyWalletTransaction:
         result = classify_wallet_transaction(parsed, [], owned_outputs, False, NETWORK)
         assert result is not None
         assert result.role == "deposit"
-        assert result.cj_amount == CJ_AMOUNT
+        assert result.amount == CJ_AMOUNT
+        assert result.cj_amount is None
         assert result.peer_count == 3
 
     def test_unrelated_transaction_is_ignored(self) -> None:
@@ -370,12 +376,14 @@ class TestReconstructHistoryFromChain:
 
         deposit = entries[txids["fund"]]
         assert deposit.role == "deposit"
-        assert deposit.cj_amount == 100_000
+        assert deposit.amount == 100_000
+        assert deposit.cj_amount == 0
         assert deposit.source == "onchain"
         assert deposit.success is True
 
         cj = entries[txids["cj"]]
         assert cj.role == "taker"
+        assert cj.amount == CJ_AMOUNT
         assert cj.cj_amount == CJ_AMOUNT
         # 3 equal outputs, one ours -> 2 makers (protocol taker convention).
         assert cj.peer_count == 2
@@ -390,7 +398,8 @@ class TestReconstructHistoryFromChain:
 
         send = entries[txids["send"]]
         assert send.role == "send"
-        assert send.cj_amount == 50_000
+        assert send.amount == 50_000
+        assert send.cj_amount == 0
         assert send.mining_fee_paid == 500
         assert send.destination_address == _addr(FOREIGN_A)
         assert send.change_address == _addr(OUR_CHANGE_2)
