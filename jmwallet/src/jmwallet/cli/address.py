@@ -43,6 +43,21 @@ app.add_typer(address_app, name="address")
 
 
 @dataclass
+class _AddressOptions:
+    """Unresolved options shared by all ``jm-wallet address`` subcommands."""
+
+    mnemonic_file: Path | None
+    prompt_bip39_passphrase: bool
+    network: str | None
+    backend_type: str | None
+    rpc_url: str | None
+    neutrino_url: str | None
+    data_dir: Path | None
+    config_file: Path | None
+    log_level: str | None
+
+
+@dataclass
 class _AddressContext:
     """Resolved options shared by all ``jm-wallet address`` subcommands."""
 
@@ -92,14 +107,33 @@ def _address_main(
     ] = None,
     log_level: Annotated[str | None, typer.Option("--log-level", "-l", help="Log level")] = None,
 ) -> None:
-    """Resolve the wallet/backend once for every ``address`` subcommand."""
-    settings = setup_cli(log_level, data_dir=data_dir, config_file=config_file)
+    """Capture shared options without resolving wallet state during nested help."""
+    ctx.obj = _AddressOptions(
+        mnemonic_file=mnemonic_file,
+        prompt_bip39_passphrase=prompt_bip39_passphrase,
+        network=network,
+        backend_type=backend_type,
+        rpc_url=rpc_url,
+        neutrino_url=neutrino_url,
+        data_dir=data_dir,
+        config_file=config_file,
+        log_level=log_level,
+    )
+
+
+def _resolve_address_context(options: _AddressOptions) -> _AddressContext:
+    """Resolve wallet and backend settings when a subcommand executes."""
+    settings = setup_cli(
+        options.log_level,
+        data_dir=options.data_dir,
+        config_file=options.config_file,
+    )
 
     try:
         resolved = resolve_mnemonic(
             settings,
-            mnemonic_file=mnemonic_file,
-            prompt_bip39_passphrase=prompt_bip39_passphrase,
+            mnemonic_file=options.mnemonic_file,
+            prompt_bip39_passphrase=options.prompt_bip39_passphrase,
         )
         if not resolved:
             raise ValueError("No mnemonic provided")
@@ -109,14 +143,14 @@ def _address_main(
 
     backend_settings = resolve_backend_settings(
         settings,
-        network=network,
-        backend_type=backend_type,
-        rpc_url=rpc_url,
-        neutrino_url=neutrino_url,
-        data_dir=data_dir,
+        network=options.network,
+        backend_type=options.backend_type,
+        rpc_url=options.rpc_url,
+        neutrino_url=options.neutrino_url,
+        data_dir=options.data_dir,
     )
 
-    ctx.obj = _AddressContext(
+    return _AddressContext(
         mnemonic=resolved.mnemonic,
         bip39_passphrase=resolved.bip39_passphrase,
         backend_settings=backend_settings,
@@ -207,7 +241,7 @@ def address_new(
     The address is verified against the backend, persisted so it is never
     reissued, and (with --label) shown with its label in ``info --extended``.
     """
-    asyncio.run(_address_new(ctx.obj, mixdepth, label))
+    asyncio.run(_address_new(_resolve_address_context(ctx.obj), mixdepth, label))
 
 
 async def _address_new(c: _AddressContext, mixdepth: int, label: str) -> None:
@@ -239,7 +273,7 @@ def address_label(
     Reserving hides the address from ``jm-wallet info``, shows it with the
     label in ``info --extended``, and prevents it from being reissued.
     """
-    asyncio.run(_address_label(ctx.obj, address, label))
+    asyncio.run(_address_label(_resolve_address_context(ctx.obj), address, label))
 
 
 async def _address_label(c: _AddressContext, address: str, label: str) -> None:
@@ -261,7 +295,7 @@ def address_release(
 
     An address that has real on-chain history is still never reissued.
     """
-    asyncio.run(_address_release(ctx.obj, address))
+    asyncio.run(_address_release(_resolve_address_context(ctx.obj), address))
 
 
 async def _address_release(c: _AddressContext, address: str) -> None:
@@ -278,7 +312,7 @@ async def _address_release(c: _AddressContext, address: str) -> None:
 @address_app.command("list")
 def address_list(ctx: typer.Context) -> None:
     """List reserved deposit addresses with their mixdepth and label."""
-    asyncio.run(_address_list(ctx.obj))
+    asyncio.run(_address_list(_resolve_address_context(ctx.obj)))
 
 
 async def _address_list(c: _AddressContext) -> None:

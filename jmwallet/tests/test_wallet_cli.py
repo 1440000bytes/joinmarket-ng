@@ -90,6 +90,63 @@ def test_help_output_is_alphabetically_sorted() -> None:
     assert find_unsorted_help(app) == []
 
 
+def test_address_new_help_does_not_require_a_configured_mnemonic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nested help must render before address commands resolve wallet state."""
+    monkeypatch.setenv("JOINMARKET_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("JOINMARKET_CONFIG_FILE", raising=False)
+    monkeypatch.delenv("MNEMONIC_FILE", raising=False)
+    monkeypatch.delenv("MNEMONIC", raising=False)
+
+    result = runner.invoke(app, ["address", "new", "--help"], prog_name="jm-wallet")
+    output = click.unstyle(result.stdout)
+
+    assert result.exit_code == 0, output
+    assert "Generate a fresh deposit address" in output
+    assert "No mnemonic provided" not in output
+
+
+def test_address_new_execution_still_requires_a_mnemonic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Deferring setup for help must not weaken normal command validation."""
+    monkeypatch.setenv("JOINMARKET_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("JOINMARKET_CONFIG_FILE", raising=False)
+    monkeypatch.delenv("MNEMONIC_FILE", raising=False)
+    monkeypatch.delenv("MNEMONIC", raising=False)
+
+    result = runner.invoke(app, ["address", "new"], prog_name="jm-wallet")
+
+    assert result.exit_code == 1
+    assert "No mnemonic provided" in result.stderr
+
+
+def test_address_new_help_does_not_unlock_a_configured_wallet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nested help must not prompt for an encrypted configured mnemonic."""
+    from jmwallet.cli.mnemonic import save_mnemonic_file
+
+    mnemonic_file = tmp_path / "configured.mnemonic"
+    save_mnemonic_file("abandon " * 11 + "about", mnemonic_file, "test-password")
+    config_file = tmp_path / "config.toml"
+    config_file.write_text(f'[wallet]\nmnemonic_file = "{mnemonic_file}"\n')
+
+    monkeypatch.setenv("JOINMARKET_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("JOINMARKET_CONFIG_FILE", raising=False)
+    monkeypatch.delenv("MNEMONIC_FILE", raising=False)
+    monkeypatch.delenv("MNEMONIC", raising=False)
+    monkeypatch.delenv("MNEMONIC_PASSWORD", raising=False)
+
+    result = runner.invoke(app, ["address", "new", "--help"], prog_name="jm-wallet")
+    output = click.unstyle(result.stdout)
+
+    assert result.exit_code == 0, output
+    assert "Generate a fresh deposit address" in output
+    assert "Enter password for wallet" not in output
+
+
 class TestExtendedInfoColorGating:
     """The extended wallet-info view must only emit ANSI colors on a TTY.
 
