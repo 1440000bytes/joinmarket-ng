@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -13,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import click
 import pytest
 import typer
+from jmcore.cli_common import ResolvedBackendSettings
 from mnemonic import Mnemonic
 from typer.testing import CliRunner
 
@@ -591,6 +593,211 @@ def test_send_rejects_nan_manual_fee_rate():
 
     assert result.exit_code == 1
     mock_resolve.assert_not_called()
+
+
+@pytest.mark.parametrize("backend_txid", [None, ""])
+def test_send_uses_local_txid_when_backend_omits_it(backend_txid: str | None) -> None:
+    from jmwallet.cli.send import _resolve_broadcast_txid
+
+    with patch("jmwallet.cli.send.get_txid", return_value="local_txid") as mock_get_txid:
+        txid = _resolve_broadcast_txid("signed_tx_hex", backend_txid)
+
+    assert txid == "local_txid"
+    mock_get_txid.assert_called_once_with("signed_tx_hex")
+
+
+def test_send_prefers_backend_txid() -> None:
+    from jmwallet.cli.send import _resolve_broadcast_txid
+
+    with patch("jmwallet.cli.send.get_txid") as mock_get_txid:
+        txid = _resolve_broadcast_txid("signed_tx_hex", "backend_txid")
+
+    assert txid == "backend_txid"
+    mock_get_txid.assert_not_called()
+
+
+def test_send_skips_finalization_when_history_append_failed(tmp_path: Path) -> None:
+    from jmwallet.cli.send import _finalize_send_history_entry
+
+    with patch("jmwallet.history.update_send_awaiting_broadcast") as mock_update:
+        _finalize_send_history_entry(
+            MagicMock(),
+            txid="txid",
+            success=True,
+            failure_reason="",
+            data_dir=tmp_path,
+            history_persisted=False,
+        )
+
+    mock_update.assert_not_called()
+
+
+def test_send_warns_when_history_row_cannot_be_finalized(tmp_path: Path) -> None:
+    from jmwallet.cli.send import _finalize_send_history_entry
+
+    with (
+        patch("jmwallet.history.update_send_awaiting_broadcast", return_value=False),
+        patch("jmwallet.cli.send.logger.warning") as mock_warning,
+    ):
+        _finalize_send_history_entry(
+            MagicMock(),
+            txid="txid",
+            success=True,
+            failure_reason="",
+            data_dir=tmp_path,
+            history_persisted=True,
+        )
+
+    mock_warning.assert_called_once_with(
+        "Could not find pre-broadcast send history entry to finalize"
+    )
+
+
+@contextmanager
+def _mock_send_execution(tmp_path: Path) -> Iterator[tuple[ResolvedBackendSettings, MagicMock]]:
+    from jmwallet.wallet.models import UTXOInfo
+
+    backend_settings = ResolvedBackendSettings(
+        network="regtest",
+        bitcoin_network="regtest",
+        backend_type="descriptor_wallet",
+        rpc_url="http://127.0.0.1:18443",
+        rpc_user="user",
+        rpc_password="pass",
+        neutrino_url="",
+        neutrino_add_peers=[],
+        data_dir=tmp_path,
+        scan_start_height=None,
+    )
+    utxo = UTXOInfo(
+        txid="a" * 64,
+        vout=0,
+        value=100_000,
+        address="bcrt1qq6hag67dl53wl99vzg42z8eyzfz2xlkvwk6f7m",
+        confirmations=6,
+        scriptpubkey="0014" + "11" * 20,
+        path="m/84'/1'/0'/0/0",
+        mixdepth=0,
+    )
+
+    mocks = MagicMock()
+    mocks.backend = MagicMock(spec=DescriptorWalletBackend)
+    mocks.backend.get_mempool_min_fee = AsyncMock(return_value=None)
+    mocks.backend.broadcast_transaction = AsyncMock(return_value="backend_txid")
+    mocks.wallet = MagicMock()
+    mocks.wallet.wallet_fingerprint = "wallet_fingerprint"
+    mocks.wallet.sync_with_registered_bonds = AsyncMock(return_value={})
+    mocks.wallet.get_balance = AsyncMock(return_value=utxo.value)
+    mocks.wallet.get_utxos = AsyncMock(return_value=[utxo])
+    mocks.wallet.sign_input.return_value = MagicMock(witness=[b"signature", b"pubkey"])
+    mocks.wallet.close = AsyncMock()
+    mocks.send_entry = MagicMock()
+
+    with (
+        patch(
+            "jmwallet.backends.descriptor_wallet.DescriptorWalletBackend",
+            _stub_backend_class(mocks.backend),
+        ),
+        patch("jmwallet.wallet.service.WalletService", return_value=mocks.wallet),
+        patch("jmwallet.cli.send.estimate_fee", return_value=(200, 200)),
+        patch("jmwallet.history.create_send_history_entry", return_value=mocks.send_entry),
+        patch("jmwallet.history.append_history_entry") as mocks.append_history,
+        patch(
+            "jmwallet.cli.send._resolve_broadcast_txid", return_value="resolved_txid"
+        ) as mocks.resolve_txid,
+        patch("jmwallet.cli.send._finalize_send_history_entry") as mocks.finalize_history,
+    ):
+        yield backend_settings, mocks
+
+
+async def _run_mock_send(
+    backend_settings: ResolvedBackendSettings, *, broadcast: bool = True
+) -> None:
+    from jmwallet.cli.send import _send_transaction
+
+    await _send_transaction(
+        mnemonic="abandon " * 11 + "about",
+        destination="bcrt1qq6hag67dl53wl99vzg42z8eyzfz2xlkvwk6f7m",
+        amount=0,
+        mixdepth=0,
+        fee_rate=1.0,
+        block_target=None,
+        backend_settings=backend_settings,
+        broadcast=broadcast,
+        skip_confirmation=True,
+        interactive_utxo_selection=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_finalizes_with_resolved_txid(tmp_path: Path) -> None:
+    with _mock_send_execution(tmp_path) as (backend_settings, mocks):
+        mocks.backend.broadcast_transaction.return_value = None
+
+        await _run_mock_send(backend_settings)
+
+    tx_hex = mocks.backend.broadcast_transaction.await_args.args[0]
+    mocks.resolve_txid.assert_called_once_with(tx_hex, None)
+    mocks.finalize_history.assert_called_once_with(
+        mocks.send_entry,
+        txid="resolved_txid",
+        success=True,
+        failure_reason="",
+        data_dir=tmp_path,
+        history_persisted=True,
+    )
+    mocks.wallet.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_send_broadcasts_after_history_append_failure(tmp_path: Path) -> None:
+    with _mock_send_execution(tmp_path) as (backend_settings, mocks):
+        mocks.append_history.side_effect = OSError("history unavailable")
+
+        await _run_mock_send(backend_settings)
+
+    mocks.backend.broadcast_transaction.assert_awaited_once()
+    mocks.finalize_history.assert_called_once_with(
+        mocks.send_entry,
+        txid="resolved_txid",
+        success=True,
+        failure_reason="",
+        data_dir=tmp_path,
+        history_persisted=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_finalizes_and_reraises_broadcast_failure(tmp_path: Path) -> None:
+    with _mock_send_execution(tmp_path) as (backend_settings, mocks):
+        broadcast_error = RuntimeError("broadcast failed")
+        mocks.backend.broadcast_transaction.side_effect = broadcast_error
+
+        with pytest.raises(RuntimeError, match="broadcast failed"):
+            await _run_mock_send(backend_settings)
+
+    mocks.resolve_txid.assert_not_called()
+    mocks.finalize_history.assert_called_once_with(
+        mocks.send_entry,
+        txid="",
+        success=False,
+        failure_reason="broadcast failed",
+        data_dir=tmp_path,
+        history_persisted=True,
+    )
+    mocks.wallet.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_send_without_broadcast_keeps_pending_history(tmp_path: Path) -> None:
+    with _mock_send_execution(tmp_path) as (backend_settings, mocks):
+        await _run_mock_send(backend_settings, broadcast=False)
+
+    mocks.append_history.assert_called_once_with(mocks.send_entry, data_dir=tmp_path)
+    mocks.backend.broadcast_transaction.assert_not_awaited()
+    mocks.resolve_txid.assert_not_called()
+    mocks.finalize_history.assert_not_called()
+    mocks.wallet.close.assert_awaited_once()
 
 
 @pytest.mark.asyncio

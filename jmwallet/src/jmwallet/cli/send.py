@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
 import typer
+from jmcore.bitcoin import get_txid
 from jmcore.cli_common import (
     ResolvedBackendSettings,
     resolve_backend_settings,
@@ -30,8 +31,43 @@ from jmwallet.wallet.spend import (
 )
 
 if TYPE_CHECKING:
+    from jmwallet.history import TransactionHistoryEntry
     from jmwallet.wallet.models import UTXOInfo
     from jmwallet.wallet.service import WalletService
+
+
+def _resolve_broadcast_txid(tx_hex: str, backend_txid: str | None) -> str:
+    """Return the backend txid, falling back to the signed transaction."""
+    return backend_txid or get_txid(tx_hex)
+
+
+def _finalize_send_history_entry(
+    send_entry: TransactionHistoryEntry,
+    *,
+    txid: str,
+    success: bool,
+    failure_reason: str,
+    data_dir: Path,
+    history_persisted: bool,
+) -> None:
+    """Best-effort finalization for a successfully appended send history row."""
+    if not history_persisted:
+        return
+
+    from jmwallet.history import update_send_awaiting_broadcast
+
+    try:
+        updated = update_send_awaiting_broadcast(
+            send_entry,
+            txid=txid,
+            success=success,
+            failure_reason=failure_reason,
+            data_dir=data_dir,
+        )
+        if not updated:
+            logger.warning("Could not find pre-broadcast send history entry to finalize")
+    except Exception as exc:
+        logger.warning(f"Failed to finalize send history entry: {exc}")
 
 
 async def _select_input_utxos(
@@ -624,7 +660,6 @@ async def _send_transaction(
         from jmwallet.history import (
             append_history_entry,
             create_send_history_entry,
-            update_send_awaiting_broadcast,
         )
 
         selected_outpoints = [(u.txid, u.vout) for u in utxos]
@@ -643,8 +678,10 @@ async def _send_transaction(
             wallet_fingerprint=wallet.wallet_fingerprint,
             source_addresses=selected_input_addresses,
         )
+        history_persisted = False
         try:
             append_history_entry(send_entry, data_dir=backend_settings.data_dir)
+            history_persisted = True
         except Exception as e:
             # Persistence failure should not block the user from broadcasting;
             # surface a warning and continue.
@@ -653,31 +690,28 @@ async def _send_transaction(
         if broadcast:
             logger.info("Broadcasting transaction...")
             try:
-                txid = await backend.broadcast_transaction(tx_hex)
+                backend_txid = await backend.broadcast_transaction(tx_hex)
             except Exception:
-                try:
-                    update_send_awaiting_broadcast(
-                        send_entry,
-                        txid="",
-                        success=False,
-                        failure_reason="broadcast failed",
-                        data_dir=backend_settings.data_dir,
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to finalize send history entry: {e}")
+                _finalize_send_history_entry(
+                    send_entry,
+                    txid="",
+                    success=False,
+                    failure_reason="broadcast failed",
+                    data_dir=backend_settings.data_dir,
+                    history_persisted=history_persisted,
+                )
                 raise
+            txid = _resolve_broadcast_txid(tx_hex, backend_txid)
             print("\nTransaction broadcast successfully!")
             print(f"TXID: {txid}")
-            try:
-                update_send_awaiting_broadcast(
-                    send_entry,
-                    txid=txid,
-                    success=True,
-                    failure_reason="",
-                    data_dir=backend_settings.data_dir,
-                )
-            except Exception as e:
-                logger.warning(f"Failed to finalize send history entry: {e}")
+            _finalize_send_history_entry(
+                send_entry,
+                txid=txid,
+                success=True,
+                failure_reason="",
+                data_dir=backend_settings.data_dir,
+                history_persisted=history_persisted,
+            )
         else:
             print("\nTransaction NOT broadcast (--no-broadcast set)")
             print(f"Full hex: {tx_hex}")
