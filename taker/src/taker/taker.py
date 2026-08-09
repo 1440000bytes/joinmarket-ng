@@ -345,12 +345,15 @@ class Taker(TakerMonitoringMixin):
             utxos = []
             for md in mixdepths:
                 utxos.extend(await self.wallet.get_utxos(md))
-            if not selectable_for_interactive(utxos, min_conf):
+            reserved = self.wallet.get_locked_input_outpoints()
+            if not selectable_for_interactive(utxos, min_conf, excluded_outpoints=reserved):
                 if mixdepth is not None:
-                    return classify_utxos(utxos, mixdepth, min_conf).no_eligible_reason()
+                    return classify_utxos(
+                        utxos, mixdepth, min_conf, reserved_outpoints=reserved
+                    ).no_eligible_reason()
                 return (
                     "No selectable UTXOs in any mixdepth (all UTXOs are "
-                    "frozen, immature, or locked fidelity bonds)"
+                    "frozen, immature, locked fidelity bonds, or in use)"
                 )
             return None
 
@@ -804,8 +807,11 @@ class Taker(TakerMonitoringMixin):
                     )
                 else:
                     # Get ALL UTXOs from the mixdepth (default sweep behavior)
+                    locked_inputs = self.wallet.get_locked_input_outpoints()
                     self._session.preselected_utxos = self.wallet.get_all_utxos(
-                        mixdepth, self.config.taker_utxo_age
+                        mixdepth,
+                        self.config.taker_utxo_age,
+                        exclude=locked_inputs,
                     )
                     logger.info(
                         f"Sweep using all {len(self._session.preselected_utxos)} UTXOs "
@@ -1157,11 +1163,14 @@ class Taker(TakerMonitoringMixin):
                 if mixdepth is None
                 else [u for u in available_utxos if u.mixdepth == mixdepth]
             )
-            if not selectable_for_interactive(candidates, min_age):
+            locked_inputs = self.wallet.get_locked_input_outpoints()
+            if not selectable_for_interactive(
+                candidates, min_age, excluded_outpoints=locked_inputs
+            ):
                 where = "wallet" if mixdepth is None else f"mixdepth {mixdepth}"
                 reason = (
                     f"No eligible UTXOs in {where} "
-                    f"(all {len(candidates)} UTXOs are frozen, immature, or locked)"
+                    f"(all {len(candidates)} UTXOs are frozen, immature, locked, or in use)"
                 )
                 logger.error(reason)
                 self._session.last_failure_reason = reason
@@ -1170,11 +1179,12 @@ class Taker(TakerMonitoringMixin):
 
             # Populate labels for each UTXO based on history
             for utxo in available_utxos:
-                utxo.label = get_utxo_label(
-                    utxo.address,
-                    self.config.data_dir,
-                    wallet_fingerprint=self.wallet.wallet_fingerprint,
-                )
+                if utxo.label is None:
+                    utxo.label = get_utxo_label(
+                        utxo.address,
+                        self.config.data_dir,
+                        wallet_fingerprint=self.wallet.wallet_fingerprint,
+                    )
 
             logger.info(
                 f"Launching interactive UTXO selector ({len(available_utxos)} available, "
@@ -1185,6 +1195,7 @@ class Taker(TakerMonitoringMixin):
                 amount,
                 allowed_mixdepth=mixdepth,
                 min_confirmations=min_age,
+                excluded_outpoints=locked_inputs,
             )
 
             if not manually_selected_utxos:
@@ -1666,8 +1677,12 @@ class Taker(TakerMonitoringMixin):
                     f"{self._session.cj_destination[:20]}... - history may be inconsistent"
                 )
 
+            destination_vout = self._session._get_taker_cj_output_index()
             await self._update_pending_transaction_now(
-                self._session.txid, self._session.cj_destination
+                self._session.txid,
+                self._session.cj_destination,
+                destination_vout if destination_vout is not None else -1,
+                len(self._session.maker_sessions),
             )
         except Exception as e:
             logger.warning(f"Failed to update CoinJoin history: {e}")

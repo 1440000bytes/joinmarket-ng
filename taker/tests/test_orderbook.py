@@ -612,6 +612,31 @@ class TestChooseSweepOrders:
         # (99990000 * 10000) // (10000 + 15) = 999900000000 // 10015 = 99840239
         assert cj_amount == 99_840_239
 
+    def test_choose_sweep_orders_rejects_solved_amount_outside_offer_range(
+        self, max_cj_fee: MaxCjFee
+    ) -> None:
+        """The exact solved sweep amount must fit every selected offer."""
+        offer = Offer(
+            counterparty="maker1",
+            oid=0,
+            ordertype=OfferType.SW0_ABSOLUTE,
+            minsize=10_000,
+            maxsize=100_000,
+            txfee=0,
+            cjfee=0,
+        )
+
+        orders, cj_amount, total_fee = choose_sweep_orders(
+            offers=[offer],
+            total_input_value=100_001,
+            my_txfee=0,
+            n=1,
+            max_cj_fee=max_cj_fee,
+            choose_fn=lambda offers, _n: offers,
+        )
+
+        assert (orders, cj_amount, total_fee) == ({}, 0, 0)
+
 
 class TestOrderbookManager:
     """Tests for OrderbookManager."""

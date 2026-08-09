@@ -110,6 +110,19 @@ def test_selectable_for_interactive_excludes_frozen_and_locked_bonds() -> None:
     assert selectable[0].txid == "a" * 64
 
 
+def test_selectable_for_interactive_excludes_in_flight_inputs() -> None:
+    in_use = _utxo(txid_char="a")
+    available = _utxo(txid_char="b")
+
+    selectable = selectable_for_interactive(
+        [in_use, available],
+        min_confirmations=5,
+        excluded_outpoints={(in_use.txid, in_use.vout)},
+    )
+
+    assert selectable == [available]
+
+
 def test_podle_threshold_met() -> None:
     # 20% of 10_000_000 = 2_000_000
     eligible = [_utxo(value=2_000_000)]

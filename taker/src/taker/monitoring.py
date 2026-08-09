@@ -16,6 +16,7 @@ from jmwallet.history import (
     abandon_transaction,
     get_pending_transactions,
     update_transaction_confirmation,
+    verify_history_destination_output,
 )
 from loguru import logger
 
@@ -43,6 +44,24 @@ class TakerMonitoringMixin:
     wallet: WalletService
     config: TakerConfig
     directory_client: Any  # MultiDirectoryClient
+
+    async def _verify_destination_output(
+        self,
+        txid: str,
+        destination_address: str,
+        destination_vout: int,
+        peer_count: int | None,
+        start_height: int | None,
+    ) -> bool:
+        """Verify an exact destination output, or a bounded legacy candidate set."""
+        return await verify_history_destination_output(
+            self.backend,
+            txid=txid,
+            destination_address=destination_address,
+            destination_vout=destination_vout,
+            peer_count=peer_count,
+            start_height=start_height,
+        )
 
     async def _monitor_pending_transactions(self) -> None:
         """
@@ -186,17 +205,14 @@ class TakerMonitoringMixin:
         except Exception:
             current_height = None
 
-        # Try to verify the CJ output exists in a confirmed block
-        # We use vout=0 as a guess for the CJ output position, but this may not be accurate
-        # A more robust solution would store the vout in history
-        # For now, we rely on the fact that if the address has a UTXO with this txid,
-        # the transaction is confirmed
-        verified = await self.backend.verify_tx_output(
+        # Newly written entries retain the shuffled output index. Legacy rows
+        # fall back to a bounded, deterministic scan of plausible outputs.
+        verified = await self._verify_destination_output(
             txid=entry.txid,
-            vout=0,  # CJ outputs are typically first, but this is a guess
-            address=entry.destination_address,
+            destination_address=entry.destination_address,
+            destination_vout=entry.destination_vout,
+            peer_count=entry.peer_count,
             start_height=current_height,
-            include_mempool=False,
         )
 
         if verified:
@@ -246,7 +262,11 @@ class TakerMonitoringMixin:
                 )
 
     async def _update_pending_transaction_now(
-        self, txid: str, destination_address: str | None = None
+        self,
+        txid: str,
+        destination_address: str | None = None,
+        destination_vout: int = -1,
+        peer_count: int | None = None,
     ) -> None:
         """
         Immediately check and update a pending transaction's status.
@@ -259,6 +279,8 @@ class TakerMonitoringMixin:
         Args:
             txid: Transaction ID to check
             destination_address: Optional destination address (needed for Neutrino)
+            destination_vout: Destination output index, or -1 for legacy fallback
+            peer_count: CoinJoin maker count used to bound the legacy fallback
         """
         try:
             can_confirm_by_txid = self.backend.can_get_confirmations_by_txid()
@@ -294,12 +316,12 @@ class TakerMonitoringMixin:
                     except Exception:
                         current_height = None
 
-                    verified = await self.backend.verify_tx_output(
+                    verified = await self._verify_destination_output(
                         txid=txid,
-                        vout=0,  # CJ outputs are typically first
-                        address=destination_address,
+                        destination_address=destination_address,
+                        destination_vout=destination_vout,
+                        peer_count=peer_count,
                         start_height=current_height,
-                        include_mempool=False,
                     )
 
                     if verified:

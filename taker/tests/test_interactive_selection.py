@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, Mock, call
 
 import pytest
 from _taker_test_helpers import make_taker_config, make_utxo
+from jmcore.models import Offer, OfferType
 
 from taker.taker import Taker, TakerState
 
@@ -58,10 +59,17 @@ async def test_selector_receives_whole_wallet_and_pin(
 
     captured: dict[str, object] = {}
 
-    def fake_select(utxos, target_amount=0, allowed_mixdepth=None, min_confirmations=0):  # noqa: ANN001, ANN202
+    def fake_select(  # noqa: ANN001, ANN202
+        utxos,
+        target_amount=0,
+        allowed_mixdepth=None,
+        min_confirmations=0,
+        excluded_outpoints=None,
+    ):
         captured["utxos"] = list(utxos)
         captured["allowed_mixdepth"] = allowed_mixdepth
         captured["min_confirmations"] = min_confirmations
+        captured["excluded_outpoints"] = excluded_outpoints
         return [utxos_by_md[2][0]]
 
     import jmwallet.utxo_selector
@@ -73,10 +81,107 @@ async def test_selector_receives_whole_wallet_and_pin(
     assert selected == [utxos_by_md[2][0]]
     assert captured["allowed_mixdepth"] is None
     assert captured["min_confirmations"] == 5
+    assert captured["excluded_outpoints"] == set()
     # UTXOs from every mixdepth are shown, not just one.
     shown = captured["utxos"]
     assert isinstance(shown, list)
     assert {u.mixdepth for u in shown} == {0, 2}
+
+
+@pytest.mark.asyncio
+async def test_selector_receives_in_flight_inputs_as_excluded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """In-flight inputs are displayed but passed to the selector as unavailable."""
+    in_use = make_utxo(txid_char="a", mixdepth=0, confirmations=10)
+    available = make_utxo(txid_char="b", mixdepth=0, confirmations=10)
+    wallet = _make_wallet({0: [in_use, available]})
+    locked = {(in_use.txid, in_use.vout)}
+    wallet.get_locked_input_outpoints.return_value = locked
+    taker = Taker(wallet, _backend(), _make_config(tmp_path))
+
+    captured: dict[str, object] = {}
+
+    def fake_select(utxos, target_amount=0, **kwargs):  # noqa: ANN001, ANN202
+        captured["utxos"] = list(utxos)
+        captured["excluded_outpoints"] = kwargs["excluded_outpoints"]
+        return [available]
+
+    import jmwallet.utxo_selector
+
+    monkeypatch.setattr(jmwallet.utxo_selector, "select_utxos_interactive", fake_select)
+
+    selected = await taker._maybe_select_utxos_interactively(amount=1_000_000, mixdepth=0)
+
+    assert selected == [available]
+    assert captured["excluded_outpoints"] == locked
+    shown = captured["utxos"]
+    assert isinstance(shown, list)
+    assert in_use in shown
+
+
+@pytest.mark.asyncio
+async def test_selector_preserves_user_utxo_labels(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """History display defaults must not overwrite BIP-329 user annotations."""
+    labeled = make_utxo(txid_char="a", mixdepth=0, confirmations=10)
+    labeled.label = "personal note"
+    taker = Taker(_make_wallet({0: [labeled]}), _backend(), _make_config(tmp_path))
+
+    captured: list = []
+
+    def fake_select(utxos, *_args, **_kwargs):  # noqa: ANN001, ANN202
+        captured.extend(utxos)
+        return [labeled]
+
+    import jmwallet.utxo_selector
+
+    monkeypatch.setattr(jmwallet.utxo_selector, "select_utxos_interactive", fake_select)
+
+    assert await taker._maybe_select_utxos_interactively(1_000_000, 0) == [labeled]
+    assert captured[0].label == "personal note"
+
+
+@pytest.mark.asyncio
+async def test_automatic_sweep_excludes_in_flight_inputs(tmp_path: Path) -> None:
+    """Automatic sweep fetches the same lock-excluded pool as preflight."""
+    in_use = make_utxo(txid_char="a", mixdepth=0, confirmations=10)
+    available = make_utxo(txid_char="b", mixdepth=0, confirmations=10)
+    wallet = _make_wallet({0: [in_use, available]})
+    locked = {(in_use.txid, in_use.vout)}
+    wallet.get_locked_input_outpoints.return_value = locked
+    wallet.get_all_utxos = Mock(return_value=[available])
+    config = _make_config(
+        tmp_path,
+        select_utxos=False,
+        counterparty_count=1,
+        minimum_makers=1,
+        fee_rate=1.0,
+    )
+    backend = _backend()
+    backend.get_mempool_min_fee = AsyncMock(return_value=None)
+    taker = Taker(wallet, backend, config)
+    taker.directory_client.fetch_orderbook = AsyncMock(
+        return_value=[
+            Offer(
+                counterparty="maker1",
+                oid=0,
+                ordertype=OfferType.SW0_ABSOLUTE,
+                minsize=10_000,
+                maxsize=100_000_000,
+                txfee=0,
+                cjfee=0,
+            )
+        ]
+    )
+    taker._update_offers_with_bond_values = AsyncMock()  # type: ignore[method-assign]
+    taker.orderbook_manager.select_makers_for_sweep = Mock(return_value=({}, 0, 0))
+
+    result = await taker.do_coinjoin(amount=0, destination="INTERNAL", mixdepth=0)
+
+    assert result is None
+    wallet.get_all_utxos.assert_called_once_with(0, config.taker_utxo_age, exclude=locked)
 
 
 @pytest.mark.asyncio

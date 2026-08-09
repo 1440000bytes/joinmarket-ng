@@ -1469,6 +1469,7 @@ class CoinJoinSession:
                 for session in self.maker_sessions.values()
             )
             maker_nicks = list(self.maker_sessions.keys())
+            destination_vout = self._get_taker_cj_output_index()
 
             history_entry = create_taker_history_entry(
                 maker_nicks=maker_nicks,
@@ -1485,6 +1486,7 @@ class CoinJoinSession:
                 failure_reason="Awaiting transaction",
                 wallet_fingerprint=self.wallet.wallet_fingerprint,
                 source_addresses=[utxo.address for utxo in self.selected_utxos],
+                destination_vout=destination_vout if destination_vout is not None else -1,
             )
             append_history_entry(history_entry, data_dir=self.config.data_dir)
 
@@ -1805,6 +1807,7 @@ class CoinJoinSession:
             txid = get_txid(self.final_tx.hex())
             maker_nicks = list(self.maker_sessions.keys())
             broadcast_method = self.config.tx_broadcast.value
+            destination_vout = self._get_taker_cj_output_index()
 
             history_entry = create_taker_history_entry(
                 maker_nicks=maker_nicks,
@@ -1821,6 +1824,7 @@ class CoinJoinSession:
                 failure_reason="User declined broadcast (manual broadcast pending)",
                 wallet_fingerprint=self.wallet.wallet_fingerprint,
                 source_addresses=[utxo.address for utxo in self.selected_utxos],
+                destination_vout=destination_vout if destination_vout is not None else -1,
             )
 
             # Format as CSV line for manual addition

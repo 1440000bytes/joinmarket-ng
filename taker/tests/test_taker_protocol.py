@@ -1609,11 +1609,12 @@ class TestUpdatePendingTransactionNow:
             selected_utxos=[("h" * 64, 0)],
             txid=txid,
             wallet_fingerprint="deadbeef",
+            destination_vout=4,
         )
         append_history_entry(entry, data_dir=tmp_path)
 
         # Call the update method
-        await taker._update_pending_transaction_now(txid, destination)
+        await taker._update_pending_transaction_now(txid, destination, destination_vout=4)
 
         # Verify transaction is no longer pending
         pending = get_pending_transactions(data_dir=tmp_path)
@@ -1626,8 +1627,74 @@ class TestUpdatePendingTransactionNow:
         assert history[0].confirmations == 1
         mock_backend.verify_tx_output.assert_awaited_once_with(
             txid=txid,
-            vout=0,
+            vout=4,
             address=destination,
+            start_height=100,
+            include_mempool=False,
+        )
+
+    @pytest.mark.asyncio
+    async def test_pending_neutrino_legacy_vout_fallback_stops_when_verified(
+        self, mock_wallet, mock_backend, mock_config, tmp_path
+    ):
+        """Legacy entries scan plausible outputs only until the destination matches."""
+        from jmwallet.history import create_taker_history_entry
+
+        mock_config.data_dir = tmp_path
+        mock_backend.can_get_confirmations_by_txid = Mock(return_value=False)
+        mock_backend.get_block_height = AsyncMock(return_value=100)
+        mock_backend.verify_tx_output = AsyncMock(side_effect=[False, False, True])
+        taker = Taker(mock_wallet, mock_backend, mock_config)
+        entry = create_taker_history_entry(
+            maker_nicks=["J5maker1", "J5maker2"],
+            cj_amount=75_000,
+            total_maker_fees=150,
+            mining_fee=300,
+            destination="bcrt1qdest5",
+            change_address="bcrt1qchange5",
+            source_mixdepth=2,
+            selected_utxos=[("i" * 64, 0)],
+            txid="j" * 64,
+        )
+
+        await taker._check_pending_without_mempool(entry)
+
+        assert [call.kwargs["vout"] for call in mock_backend.verify_tx_output.await_args_list] == [
+            0,
+            1,
+            2,
+        ]
+
+    @pytest.mark.asyncio
+    async def test_pending_neutrino_uses_stored_destination_vout(
+        self, mock_wallet, mock_backend, mock_config, tmp_path
+    ):
+        """A pending row verifies its stored shuffled destination output index."""
+        from jmwallet.history import create_taker_history_entry
+
+        mock_config.data_dir = tmp_path
+        mock_backend.get_block_height = AsyncMock(return_value=100)
+        mock_backend.verify_tx_output = AsyncMock(return_value=True)
+        taker = Taker(mock_wallet, mock_backend, mock_config)
+        entry = create_taker_history_entry(
+            maker_nicks=["J5maker1"],
+            cj_amount=75_000,
+            total_maker_fees=150,
+            mining_fee=300,
+            destination="bcrt1qdest6",
+            change_address="bcrt1qchange6",
+            source_mixdepth=2,
+            selected_utxos=[("k" * 64, 0)],
+            txid="l" * 64,
+            destination_vout=3,
+        )
+
+        await taker._check_pending_without_mempool(entry)
+
+        mock_backend.verify_tx_output.assert_awaited_once_with(
+            txid="l" * 64,
+            vout=3,
+            address="bcrt1qdest6",
             start_height=100,
             include_mempool=False,
         )

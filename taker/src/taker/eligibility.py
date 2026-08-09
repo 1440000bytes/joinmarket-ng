@@ -121,18 +121,26 @@ def classify_utxos(
     return result
 
 
-def selectable_for_interactive(utxos: list[UTXOInfo], min_confirmations: int) -> list[UTXOInfo]:
+def selectable_for_interactive(
+    utxos: list[UTXOInfo],
+    min_confirmations: int,
+    excluded_outpoints: set[tuple[str, int]] | None = None,
+) -> list[UTXOInfo]:
     """Return UTXOs a user may pick in the interactive selector.
 
     The interactive selector (``--select-utxos``) shows frozen/locked UTXOs but
     renders them unselectable, and lets the user spend unlocked fidelity bonds.
+    ``excluded_outpoints`` keeps in-flight CoinJoin inputs visible while
+    preventing their reuse.
     """
+    excluded_outpoints = excluded_outpoints or set()
     return [
         u
         for u in utxos
         if (u.confirmations >= min_confirmations)
         and not u.frozen
         and not (u.is_fidelity_bond and u.is_locked)
+        and (u.txid, u.vout) not in excluded_outpoints
     ]
 
 

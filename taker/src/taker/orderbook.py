@@ -758,7 +758,7 @@ def choose_sweep_orders(
                 f"Sweep amount {cj_amount} outside range for {offer.counterparty}: "
                 f"{offer.minsize}-{offer.maxsize}"
             )
-            # Could retry with fewer makers here
+            return {}, 0, 0
 
     result = {offer.counterparty: offer for offer in selected}
     total_fee = sum(calculate_cj_fee(offer, cj_amount) for offer in selected)
