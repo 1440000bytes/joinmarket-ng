@@ -190,6 +190,53 @@ class TestReconstructImportedLabels:
         backend.get_transaction.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_local_history_cj_outputs_are_mergeable_in_md0(
+        self, tmp_path, test_mnemonic, test_network
+    ) -> None:
+        backend = _make_backend({})
+        ws = _wallet(backend, tmp_path, test_mnemonic, test_network)
+        cj_outputs = [
+            _utxo(txid="a" * 64, value=60_000, address="bcrt1qcjout1", index=1),
+            _utxo(txid="b" * 64, value=40_000, address="bcrt1qcjout2", index=2),
+        ]
+        reused_deposit = _utxo(
+            txid="d" * 64,
+            value=70_000,
+            address=cj_outputs[0].address,
+            index=1,
+        )
+        for utxo in cj_outputs:
+            entry = create_maker_history_entry(
+                taker_nick="J5taker",
+                cj_amount=utxo.value,
+                fee_received=100,
+                txfee_contribution=50,
+                cj_address=utxo.address,
+                change_address=f"{utxo.address}-change",
+                our_utxos=[("cc" * 32, 0)],
+                txid=utxo.txid,
+                network=test_network,
+                wallet_fingerprint=ws.wallet_fingerprint,
+            )
+            entry.success = True
+            append_history_entry(entry, tmp_path)
+        ws.utxo_cache = {0: [*cj_outputs, reused_deposit]}
+
+        assert await ws.reconstruct_imported_labels() == 0
+
+        backend.get_transaction.assert_not_awaited()
+        assert [utxo.label for utxo in cj_outputs] == ["cj-out", "cj-out"]
+        assert reused_deposit.label is None
+        assert await ws.get_balance_for_offers(0, min_confirmations=1) == 100_000
+        selected = ws.select_utxos_with_merge(
+            0,
+            90_000,
+            min_confirmations=1,
+            merge_algorithm="greedy",
+        )
+        assert {utxo.outpoint for utxo in selected} == {utxo.outpoint for utxo in cj_outputs}
+
+    @pytest.mark.asyncio
     async def test_skips_fidelity_bonds(self, tmp_path, test_mnemonic, test_network) -> None:
         backend = _make_backend({"bondtx": _coinjoin_raw()})
         ws = _wallet(backend, tmp_path, test_mnemonic, test_network)
@@ -208,10 +255,12 @@ class TestReconstructImportedLabels:
         ws = WalletService(
             mnemonic=test_mnemonic, backend=backend, network=test_network, mixdepth_count=5
         )
-        ws.utxo_cache = {0: [_utxo(txid="cjtx", value=CJ_AMOUNT, address="bcrt1qcjout")]}
+        utxo = _utxo(txid="cjtx", value=CJ_AMOUNT, address="bcrt1qcjout")
+        ws.utxo_cache = {0: [utxo]}
 
         assert await ws.reconstruct_imported_labels() == 0
         backend.get_transaction.assert_not_awaited()
+        assert utxo.label is None
 
     @pytest.mark.asyncio
     async def test_backend_failure_degrades_gracefully(

@@ -397,6 +397,20 @@ class WalletSyncMixin:
             # Without persistence we would re-fetch every transaction on each
             # display; only run when results can be cached.
             return 0
+
+        from jmwallet.history import get_protocol_coinjoin_output_outpoints
+
+        current_utxos = [utxo for utxos in self.utxo_cache.values() for utxo in utxos]
+        recorded_cj_outputs = get_protocol_coinjoin_output_outpoints(
+            current_utxos,
+            network=self.network,
+            data_dir=self.data_dir,
+            wallet_fingerprint=self.wallet_fingerprint,
+        )
+        for utxo in current_utxos:
+            if utxo.outpoint in recorded_cj_outputs and utxo.label is None:
+                utxo.label = "cj-out"
+
         if getattr(self, "_imported_labels_scanned", False) and not force:
             return 0
 

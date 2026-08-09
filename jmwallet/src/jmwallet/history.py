@@ -1928,6 +1928,39 @@ def get_address_history_types(
     return address_types
 
 
+def get_protocol_coinjoin_output_outpoints(
+    current_utxos: Iterable[UTXOInfo],
+    *,
+    network: str,
+    data_dir: Path | None = None,
+    wallet_fingerprint: str | None = None,
+) -> set[str]:
+    """Return current outpoints that exactly match protocol CoinJoin outputs.
+
+    Address-level history is insufficient for coin selection because a later
+    payment can reuse a CoinJoin destination. Match the creating transaction,
+    destination address, and equal-output amount from successful maker/taker
+    protocol rows so only the actual protocol output receives the merge
+    exemption. Best-effort on-chain reconstruction is intentionally excluded.
+    """
+    recorded_outputs = {
+        (entry.txid, entry.destination_address, entry.cj_amount)
+        for entry in read_history(data_dir, wallet_fingerprint=wallet_fingerprint)
+        if entry.network == network
+        and entry.success
+        and entry.txid
+        and entry.destination_address
+        and entry.cj_amount > 0
+        and entry.role in ("maker", "taker")
+        and entry.source == "protocol"
+    }
+    return {
+        utxo.outpoint
+        for utxo in current_utxos
+        if (utxo.txid, utxo.address, utxo.value) in recorded_outputs
+    }
+
+
 def get_coinjoin_lineage_outpoints(
     current_utxos: Iterable[UTXOInfo],
     *,
