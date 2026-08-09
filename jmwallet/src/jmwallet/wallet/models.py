@@ -40,6 +40,8 @@ class UTXOInfo:
     locktime: int | None = None  # Locktime for fidelity bond UTXOs (None for regular UTXOs)
     label: str | None = None  # Human-readable label/note (e.g., "cj-out", "deposit", "change")
     frozen: bool = False  # Whether this UTXO is frozen (excluded from automatic coin selection)
+    # Protocol-backed exact-outpoint provenance, independent from display labels.
+    coinjoin_output: bool = False
 
     @property
     def outpoint(self) -> str:

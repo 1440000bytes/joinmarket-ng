@@ -133,6 +133,14 @@ class TestFormatUtxoLine:
 
         assert "(cj-out)" in line
 
+    def test_format_in_use_indicator(self, sample_utxos: list[UTXOInfo]) -> None:
+        """Inputs committed to another CoinJoin are visibly marked."""
+        utxo = sample_utxos[0]
+
+        line = format_utxo_line(utxo, excluded_outpoints={(utxo.txid, utxo.vout)})
+
+        assert "[IN-USE]" in line
+
     def test_format_without_label(self, sample_utxos: list[UTXOInfo]) -> None:
         """Test formatting UTXO without a label."""
         utxo = sample_utxos[0]
@@ -286,6 +294,14 @@ class TestFrozenUtxoUnselectability:
         result = select_utxos_interactive([normal])
         assert result == [normal]
 
+    def test_single_in_use_utxo_not_auto_selected(self) -> None:
+        """In-flight inputs remain visible but cannot be selected in non-TTY mode."""
+        in_use = _make_utxo(0)
+
+        result = select_utxos_interactive([in_use], excluded_outpoints={(in_use.txid, in_use.vout)})
+
+        assert result == []
+
 
 def _make_utxo(
     mixdepth: int,
@@ -330,6 +346,10 @@ class TestBaseSelectability:
 
     def test_immature_not_selectable(self) -> None:
         assert _is_base_selectable(_make_utxo(0, confirmations=2), None, 5) is False
+
+    def test_in_use_not_selectable(self) -> None:
+        utxo = _make_utxo(0)
+        assert _is_base_selectable(utxo, None, 0, {(utxo.txid, utxo.vout)}) is False
 
     def test_other_mixdepth_not_selectable_when_pinned(self) -> None:
         assert _is_base_selectable(_make_utxo(1), 0, 0) is False

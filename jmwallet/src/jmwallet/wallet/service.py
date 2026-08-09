@@ -563,7 +563,7 @@ class WalletService(WalletSyncMixin, CoinSelectionMixin, WalletDisplayMixin, Wal
             utxos = [u for u in utxos if u.confirmations >= min_confirmations]
         return sum(utxo.value for utxo in utxos)
 
-    async def get_balance_for_offers(
+    async def get_coinjoin_balance(
         self,
         mixdepth: int,
         min_confirmations: int = 0,
@@ -571,14 +571,16 @@ class WalletService(WalletSyncMixin, CoinSelectionMixin, WalletDisplayMixin, Wal
         restrict_md0: bool = True,
         exclude: set[tuple[str, int]] | None = None,
     ) -> int:
-        """Get balance available for maker offers (excludes fidelity bond UTXOs).
+        """Get balance available to automatic CoinJoin input selection.
 
-        Fidelity bonds should never be automatically spent in CoinJoins,
-        so makers must exclude them when calculating available offer amounts.
+        This is the capacity counterpart to :meth:`select_utxos`: fidelity
+        bonds, frozen coins, immature coins, and excluded in-flight inputs do
+        not contribute. The md0 privacy restriction uses the same effective
+        capacity as selection.
 
         For mixdepth 0 (when ``restrict_md0`` is True), UTXOs that are **not**
         CoinJoin outputs are restricted to a single UTXO to avoid linking
-        deposits or fidelity bonds.  CoinJoin outputs (``label == "cj-out"``)
+        deposits or fidelity bonds. CoinJoin outputs with exact persisted provenance
         are exempt because they already have CoinJoin privacy and can be
         safely merged.
 
@@ -608,12 +610,28 @@ class WalletService(WalletSyncMixin, CoinSelectionMixin, WalletDisplayMixin, Wal
             return 0
 
         if mixdepth == 0 and restrict_md0:
-            cj_pool = sum(u.value for u in eligible if u.label == "cj-out")
-            non_cj = [u for u in eligible if u.label != "cj-out"]
+            cj_pool = sum(u.value for u in eligible if u.coinjoin_output)
+            non_cj = [u for u in eligible if not u.coinjoin_output]
             largest_single = max((u.value for u in non_cj), default=0)
             return max(cj_pool, largest_single)
 
         return sum(u.value for u in eligible)
+
+    async def get_balance_for_offers(
+        self,
+        mixdepth: int,
+        min_confirmations: int = 0,
+        *,
+        restrict_md0: bool = True,
+        exclude: set[tuple[str, int]] | None = None,
+    ) -> int:
+        """Return maker offer capacity using shared CoinJoin eligibility rules."""
+        return await self.get_coinjoin_balance(
+            mixdepth,
+            min_confirmations,
+            restrict_md0=restrict_md0,
+            exclude=exclude,
+        )
 
     async def get_utxos(self, mixdepth: int) -> list[UTXOInfo]:
         """Get UTXOs for a mixdepth, syncing if not cached."""
@@ -991,7 +1009,8 @@ class WalletService(WalletSyncMixin, CoinSelectionMixin, WalletDisplayMixin, Wal
         """Apply frozen state from metadata store to all cached UTXOs.
 
         Called after sync operations to mark UTXOs that are frozen according
-        to the persisted metadata. Also applies labels from metadata.
+        to the persisted metadata. Also hydrates exact CoinJoin-output
+        provenance and applies labels from metadata.
 
         Re-reads the metadata file from disk on each call to pick up changes
         made by other processes (e.g., ``jm-wallet freeze`` while maker is running).
@@ -1003,12 +1022,14 @@ class WalletService(WalletSyncMixin, CoinSelectionMixin, WalletDisplayMixin, Wal
         self.metadata_store.load()
 
         frozen_outpoints = self.metadata_store.get_frozen_outpoints()
+        coinjoin_output_outpoints = self.metadata_store.get_coinjoin_output_outpoints()
 
         frozen_count = 0
         for utxos in self.utxo_cache.values():
             for utxo in utxos:
                 outpoint = utxo.outpoint
                 utxo.frozen = outpoint in frozen_outpoints
+                utxo.coinjoin_output = outpoint in coinjoin_output_outpoints
                 if utxo.frozen:
                     frozen_count += 1
                 # Apply label from metadata if not already set

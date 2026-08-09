@@ -113,6 +113,7 @@ class OutputRecord:
         label: Optional human-readable label.
         lock_until: Optional temporary CoinJoin lock expiry timestamp.
         lock_owner: Optional opaque owner token for compare-and-release.
+        coinjoin_output: Whether this exact outpoint is a CoinJoin equal output.
     """
 
     ref: str
@@ -125,6 +126,9 @@ class OutputRecord:
     # forced-address-reuse defense can tell a coin that predates a restart from
     # a genuinely new arrival. Ignored by other BIP-329 consumers.
     seen: bool = False
+    # JoinMarket extension: protocol-backed exact-outpoint provenance,
+    # deliberately separate from the human-readable BIP-329 label.
+    coinjoin_output: bool = False
 
     @property
     def is_frozen(self) -> bool:
@@ -151,14 +155,16 @@ class OutputRecord:
             or self.label is not None
             or self.lock_until is not None
             or self.seen
+            or self.coinjoin_output
         )
 
     def to_dict(self) -> dict[str, str | bool | float]:
         """Serialize to a BIP-329 JSON dict.
 
-        ``jm_lock_until``, ``jm_lock_owner``, and ``jm_seen`` are JoinMarket
-        extensions (other BIP-329 consumers ignore unknown keys). The owner is
-        an opaque generation token used for compare-and-release semantics.
+        ``jm_lock_until``, ``jm_lock_owner``, ``jm_seen``, and
+        ``jm_coinjoin_output`` are JoinMarket extensions (other BIP-329
+        consumers ignore unknown keys). The owner is an opaque generation token
+        used for compare-and-release semantics.
         """
         d: dict[str, str | bool | float] = {"type": "output", "ref": self.ref}
         if self.spendable is not None:
@@ -171,6 +177,8 @@ class OutputRecord:
                 d["jm_lock_owner"] = self.lock_owner
         if self.seen:
             d["jm_seen"] = True
+        if self.coinjoin_output:
+            d["jm_coinjoin_output"] = True
         return d
 
     @classmethod
@@ -203,6 +211,7 @@ class OutputRecord:
             else None
         )
         seen = d.get("jm_seen") is True
+        coinjoin_output = d.get("jm_coinjoin_output") is True
         return cls(
             ref=ref,
             spendable=spendable,
@@ -210,6 +219,7 @@ class OutputRecord:
             lock_until=lock_until,
             lock_owner=lock_owner,
             seen=seen,
+            coinjoin_output=coinjoin_output,
         )
 
 
@@ -567,7 +577,12 @@ class UTXOMetadataStore:
                 # Already unfrozen (no record means spendable)
                 return
 
-            if record.label is not None or record.lock_until is not None or record.seen:
+            if (
+                record.label is not None
+                or record.lock_until is not None
+                or record.seen
+                or record.coinjoin_output
+            ):
                 # Keep the record for labels, locks, and reuse observations.
                 record.spendable = True
             else:
@@ -590,7 +605,12 @@ class UTXOMetadataStore:
             self.load()
             record = self.records.get(outpoint)
             if record is not None and record.is_frozen:
-                if record.label is not None or record.lock_until is not None or record.seen:
+                if (
+                    record.label is not None
+                    or record.lock_until is not None
+                    or record.seen
+                    or record.coinjoin_output
+                ):
                     record.spendable = True
                 else:
                     del self.records[outpoint]
@@ -814,6 +834,37 @@ class UTXOMetadataStore:
         """
         record = self.records.get(outpoint)
         return record.label if record else None
+
+    # -- Exact CoinJoin output provenance ------------------------------------
+
+    def mark_coinjoin_outputs(self, outpoints: Iterable[str]) -> bool:
+        """Persist protocol-backed CoinJoin-output provenance for ``outpoints``.
+
+        The update reloads and writes while holding the metadata sidecar lock,
+        so concurrent wallet processes do not overwrite each other's label,
+        freeze, or provenance updates. Returns whether persisted state changed.
+        """
+        wanted = {outpoint for outpoint in outpoints if outpoint}
+        if not wanted:
+            return False
+        with self._exclusive_file_lock():
+            self.load()
+            changed = False
+            for outpoint in wanted:
+                record = self.records.get(outpoint)
+                if record is None:
+                    self.records[outpoint] = OutputRecord(ref=outpoint, coinjoin_output=True)
+                    changed = True
+                elif not record.coinjoin_output:
+                    record.coinjoin_output = True
+                    changed = True
+            if changed:
+                self.save()
+            return changed
+
+    def get_coinjoin_output_outpoints(self) -> set[str]:
+        """Return protocol-backed CoinJoin outpoints from loaded metadata."""
+        return {ref for ref, record in self.records.items() if record.coinjoin_output}
 
     # -- Address history (BIP-329 ``addr`` records with ``jm:used`` label) --
 

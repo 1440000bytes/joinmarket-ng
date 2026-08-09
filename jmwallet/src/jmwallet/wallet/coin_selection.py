@@ -43,10 +43,10 @@ class CoinSelectionMixin:
             include_fidelity_bonds: If True, include fidelity bond UTXOs in automatic
                                     selection. Defaults to False to prevent accidentally
                                     spending bonds.
-            restrict_md0: When True (default), mixdepth 0 non-CJ-output UTXOs are
-                          restricted to a single UTXO.  CoinJoin outputs (label
-                          ``"cj-out"``) are exempt and can be merged.  Set to False
-                          to disable the restriction.
+            restrict_md0: When True (default), mixdepth 0 UTXOs without exact
+                          protocol CoinJoin provenance are restricted to a single
+                          UTXO. Protocol CoinJoin outputs are exempt and can be
+                          merged. Set to False to disable the restriction.
             exclude: ``(txid, vout)`` outpoints that must not be selected. Used to
                      skip inputs already locked by another in-flight CoinJoin round
                      (this or another process) so concurrent rounds never pick the
@@ -76,8 +76,8 @@ class CoinSelectionMixin:
         eligible.sort(key=lambda u: u.value, reverse=True)
 
         # Mixdepth 0 restriction: avoid merging non-CoinJoin UTXOs to prevent
-        # linking deposits/fidelity bonds.  CoinJoin outputs (label "cj-out")
-        # are exempt because they already have CoinJoin privacy.
+        # linking deposits/fidelity bonds. Protocol-backed CoinJoin outputs are
+        # exempt because they already have CoinJoin privacy.
         # When restrict_md0 is False the restriction is skipped entirely.
         if mixdepth == 0 and restrict_md0:
             # Start with mandatory UTXOs if any
@@ -90,9 +90,9 @@ class CoinSelectionMixin:
             if total >= target_amount:
                 return selected
 
-            # Split eligible UTXOs into CJ outputs (mergeable) and others (single only)
-            cj_outs = [u for u in eligible if u.label == "cj-out"]
-            non_cj = [u for u in eligible if u.label != "cj-out"]
+            # Split eligible UTXOs by exact CoinJoin-output provenance.
+            cj_outs = [u for u in eligible if u.coinjoin_output]
+            non_cj = [u for u in eligible if not u.coinjoin_output]
 
             remaining = target_amount - total
 
@@ -179,6 +179,8 @@ class CoinSelectionMixin:
         mixdepth: int,
         min_confirmations: int = 1,
         include_fidelity_bonds: bool = False,
+        *,
+        exclude: set[tuple[str, int]] | None = None,
     ) -> list[UTXOInfo]:
         """
         Get all UTXOs from a mixdepth for sweep operations.
@@ -192,6 +194,9 @@ class CoinSelectionMixin:
             include_fidelity_bonds: If True, include fidelity bond UTXOs.
                                     Defaults to False to prevent accidentally
                                     spending bonds in sweeps.
+            exclude: ``(txid, vout)`` outpoints that must not be included.
+                Used to skip inputs already locked by another in-flight
+                CoinJoin round.
 
         Returns:
             List of all eligible UTXOs in the mixdepth
@@ -200,6 +205,8 @@ class CoinSelectionMixin:
         eligible = [utxo for utxo in utxos if utxo.confirmations >= min_confirmations]
         # Filter out frozen UTXOs (never auto-selected)
         eligible = [utxo for utxo in eligible if not utxo.frozen]
+        if exclude:
+            eligible = [utxo for utxo in eligible if (utxo.txid, utxo.vout) not in exclude]
         if not include_fidelity_bonds:
             eligible = [utxo for utxo in eligible if not utxo.is_fidelity_bond]
         return eligible
@@ -234,10 +241,10 @@ class CoinSelectionMixin:
             include_fidelity_bonds: If True, include fidelity bond UTXOs.
                                     Defaults to False since they should never be
                                     automatically spent in CoinJoins.
-            restrict_md0: When True (default), mixdepth 0 non-CJ-output UTXOs are
-                          restricted to a single UTXO.  CoinJoin outputs (label
-                          ``"cj-out"``) are exempt and can be merged.  Set to False
-                          to disable the restriction.
+            restrict_md0: When True (default), mixdepth 0 UTXOs without exact
+                          protocol CoinJoin provenance are restricted to a single
+                          UTXO. Proven CoinJoin outputs are exempt and can be
+                          merged. Set to False to disable the restriction.
             exclude: ``(txid, vout)`` outpoints that must not be selected. Used by
                      makers to avoid committing the same UTXO to two concurrent
                      CoinJoin sessions (which would create conflicting, mutually
@@ -271,8 +278,8 @@ class CoinSelectionMixin:
                 raise ValueError("Insufficient funds: no eligible UTXOs in mixdepth 0")
 
             # CJ outputs can be merged; non-CJ outputs are single-UTXO only
-            cj_outs = [u for u in eligible if u.label == "cj-out"]
-            non_cj = [u for u in eligible if u.label != "cj-out"]
+            cj_outs = [u for u in eligible if u.coinjoin_output]
+            non_cj = [u for u in eligible if not u.coinjoin_output]
 
             cj_pool_value = sum(u.value for u in cj_outs)
             largest_non_cj = non_cj[0].value if non_cj else 0

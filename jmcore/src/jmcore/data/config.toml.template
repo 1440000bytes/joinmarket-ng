@@ -413,10 +413,10 @@
 
 # Mixdepth 0 privacy restriction.
 # By default, UTXOs in mixdepth 0 are restricted to a single UTXO per CoinJoin
-# to prevent linking deposits and fidelity bonds.  CoinJoin outputs (cj-out)
-# are always exempt from this restriction because they already have CoinJoin
-# privacy.  Set to true to disable the restriction entirely and allow merging
-# all md0 UTXOs (experienced makers only -- reduces privacy).
+# to prevent linking deposits and fidelity bonds. Outputs with exact protocol
+# CoinJoin provenance are always exempt because they already have CoinJoin
+# privacy. Set to true to disable the restriction entirely and allow merging
+# all md0 UTXOs (experienced makers only, reduces privacy).
 # allow_mixdepth_zero_merge = false
 
 # Timeouts and intervals

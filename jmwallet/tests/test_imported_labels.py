@@ -111,6 +111,87 @@ class TestReconstructImportedLabels:
         # In-memory labels are surfaced for the /utxos view.
         assert cj_out.label == "cj-out"
         assert cj_change.label == "cj-change"
+        # Imported equal-output analysis is display-only. It cannot grant the
+        # protocol-backed md0 merge exemption.
+        assert cj_out.coinjoin_output is False
+        assert cj_change.coinjoin_output is False
+
+    @pytest.mark.asyncio
+    async def test_imported_label_survives_wallet_restart_without_merge_authority(
+        self, tmp_path, test_mnemonic, test_network
+    ) -> None:
+        backend = _make_backend({"cjtx": _coinjoin_raw()})
+        ws = _wallet(backend, tmp_path, test_mnemonic, test_network)
+        original = _utxo(txid="cjtx", value=CJ_AMOUNT, address="bcrt1qcjout")
+        ws.utxo_cache = {0: [original]}
+
+        assert await ws.reconstruct_imported_labels() == 1
+        ws.metadata_store.set_label(original.outpoint, "personal note")
+
+        restarted = _wallet(backend, tmp_path, test_mnemonic, test_network)
+        restored = _utxo(txid="cjtx", value=CJ_AMOUNT, address="bcrt1qcjout")
+        restored.label = "personal note"
+        restarted.utxo_cache = {0: [restored]}
+        restarted._apply_frozen_state()
+
+        assert restored.coinjoin_output is False
+        assert restored.label == "personal note"
+
+    @pytest.mark.asyncio
+    async def test_protocol_provenance_survives_restart_without_history_file(
+        self, tmp_path, test_mnemonic, test_network
+    ) -> None:
+        backend = _make_backend({})
+        ws = _wallet(backend, tmp_path, test_mnemonic, test_network)
+        original = _utxo(txid="a" * 64, value=CJ_AMOUNT, address="bcrt1qcjout")
+        entry = create_maker_history_entry(
+            taker_nick="J5taker",
+            cj_amount=original.value,
+            fee_received=100,
+            txfee_contribution=50,
+            cj_address=original.address,
+            change_address="bcrt1qcjchange",
+            our_utxos=[("cc" * 32, 0)],
+            txid=original.txid,
+            network=test_network,
+            wallet_fingerprint=ws.wallet_fingerprint,
+            destination_vout=original.vout,
+        )
+        entry.success = True
+        append_history_entry(entry, tmp_path)
+        ws.utxo_cache = {0: [original]}
+
+        assert await ws.reconstruct_imported_labels() == 0
+        assert original.coinjoin_output is True
+        (tmp_path / "history.csv").unlink()
+
+        restarted = _wallet(backend, tmp_path, test_mnemonic, test_network)
+        restored = _utxo(txid=original.txid, value=original.value, address=original.address)
+        restarted.utxo_cache = {0: [restored]}
+        restarted._apply_frozen_state()
+
+        assert restored.coinjoin_output is True
+        assert await restarted.reconstruct_imported_labels() == 0
+        assert restored.coinjoin_output is True
+
+    @pytest.mark.asyncio
+    async def test_forged_coinjoin_shape_cannot_authorize_md0_merge(
+        self, tmp_path, test_mnemonic, test_network
+    ) -> None:
+        backend = _make_backend({"fake-a": _coinjoin_raw(), "fake-b": _coinjoin_raw()})
+        ws = _wallet(backend, tmp_path, test_mnemonic, test_network)
+        deposits = [
+            _utxo(txid="fake-a", value=CJ_AMOUNT, address="bcrt1qfakea", index=1),
+            _utxo(txid="fake-b", value=CJ_AMOUNT, address="bcrt1qfakeb", index=2),
+        ]
+        ws.utxo_cache = {0: deposits}
+
+        assert await ws.reconstruct_imported_labels() == 2
+        assert [utxo.label for utxo in deposits] == ["cj-out", "cj-out"]
+        assert all(not utxo.coinjoin_output for utxo in deposits)
+        assert await ws.get_balance_for_offers(0, min_confirmations=1) == CJ_AMOUNT
+        with pytest.raises(ValueError, match="privacy reasons"):
+            ws.select_utxos(0, CJ_AMOUNT + 1, min_confirmations=1)
 
     @pytest.mark.asyncio
     async def test_non_coinjoin_is_deposit_or_non_cj_change(
@@ -217,6 +298,7 @@ class TestReconstructImportedLabels:
                 txid=utxo.txid,
                 network=test_network,
                 wallet_fingerprint=ws.wallet_fingerprint,
+                destination_vout=utxo.vout,
             )
             entry.success = True
             append_history_entry(entry, tmp_path)
@@ -226,7 +308,12 @@ class TestReconstructImportedLabels:
 
         backend.get_transaction.assert_not_awaited()
         assert [utxo.label for utxo in cj_outputs] == ["cj-out", "cj-out"]
+        assert all(utxo.coinjoin_output for utxo in cj_outputs)
+        assert ws.metadata_store.get_coinjoin_output_outpoints() == {
+            utxo.outpoint for utxo in cj_outputs
+        }
         assert reused_deposit.label is None
+        assert reused_deposit.coinjoin_output is False
         assert await ws.get_balance_for_offers(0, min_confirmations=1) == 100_000
         selected = ws.select_utxos_with_merge(
             0,

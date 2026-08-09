@@ -166,6 +166,15 @@ re-runs it so coins surfaced by the rescan are classified too. Only the imported
 backlog needs this; coins received while running are either this wallet's own
 CoinJoins (recorded in history) or genuine deposits.
 
+The reconstructed `cj-out` status is display metadata, not spend authority. The
+mixdepth 0 merge restriction exempts only exact outpoints backed by this
+wallet's successful maker or taker protocol history. This deliberately accepts
+false negatives after seed recovery: an unrelated payment can imitate the
+equal-output shape of a CoinJoin, so a heuristic classification must not grant
+permission to merge deposits. User labels likewise cannot grant or revoke the
+exemption. Protocol-backed outpoint provenance is persisted separately as the
+`jm_coinjoin_output` BIP-329 extension.
+
 ### Backend Systems
 
 **Descriptor Wallet Backend (Recommended):**

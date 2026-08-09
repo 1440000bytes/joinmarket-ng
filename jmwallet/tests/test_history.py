@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import csv
 import struct
+from dataclasses import fields
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -32,6 +33,7 @@ from jmwallet.history import (
     create_maker_history_entry,
     create_send_history_entry,
     create_taker_history_entry,
+    destination_vout_candidates,
     detect_coinjoin_peer_count,
     format_yield_generator_report,
     get_address_history_types,
@@ -39,6 +41,7 @@ from jmwallet.history import (
     get_history_stats,
     get_history_stats_for_period,
     get_pending_transactions,
+    get_protocol_coinjoin_output_outpoints,
     get_used_addresses,
     mark_pending_transaction_failed,
     read_history,
@@ -127,6 +130,7 @@ class TestTransactionHistoryEntry:
         assert entry.cj_amount == 0
         assert entry.net_fee == 0
         assert entry.network == "mainnet"
+        assert entry.destination_vout == -1
 
     def test_maker_entry(self) -> None:
         """Test maker entry creation."""
@@ -177,6 +181,39 @@ class TestAppendAndReadHistory:
         assert len(entries) == 1
         assert entries[0].txid == entry.txid
         assert entries[0].cj_amount == 1_000_000
+
+    def test_destination_vout_round_trips(self, temp_data_dir: Path) -> None:
+        entry = TransactionHistoryEntry(
+            timestamp="2024-01-01T00:00:00",
+            txid="destination_vout_txid",
+            destination_vout=5,
+        )
+
+        append_history_entry(entry, temp_data_dir)
+
+        assert read_history(temp_data_dir)[0].destination_vout == 5
+
+    def test_legacy_csv_defaults_destination_vout_and_migrates(self, temp_data_dir: Path) -> None:
+        legacy_fieldnames = [
+            field.name
+            for field in fields(TransactionHistoryEntry)
+            if field.name != "destination_vout"
+        ]
+        legacy_entry = TransactionHistoryEntry(
+            timestamp="2024-01-01T00:00:00",
+            txid="legacy_destination_vout_txid",
+        )
+        history_path = temp_data_dir / "history.csv"
+        with open(history_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=legacy_fieldnames)
+            writer.writeheader()
+            writer.writerow({name: getattr(legacy_entry, name) for name in legacy_fieldnames})
+
+        entries = read_history(temp_data_dir)
+
+        assert entries[0].destination_vout == -1
+        with open(history_path, newline="", encoding="utf-8") as f:
+            assert "destination_vout" in next(csv.reader(f))
 
     def test_append_multiple_entries(self, temp_data_dir: Path) -> None:
         """Test appending multiple entries."""
@@ -813,6 +850,7 @@ class TestHistoryStatsForPeriod:
             txid="txid" * 16,
             broadcast_method="self",
             network="mainnet",
+            destination_vout=4,
         )
 
         assert entry.role == "taker"
@@ -826,6 +864,7 @@ class TestHistoryStatsForPeriod:
         assert entry.change_address == "bc1qchange..."
         assert entry.source_mixdepth == 0
         assert entry.broadcast_method == "self"
+        assert entry.destination_vout == 4
 
     def test_create_taker_history_entry_failed(self) -> None:
         """Test create_taker_history_entry for failed CoinJoin."""
@@ -1053,6 +1092,15 @@ class TestPendingTransactions:
 class TestPendingConfirmationRefresh:
     """Tests for update_all_pending_transactions behavior."""
 
+    def test_unknown_peer_legacy_destination_vouts_use_full_bounded_scan(self) -> None:
+        unknown_peer_candidates = destination_vout_candidates(-1, None)
+        negative_peer_candidates = destination_vout_candidates(-1, -1)
+
+        assert 32 in unknown_peer_candidates
+        assert 63 in unknown_peer_candidates
+        assert 64 not in unknown_peer_candidates
+        assert negative_peer_candidates == unknown_peer_candidates
+
     @pytest.mark.asyncio
     async def test_mempool_seen_but_zero_conf_stays_pending(self, temp_data_dir: Path) -> None:
         entry = _make_pending_maker_entry(txid="mempool_txid")
@@ -1144,6 +1192,7 @@ class TestPendingConfirmationRefresh:
         confirmed CoinJoin must be detected with a compact-filter address match.
         """
         entry = _make_pending_maker_entry(txid="neutrino_txid")
+        entry.destination_vout = 4
         append_history_entry(entry, temp_data_dir)
 
         mock_backend = MagicMock()
@@ -1166,7 +1215,7 @@ class TestPendingConfirmationRefresh:
         assert entries[0].confirmations == 1
         mock_backend.verify_tx_output.assert_awaited_once_with(
             txid="neutrino_txid",
-            vout=0,
+            vout=4,
             address=entry.destination_address,
             start_height=200,
             include_mempool=False,
@@ -1419,6 +1468,7 @@ class TestUpdateAwaitingTransactionSigned:
             txid="signed_tx_1234567890abcdef",
             fee_received=250,
             txfee_contribution=50,
+            destination_vout=4,
             data_dir=temp_data_dir,
         )
         assert result is True
@@ -1430,6 +1480,7 @@ class TestUpdateAwaitingTransactionSigned:
         assert entries[0].fee_received == 250
         assert entries[0].txfee_contribution == 50
         assert entries[0].net_fee == 200  # 250 - 50
+        assert entries[0].destination_vout == 4
         assert entries[0].failure_reason == "Pending confirmation"  # Now awaiting confirmation
 
     def test_update_awaiting_transaction_signed_nonexistent(self, temp_data_dir: Path) -> None:
@@ -2436,6 +2487,64 @@ class TestCleanupStalePendingTransactions:
         # Verify failure reason unchanged
         entries = read_history(temp_data_dir)
         assert entries[0].failure_reason == "Original failure reason"
+
+
+class TestProtocolCoinjoinOutputOutpoints:
+    """Tests for exact protocol provenance used by md0 selection."""
+
+    @staticmethod
+    def _utxo(vout: int) -> UTXOInfo:
+        return UTXOInfo(
+            txid="ab" * 32,
+            vout=vout,
+            value=100_000,
+            address="bcrt1qsamedestination",
+            confirmations=3,
+            scriptpubkey="0014" + "11" * 20,
+            path=f"m/84'/1'/0'/1/{vout}",
+            mixdepth=0,
+        )
+
+    @staticmethod
+    def _entry(destination_vout: int) -> TransactionHistoryEntry:
+        return TransactionHistoryEntry(
+            timestamp="2026-01-01T00:00:00",
+            role="taker",
+            success=True,
+            txid="ab" * 32,
+            cj_amount=100_000,
+            destination_address="bcrt1qsamedestination",
+            destination_vout=destination_vout,
+            source="protocol",
+            network="regtest",
+            wallet_fingerprint="a1b2c3d4",
+        )
+
+    def test_destination_vout_disambiguates_duplicate_wallet_outputs(
+        self, temp_data_dir: Path
+    ) -> None:
+        append_history_entry(self._entry(destination_vout=2), temp_data_dir)
+
+        matched = get_protocol_coinjoin_output_outpoints(
+            [self._utxo(2), self._utxo(3)],
+            network="regtest",
+            data_dir=temp_data_dir,
+            wallet_fingerprint="a1b2c3d4",
+        )
+
+        assert matched == {f"{'ab' * 32}:2"}
+
+    def test_legacy_row_uses_conservative_tuple_fallback(self, temp_data_dir: Path) -> None:
+        append_history_entry(self._entry(destination_vout=-1), temp_data_dir)
+
+        matched = get_protocol_coinjoin_output_outpoints(
+            [self._utxo(2), self._utxo(3)],
+            network="regtest",
+            data_dir=temp_data_dir,
+            wallet_fingerprint="a1b2c3d4",
+        )
+
+        assert matched == {f"{'ab' * 32}:2", f"{'ab' * 32}:3"}
 
 
 class TestCoinjoinLineageOutpoints:

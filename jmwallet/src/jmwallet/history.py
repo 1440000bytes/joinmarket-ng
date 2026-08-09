@@ -149,9 +149,50 @@ class TransactionHistoryEntry:
     # able to recover rows written against an older header.
     input_value: int = 0
 
+    # Index of this wallet's destination CoinJoin output in the serialized
+    # transaction. Kept last so older CSV rows safely default to unknown.
+    # Neutrino needs the exact vout to verify a confirmed output by address.
+    destination_vout: int = -1
+
 
 HISTORY_FILENAME = "history.csv"
 LEGACY_HISTORY_FILENAME = "coinjoin_history.csv"
+
+# A normal CoinJoin has no more than two outputs per participant (CoinJoin and
+# change). New rows retain the exact vout; this cap bounds compatibility scans
+# of manually edited or legacy history rows.
+_MAX_LEGACY_DESTINATION_VOUTS = 64
+
+
+def destination_vout_candidates(destination_vout: int, peer_count: int | None) -> range:
+    """Return an exact output index or bounded candidates for legacy history."""
+    if destination_vout >= 0:
+        return range(destination_vout, destination_vout + 1)
+    if peer_count is None or peer_count < 0:
+        return range(_MAX_LEGACY_DESTINATION_VOUTS)
+    return range(min(2 * (peer_count + 1), _MAX_LEGACY_DESTINATION_VOUTS))
+
+
+async def verify_history_destination_output(
+    backend: BlockchainBackend,
+    *,
+    txid: str,
+    destination_address: str,
+    destination_vout: int,
+    peer_count: int | None,
+    start_height: int | None,
+) -> bool:
+    """Verify a history destination by exact vout or bounded legacy scan."""
+    for vout in destination_vout_candidates(destination_vout, peer_count):
+        if await backend.verify_tx_output(
+            txid=txid,
+            vout=vout,
+            address=destination_address,
+            start_height=start_height,
+            include_mempool=False,
+        ):
+            return True
+    return False
 
 
 def _get_history_path(data_dir: Path | None = None) -> Path:
@@ -418,6 +459,11 @@ def _row_to_entry(row: Mapping[str, str | None]) -> TransactionHistoryEntry | No
         return value if value is not None else default
 
     try:
+        destination_vout = max(int(_get("destination_vout", "-1") or -1), -1)
+    except ValueError:
+        destination_vout = -1
+
+    try:
         return TransactionHistoryEntry(
             timestamp=_get("timestamp"),
             completed_at=_get("completed_at"),
@@ -456,6 +502,7 @@ def _row_to_entry(row: Mapping[str, str | None]) -> TransactionHistoryEntry | No
                 else "protocol",
             ),
             input_value=int(_get("input_value", "0") or 0),
+            destination_vout=destination_vout,
         )
     except (ValueError, KeyError) as e:
         logger.warning(f"Skipping malformed history row: {e}")
@@ -1004,6 +1051,7 @@ def create_maker_history_entry(
     wallet_fingerprint: str = "",
     source_addresses: list[str] | None = None,
     input_value: int = 0,
+    destination_vout: int = -1,
 ) -> TransactionHistoryEntry:
     """
     Create a history entry for a maker CoinJoin (initially marked as pending).
@@ -1025,6 +1073,7 @@ def create_maker_history_entry(
         wallet_fingerprint: Fingerprint of the wallet creating the entry
         source_addresses: Addresses corresponding to ``our_utxos``
         input_value: Total value of ``our_utxos`` in satoshis
+        destination_vout: Destination CoinJoin output index, or -1 when unknown
 
     Returns:
         TransactionHistoryEntry ready to be appended (marked as pending)
@@ -1055,6 +1104,7 @@ def create_maker_history_entry(
         network=network,
         wallet_fingerprint=wallet_fingerprint,
         input_value=input_value,
+        destination_vout=destination_vout,
     )
 
 
@@ -1367,6 +1417,7 @@ def update_awaiting_transaction_signed(
     txfee_contribution: int,
     data_dir: Path | None = None,
     wallet_fingerprint: str | None = None,
+    destination_vout: int = -1,
 ) -> bool:
     """
     Update a pending "Awaiting transaction" entry when the maker signs the tx.
@@ -1380,6 +1431,7 @@ def update_awaiting_transaction_signed(
         txid: The transaction ID
         fee_received: CoinJoin fee earned
         txfee_contribution: Mining fee contribution
+        destination_vout: Destination CoinJoin output index, or -1 when unknown
         data_dir: Optional data directory
         wallet_fingerprint: If provided, only match entries belonging to this
             wallet (issue #473).
@@ -1407,6 +1459,7 @@ def update_awaiting_transaction_signed(
             entry.fee_received = fee_received
             entry.txfee_contribution = txfee_contribution
             entry.net_fee = fee_received - txfee_contribution
+            entry.destination_vout = destination_vout
             entry.failure_reason = "Pending confirmation"  # Now awaiting confirmation
             logger.info(
                 f"Updated awaiting transaction for {destination_address[:20]}... "
@@ -1686,6 +1739,7 @@ def create_taker_history_entry(
     failure_reason: str = "Awaiting transaction",
     wallet_fingerprint: str = "",
     source_addresses: list[str] | None = None,
+    destination_vout: int = -1,
 ) -> TransactionHistoryEntry:
     """
     Create a history entry for a taker CoinJoin.
@@ -1712,6 +1766,7 @@ def create_taker_history_entry(
         network: Network name
         success: Whether the CoinJoin succeeded (default False for pending)
         failure_reason: Reason for failure if any (default "Awaiting transaction")
+        destination_vout: Destination CoinJoin output index, or -1 when unknown
 
     Returns:
         TransactionHistoryEntry ready to be appended
@@ -1742,6 +1797,7 @@ def create_taker_history_entry(
         broadcast_method=broadcast_method,
         network=network,
         wallet_fingerprint=wallet_fingerprint,
+        destination_vout=destination_vout,
     )
 
 
@@ -1938,13 +1994,13 @@ def get_protocol_coinjoin_output_outpoints(
     """Return current outpoints that exactly match protocol CoinJoin outputs.
 
     Address-level history is insufficient for coin selection because a later
-    payment can reuse a CoinJoin destination. Match the creating transaction,
-    destination address, and equal-output amount from successful maker/taker
-    protocol rows so only the actual protocol output receives the merge
-    exemption. Best-effort on-chain reconstruction is intentionally excluded.
+    payment can reuse a CoinJoin destination. New rows identify the exact
+    ``(txid, vout)``; legacy rows without an output index fall back to matching
+    the creating transaction, destination address, and equal-output amount.
+    Best-effort on-chain reconstruction is intentionally excluded.
     """
-    recorded_outputs = {
-        (entry.txid, entry.destination_address, entry.cj_amount)
+    entries = [
+        entry
         for entry in read_history(data_dir, wallet_fingerprint=wallet_fingerprint)
         if entry.network == network
         and entry.success
@@ -1953,11 +2009,20 @@ def get_protocol_coinjoin_output_outpoints(
         and entry.cj_amount > 0
         and entry.role in ("maker", "taker")
         and entry.source == "protocol"
+    ]
+    exact_outpoints = {
+        (entry.txid, entry.destination_vout) for entry in entries if entry.destination_vout >= 0
+    }
+    legacy_outputs = {
+        (entry.txid, entry.destination_address, entry.cj_amount)
+        for entry in entries
+        if entry.destination_vout < 0
     }
     return {
         utxo.outpoint
         for utxo in current_utxos
-        if (utxo.txid, utxo.address, utxo.value) in recorded_outputs
+        if (utxo.txid, utxo.vout) in exact_outpoints
+        or (utxo.txid, utxo.address, utxo.value) in legacy_outputs
     }
 
 
@@ -2341,12 +2406,13 @@ async def update_all_pending_transactions(
                 except Exception:
                     current_height = None
 
-                verified = await backend.verify_tx_output(
+                verified = await verify_history_destination_output(
+                    backend,
                     txid=entry.txid,
-                    vout=0,  # CJ outputs are typically first
-                    address=entry.destination_address,
+                    destination_address=entry.destination_address,
+                    destination_vout=entry.destination_vout,
+                    peer_count=entry.peer_count,
                     start_height=current_height,
-                    include_mempool=False,
                 )
 
                 if verified:

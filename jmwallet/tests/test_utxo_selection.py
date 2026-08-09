@@ -288,6 +288,17 @@ class TestGetAllUtxos:
         # Only UTXOs with 5+ confirms: 100k (10), 50k (5)
         assert len(all_utxos) == 2
 
+    def test_get_all_excludes_in_flight_outpoints(self, wallet_service: WalletService):
+        """Sweeps omit explicitly excluded inputs without changing other filters."""
+        excluded = {("a" * 64, 0)}
+
+        all_utxos = wallet_service.get_all_utxos(0, min_confirmations=1, exclude=excluded)
+
+        assert {(utxo.txid, utxo.vout) for utxo in all_utxos} == {
+            ("b" * 64, 0),
+            ("c" * 64, 0),
+        }
+
     def test_get_all_empty_mixdepth(self, wallet_service: WalletService):
         """Empty mixdepth returns empty list."""
         all_utxos = wallet_service.get_all_utxos(2, min_confirmations=1)
@@ -416,7 +427,7 @@ class TestSelectUtxosWithMergeExclude:
 
 @pytest.fixture
 def wallet_with_cj_labels(test_mnemonic: str, mock_backend) -> WalletService:
-    """WalletService with md0 UTXOs that have CJ labels (cj-out, cj-change, deposit)."""
+    """WalletService with md0 UTXOs that have exact CJ provenance."""
     ws = WalletService(
         mnemonic=test_mnemonic,
         backend=mock_backend,
@@ -438,6 +449,7 @@ def wallet_with_cj_labels(test_mnemonic: str, mock_backend) -> WalletService:
                 path="m/84'/0'/0'/0/0",
                 mixdepth=0,
                 label="cj-out",
+                coinjoin_output=True,
             ),
             # CJ output - can be merged
             UTXOInfo(
@@ -450,6 +462,7 @@ def wallet_with_cj_labels(test_mnemonic: str, mock_backend) -> WalletService:
                 path="m/84'/0'/0'/0/1",
                 mixdepth=0,
                 label="cj-out",
+                coinjoin_output=True,
             ),
             # CJ change - restricted (same as deposit)
             UTXOInfo(
@@ -505,7 +518,7 @@ def wallet_with_cj_labels(test_mnemonic: str, mock_backend) -> WalletService:
 
 
 class TestMd0CjOutputExemption:
-    """Tests that CJ outputs (label='cj-out') are exempt from md0 merge restriction."""
+    """Tests that exact CJ outputs are exempt from the md0 merge restriction."""
 
     def test_select_utxos_md0_cj_outputs_can_merge(self, wallet_with_cj_labels: WalletService):
         """select_utxos() for md0 can merge multiple cj-out UTXOs."""
@@ -521,6 +534,19 @@ class TestMd0CjOutputExemption:
         assert len(selected) == 1
         assert selected[0].value == 60_000
         assert selected[0].label == "cj-out"
+
+    def test_user_cj_out_labels_do_not_allow_md0_merges(self, wallet_with_cj_labels: WalletService):
+        """A user cannot grant merge eligibility by labeling deposits ``cj-out``."""
+        for utxo in wallet_with_cj_labels.utxo_cache[0]:
+            utxo.coinjoin_output = False
+            utxo.label = "cj-out"
+
+        with pytest.raises(ValueError, match="Cannot merge non-CJ md0 UTXOs"):
+            wallet_with_cj_labels.select_utxos(0, 90_000, min_confirmations=1)
+        with pytest.raises(ValueError, match="Cannot merge non-CJ md0 UTXOs"):
+            wallet_with_cj_labels.select_utxos_with_merge(
+                0, 90_000, min_confirmations=1, merge_algorithm="greedy"
+            )
 
     def test_select_utxos_md0_falls_back_to_largest_non_cj(
         self, wallet_with_cj_labels: WalletService
@@ -542,7 +568,7 @@ class TestMd0CjOutputExemption:
         """cj-change is NOT exempt from md0 restriction."""
         # Remove CJ outputs so only non-CJ UTXOs remain
         wallet_with_cj_labels.utxo_cache[0] = [
-            u for u in wallet_with_cj_labels.utxo_cache[0] if u.label != "cj-out"
+            u for u in wallet_with_cj_labels.utxo_cache[0] if not u.coinjoin_output
         ]
         # Non-CJ: cj-change=70k, deposit=50k, nolabel=30k
         # Cannot merge, largest is 70k
@@ -585,7 +611,7 @@ class TestMd0CjOutputExemption:
         """Non-CJ UTXOs in md0 still restricted to single UTXO even with greedy merge."""
         # Remove CJ outputs
         wallet_with_cj_labels.utxo_cache[0] = [
-            u for u in wallet_with_cj_labels.utxo_cache[0] if u.label != "cj-out"
+            u for u in wallet_with_cj_labels.utxo_cache[0] if not u.coinjoin_output
         ]
         # Largest non-CJ is 70k, target is 50k
         selected = wallet_with_cj_labels.select_utxos_with_merge(
@@ -638,7 +664,7 @@ class TestGetBalanceForOffersCjExemption:
     async def test_md0_only_cj_outputs(self, wallet_with_cj_labels: WalletService):
         """When md0 has only cj-out UTXOs, pool sum is the balance."""
         wallet_with_cj_labels.utxo_cache[0] = [
-            u for u in wallet_with_cj_labels.utxo_cache[0] if u.label == "cj-out"
+            u for u in wallet_with_cj_labels.utxo_cache[0] if u.coinjoin_output
         ]
         balance = await wallet_with_cj_labels.get_balance_for_offers(0, min_confirmations=1)
         assert balance == 100_000  # max(100k, 0) = 100k
@@ -647,11 +673,22 @@ class TestGetBalanceForOffersCjExemption:
     async def test_md0_no_cj_outputs(self, wallet_with_cj_labels: WalletService):
         """When md0 has no cj-out UTXOs, balance is largest single UTXO."""
         wallet_with_cj_labels.utxo_cache[0] = [
-            u for u in wallet_with_cj_labels.utxo_cache[0] if u.label != "cj-out"
+            u for u in wallet_with_cj_labels.utxo_cache[0] if not u.coinjoin_output
         ]
         balance = await wallet_with_cj_labels.get_balance_for_offers(0, min_confirmations=1)
         # Largest non-CJ: cj-change=70k
         assert balance == 70_000
+
+    @pytest.mark.asyncio
+    async def test_user_cj_out_labels_do_not_inflate_offer_balance(
+        self, wallet_with_cj_labels: WalletService
+    ):
+        """Offer liquidity trusts exact provenance, not a user-provided label."""
+        for utxo in wallet_with_cj_labels.utxo_cache[0]:
+            utxo.coinjoin_output = False
+            utxo.label = "cj-out"
+
+        assert await wallet_with_cj_labels.get_balance_for_offers(0, min_confirmations=1) == 70_000
 
 
 class TestGetBalanceForOffersMd0:

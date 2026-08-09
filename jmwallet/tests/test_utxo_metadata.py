@@ -144,6 +144,17 @@ class TestOutputRecord:
         assert restored.spendable == original.spendable
         assert restored.label == original.label
 
+    def test_coinjoin_output_extension_roundtrip(self):
+        """The JoinMarket provenance extension is independent from the label."""
+        original = OutputRecord(ref="aa" * 32 + ":1", label="user note", coinjoin_output=True)
+
+        restored = OutputRecord.from_dict(original.to_dict())
+
+        assert restored is not None
+        assert restored.label == "user note"
+        assert restored.coinjoin_output is True
+        assert restored.to_dict()["jm_coinjoin_output"] is True
+
 
 # ---------------------------------------------------------------------------
 # UTXOMetadataStore tests
@@ -366,6 +377,25 @@ class TestUTXOMetadataStore:
         store.set_label(outpoint_a, "test")
         store.set_label(outpoint_a, None)
         assert outpoint_a not in store.records
+
+    def test_clear_label_preserves_coinjoin_provenance(self, store, outpoint_a):
+        """User label changes must not revoke exact CoinJoin provenance."""
+        store.mark_coinjoin_outputs([outpoint_a])
+        store.set_label(outpoint_a, "user note")
+        store.set_label(outpoint_a, None)
+
+        assert store.get_coinjoin_output_outpoints() == {outpoint_a}
+        assert store.records[outpoint_a].label is None
+
+    def test_coinjoin_output_provenance_survives_store_restart(self, store, outpoint_a):
+        """Exact CoinJoin provenance persists independently from labels."""
+        store.mark_coinjoin_outputs([outpoint_a])
+        store.set_label(outpoint_a, "personal note")
+
+        reloaded = UTXOMetadataStore(path=store.path)
+        reloaded.load()
+        assert reloaded.get_coinjoin_output_outpoints() == {outpoint_a}
+        assert reloaded.get_label(outpoint_a) == "personal note"
 
     def test_clear_label_keeps_frozen_state(self, store, outpoint_a):
         """Clearing label preserves frozen state."""

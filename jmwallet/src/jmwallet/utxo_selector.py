@@ -39,7 +39,12 @@ _SELECTOR_COL_HEADER = (
 )
 
 
-def format_utxo_line(utxo: UTXOInfo, max_width: int = 120, prev_address: str = "") -> str:
+def format_utxo_line(
+    utxo: UTXOInfo,
+    max_width: int = 120,
+    prev_address: str = "",
+    excluded_outpoints: set[tuple[str, int]] | None = None,
+) -> str:
     """Format a single UTXO row (without the selection-state prefix).
 
     Args:
@@ -50,7 +55,7 @@ def format_utxo_line(utxo: UTXOInfo, max_width: int = 120, prev_address: str = "
 
     Returns:
         Formatted string with mixdepth, address, amount, confirmations,
-        outpoint, fidelity bond / frozen indicators, and label.
+        outpoint, fidelity bond / frozen / in-use indicators, and label.
     """
     md_str = f"m{utxo.mixdepth}"
     addr_str = format_address_column(utxo.address, prev_address)
@@ -68,10 +73,13 @@ def format_utxo_line(utxo: UTXOInfo, max_width: int = 120, prev_address: str = "
 
     # Frozen indicator (placed after label for consistency with --extended view)
     frozen_indicator = " [FROZEN]" if utxo.frozen else ""
+    in_use_indicator = (
+        " [IN-USE]" if excluded_outpoints and (utxo.txid, utxo.vout) in excluded_outpoints else ""
+    )
 
     line = (
         f"{md_str:>2} | {addr_str:<{ADDRESS_COL_WIDTH}} | {amount_str:>15} | {conf_str} | "
-        f"{outpoint}{fb_indicator}{label_str}{frozen_indicator}"
+        f"{outpoint}{fb_indicator}{label_str}{frozen_indicator}{in_use_indicator}"
     )
 
     if len(line) > max_width:
@@ -84,18 +92,22 @@ def _is_base_selectable(
     utxo: UTXOInfo,
     allowed_mixdepth: int | None,
     min_confirmations: int,
+    excluded_outpoints: set[tuple[str, int]] | None = None,
 ) -> bool:
     """Whether a UTXO may ever be selected in this session.
 
     Frozen UTXOs and still-locked fidelity bonds are never selectable, nor
     are UTXOs below ``min_confirmations`` or outside ``allowed_mixdepth``
-    (when pinned by the caller). They are still displayed for context.
+    (when pinned by the caller), or in ``excluded_outpoints``. They are still
+    displayed for context.
     """
     if utxo.frozen:
         return False
     if utxo.is_fidelity_bond and utxo.is_locked:
         return False
     if utxo.confirmations < min_confirmations:
+        return False
+    if excluded_outpoints and (utxo.txid, utxo.vout) in excluded_outpoints:
         return False
     if allowed_mixdepth is not None and utxo.mixdepth != allowed_mixdepth:
         return False
@@ -108,6 +120,7 @@ def _run_selector(
     target_amount: int,
     allowed_mixdepth: int | None,
     min_confirmations: int,
+    excluded_outpoints: set[tuple[str, int]],
 ) -> list[UTXOInfo]:
     """Run the curses-based UTXO selector.
 
@@ -140,7 +153,8 @@ def _run_selector(
     base_selectable: set[int] = {
         i
         for i, item in enumerate(display_items)
-        if item is not None and _is_base_selectable(item, allowed_mixdepth, min_confirmations)
+        if item is not None
+        and _is_base_selectable(item, allowed_mixdepth, min_confirmations, excluded_outpoints)
     }
     last = len(display_items) - 1
 
@@ -211,7 +225,9 @@ def _run_selector(
                 mark = "[x]"
             else:
                 mark = "[ ]"
-            line = f" {mark} | " + format_utxo_line(item, width - 8, prev_address)
+            line = f" {mark} | " + format_utxo_line(
+                item, width - 8, prev_address, excluded_outpoints
+            )
             prev_address = item.address
 
             # Apply colors
@@ -219,8 +235,12 @@ def _run_selector(
                 attr = curses.color_pair(2) | curses.A_REVERSE
             elif is_selected:
                 attr = curses.color_pair(1) | curses.A_BOLD
-            elif item.frozen or (item.is_fidelity_bond and item.is_locked):
-                # Frozen / still-locked bonds - red, dimmed (never selectable)
+            elif (
+                item.frozen
+                or (item.is_fidelity_bond and item.is_locked)
+                or (item.txid, item.vout) in excluded_outpoints
+            ):
+                # Frozen, in-use, or still-locked bonds are red and unselectable.
                 attr = curses.color_pair(4) | curses.A_DIM
             elif item.is_fidelity_bond:
                 # Unlocked FB - magenta (can be spent but should be careful)
@@ -353,6 +373,7 @@ def select_utxos_interactive(
     target_amount: int = 0,
     allowed_mixdepth: int | None = None,
     min_confirmations: int = 0,
+    excluded_outpoints: set[tuple[str, int]] | None = None,
 ) -> list[UTXOInfo]:
     """Display an interactive UTXO selector over the whole wallet.
 
@@ -376,6 +397,8 @@ def select_utxos_interactive(
             (other mixdepths are displayed for context only)
         min_confirmations: UTXOs below this many confirmations are shown
             but unselectable
+        excluded_outpoints: In-flight CoinJoin inputs shown as ``[IN-USE]``
+            but unavailable for selection.
 
     Returns:
         List of selected UTXOs (all from one mixdepth), empty if cancelled
@@ -386,13 +409,16 @@ def select_utxos_interactive(
     # Handle trivial cases without requiring a terminal
     if not utxos:
         return []
+    excluded_outpoints = excluded_outpoints or set()
 
     # For multiple UTXOs, we need a terminal
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         # If only one UTXO and no terminal, auto-select it (only if selectable)
         if len(utxos) == 1:
             utxo = utxos[0]
-            if not _is_base_selectable(utxo, allowed_mixdepth, min_confirmations):
+            if not _is_base_selectable(
+                utxo, allowed_mixdepth, min_confirmations, excluded_outpoints
+            ):
                 return []
             return utxos
         raise RuntimeError("Interactive UTXO selection requires a terminal")
@@ -402,5 +428,10 @@ def select_utxos_interactive(
     display_items = build_display_items(sorted_utxos)
 
     return curses.wrapper(
-        _run_selector, display_items, target_amount, allowed_mixdepth, min_confirmations
+        _run_selector,
+        display_items,
+        target_amount,
+        allowed_mixdepth,
+        min_confirmations,
+        excluded_outpoints,
     )

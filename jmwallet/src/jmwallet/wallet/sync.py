@@ -407,9 +407,22 @@ class WalletSyncMixin:
             data_dir=self.data_dir,
             wallet_fingerprint=self.wallet_fingerprint,
         )
+        # Exact outpoints already persisted by an earlier protocol-history pass
+        # remain authoritative across restarts even if history.csv is later
+        # unavailable. Imported equal-output classifications never set this bit.
+        recorded_cj_outputs |= store.get_coinjoin_output_outpoints()
+        if recorded_cj_outputs:
+            try:
+                store.mark_coinjoin_outputs(recorded_cj_outputs)
+            except Exception as exc:  # pragma: no cover - disk failures are rare
+                logger.warning(f"Could not persist protocol CoinJoin provenance: {exc}")
         for utxo in current_utxos:
-            if utxo.outpoint in recorded_cj_outputs and utxo.label is None:
-                utxo.label = "cj-out"
+            # Only exact protocol provenance grants the md0 merge exemption.
+            # Imported equal-output analysis below is a display heuristic.
+            utxo.coinjoin_output = utxo.outpoint in recorded_cj_outputs
+            if utxo.coinjoin_output:
+                if utxo.label is None:
+                    utxo.label = "cj-out"
 
         if getattr(self, "_imported_labels_scanned", False) and not force:
             return 0
