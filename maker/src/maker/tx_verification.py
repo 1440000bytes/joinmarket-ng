@@ -196,6 +196,21 @@ def parse_transaction(
         return None
 
 
+def find_output_index(
+    tx_hex: str,
+    address: str,
+    network: NetworkType = NetworkType.MAINNET,
+) -> int:
+    """Return the verified transaction output index paying ``address``."""
+    tx = parse_transaction(tx_hex, network=network)
+    if tx is None:
+        return -1
+    return next(
+        (index for index, output in enumerate(tx["outputs"]) if output["address"] == address),
+        -1,
+    )
+
+
 def script_to_address(script: bytes, network: str = "mainnet") -> str:
     """
     Convert scriptPubKey to address.

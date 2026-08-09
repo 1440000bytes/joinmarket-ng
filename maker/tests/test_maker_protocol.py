@@ -534,13 +534,13 @@ async def test_select_our_utxos_forwards_exclude_to_wallet():
     replacement"). The exclusion set originates from other active sessions and
     must reach select_utxos_with_merge.
     """
-    from unittest.mock import AsyncMock, MagicMock
+    from unittest.mock import AsyncMock, MagicMock, patch
 
-    from jmcore.constants import DUST_THRESHOLD
     from jmcore.models import Offer, OfferType
     from jmwallet.wallet.models import UTXOInfo
 
     from maker.coinjoin import CoinJoinSession
+    from maker.offer_math import required_maker_input
 
     mock_wallet = MagicMock()
     mock_wallet.mixdepth_count = 5
@@ -584,7 +584,10 @@ async def test_select_our_utxos_forwards_exclude_to_wallet():
     session.amount = 1_000_000
 
     committed_elsewhere = {("cd" * 32, 0), ("ef" * 32, 3)}
-    utxos_dict, _, _, mixdepth = await session._select_our_utxos(exclude_utxos=committed_elsewhere)
+    with patch("maker.coinjoin.required_maker_input", wraps=required_maker_input) as required_input:
+        utxos_dict, _, _, mixdepth = await session._select_our_utxos(
+            exclude_utxos=committed_elsewhere
+        )
 
     assert mixdepth >= 0  # selection succeeded
     assert (("ab" * 32), 1) in utxos_dict
@@ -592,10 +595,10 @@ async def test_select_our_utxos_forwards_exclude_to_wallet():
     assert mock_wallet.select_utxos_with_merge.call_args.kwargs["exclude"] == (committed_elsewhere)
     for call in mock_wallet.get_balance_for_offers.call_args_list:
         assert call.kwargs["exclude"] == committed_elsewhere
+    required_input.assert_called_once_with(offer, 1_000_000)
     # Selection must reserve enough value for a non-dust change output.
-    # real_cjfee = 1_000_000 * 0.0003 = 300 sats.
-    assert mock_wallet.select_utxos_with_merge.call_args.args[1] == (
-        1_000_000 + 1000 + DUST_THRESHOLD + 1 - 300
+    assert mock_wallet.select_utxos_with_merge.call_args.args[1] == required_maker_input(
+        offer, 1_000_000
     )
     mock_wallet.reserve_coinjoin_inputs.assert_called_once_with(
         {("ab" * 32, 1)}, ttl=session.input_lock_ttl_sec, owner=session.input_lock_owner
@@ -1152,7 +1155,10 @@ async def test_on_tx_fallback_history_records_input_value():
     inner.offer.calculate_fee.return_value = 500
     inner.offer.txfee = 100
     inner.handle_tx = AsyncMock(
-        return_value=(True, {"signatures": ["signature"], "txid": "ab" * 32})
+        return_value=(
+            True,
+            {"signatures": ["signature"], "txid": "ab" * 32, "destination_vout": 3},
+        )
     )
     session = MakerSession(inner)
     session.send_response = AsyncMock(return_value=True)
@@ -1164,7 +1170,9 @@ async def test_on_tx_fallback_history_records_input_value():
     bot.wallet.wallet_fingerprint = "deadbeef"
 
     with (
-        patch("maker.maker_session.update_awaiting_transaction_signed", return_value=False),
+        patch(
+            "maker.maker_session.update_awaiting_transaction_signed", return_value=False
+        ) as update_history,
         patch(
             "maker.maker_session.create_maker_history_entry", return_value=MagicMock()
         ) as create_history,
@@ -1175,6 +1183,8 @@ async def test_on_tx_fallback_history_records_input_value():
         await session.on_tx(bot, "tx ciphertext", "dir:test")
 
     assert create_history.call_args.kwargs["input_value"] == 612_345
+    assert create_history.call_args.kwargs["destination_vout"] == 3
+    assert update_history.call_args.kwargs["destination_vout"] == 3
 
 
 def test_maker_session_uses_monotonic_deadline_without_running_loop():

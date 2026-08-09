@@ -492,6 +492,9 @@ class MakerSession:
             if success:
                 signatures = response.get("signatures", [])
                 txid = response.get("txid", "")
+                destination_vout = response.get("destination_vout", -1)
+                if not isinstance(destination_vout, int):
+                    destination_vout = -1
                 if not await bot._register_pending_signed_round(self, txid):
                     logger.error(
                         f"Cannot retain signed round for {taker_nick}; withholding signatures"
@@ -517,6 +520,7 @@ class MakerSession:
                         txid=txid,
                         fee_received=fee_received,
                         txfee_contribution=txfee_contribution,
+                        destination_vout=destination_vout,
                         data_dir=bot.config.data_dir,
                         wallet_fingerprint=bot.wallet.wallet_fingerprint,
                     )
@@ -543,6 +547,7 @@ class MakerSession:
                             wallet_fingerprint=bot.wallet.wallet_fingerprint,
                             source_addresses=our_input_addresses,
                             input_value=input_value,
+                            destination_vout=destination_vout,
                         )
                         append_history_entry(history_entry, data_dir=bot.config.data_dir)
                         logger.debug(f"Created new CoinJoin history: net fee {net} sats")

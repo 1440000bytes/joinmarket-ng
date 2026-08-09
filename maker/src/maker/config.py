@@ -33,6 +33,33 @@ def normalize_decimal_string(v: str | float | int) -> str:
     return v
 
 
+def validate_relative_cj_fee(value: str, randomization_factor: float = 0.0) -> None:
+    """Validate the full relative-fee range produced for protocol offers."""
+    try:
+        fee = Decimal(value)
+    except InvalidOperation as exc:
+        raise ValueError(f"cj_fee_relative must be a valid number, got {value}") from exc
+    if not fee.is_finite():
+        raise ValueError(f"cj_fee_relative must be a valid number, got {value}")
+    if fee <= 0:
+        raise ValueError(f"cj_fee_relative must be > 0 for relative offer types, got {value}")
+    if fee >= 1:
+        raise ValueError(f"cj_fee_relative must be < 1 for relative offer types, got {value}")
+    factor = Decimal(str(randomization_factor))
+    if factor > 1:
+        raise ValueError(
+            "cjfee_factor must be <= 1 for relative offer types because "
+            "cj_fee_relative * (1 - cjfee_factor) must not be negative, "
+            f"got {randomization_factor}"
+        )
+    maximum_fee = fee * (Decimal(1) + factor)
+    if maximum_fee >= 1:
+        raise ValueError(
+            "cj_fee_relative * (1 + cjfee_factor) must be < 1 for relative "
+            f"offer types, got {value} and {randomization_factor}"
+        )
+
+
 class OfferConfig(BaseModel):
     """
     Configuration for a single offer.
@@ -124,19 +151,7 @@ class OfferConfig(BaseModel):
                 "Wrapped SegWit maker offers are not supported by the P2WPKH wallet signer"
             )
         if self.offer_type in (OfferType.SW0_RELATIVE, OfferType.SWA_RELATIVE):
-            try:
-                cj_fee_float = float(self.cj_fee_relative)
-                if cj_fee_float <= 0:
-                    raise ValueError(
-                        f"cj_fee_relative must be > 0 for relative offer types, "
-                        f"got {self.cj_fee_relative}"
-                    )
-            except ValueError as e:
-                if "could not convert" in str(e):
-                    raise ValueError(
-                        f"cj_fee_relative must be a valid number, got {self.cj_fee_relative}"
-                    ) from e
-                raise
+            validate_relative_cj_fee(self.cj_fee_relative, self.cjfee_factor)
         return self
 
     def get_cjfee(self) -> str | int:
@@ -358,10 +373,10 @@ class MakerConfig(WalletConfig):
         default=False,
         description=(
             "When False (default), mixdepth 0 UTXOs are restricted to prevent "
-            "linking deposits/fidelity bonds via UTXO merging. CoinJoin outputs "
-            "(label 'cj-out') are always exempt from this restriction since they "
-            "already have CoinJoin privacy. Set to True to disable the restriction "
-            "entirely (experienced makers only)."
+            "linking deposits/fidelity bonds via UTXO merging. Outputs with exact "
+            "protocol CoinJoin provenance are always exempt since they already "
+            "have CoinJoin privacy. Set to True to disable the restriction entirely "
+            "(experienced makers only)."
         ),
     )
 
@@ -462,19 +477,7 @@ class MakerConfig(WalletConfig):
                 )
             # Validate cj_fee_relative for relative offer types
             if self.offer_type in (OfferType.SW0_RELATIVE, OfferType.SWA_RELATIVE):
-                try:
-                    cj_fee_float = float(self.cj_fee_relative)
-                    if cj_fee_float <= 0:
-                        raise ValueError(
-                            f"cj_fee_relative must be > 0 for relative offer types, "
-                            f"got {self.cj_fee_relative}"
-                        )
-                except ValueError as e:
-                    if "could not convert" in str(e):
-                        raise ValueError(
-                            f"cj_fee_relative must be a valid number, got {self.cj_fee_relative}"
-                        ) from e
-                    raise
+                validate_relative_cj_fee(self.cj_fee_relative, self.cjfee_factor)
 
         return self
 

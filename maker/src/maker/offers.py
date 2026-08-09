@@ -7,6 +7,8 @@ Supports multiple simultaneous offers with different fee structures (relative/ab
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 from jmcore.constants import DUST_THRESHOLD
 from jmcore.models import Offer, OfferType
 from jmcore.randomness import secure_random
@@ -15,6 +17,7 @@ from loguru import logger
 
 from maker.config import MakerConfig, OfferConfig
 from maker.fidelity import get_best_fidelity_bond
+from maker.offer_math import max_fillable_cj_amount
 
 
 def _randomize(value: float, factor: float, low: float | None = None) -> float:
@@ -34,15 +37,16 @@ def _randomize(value: float, factor: float, low: float | None = None) -> float:
     return result
 
 
-def _format_relative_cjfee(value: float) -> str:
+def _format_relative_cjfee(value: Decimal) -> str:
     """Format a relative CJ fee without scientific notation or trailing zeros.
 
-    Mirrors the canonicalization performed by
-    :meth:`maker.config.OfferConfig.normalize_cj_fee_relative` so that wire
-    values stay compact and round-trip through the validator.
+    Decimal arithmetic retains configured precision and avoids converting tiny
+    valid fees into zero before they are advertised.
     """
-    formatted = f"{value:.10f}".rstrip("0").rstrip(".")
-    return formatted if formatted else "0"
+    formatted = format(value, "f")
+    if "." in formatted:
+        formatted = formatted.rstrip("0").rstrip(".")
+    return formatted
 
 
 class OfferManager:
@@ -198,15 +202,23 @@ class OfferManager:
         )
 
         if offer_cfg.offer_type in (OfferType.SW0_RELATIVE, OfferType.SWA_RELATIVE):
-            cj_fee_float = float(offer_cfg.cj_fee_relative)
-            if cj_fee_float <= 0:
+            cj_fee = Decimal(offer_cfg.cj_fee_relative)
+            if cj_fee <= 0:
                 logger.error(f"Invalid cj_fee_relative: {offer_cfg.cj_fee_relative}. Must be > 0.")
                 return None
-            randomized_cj_fee_float = _randomize(cj_fee_float, offer_cfg.cjfee_factor)
-            if randomized_cj_fee_float <= 0:
-                randomized_cj_fee_float = cj_fee_float
-            cjfee_str = _format_relative_cjfee(randomized_cj_fee_float)
-            return cjfee_str, randomized_txfee, randomized_cj_fee_float
+            factor = Decimal(str(offer_cfg.cjfee_factor))
+            if factor <= 0:
+                randomized_cj_fee = cj_fee
+            else:
+                lower = cj_fee * (Decimal(1) - factor)
+                upper = cj_fee * (Decimal(1) + factor)
+                randomized_cj_fee = lower + (upper - lower) * Decimal(str(secure_random.random()))
+                # A factor of one has a zero lower endpoint. ``random()`` can
+                # theoretically return zero, which is invalid on the wire.
+                if randomized_cj_fee <= 0 or randomized_cj_fee >= 1:
+                    randomized_cj_fee = cj_fee
+            cjfee_str = _format_relative_cjfee(randomized_cj_fee)
+            return cjfee_str, randomized_txfee, float(randomized_cj_fee)
         else:
             # Absolute offer: randomize the CJ fee and add the txfee
             # contribution for the wire value, but keep them separate so the
@@ -247,15 +259,10 @@ class OfferManager:
         - ``suppressed`` is the set of offer indices that the auto-split
           has rendered fully dominated and that the caller must skip.
 
-        ``max_balance`` is the gross mixdepth balance.  The actual ceiling
-        that :meth:`_create_single_offer` will enforce as ``max_available``
-        (``max_balance`` minus the dust threshold and the rel offer's
-        randomized tx-fee contribution) is recomputed here so the
-        intersection check uses the same usable balance.  Otherwise an
-        intersection falling in the band ``(max_available, max_balance]``
-        would be treated as "inside the usable range" here but rejected
-        later as "min_size > max_available", producing a misleading
-        "Insufficient balance" warning.
+        ``max_balance`` is the gross mixdepth balance. The exact ceiling that
+        :meth:`_create_single_offer` will enforce is recomputed here from the
+        randomized relative-offer terms so split suppression cannot create an
+        unfillable relative range.
 
         Returns ``({}, set())`` for any non-dual configuration (single
         offer, two same-type offers, three or more offers, etc.) so
@@ -300,14 +307,17 @@ class OfferManager:
 
         # Lower floor for the abs offer is its own configured min_size.
         abs_min = abs_cfg.min_size
-        # Upper ceiling for the rel offer is the wallet-derived max_available
-        # for that offer (i.e. after subtracting the dust threshold and the
-        # rel offer's randomized tx-fee contribution).  Using the gross
-        # ``max_balance`` here would let an intersection fall in the band
-        # ``(max_available, max_balance]`` and produce an unfillable rel
-        # offer with ``min_size > max_available``.
+        # Use the same exact requirement calculation as fill-time selection.
         rel_randomized_txfee = randomized_fees[rel_idx][1]
-        rel_max_ceiling = max_balance - max(DUST_THRESHOLD, rel_randomized_txfee)
+        rel_offer = self._offer_terms(
+            rel_idx,
+            rel_cfg,
+            randomized_fees[rel_idx][0],
+            rel_randomized_txfee,
+        )
+        rel_max_ceiling = max_fillable_cj_amount(rel_offer, max_balance)
+        if rel_max_ceiling is None:
+            rel_max_ceiling = -1
 
         overrides: dict[int, tuple[int | None, int | None]] = {}
         suppressed: set[int] = set()
@@ -332,11 +342,11 @@ class OfferManager:
             logger.info(
                 f"Dual-offer auto-split: intersection ({intersection} sats) "
                 f"is at or above the usable balance ({rel_max_ceiling} sats, "
-                f"gross={max_balance}); rel offer suppressed, abs offer "
-                f"covers [{abs_min}, {rel_max_ceiling}]"
+                f"gross={max_balance}); rel offer suppressed, abs offer covers "
+                "its full fillable range"
             )
             suppressed.add(rel_idx)
-            overrides[abs_idx] = (abs_min, rel_max_ceiling)
+            overrides[abs_idx] = (abs_min, None)
             return overrides, suppressed
 
         # Standard case: the intersection sits strictly inside the usable
@@ -350,6 +360,26 @@ class OfferManager:
             f"rel offer covers [{intersection}, {rel_max_ceiling}]"
         )
         return overrides, suppressed
+
+    def _offer_terms(
+        self,
+        offer_id: int,
+        offer_cfg: OfferConfig,
+        cjfee: str,
+        txfee: int,
+        fidelity_bond_value: int = 0,
+    ) -> Offer:
+        """Build an Offer carrying terms used by pure liquidity calculations."""
+        return Offer(
+            counterparty=self.maker_nick,
+            oid=offer_id,
+            ordertype=offer_cfg.offer_type,
+            minsize=0,
+            maxsize=0,
+            txfee=txfee,
+            cjfee=cjfee,
+            fidelity_bond_value=fidelity_bond_value,
+        )
 
     def _create_single_offer(
         self,
@@ -391,8 +421,20 @@ class OfferManager:
                 logger.error(f"Offer {offer_id}: invalid fee config, skipping")
                 return None
 
-            # Reserve dust threshold + randomized tx fee contribution.
-            max_available = max_balance - max(DUST_THRESHOLD, randomized_txfee)
+            terms = self._offer_terms(
+                offer_id,
+                offer_cfg,
+                cjfee_str,
+                randomized_txfee,
+                fidelity_bond_value,
+            )
+            max_available = max_fillable_cj_amount(terms, max_balance)
+            if max_available is None:
+                logger.warning(
+                    f"Offer {offer_id}: Insufficient balance for mandatory maker change "
+                    f"(max_balance={max_balance})"
+                )
+                return None
             # Apply dual-offer ceiling (caps the abs offer at the intersection).
             if max_size_override is not None:
                 max_available = min(max_available, max_size_override)
@@ -405,7 +447,7 @@ class OfferManager:
                 logger.warning(
                     f"Offer {offer_id}: Insufficient balance: "
                     f"max_available={max_available} <= min_size={effective_min_size} "
-                    f"(max_balance={max_balance}, dust_threshold={DUST_THRESHOLD})"
+                    f"(max_balance={max_balance})"
                 )
                 return None
 
@@ -450,15 +492,8 @@ class OfferManager:
                 )
                 return None
 
-            offer = Offer(
-                counterparty=self.maker_nick,
-                oid=offer_id,
-                ordertype=offer_cfg.offer_type,
-                minsize=randomized_min_size,
-                maxsize=randomized_max_size,
-                txfee=randomized_txfee,
-                cjfee=cjfee_str,
-                fidelity_bond_value=fidelity_bond_value,
+            offer = terms.model_copy(
+                update={"minsize": randomized_min_size, "maxsize": randomized_max_size}
             )
 
             logger.info(

@@ -10,9 +10,23 @@ from jmwallet.wallet.models import UTXOInfo
 
 from maker.tx_verification import (
     calculate_cj_fee,
+    find_output_index,
     parse_transaction,
     verify_unsigned_transaction,
 )
+
+
+def test_find_output_index_uses_verified_output_order() -> None:
+    parsed = {
+        "inputs": [],
+        "outputs": [
+            {"value": 10_000, "address": "bcrt1qother"},
+            {"value": 100_000, "address": "bcrt1qmaker"},
+        ],
+    }
+    with patch("maker.tx_verification.parse_transaction", return_value=parsed):
+        assert find_output_index("00", "bcrt1qmaker", NetworkType.REGTEST) == 1
+        assert find_output_index("00", "bcrt1qmissing", NetworkType.REGTEST) == -1
 
 
 def test_calculate_cj_fee_absolute():

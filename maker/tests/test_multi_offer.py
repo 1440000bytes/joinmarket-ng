@@ -18,6 +18,7 @@ from maker.bot import MakerBot
 from maker.coinjoin import CoinJoinState
 from maker.config import MakerConfig, OfferConfig
 from maker.maker_session import MakerSession
+from maker.offer_math import max_fillable_cj_amount, required_maker_input
 from maker.offers import OfferManager
 
 
@@ -234,10 +235,10 @@ class TestOfferManagerMultiOffer:
         assert offers[0].cjfee == "0.001"
 
     @pytest.mark.asyncio
-    async def test_offer_reserve_ignores_mutated_legacy_threshold(
+    async def test_relative_offer_maxsize_matches_fillable_balance(
         self, mock_wallet, config_single_offer
     ):
-        """Offer liquidity always reserves the fixed coordination threshold."""
+        """Relative maxsize accounts for the exact rounded CJ fee at fill time."""
         config_single_offer.dust_threshold = 1
         manager = OfferManager(mock_wallet, config_single_offer, "J5TestMaker")
 
@@ -245,7 +246,56 @@ class TestOfferManagerMultiOffer:
             offers = await manager.create_offers()
 
         assert len(offers) == 1
-        assert offers[0].maxsize == 1_000_000 - DUST_THRESHOLD
+        offer = offers[0]
+        assert offer.maxsize == 973_673
+        assert required_maker_input(offer, offer.maxsize) <= 1_000_000
+        assert required_maker_input(offer, offer.maxsize + 1) > 1_000_000
+
+    @pytest.mark.asyncio
+    async def test_zero_fee_absolute_offer_maxsize_matches_fillable_balance(self, mock_wallet):
+        """A zero-fee absolute offer reserves exactly the mandatory change output."""
+        config = MakerConfig(
+            mnemonic="test " * 12,
+            directory_servers=["localhost:5222"],
+            network=NetworkType.REGTEST,
+            offer_type=OfferType.SW0_ABSOLUTE,
+            min_size=100_000,
+            cj_fee_absolute=0,
+            tx_fee_contribution=0,
+            cjfee_factor=0.0,
+            txfee_contribution_factor=0.0,
+            size_factor=0.0,
+        )
+        manager = OfferManager(mock_wallet, config, "J5TestMaker")
+
+        with patch("maker.offers.get_best_fidelity_bond", new=AsyncMock(return_value=None)):
+            offers = await manager.create_offers()
+
+        assert len(offers) == 1
+        offer = offers[0]
+        assert offer.maxsize == 1_000_000 - DUST_THRESHOLD - 1
+        assert required_maker_input(offer, offer.maxsize) <= 1_000_000
+        assert required_maker_input(offer, offer.maxsize + 1) > 1_000_000
+
+    @pytest.mark.parametrize(
+        "ordertype,cjfee",
+        [(OfferType.SW0_ABSOLUTE, 0), (OfferType.SW0_RELATIVE, "0")],
+    )
+    def test_zero_fee_offer_required_input_reserves_mandatory_change(
+        self, ordertype: OfferType, cjfee: str | int
+    ) -> None:
+        """Both fee types use the same mandatory change reserve when fee is zero."""
+        offer = Offer(
+            counterparty="J5TestMaker",
+            oid=0,
+            ordertype=ordertype,
+            minsize=0,
+            maxsize=0,
+            txfee=0,
+            cjfee=cjfee,
+        )
+        assert required_maker_input(offer, 100_000) == 100_000 + DUST_THRESHOLD + 1
+        assert max_fillable_cj_amount(offer, 100_000 + DUST_THRESHOLD + 1) == 100_000
 
     @pytest.mark.asyncio
     async def test_create_dual_offers(self, mock_wallet, config_dual_offers):
@@ -1466,6 +1516,73 @@ class TestOfferRandomization:
         assert len(seen) > 1, "cjfee was never randomized"
 
     @pytest.mark.asyncio
+    async def test_tiny_relative_cjfee_is_advertised_without_quantization(
+        self, randomized_wallet
+    ) -> None:
+        """A valid fee below 10 decimal places must not become zero on the wire."""
+        config = MakerConfig(
+            mnemonic="test " * 12,
+            directory_servers=["localhost:5222"],
+            network=NetworkType.REGTEST,
+            offer_type=OfferType.SW0_RELATIVE,
+            min_size=100_000,
+            cj_fee_relative="1e-11",
+            cjfee_factor=0.0,
+            txfee_contribution_factor=0.0,
+            size_factor=0.0,
+        )
+        manager = OfferManager(randomized_wallet, config, "J5TestMaker")
+
+        with patch("maker.offers.get_best_fidelity_bond", new=AsyncMock(return_value=None)):
+            offers = await manager.create_offers()
+
+        assert len(offers) == 1
+        assert offers[0].cjfee == "0.00000000001"
+
+    def test_tiny_relative_cjfee_uses_decimal_interpolation(self, randomized_wallet) -> None:
+        """Randomization retains precision below the previous 10-place grid."""
+        config = MakerConfig(
+            mnemonic="test " * 12,
+            directory_servers=["localhost:5222"],
+            network=NetworkType.REGTEST,
+            offer_type=OfferType.SW0_RELATIVE,
+            cj_fee_relative="1e-11",
+            cjfee_factor=0.5,
+            txfee_contribution_factor=0.0,
+        )
+        manager = OfferManager(randomized_wallet, config, "J5TestMaker")
+
+        with patch("maker.offers.secure_random.random", return_value=0.25) as random:
+            randomized = manager._randomize_offer_fees(config.get_effective_offer_configs()[0])
+
+        assert randomized is not None
+        cjfee, _, numeric_cjfee = randomized
+        assert cjfee == "0.0000000000075"
+        assert numeric_cjfee > 0
+        random.assert_called_once_with()
+
+    def test_relative_cjfee_zero_lower_endpoint_stays_positive(self, randomized_wallet) -> None:
+        """The permitted factor-one lower endpoint must not emit a zero fee."""
+        config = MakerConfig(
+            mnemonic="test " * 12,
+            directory_servers=["localhost:5222"],
+            network=NetworkType.REGTEST,
+            offer_type=OfferType.SW0_RELATIVE,
+            cj_fee_relative="0.4",
+            cjfee_factor=1.0,
+            txfee_contribution_factor=0.0,
+        )
+        manager = OfferManager(randomized_wallet, config, "J5TestMaker")
+
+        with patch("maker.offers.secure_random.random", return_value=0.0):
+            randomized = manager._randomize_offer_fees(config.get_effective_offer_configs()[0])
+
+        assert randomized is not None
+        cjfee, _, numeric_cjfee = randomized
+        assert cjfee == "0.4"
+        assert 0 < numeric_cjfee < 1
+
+    @pytest.mark.asyncio
     async def test_minsize_clamped_to_dust(self, randomized_wallet):
         """Randomized minsize must never drop below the dust threshold."""
         from jmcore.constants import DUST_THRESHOLD
@@ -1691,9 +1808,11 @@ class TestDualOfferAutoSplit:
         assert len(offers) == 2
         assert offers[0].minsize == 100_000
         assert offers[1].minsize == 200_000
-        # Both reach up to (close to) max_available, i.e. they overlap as
-        # before -- the split logic only fires for rel + abs pairs.
-        assert offers[0].maxsize == offers[1].maxsize
+        # The split logic only fires for rel + abs pairs. Each independent
+        # offer still has its own exact, fee-dependent fillable ceiling.
+        for offer in offers:
+            assert required_maker_input(offer, offer.maxsize) <= 10_000_000
+            assert required_maker_input(offer, offer.maxsize + 1) > 10_000_000
 
     @pytest.mark.asyncio
     async def test_single_offer_unaffected(self, wallet_10m):
@@ -1963,7 +2082,8 @@ class TestDualOfferAutoSplit:
         # threshold so the abs offer can be created, while still leaving
         # an intersection that lands in the (max_available, max_balance]
         # band for the chosen fees.
-        # max_balance = 200_000  ->  max_available = 200_000 - 27_300 = 172_700
+        # max_balance = 200_000. The zero-txfee absolute offer receives its
+        # 1,000 sat CJ fee, so its exact ceiling is 173,699.
         # intersection = 1000 / 0.005 = 200_000 == max_balance (inside the
         # band [172_700, 200_000]).  Pre-fix this slipped through to the
         # standard branch and produced a rel offer with min_size = 200_000.
@@ -1987,8 +2107,7 @@ class TestDualOfferAutoSplit:
         # abs offer should be created, covering up to the usable balance
         abs_offers = [o for o in offers if o.ordertype == OfferType.SW0_ABSOLUTE]
         assert len(abs_offers) == 1
-        # max_available = 200_000 - 27_300 = 172_700
-        assert abs_offers[0].maxsize == 172_700
+        assert abs_offers[0].maxsize == 173_699
         # min_size must stay fillable
         assert abs_offers[0].minsize < abs_offers[0].maxsize
 

@@ -64,6 +64,45 @@ def test_negative_cj_fee_relative_fails() -> None:
         )
 
 
+@pytest.mark.parametrize("fee", ["1", "1.1"])
+def test_relative_cj_fee_at_or_above_one_fails(fee: str) -> None:
+    with pytest.raises(ValidationError, match="cj_fee_relative must be < 1"):
+        MakerConfig(
+            mnemonic=TEST_MNEMONIC,
+            cj_fee_relative=fee,
+            offer_type=OfferType.SW0_RELATIVE,
+        )
+
+
+def test_relative_cj_fee_randomized_upper_bound_must_stay_below_one() -> None:
+    with pytest.raises(ValidationError, match=r"cj_fee_relative \* \(1 \+ cjfee_factor\)"):
+        MakerConfig(
+            mnemonic=TEST_MNEMONIC,
+            cj_fee_relative="0.9",
+            cjfee_factor=0.2,
+            offer_type=OfferType.SW0_RELATIVE,
+        )
+
+
+def test_relative_cj_fee_factor_above_one_fails() -> None:
+    with pytest.raises(ValidationError, match="cjfee_factor must be <= 1"):
+        MakerConfig(
+            mnemonic=TEST_MNEMONIC,
+            cj_fee_relative="0.001",
+            cjfee_factor=1.01,
+            offer_type=OfferType.SW0_RELATIVE,
+        )
+
+
+def test_absolute_cj_fee_factor_above_one_remains_compatible() -> None:
+    config = MakerConfig(
+        mnemonic=TEST_MNEMONIC,
+        offer_type=OfferType.SW0_ABSOLUTE,
+        cjfee_factor=1.01,
+    )
+    assert config.cjfee_factor == 1.01
+
+
 def test_invalid_cj_fee_relative_string_fails() -> None:
     """Test that invalid string for cj_fee_relative fails."""
     with pytest.raises(ValidationError, match="cj_fee_relative must be a valid number"):
@@ -309,9 +348,27 @@ class TestCjFeeRelativeNormalization:
         """Test that integer inputs are converted to string."""
         config = OfferConfig(
             cj_fee_relative=1,  # type: ignore[arg-type]
+            offer_type=OfferType.SW0_ABSOLUTE,
         )
         # Integer 1 should become "1"
         assert config.cj_fee_relative == "1"
+
+    @pytest.mark.parametrize("fee", ["1", "1.1"])
+    def test_relative_offer_rejects_fee_at_or_above_one(self, fee: str) -> None:
+        with pytest.raises(ValidationError, match="cj_fee_relative must be < 1"):
+            OfferConfig(cj_fee_relative=fee)
+
+    def test_relative_offer_randomized_upper_bound_stays_in_protocol_domain(self) -> None:
+        with pytest.raises(ValidationError, match=r"cj_fee_relative \* \(1 \+ cjfee_factor\)"):
+            OfferConfig(cj_fee_relative="0.9", cjfee_factor=0.2)
+
+    def test_relative_offer_factor_above_one_fails(self) -> None:
+        with pytest.raises(ValidationError, match="cjfee_factor must be <= 1"):
+            OfferConfig(cj_fee_relative="0.001", cjfee_factor=1.01)
+
+    def test_absolute_offer_factor_above_one_remains_compatible(self) -> None:
+        config = OfferConfig(offer_type=OfferType.SW0_ABSOLUTE, cjfee_factor=1.01)
+        assert config.cjfee_factor == 1.01
 
 
 class TestBuildMakerConfig:
