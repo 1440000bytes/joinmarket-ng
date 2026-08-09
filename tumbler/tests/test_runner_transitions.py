@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from tumbler.builder import PlanBuilder, TumbleParameters
@@ -41,6 +42,9 @@ class FakeWalletService:
         self._next_index: dict[tuple[int, int], int] = {}
         # Per-mixdepth balance used by the runner's amount_fraction resolver.
         self._balances: dict[int, int] = {m: balance_sats for m in range(mixdepth_count)}
+        self._coinjoin_balances: dict[int, int] = dict(self._balances)
+        self._locked_outpoints: set[tuple[str, int]] = set()
+        self.coinjoin_balance_calls: list[tuple[int, int, set[tuple[str, int]]]] = []
 
     def _check_mixdepth(self, mixdepth: int) -> None:
         # Mirror WalletService.get_address: out-of-range mixdepth is an error.
@@ -65,6 +69,22 @@ class FakeWalletService:
         min_confirmations: int = 0,
     ) -> int:
         return self._balances.get(mixdepth, 0)
+
+    async def get_coinjoin_balance(
+        self,
+        mixdepth: int,
+        min_confirmations: int = 0,
+        *,
+        restrict_md0: bool = True,
+        exclude: set[tuple[str, int]] | None = None,
+    ) -> int:
+        del restrict_md0
+        excluded = exclude or set()
+        self.coinjoin_balance_calls.append((mixdepth, min_confirmations, excluded))
+        return self._coinjoin_balances.get(mixdepth, 0)
+
+    def get_locked_input_outpoints(self) -> set[tuple[str, int]]:
+        return set(self._locked_outpoints)
 
 
 class FakeTakerResult:
@@ -96,6 +116,7 @@ class FakeTaker:
         self.do_coinjoin_kwargs: dict[str, Any] | None = None
         self.state = "idle"
         self.last_failure_reason: str | None = None
+        self.config = SimpleNamespace(taker_utxo_age=0)
         # Default last_used_nicks: the runner reads this to populate the
         # exclusion set for the next phase. Tests override per-instance.
         self.last_used_nicks: set[str] = set()
@@ -1094,10 +1115,10 @@ class TestRunnerTakerInterop:
             # ``amount`` must be an int (int sats), never a float fraction.
             assert isinstance(call["amount"], int)
 
-    async def test_runner_resolves_amount_fraction_via_wallet_balance(self, tmp_path: Path) -> None:
-        """Stage-2 fractional CJ phases must be converted to int sats via
-        :meth:`WalletService.get_balance` at dispatch time.
-        """
+    async def test_runner_resolves_fraction_from_coinjoin_selectable_balance(
+        self, tmp_path: Path
+    ) -> None:
+        """Fractional phases use the same capacity constraints as selection."""
         plan = _plan(tmp_path)
         fractional = next(
             (p for p in plan.phases if isinstance(p, TakerCoinjoinPhase) and p.amount_fraction),
@@ -1109,10 +1130,13 @@ class TestRunnerTakerInterop:
         fractional.amount_fraction = 0.25
 
         wallet = FakeWalletService(balance_sats=4_000_000)
+        wallet._coinjoin_balances[fractional.mixdepth] = 100_000
+        wallet._locked_outpoints = {("aa" * 32, 1)}
         captured: list[dict[str, Any]] = []
 
         async def make_taker(phase: Any) -> FakeTaker:
             t = FakeTaker(phase)
+            t.config.taker_utxo_age = 5
 
             async def trace(
                 amount: int,
@@ -1140,8 +1164,14 @@ class TestRunnerTakerInterop:
 
         frac_calls = [c for c in captured if c["mixdepth"] == fractional.mixdepth]
         assert frac_calls, "expected a call for the fractional phase's mixdepth"
-        # 25% of 4_000_000 == 1_000_000 sats.
-        assert 1_000_000 in {c["amount"] for c in frac_calls}
+        # The ordinary wallet balance is 4M, but only 100k is selectable after
+        # md0/bond/confirmation/lock constraints. Resolve 25% from that source.
+        assert 25_000 in {c["amount"] for c in frac_calls}
+        assert (
+            fractional.mixdepth,
+            5,
+            {("aa" * 32, 1)},
+        ) in wallet.coinjoin_balance_calls
 
     async def test_runner_accepts_plain_string_txid(self, tmp_path: Path) -> None:
         """Runner must treat ``do_coinjoin``'s str return value as the txid."""
@@ -1641,6 +1671,8 @@ class TestConfirmationGate:
                 persisted = load_plan(plan.wallet_name, tmp_path)
                 first_persisted_phase = persisted.phases[0]
                 assert isinstance(first_persisted_phase, TakerCoinjoinPhase)
+                assert first_persisted_phase.status == PhaseStatus.AWAITING_CONFIRMATION
+                assert first_persisted_phase.finished_at is None
                 observed_txids.append(first_persisted_phase.txid)
             return 99  # immediately satisfy the gate
 
@@ -1660,6 +1692,40 @@ class TestConfirmationGate:
         result = await TumbleRunner(plan, ctx).run()
         assert result.status == PlanStatus.COMPLETED
         assert observed_txids and observed_txids[0] is not None
+
+    async def test_resumed_confirmation_wait_does_not_replay_coinjoin(self, tmp_path: Path) -> None:
+        plan = _plan(tmp_path)
+        plan.phases = plan.phases[:2]
+        first = plan.phases[0]
+        assert isinstance(first, TakerCoinjoinPhase)
+        first.status = PhaseStatus.AWAITING_CONFIRMATION
+        first.txid = "ab" * 32
+        plan.current_phase = 0
+
+        invoked_phases: list[int] = []
+
+        async def make_taker(phase: TakerCoinjoinPhase) -> FakeTaker:
+            invoked_phases.append(phase.index)
+            return FakeTaker(phase)
+
+        async def get_confirmations(_txid: str) -> int | None:
+            return 6
+
+        ctx = RunnerContext(
+            wallet_service=FakeWalletService(),  # type: ignore[arg-type]
+            wallet_name="RunnerTest",
+            data_dir=tmp_path,
+            taker_factory=make_taker,
+            min_confirmations_between_phases=2,
+            get_confirmations=get_confirmations,
+            confirmation_poll_interval=0.0,
+        )
+
+        result = await TumbleRunner(plan, ctx).run()
+
+        assert result.status == PlanStatus.COMPLETED
+        assert first.status == PhaseStatus.COMPLETED
+        assert first.index not in invoked_phases
 
 
 class TestInterPhaseWaitLogging:

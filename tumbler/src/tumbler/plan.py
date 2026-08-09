@@ -31,7 +31,9 @@ class PhaseKind(StrEnum):
 class PhaseStatus(StrEnum):
     """Lifecycle of an individual phase.
 
-    ``SKIPPED`` marks a taker phase whose source mixdepth had no spendable
+    ``AWAITING_CONFIRMATION`` marks a taker transaction that broadcast but has
+    not passed the inter-phase confirmation gate. ``SKIPPED`` marks a taker
+    phase whose source mixdepth had no spendable
     funds at execution time (for example, all UTXOs were frozen after the
     plan was built, or the mixdepth never received coins). Skipped phases
     are terminal like ``COMPLETED`` and do not fail the plan.
@@ -39,6 +41,7 @@ class PhaseStatus(StrEnum):
 
     PENDING = "pending"
     RUNNING = "running"
+    AWAITING_CONFIRMATION = "awaiting_confirmation"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -105,7 +108,7 @@ class TakerCoinjoinPhase(_PhaseBase):
         "next mixdepth's internal address at execution time.",
     )
     txid: str | None = Field(
-        default=None, description="Broadcast txid, set once the CoinJoin confirms."
+        default=None, description="Broadcast txid, set once the CoinJoin is broadcast."
     )
     rounding_sigfigs: int | None = Field(
         default=None,
@@ -240,6 +243,72 @@ class Plan(BaseModel):
     def touch(self) -> None:
         """Update ``updated_at`` to now (UTC)."""
         self.updated_at = datetime.now(UTC)
+
+
+def is_safely_resumable_confirmation_wait(plan: Plan) -> bool:
+    """Return whether ``plan`` can resume at its confirmation gate only.
+
+    This intentionally recognizes only a current taker phase with a persisted
+    broadcast txid. Older persisted plans recorded that phase as ``COMPLETED``
+    before the confirmation gate; that representation is safe only when a
+    later phase proves the plan had not finished.
+    """
+    current = plan.current()
+    if not isinstance(current, TakerCoinjoinPhase) or not current.txid:
+        return False
+    if current.status == PhaseStatus.AWAITING_CONFIRMATION:
+        return True
+    return current.status == PhaseStatus.COMPLETED and plan.current_phase + 1 < len(plan.phases)
+
+
+def reset_plan_for_resume(plan: Plan) -> int:
+    """Reset a terminal-state plan so the runner can pick it up again.
+
+    Completed, skipped, and confirmation-waiting phases are preserved; FAILED,
+    RUNNING, and CANCELLED phases are rolled back to PENDING with cleared
+    error/timestamp metadata so the runner re-attempts them. ``current_phase``
+    is moved to the first non-terminal phase and the plan status is reset to
+    PENDING.
+
+    Returns the number of phases that were rolled back.
+    """
+    rollback_statuses = {PhaseStatus.FAILED, PhaseStatus.RUNNING, PhaseStatus.CANCELLED}
+    rolled_back = 0
+    first_pending: int | None = None
+
+    # Migrate plans persisted by older runners after broadcast but before the
+    # confirmation gate. At that point the current phase was incorrectly
+    # labelled COMPLETED even though ``current_phase`` had not advanced.
+    current = plan.current()
+    if (
+        isinstance(current, TakerCoinjoinPhase)
+        and current.status == PhaseStatus.COMPLETED
+        and current.txid
+        and plan.current_phase + 1 < len(plan.phases)
+    ):
+        current.status = PhaseStatus.AWAITING_CONFIRMATION
+        current.finished_at = None
+
+    for index, phase in enumerate(plan.phases):
+        if phase.status in rollback_statuses:
+            phase.status = PhaseStatus.PENDING
+            phase.error = None
+            phase.started_at = None
+            phase.finished_at = None
+            # Keep ``attempt_count`` so retry budgets carry across resumes;
+            # otherwise a stuck phase would silently get unlimited retries.
+            rolled_back += 1
+        if first_pending is None and phase.status not in (
+            PhaseStatus.COMPLETED,
+            PhaseStatus.SKIPPED,
+        ):
+            first_pending = index
+
+    plan.current_phase = first_pending if first_pending is not None else len(plan.phases)
+    plan.status = PlanStatus.PENDING
+    plan.error = None
+    plan.touch()
+    return rolled_back
 
 
 def round_to_significant_figures(value: int, sigfigs: int) -> int:

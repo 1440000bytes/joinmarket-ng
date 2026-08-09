@@ -46,6 +46,8 @@ from tumbler.plan import (
     Plan,
     PlanStatus,
     TakerCoinjoinPhase,
+    is_safely_resumable_confirmation_wait,
+    reset_plan_for_resume,
 )
 from tumbler.runner import RunnerContext, TumbleRunner
 
@@ -164,20 +166,26 @@ def _plan_to_response(plan: Plan, *, stale: bool = False) -> TumblerPlanResponse
     )
 
 
-async def _mixdepth_balances(wallet_service: Any, num_mixdepths: int = 5) -> dict[int, int]:
-    """Return the tumble-spendable balance per mixdepth in satoshis.
+async def _mixdepth_balances(
+    wallet_service: Any,
+    num_mixdepths: int = 5,
+    min_confirmations: int = 0,
+) -> dict[int, int]:
+    """Return CoinJoin-selectable plan capacity per mixdepth in satoshis.
 
-    :class:`WalletService.get_balance` is ``async`` and returns an ``int`` of
-    sats that already excludes frozen UTXOs. Fidelity bonds are excluded too:
-    the taker never auto-spends them, so counting them here would schedule
-    sweeps of mixdepths the taker cannot actually fund (the plan would then
-    stall and fail at execution time).
+    This mirrors the taker's automatic selection constraints, including md0,
+    confirmation, fidelity-bond, frozen, and in-flight input rules.
     """
+    reserved = wallet_service.get_locked_input_outpoints()
     balances: dict[int, int] = {}
     for mixdepth in range(num_mixdepths):
         try:
             balances[mixdepth] = int(
-                await wallet_service.get_balance(mixdepth, include_fidelity_bonds=False)
+                await wallet_service.get_coinjoin_balance(
+                    mixdepth,
+                    min_confirmations=min_confirmations,
+                    exclude=reserved,
+                )
             )
         except Exception:
             logger.exception("failed to read balance for mixdepth {}", mixdepth)
@@ -189,10 +197,11 @@ def _reconcile_on_request(state: DaemonState, wallet_name: str) -> Plan | None:
     """Bring on-disk state in line with in-memory reality before answering.
 
     If the daemon has no live runner for ``wallet_name`` but the plan on disk
-    is ``RUNNING``, transition it to ``FAILED``. This covers restarts where
-    the startup reconciliation already ran but a fresh wallet-specific plan
-    was somehow left dangling. Returns the possibly-updated plan or ``None``
-    if no plan exists for the wallet.
+    is ``RUNNING``, only a persisted confirmation wait may be resumed. All
+    other stale runs become ``FAILED``. This covers restarts where startup
+    reconciliation already ran but a fresh wallet-specific plan was somehow
+    left dangling. Returns the possibly-updated plan or ``None`` if no plan
+    exists for the wallet.
     """
     try:
         plan = load_plan(wallet_name, state.data_dir)
@@ -208,8 +217,11 @@ def _reconcile_on_request(state: DaemonState, wallet_name: str) -> Plan | None:
         and state.tumble_plan_wallet == wallet_name
     )
     if plan.status == PlanStatus.RUNNING and not runner_alive:
-        plan.status = PlanStatus.FAILED
-        plan.error = plan.error or "daemon restarted mid-run"
+        if is_safely_resumable_confirmation_wait(plan):
+            reset_plan_for_resume(plan)
+        else:
+            plan.status = PlanStatus.FAILED
+            plan.error = plan.error or "daemon restarted mid-run"
         save_plan(plan, state.data_dir)
     return plan
 
@@ -304,7 +316,11 @@ async def create_plan(
     if ws is None:
         raise NoWalletFound()
 
-    balances = await _mixdepth_balances(ws, num_mixdepths=getattr(ws, "mixdepth_count", 5))
+    balances = await _mixdepth_balances(
+        ws,
+        num_mixdepths=getattr(ws, "mixdepth_count", 5),
+        min_confirmations=get_settings().taker.taker_utxo_age,
+    )
     if not any(v > 0 for v in balances.values()):
         raise ActionNotAllowed("Wallet has no confirmed coins to tumble.")
 
@@ -347,8 +363,8 @@ async def get_status(
     """Return the live plan if the runner is active, otherwise the on-disk plan.
 
     When the on-disk plan is ``RUNNING`` but no runner is live, the response's
-    ``stale`` flag is set so the UI can prompt the user to acknowledge the
-    failure and delete the plan.
+    ``stale`` flag is set. A persisted confirmation wait is reset to pending;
+    all other stale plans are marked failed.
     """
     if _runner_alive_for(state, state.wallet_name):
         # ``tumble_runner`` is the authoritative state while running.
@@ -364,8 +380,11 @@ async def get_status(
     stale = plan.status == PlanStatus.RUNNING
     if stale:
         # Best-effort reconcile so successive calls do not keep flagging.
-        plan.status = PlanStatus.FAILED
-        plan.error = plan.error or "daemon restarted mid-run"
+        if is_safely_resumable_confirmation_wait(plan):
+            reset_plan_for_resume(plan)
+        else:
+            plan.status = PlanStatus.FAILED
+            plan.error = plan.error or "daemon restarted mid-run"
         save_plan(plan, state.data_dir)
     return _plan_to_response(plan, stale=stale)
 

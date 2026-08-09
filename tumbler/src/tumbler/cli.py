@@ -41,7 +41,7 @@ from tumbler.persistence import (
 from tumbler.persistence import (
     delete_plan as delete_plan_on_disk,
 )
-from tumbler.plan import MIN_DESTINATIONS, PhaseStatus, Plan, PlanStatus
+from tumbler.plan import MIN_DESTINATIONS, Plan, PlanStatus, reset_plan_for_resume
 from tumbler.runner import RunnerContext, TumbleRunner
 
 app = SortedTyper(
@@ -95,44 +95,6 @@ def _load_or_error(wallet_name: str, data_dir: Path) -> Plan:
     except PlanCorruptError as exc:
         logger.error(f"Tumbler plan is corrupt: {exc}")
         raise typer.Exit(1)
-
-
-def _reset_plan_for_resume(plan: Plan) -> int:
-    """
-    Reset a terminal-state plan so the runner can pick it up again.
-
-    Completed and skipped phases are preserved; FAILED, RUNNING, and
-    CANCELLED phases are rolled back to PENDING with cleared error/timestamp
-    metadata so the runner re-attempts them. ``current_phase`` is moved to
-    the first phase that is neither COMPLETED nor SKIPPED, and the plan
-    status is reset to PENDING.
-
-    Returns the number of phases that were rolled back.
-    """
-    rollback_statuses = {PhaseStatus.FAILED, PhaseStatus.RUNNING, PhaseStatus.CANCELLED}
-    rolled_back = 0
-    first_pending: int | None = None
-
-    for phase in plan.phases:
-        if phase.status in rollback_statuses:
-            phase.status = PhaseStatus.PENDING
-            phase.error = None
-            phase.started_at = None
-            phase.finished_at = None
-            # Keep ``attempt_count`` so retry budgets carry across resumes;
-            # otherwise a stuck phase would silently get unlimited retries.
-            rolled_back += 1
-        if first_pending is None and phase.status not in (
-            PhaseStatus.COMPLETED,
-            PhaseStatus.SKIPPED,
-        ):
-            first_pending = plan.phases.index(phase)
-
-    plan.current_phase = first_pending if first_pending is not None else len(plan.phases)
-    plan.status = PlanStatus.PENDING
-    plan.error = None
-    plan.touch()
-    return rolled_back
 
 
 def _format_duration(seconds: float) -> str:
@@ -242,18 +204,24 @@ def _resolve_wallet_name(
     )
 
 
-async def _collect_balances(wallet: WalletService, mixdepth_count: int) -> dict[int, int]:
-    """Collect the tumble-spendable balance per mixdepth.
+async def _collect_balances(
+    wallet: WalletService, mixdepth_count: int, min_confirmations: int = 0
+) -> dict[int, int]:
+    """Collect CoinJoin-selectable plan capacity per mixdepth.
 
-    Frozen UTXOs are excluded by ``get_balance`` itself; fidelity bonds are
-    excluded explicitly because the taker never auto-spends them, so a plan
-    built on bond-inflated balances would schedule sweeps it cannot fund.
+    Uses the same frozen, fidelity-bond, confirmation, in-flight lock, and md0
+    merge rules as automatic taker selection.
     """
+    reserved = wallet.get_locked_input_outpoints()
     balances: dict[int, int] = {}
     for mixdepth in range(mixdepth_count):
         try:
             balances[mixdepth] = int(
-                await wallet.get_balance(mixdepth, include_fidelity_bonds=False)
+                await wallet.get_coinjoin_balance(
+                    mixdepth,
+                    min_confirmations=min_confirmations,
+                    exclude=reserved,
+                )
             )
         except Exception:
             logger.exception(f"failed to read balance for mixdepth {mixdepth}")
@@ -746,7 +714,7 @@ def run_command(
         if plan.status == PlanStatus.COMPLETED:
             logger.error("Plan is already COMPLETED; nothing to resume.")
             raise typer.Exit(1)
-        rolled_back = _reset_plan_for_resume(plan)
+        rolled_back = reset_plan_for_resume(plan)
         save_plan(plan, data_dir)
         logger.warning(
             f"Resuming plan from terminal state: rolled back {rolled_back} "
@@ -756,7 +724,7 @@ def run_command(
         if resume:
             # Stuck-RUNNING (previous process crashed): resume reconciles
             # the running phase back to PENDING instead of failing the plan.
-            rolled_back = _reset_plan_for_resume(plan)
+            rolled_back = reset_plan_for_resume(plan)
             save_plan(plan, data_dir)
             logger.warning(
                 "Plan was RUNNING on disk with no attached runner; "
@@ -898,7 +866,11 @@ async def _balances_for_mnemonic(
         # Older WalletService revisions sync lazily; balances will still work.
         pass
     try:
-        balances = await _collect_balances(wallet, config.mixdepth_count)
+        balances = await _collect_balances(
+            wallet,
+            config.mixdepth_count,
+            min_confirmations=config.taker_utxo_age,
+        )
         fee_rate, fee_source = await _resolve_fee_rate(settings, backend)
         return balances, fee_rate, fee_source
     finally:

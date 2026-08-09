@@ -162,7 +162,8 @@ class TumbleRunner:
                     self.plan.status = PlanStatus.CANCELLED
                     self._persist()
                     return self.plan
-                await self._run_one_phase(phase)
+                if phase.status != PhaseStatus.AWAITING_CONFIRMATION:
+                    await self._run_one_phase(phase)
                 if phase.status == PhaseStatus.FAILED:
                     if isinstance(phase, MakerSessionPhase):
                         # Maker sessions are optional privacy enhancers: a
@@ -212,9 +213,10 @@ class TumbleRunner:
                     self.plan.status = PlanStatus.CANCELLED
                     self._persist()
                     return self.plan
-                # Persist the completed phase (including its broadcast txid)
-                # *before* the confirmation gate so the txid hits disk even
-                # if the gate runs for hours or jmwalletd is restarted.
+                # Persist a broadcast taker phase, including its txid, before
+                # the confirmation gate. ``AWAITING_CONFIRMATION`` is
+                # resumable, so a restart neither skips the gate nor replays
+                # the CoinJoin.
                 self._persist()
                 # Before advancing, wait for the phase's output(s) to reach
                 # ``taker_utxo_age`` confirmations so the next phase does not
@@ -222,23 +224,26 @@ class TumbleRunner:
                 # tumbler's ``restart_waiter``.
                 next_index = self.plan.current_phase + 1
                 has_next = next_index < len(self.plan.phases)
-                if has_next:
+                if has_next and phase.status == PhaseStatus.AWAITING_CONFIRMATION:
                     try:
                         await self._wait_for_phase_confirmations(phase)
                     except _StopRequestedError:
                         self.plan.status = PlanStatus.CANCELLED
                         self._persist()
                         return self.plan
+                if phase.status == PhaseStatus.AWAITING_CONFIRMATION:
+                    phase.status = PhaseStatus.COMPLETED
+                    phase.finished_at = datetime.now(UTC)
                 self.plan.current_phase += 1
                 self._persist()
                 if phase.wait_seconds > 0 and self.plan.current() is not None:
                     next_phase = self.plan.current()
-                    next_index = next_phase.index if next_phase is not None else "?"
+                    next_phase_index = next_phase.index if next_phase is not None else "?"
                     try:
                         await self._wait_interruptibly_with_progress(
                             phase.wait_seconds,
                             label=(
-                                f"inter-phase delay before phase {next_index}"
+                                f"inter-phase delay before phase {next_phase_index}"
                                 f" (after phase {phase.index})"
                             ),
                         )
@@ -362,9 +367,14 @@ class TumbleRunner:
             phase.status = PhaseStatus.FAILED
             phase.error = f"{type(exc).__name__}: {exc}"
         else:
-            phase.status = PhaseStatus.COMPLETED
+            phase.status = (
+                PhaseStatus.AWAITING_CONFIRMATION
+                if isinstance(phase, TakerCoinjoinPhase)
+                else PhaseStatus.COMPLETED
+            )
         finally:
-            phase.finished_at = datetime.now(UTC)
+            if phase.status != PhaseStatus.AWAITING_CONFIRMATION:
+                phase.finished_at = datetime.now(UTC)
 
     # ---------------------------------------------- retry / tweak (taker) ---
 
@@ -526,7 +536,7 @@ class TumbleRunner:
         try:
             await taker.start()
             destination = await self._resolve_destination(phase)
-            amount = await self._resolve_amount(phase)
+            amount = await self._resolve_amount(phase, taker)
             # ``Taker.do_coinjoin(amount, destination, mixdepth, counterparty_count)``
             # returns the broadcast txid as a str, or None on failure.
             # ``exclude_nicks`` keeps consecutive phases from sharing makers.
@@ -579,14 +589,13 @@ class TumbleRunner:
         finally:
             await self._teardown_taker()
 
-    async def _resolve_amount(self, phase: TakerCoinjoinPhase) -> int:
+    async def _resolve_amount(self, phase: TakerCoinjoinPhase, taker: Any | None = None) -> int:
         """Resolve phase amount in satoshis.
 
         ``TakerCoinjoinPhase`` exposes either an absolute ``amount`` (sats) or
-        a ``amount_fraction`` of the mixdepth balance. The reference
-        ``run_schedule`` resolves fractions by reading the current mixdepth
-        balance immediately before the CJ; we mirror that so the phase is
-        always dispatched to ``Taker.do_coinjoin`` as an int.
+        an ``amount_fraction`` of the mixdepth's CoinJoin-selectable capacity.
+        Resolve immediately before dispatch using the same confirmation,
+        fidelity-bond, lock, and md0 rules as automatic taker selection.
         """
         if phase.amount is not None:
             return phase.amount
@@ -595,7 +604,14 @@ class TumbleRunner:
         if fraction == 0.0:
             # Sweep sentinel: Taker.do_coinjoin treats amount=0 as sweep.
             return 0
-        balance = await self.ctx.wallet_service.get_balance(phase.mixdepth)
+        config = getattr(taker, "config", None)
+        min_confirmations = int(getattr(config, "taker_utxo_age", 0))
+        reserved = self.ctx.wallet_service.get_locked_input_outpoints()
+        balance = await self.ctx.wallet_service.get_coinjoin_balance(
+            phase.mixdepth,
+            min_confirmations=min_confirmations,
+            exclude=reserved,
+        )
         amount = int(int(balance) * fraction)
         if phase.rounding_sigfigs is not None and amount > 0:
             # Privacy: obfuscate the relationship between balance and CJ

@@ -37,9 +37,9 @@ from jmwalletd.state import DaemonState
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Startup/shutdown hooks.
 
-    Startup reconciles any tumbler plan left in a non-terminal state on disk
-    (RUNNING / PENDING) to FAILED, so a crash-then-restart cannot silently
-    resume with stale backend state. See
+    Startup marks stale tumbler plans FAILED, except a persisted broadcast
+    transaction that only awaits confirmations. That narrow state is reset to
+    PENDING so the confirmation gate can continue without replaying it. See
     ``DaemonState.reconcile_stale_tumbler_plans`` for rationale.
     """
     try:

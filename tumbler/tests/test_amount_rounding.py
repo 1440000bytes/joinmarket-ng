@@ -167,12 +167,13 @@ def test_sigfig_distribution_matches_weights_over_many_seeds() -> None:
 
 def _make_runner_with_balance(balance_sats: int) -> TumbleRunner:
     """Build a TumbleRunner whose only exercised dependency is
-    ``ctx.wallet_service.get_balance``. Avoids the heavy fixture surface.
+    ``ctx.wallet_service.get_coinjoin_balance``. Avoids the heavy fixture surface.
     """
     runner = TumbleRunner.__new__(TumbleRunner)
     ctx = MagicMock()
     ctx.wallet_service = MagicMock()
-    ctx.wallet_service.get_balance = AsyncMock(return_value=balance_sats)
+    ctx.wallet_service.get_coinjoin_balance = AsyncMock(return_value=balance_sats)
+    ctx.wallet_service.get_locked_input_outpoints.return_value = set()
     runner.ctx = ctx  # type: ignore[attr-defined]
     return runner
 

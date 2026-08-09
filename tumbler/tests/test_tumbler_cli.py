@@ -478,24 +478,31 @@ class TestResolveRunnerPacing:
 
 class TestCollectBalances:
     @pytest.mark.asyncio
-    async def test_excludes_fidelity_bonds(self) -> None:
-        """Plan-time balances must exclude fidelity bonds: the taker never
-        auto-spends them, so a bond-inflated balance schedules sweeps the
-        taker cannot fund (regression: bond-only md0 stalled the tumble)."""
-        calls: list[tuple[int, bool]] = []
+    async def test_uses_coinjoin_selectable_capacity(self) -> None:
+        calls: list[tuple[int, int, set[tuple[str, int]]]] = []
 
         class _FakeWallet:
-            async def get_balance(
+            async def get_coinjoin_balance(
                 self,
                 mixdepth: int,
-                include_fidelity_bonds: bool = True,
                 min_confirmations: int = 0,
+                *,
+                restrict_md0: bool = True,
+                exclude: set[tuple[str, int]] | None = None,
             ) -> int:
-                calls.append((mixdepth, include_fidelity_bonds))
+                del restrict_md0
+                calls.append((mixdepth, min_confirmations, exclude or set()))
                 return 1_000
 
-        balances = await _collect_balances(_FakeWallet(), 3)  # type: ignore[arg-type]
+            def get_locked_input_outpoints(self) -> set[tuple[str, int]]:
+                return {("aa" * 32, 1)}
+
+        balances = await _collect_balances(  # type: ignore[arg-type]
+            _FakeWallet(), 3, min_confirmations=5
+        )
 
         assert balances == {0: 1_000, 1: 1_000, 2: 1_000}
-        assert calls, "get_balance was never called"
-        assert all(flag is False for _, flag in calls)
+        assert calls
+        assert all(
+            min_conf == 5 and excluded == {("aa" * 32, 1)} for _, min_conf, excluded in calls
+        )

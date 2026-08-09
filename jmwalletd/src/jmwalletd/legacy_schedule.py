@@ -38,11 +38,10 @@ ScheduleEntry = list[str | int | float]
 def _phase_flag(phase: TakerCoinjoinPhase, plan: Plan) -> str | int:
     """Map phase progress onto the legacy 0 / txid / 1 completion flag.
 
-    The runner marks a taker phase ``COMPLETED`` as soon as the CoinJoin
-    broadcasts, then holds ``current_phase`` at the phase's index until the
-    confirmation gate passes. So a completed phase is only *confirmed* (``1``)
-    once the plan has advanced past it; before that the broadcast txid is the
-    correct legacy marker.
+    The runner marks a broadcast taker phase ``AWAITING_CONFIRMATION`` and
+    holds ``current_phase`` at its index until the confirmation gate passes.
+    The txid is therefore the correct legacy marker while waiting; ``1`` is
+    emitted only after the phase is complete and the plan has advanced.
     """
     if phase.status == PhaseStatus.COMPLETED and phase.index < plan.current_phase:
         return 1

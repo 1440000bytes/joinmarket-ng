@@ -128,12 +128,25 @@ class TestCompletionFlag:
             amount_fraction=0.5,
             counterparty_count=5,
             destination=DEST,
-            status=PhaseStatus.COMPLETED,
+            status=PhaseStatus.AWAITING_CONFIRMATION,
             txid=TXID,
         )
         # current_phase still at 0: the runner has not advanced past the gate.
         plan = _plan([phase], current_phase=0)
         assert plan_to_legacy_schedule(plan)[0][6] == TXID
+
+    def test_legacy_completed_unconfirmed_is_txid(self) -> None:
+        """Pre-confirmation plans persisted by older runners remain visible."""
+        phase = TakerCoinjoinPhase(
+            index=0,
+            mixdepth=0,
+            amount_fraction=0.5,
+            counterparty_count=5,
+            destination=DEST,
+            status=PhaseStatus.COMPLETED,
+            txid=TXID,
+        )
+        assert plan_to_legacy_schedule(_plan([phase], current_phase=0))[0][6] == TXID
 
     def test_confirmed_is_one(self) -> None:
         """Once the plan has advanced past a completed phase it is confirmed."""

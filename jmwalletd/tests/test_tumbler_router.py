@@ -32,7 +32,7 @@ import pytest
 from fastapi.testclient import TestClient
 from tumbler.builder import PlanBuilder, TumbleParameters
 from tumbler.persistence import load_plan, plan_path, save_plan
-from tumbler.plan import Plan, PlanStatus
+from tumbler.plan import PhaseStatus, Plan, PlanStatus, TakerCoinjoinPhase
 
 from jmwalletd.deps import get_daemon_state
 from jmwalletd.state import CoinjoinState, DaemonState
@@ -97,6 +97,20 @@ def _clear_runner(state: DaemonState) -> None:
     state.tumble_runner = None
     state.tumble_plan_wallet = None
     state.coinjoin_state = CoinjoinState.NOT_RUNNING
+
+
+def _mark_stale_confirmation_wait(plan: Plan, *, legacy: bool = False) -> TakerCoinjoinPhase:
+    """Mark a non-final taker phase as a safely resumable stale run."""
+    phase = next(
+        phase
+        for phase in plan.phases
+        if isinstance(phase, TakerCoinjoinPhase) and phase.index + 1 < len(plan.phases)
+    )
+    phase.status = PhaseStatus.COMPLETED if legacy else PhaseStatus.AWAITING_CONFIRMATION
+    phase.txid = "ab" * 32
+    plan.current_phase = phase.index
+    plan.status = PlanStatus.RUNNING
+    return phase
 
 
 # ----------------------------------------------------------------------------
@@ -231,7 +245,7 @@ class TestCreatePlan:
         auth_token: str,
     ) -> None:
         ws = get_daemon_state().wallet_service
-        ws.get_balance.return_value = 0
+        ws.get_coinjoin_balance.return_value = 0
         resp = app_with_wallet.post(
             f"/api/v1/wallet/{WALLET}/tumbler/plan",
             json={"destinations": ["bcrt1qdestAaaaaa", "bcrt1qdestBbbbbb"]},
@@ -240,27 +254,25 @@ class TestCreatePlan:
         assert resp.status_code == 400
         assert "no confirmed coins" in resp.json()["message"]
 
-    def test_create_plan_excludes_fidelity_bonds_from_balances(
+    def test_create_plan_uses_coinjoin_selectable_balances(
         self,
         app_with_wallet: TestClient,
         auth_token: str,
     ) -> None:
-        """Plan-time balances must exclude fidelity bonds: the taker never
-        auto-spends bonds, so counting them would schedule sweeps of
-        mixdepths the taker cannot fund (regression: bond-only/frozen md0
-        was planned for a stage-1 sweep and stalled the whole tumble)."""
         ws = get_daemon_state().wallet_service
-        ws.get_balance.reset_mock()
-        ws.get_balance.return_value = 50_000_000
+        ws.get_coinjoin_balance.reset_mock()
+        ws.get_coinjoin_balance.return_value = 50_000_000
+        ws.get_locked_input_outpoints.return_value = {("aa" * 32, 1)}
         resp = app_with_wallet.post(
             f"/api/v1/wallet/{WALLET}/tumbler/plan",
             json={"destinations": ["bcrt1qdestAaaaaa", "bcrt1qdestBbbbbb"], "force": True},
             headers=_auth(auth_token),
         )
         assert resp.status_code == 201, resp.text
-        assert ws.get_balance.await_args_list
-        for call in ws.get_balance.await_args_list:
-            assert call.kwargs.get("include_fidelity_bonds") is False, call
+        assert ws.get_coinjoin_balance.await_args_list
+        for call in ws.get_coinjoin_balance.await_args_list:
+            assert call.kwargs["min_confirmations"] == 5
+            assert call.kwargs["exclude"] == {("aa" * 32, 1)}
 
     def test_create_plan_accepts_legacy_jam_parameters(
         self,
@@ -358,6 +370,34 @@ class TestGetStatus:
         disk = load_plan(WALLET, state.data_dir)
         assert disk.status == PlanStatus.FAILED
 
+    def test_status_preserves_stale_confirmation_wait_for_resume(
+        self,
+        app_with_wallet: TestClient,
+        auth_token: str,
+        plan_on_disk: Plan,
+    ) -> None:
+        state = get_daemon_state()
+        phase = _mark_stale_confirmation_wait(plan_on_disk)
+        save_plan(plan_on_disk, state.data_dir)
+
+        resp = app_with_wallet.get(
+            f"/api/v1/wallet/{WALLET}/tumbler/status",
+            headers=_auth(auth_token),
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["stale"] is True
+        assert body["status"] == PlanStatus.PENDING
+        assert body["phases"][phase.index]["status"] == PhaseStatus.AWAITING_CONFIRMATION
+        assert body["phases"][phase.index]["txid"] == phase.txid
+        disk = load_plan(WALLET, state.data_dir)
+        assert disk.status == PlanStatus.PENDING
+        disk_phase = disk.phases[phase.index]
+        assert isinstance(disk_phase, TakerCoinjoinPhase)
+        assert disk_phase.status == PhaseStatus.AWAITING_CONFIRMATION
+        assert disk_phase.txid == phase.txid
+
     def test_status_returns_live_runner_plan(
         self,
         app_with_wallet: TestClient,
@@ -446,6 +486,49 @@ class TestStartPlan:
         )
         # Reconcile flipped RUNNING->FAILED, then the terminal check rejects.
         assert resp.status_code == 400
+
+    def test_start_resumes_stale_legacy_confirmation_wait(
+        self,
+        app_with_wallet: TestClient,
+        auth_token: str,
+        plan_on_disk: Plan,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A legacy post-broadcast state must reach the runner as PENDING.
+
+        The runner itself skips the taker factory for the preserved
+        ``AWAITING_CONFIRMATION`` phase, so accepting this start cannot replay
+        the CoinJoin.
+        """
+        state = get_daemon_state()
+        phase = _mark_stale_confirmation_wait(plan_on_disk, legacy=True)
+        save_plan(plan_on_disk, state.data_dir)
+
+        class CapturingRunner:
+            captured_plan: Plan | None = None
+
+            def __init__(self, plan: Plan, _ctx: object) -> None:
+                self.plan = plan
+                type(self).captured_plan = plan
+
+            async def run(self) -> Plan:
+                return self.plan
+
+        monkeypatch.setattr("jmwalletd.routers.tumbler.TumbleRunner", CapturingRunner)
+
+        resp = app_with_wallet.post(
+            f"/api/v1/wallet/{WALLET}/tumbler/start",
+            headers=_auth(auth_token),
+        )
+
+        assert resp.status_code == 202, resp.text
+        captured = CapturingRunner.captured_plan
+        assert captured is not None
+        assert captured.status == PlanStatus.PENDING
+        captured_phase = captured.phases[phase.index]
+        assert isinstance(captured_phase, TakerCoinjoinPhase)
+        assert captured_phase.status == PhaseStatus.AWAITING_CONFIRMATION
+        assert captured_phase.txid == phase.txid
 
 
 # ----------------------------------------------------------------------------
@@ -588,6 +671,22 @@ class TestReconcileStaleOnStartup:
         disk = load_plan(WALLET, tmp_path)
         assert disk.status == PlanStatus.FAILED
         assert disk.error and "restarted" in disk.error
+
+    def test_reconcile_preserves_running_confirmation_wait(self, tmp_path: Path) -> None:
+        state = DaemonState(data_dir=tmp_path)
+        plan = _build_plan()
+        phase = _mark_stale_confirmation_wait(plan)
+        save_plan(plan, tmp_path)
+
+        reconciled = state.reconcile_stale_tumbler_plans()
+
+        assert reconciled == [WALLET]
+        disk = load_plan(WALLET, tmp_path)
+        assert disk.status == PlanStatus.PENDING
+        disk_phase = disk.phases[phase.index]
+        assert isinstance(disk_phase, TakerCoinjoinPhase)
+        assert disk_phase.status == PhaseStatus.AWAITING_CONFIRMATION
+        assert disk_phase.txid == phase.txid
 
     def test_reconcile_marks_pending_plan_failed(self, tmp_path: Path) -> None:
         state = DaemonState(data_dir=tmp_path)

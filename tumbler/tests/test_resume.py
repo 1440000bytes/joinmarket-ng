@@ -6,7 +6,7 @@ re-attach to it and continue with the remaining phases instead of being
 forced to start over with a fresh plan and a fresh PoDLE budget.
 
 These tests cover both layers:
-- ``_reset_plan_for_resume``: the pure rollback logic (preserves COMPLETED
+- ``reset_plan_for_resume``: the pure rollback logic (preserves COMPLETED
   phases and ``attempt_count``, rewinds everything else to PENDING, advances
   ``current_phase`` to the first non-completed phase).
 - ``run --resume``: the CLI wiring that gates resume behind the explicit
@@ -21,9 +21,16 @@ from unittest.mock import patch
 from typer.testing import CliRunner
 
 from tumbler.builder import PlanBuilder, TumbleParameters
-from tumbler.cli import _reset_plan_for_resume, app
+from tumbler.cli import app
 from tumbler.persistence import load_plan, save_plan
-from tumbler.plan import PhaseStatus, Plan, PlanStatus
+from tumbler.plan import (
+    PhaseStatus,
+    Plan,
+    PlanStatus,
+    TakerCoinjoinPhase,
+    is_safely_resumable_confirmation_wait,
+    reset_plan_for_resume,
+)
 
 runner = CliRunner()
 
@@ -99,7 +106,7 @@ class TestResetPlanForResume:
         plan.error = "boom"
         plan.current_phase = 2
 
-        rolled = _reset_plan_for_resume(plan)
+        rolled = reset_plan_for_resume(plan)
 
         assert rolled == 2  # phase 2 + phase 3
         assert plan.phases[0].status == PhaseStatus.COMPLETED
@@ -133,15 +140,78 @@ class TestResetPlanForResume:
         plan.status = PlanStatus.FAILED
         plan.current_phase = 2
 
-        rolled = _reset_plan_for_resume(plan)
+        rolled = reset_plan_for_resume(plan)
 
         assert rolled == 1  # only the FAILED phase
         assert plan.phases[1].status == PhaseStatus.SKIPPED
         assert plan.phases[2].status == PhaseStatus.PENDING
         assert plan.current_phase == 2
 
+    def test_awaiting_confirmation_phase_is_resumed_without_replay(self) -> None:
+        plan = _build_plan()
+        phase = plan.phases[1]
+        plan.phases[0].status = PhaseStatus.COMPLETED
+        phase.status = PhaseStatus.AWAITING_CONFIRMATION
+        phase.txid = "ab" * 32  # type: ignore[attr-defined]
+        plan.current_phase = 1
+        plan.status = PlanStatus.FAILED
+
+        rolled = reset_plan_for_resume(plan)
+
+        assert rolled == 0
+        assert phase.status == PhaseStatus.AWAITING_CONFIRMATION
+        assert plan.current_phase == 1
+
+    def test_legacy_completed_current_phase_migrates_to_confirmation_wait(self) -> None:
+        plan = _build_plan()
+        phase = plan.phases[1]
+        plan.phases[0].status = PhaseStatus.COMPLETED
+        phase.status = PhaseStatus.COMPLETED
+        phase.txid = "cd" * 32  # type: ignore[attr-defined]
+        plan.current_phase = 1
+        plan.status = PlanStatus.FAILED
+
+        rolled = reset_plan_for_resume(plan)
+
+        assert rolled == 0
+        assert phase.status == PhaseStatus.AWAITING_CONFIRMATION
+        assert phase.finished_at is None
+        assert plan.current_phase == 1
+
+    def test_confirmation_wait_predicate_accepts_current_broadcast_phase(self) -> None:
+        plan = _build_plan()
+        phase = plan.phases[1]
+        assert isinstance(phase, TakerCoinjoinPhase)
+        phase.status = PhaseStatus.AWAITING_CONFIRMATION
+        phase.txid = "ef" * 32
+        plan.current_phase = phase.index
+
+        assert is_safely_resumable_confirmation_wait(plan)
+
+    def test_confirmation_wait_predicate_accepts_legacy_state_only_with_later_phase(self) -> None:
+        plan = _build_plan()
+        phase = plan.phases[1]
+        assert isinstance(phase, TakerCoinjoinPhase)
+        phase.status = PhaseStatus.COMPLETED
+        phase.txid = "ef" * 32
+        plan.current_phase = phase.index
+
+        assert is_safely_resumable_confirmation_wait(plan)
+
+        plan.phases = plan.phases[: phase.index + 1]
+        assert not is_safely_resumable_confirmation_wait(plan)
+
+    def test_confirmation_wait_predicate_rejects_missing_txid(self) -> None:
+        plan = _build_plan()
+        phase = plan.phases[1]
+        assert isinstance(phase, TakerCoinjoinPhase)
+        phase.status = PhaseStatus.AWAITING_CONFIRMATION
+        plan.current_phase = phase.index
+
+        assert not is_safely_resumable_confirmation_wait(plan)
+
     def test_all_completed_advances_current_phase_past_end(self) -> None:
-        """If every phase is already completed, ``_reset_plan_for_resume``
+        """If every phase is already completed, ``reset_plan_for_resume``
         should park ``current_phase`` past the end so the runner immediately
         sees the plan as done -- this is the safety check behind the
         "nothing to resume" CLI rejection of COMPLETED plans.
@@ -150,7 +220,7 @@ class TestResetPlanForResume:
         for ph in plan.phases:
             ph.status = PhaseStatus.COMPLETED
 
-        rolled = _reset_plan_for_resume(plan)
+        rolled = reset_plan_for_resume(plan)
 
         assert rolled == 0
         assert plan.current_phase == len(plan.phases)
@@ -222,7 +292,7 @@ class TestRunResumeFlag:
 
         assert result.exit_code == 1
         m_run.assert_not_called()
-        # Plan stays COMPLETED on disk -- _reset_plan_for_resume must NOT
+        # Plan stays COMPLETED on disk -- reset_plan_for_resume must NOT
         # have run.
         reloaded = load_plan(plan.wallet_name, tmp_path)
         assert reloaded is not None

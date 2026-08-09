@@ -371,14 +371,16 @@ class DaemonState:
         logger.debug("WebSocket client unregistered (total: {})", len(self._ws_clients))
 
     def reconcile_stale_tumbler_plans(self) -> list[str]:
-        """Mark any on-disk tumbler plan left in a non-terminal state as FAILED.
+        """Reconcile stale on-disk tumbler plans after daemon startup.
 
         A ``RUNNING`` or ``PENDING`` plan on disk at startup means the daemon
         exited mid-run (crash, restart, lost power). The backend state (taker
         session, directory connection, wallet sync cursor) is gone, so silently
-        resuming would risk double-spending. Instead, mark the plan FAILED with
-        a diagnostic so the UI can surface it; the user can then delete the
-        plan and build a new one.
+        resuming would risk double-spending. The sole exception is a current
+        taker phase that has already broadcast and is waiting only for its
+        persisted txid to confirm. That plan is reset to ``PENDING`` so the
+        runner resumes the confirmation gate without replaying the CoinJoin.
+        All other stale plans become ``FAILED`` with a diagnostic.
 
         Returns the list of wallet names whose plans were touched, for
         logging / metrics.
@@ -390,7 +392,12 @@ class DaemonState:
             load_plan,
             save_plan,
         )
-        from tumbler.plan import PhaseStatus, PlanStatus
+        from tumbler.plan import (
+            PhaseStatus,
+            PlanStatus,
+            is_safely_resumable_confirmation_wait,
+            reset_plan_for_resume,
+        )
 
         schedules_dir = self.data_dir / SCHEDULES_SUBDIR
         if not schedules_dir.exists():
@@ -405,12 +412,15 @@ class DaemonState:
                 continue
             if plan.status not in (PlanStatus.RUNNING, PlanStatus.PENDING):
                 continue
-            plan.status = PlanStatus.FAILED
-            plan.error = "daemon restarted mid-run"
-            current = plan.current()
-            if current is not None and current.status == PhaseStatus.RUNNING:
-                current.status = PhaseStatus.FAILED
-                current.error = "daemon restarted mid-run"
+            if plan.status == PlanStatus.RUNNING and is_safely_resumable_confirmation_wait(plan):
+                reset_plan_for_resume(plan)
+            else:
+                plan.status = PlanStatus.FAILED
+                plan.error = "daemon restarted mid-run"
+                current = plan.current()
+                if current is not None and current.status == PhaseStatus.RUNNING:
+                    current.status = PhaseStatus.FAILED
+                    current.error = "daemon restarted mid-run"
             try:
                 save_plan(plan, self.data_dir)
             except OSError as exc:  # pragma: no cover - disk full, permissions
