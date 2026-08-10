@@ -197,6 +197,7 @@ def history(
             "net_fee",
             "success",
             "source",
+            "amount",
         ]
         writer = csv_module.DictWriter(sys.stdout, fieldnames=fieldnames)
         writer.writeheader()
@@ -211,6 +212,7 @@ def history(
                     "net_fee": entry.net_fee,
                     "success": entry.success,
                     "source": entry.source,
+                    "amount": entry.transfer_amount,
                 }
             )
     else:
@@ -244,7 +246,7 @@ def history(
             role_str = f"{entry.role}*" if entry.source == "onchain" else entry.role
 
             print(
-                f"{entry.timestamp[:19]:<20} {role_str:<8} {entry.cj_amount:>12,} "
+                f"{entry.timestamp[:19]:<20} {role_str:<8} {entry.transfer_amount:>12,} "
                 f"{peer_str:>6} {fee_str:>12} {txid_full:<64}{status}"
             )
 

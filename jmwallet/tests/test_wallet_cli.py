@@ -4,6 +4,8 @@ E2E tests for jm-wallet CLI commands.
 
 from __future__ import annotations
 
+import csv
+import io
 import os
 import tempfile
 from collections.abc import Iterator
@@ -1221,6 +1223,41 @@ def test_history_command_renders_in_chronological_order(monkeypatch):
             f" got positions oldest={idx_oldest}, middle={idx_middle},"
             f" newest={idx_newest}"
         )
+
+
+def test_history_command_uses_neutral_amount_for_send() -> None:
+    from jmwallet.history import append_history_entry, create_send_history_entry
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        data_dir = Path(tmpdir)
+        entry = create_send_history_entry(
+            destination="bcrt1qdestination",
+            change_address="bcrt1qchange",
+            amount=666,
+            mining_fee=12,
+            source_mixdepth=0,
+            selected_utxos=[("ab" * 32, 0)],
+            txid="cd" * 32,
+        )
+        append_history_entry(entry, data_dir)
+
+        table = runner.invoke(
+            app,
+            ["history", "--all-wallets", "--data-dir", str(data_dir)],
+        )
+        assert table.exit_code == 0, table.stdout
+        send_line = next(line for line in table.stdout.splitlines() if entry.txid in line)
+        assert "666" in send_line
+
+        csv_result = runner.invoke(
+            app,
+            ["history", "--csv", "--all-wallets", "--data-dir", str(data_dir)],
+        )
+        assert csv_result.exit_code == 0, csv_result.stdout
+        rows = list(csv.DictReader(io.StringIO(csv_result.stdout)))
+        assert len(rows) == 1
+        assert rows[0]["amount"] == "666"
+        assert rows[0]["cj_amount"] == "0"
 
 
 def test_generate_with_output_auto_saves():

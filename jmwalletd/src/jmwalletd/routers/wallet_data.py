@@ -230,7 +230,7 @@ async def wallet_history(
             failure_reason=e.failure_reason,
             confirmations=e.confirmations,
             txid=e.txid,
-            amount=e.amount if e.amount != 0 else e.cj_amount,
+            amount=e.transfer_amount,
             cj_amount=e.cj_amount if (e.role in _cj_roles and e.cj_amount > 0) else None,
             peer_count=e.peer_count if e.role in _cj_roles else None,
             counterparty_nicks=e.counterparty_nicks if e.role in _cj_roles else "",

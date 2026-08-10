@@ -162,6 +162,23 @@ class TestTransactionHistoryEntry:
         assert entry.total_maker_fees_paid == 1000
         assert entry.net_fee == -1500
 
+    def test_transfer_amount_prefers_neutral_amount_with_legacy_fallback(self) -> None:
+        current = TransactionHistoryEntry(
+            timestamp="2024-01-01T00:00:00",
+            role="send",
+            amount=600_000,
+            cj_amount=0,
+        )
+        legacy = TransactionHistoryEntry(
+            timestamp="2024-01-01T00:00:00",
+            role="send",
+            amount=0,
+            cj_amount=500_000,
+        )
+
+        assert current.transfer_amount == 600_000
+        assert legacy.transfer_amount == 500_000
+
 
 class TestAppendAndReadHistory:
     """Tests for appending and reading history."""

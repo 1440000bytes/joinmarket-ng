@@ -156,7 +156,9 @@ def create_notification_message(entry: dict[str, str]) -> tuple[str, str, int]:
     role = entry.get("role", "unknown")
     success = entry.get("success", "True").lower() == "true"
     confirmations = int(entry.get("confirmations", 0) or 0)
-    cj_amount = int(entry.get("cj_amount", 0) or 0)
+    amount = int(entry.get("amount", 0) or 0)
+    if amount == 0:
+        amount = int(entry.get("cj_amount", 0) or 0)
     peer_count_str = entry.get("peer_count", "")
     peer_count = (
         int(peer_count_str)
@@ -195,7 +197,7 @@ def create_notification_message(entry: dict[str, str]) -> tuple[str, str, int]:
     # Build message - exclude sensitive information (txid, network, peer nicks)
     message_parts = [
         f"{role_emoji} Role: {role.capitalize()}",
-        f"💰 Amount: {format_satoshis(cj_amount)}",
+        f"💰 Amount: {format_satoshis(amount)}",
     ]
 
     # Only show peer count if known (takers know, makers don't)

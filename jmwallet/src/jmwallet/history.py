@@ -158,6 +158,11 @@ class TransactionHistoryEntry:
     # send output amount, deposit input amount). Appended last for legacy CSV migration.
     amount: int = 0
 
+    @property
+    def transfer_amount(self) -> int:
+        """Return the neutral amount, including rows written before it existed."""
+        return self.amount if self.amount != 0 else self.cj_amount
+
 
 HISTORY_FILENAME = "history.csv"
 LEGACY_HISTORY_FILENAME = "coinjoin_history.csv"
