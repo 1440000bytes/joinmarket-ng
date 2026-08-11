@@ -77,6 +77,10 @@ class TestResolvePolicyFeeOverrides:
             result = resolve_policy_fee_overrides({"POLICY": {"max_cj_fee_rel": bad}})
             assert result.max_cj_fee_rel is None
 
+    def test_max_sweep_fee_change_override(self) -> None:
+        result = resolve_policy_fee_overrides({"POLICY": {"max_sweep_fee_change": "0.5"}})
+        assert result.max_sweep_fee_change == 0.5
+
     def test_combined_jam_fee_settings(self) -> None:
         """The full set JAM's fee modal writes in one save."""
         overrides = {
@@ -95,4 +99,5 @@ class TestResolvePolicyFeeOverrides:
             tx_fee_factor=0.2,
             max_cj_fee_abs=10000,
             max_cj_fee_rel="0.001",
+            max_sweep_fee_change=0.8,
         )

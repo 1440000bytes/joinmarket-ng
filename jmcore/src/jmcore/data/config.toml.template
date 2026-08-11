@@ -477,6 +477,7 @@
 # Maximum acceptable coinjoin fees (paid to makers, not network/miner fees)
 # max_cj_fee_abs = 500        # Absolute fee in satoshis per maker
 # max_cj_fee_rel = "0.001"    # Relative fee (0.001 = 0.1%)
+# max_sweep_fee_change = 0.8  # Relative fee tolerance for sweep transactions
 
 # Maximum inputs a single maker may contribute to the CoinJoin.
 # The taker pays the mining fee for EVERY input, so a maker with many inputs

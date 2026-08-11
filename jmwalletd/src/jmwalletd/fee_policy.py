@@ -49,6 +49,7 @@ class PolicyFeeOverrides(NamedTuple):
     tx_fee_factor: float | None = None
     max_cj_fee_abs: int | None = None
     max_cj_fee_rel: str | None = None
+    max_sweep_fee_change: float | None = None
 
 
 def resolve_policy_fee_overrides(
@@ -73,6 +74,9 @@ def resolve_policy_fee_overrides(
         tx_fee_factor=_parse_positive_float(policy.get("tx_fees_factor"), "tx_fees_factor"),
         max_cj_fee_abs=_parse_positive_int(policy.get("max_cj_fee_abs"), "max_cj_fee_abs"),
         max_cj_fee_rel=_parse_rel_fee(policy.get("max_cj_fee_rel")),
+        max_sweep_fee_change=_parse_positive_float(
+            policy.get("max_sweep_fee_change"), "max_sweep_fee_change"
+        ),
     )
 
 

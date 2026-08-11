@@ -963,6 +963,14 @@ class TakerSettings(BaseModel):
         default="0.001",
         description="Maximum relative CoinJoin fee (0.001 = 0.1%)",
     )
+    max_sweep_fee_change: float = Field(
+        default=0.8,
+        ge=0.0,
+        description=(
+            "Maximum relative fee tolerance for sweep CoinJoins (default 0.8 matches "
+            "reference JoinMarket)."
+        ),
+    )
 
     @field_validator("max_cj_fee_rel", mode="before")
     @classmethod

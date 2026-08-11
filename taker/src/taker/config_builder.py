@@ -55,6 +55,7 @@ def build_taker_config_kwargs(
     tor_socks_port: int | None = None,
     max_abs_fee: int | None = None,
     max_rel_fee: str | None = None,
+    max_sweep_fee_change: float | None = None,
     fee_rate: float | None = None,
     block_target: int | None = None,
     tx_fee_factor: float | None = None,
@@ -176,6 +177,11 @@ def build_taker_config_kwargs(
     effective_max_rel_fee = (
         max_rel_fee if max_rel_fee is not None else settings.taker.max_cj_fee_rel
     )
+    effective_max_sweep_fee_change = (
+        max_sweep_fee_change
+        if max_sweep_fee_change is not None
+        else settings.taker.max_sweep_fee_change
+    )
     # Resolve fee settings together so CLI overrides can switch modes cleanly:
     # CLI fee_rate > CLI block_target > config fee_rate > config/default block_target.
     effective_fee_rate: float | None = None
@@ -246,6 +252,7 @@ def build_taker_config_kwargs(
         "mixdepth": mixdepth,
         "counterparty_count": effective_counterparties,
         "max_cj_fee": MaxCjFee(abs_fee=effective_max_abs_fee, rel_fee=effective_max_rel_fee),
+        "max_sweep_fee_change": effective_max_sweep_fee_change,
         "tx_fee_factor": (
             tx_fee_factor if tx_fee_factor is not None else settings.taker.tx_fee_factor
         ),
@@ -298,6 +305,7 @@ def build_taker_config(
     tor_socks_port: int | None = None,
     max_abs_fee: int | None = None,
     max_rel_fee: str | None = None,
+    max_sweep_fee_change: float | None = None,
     fee_rate: float | None = None,
     block_target: int | None = None,
     tx_fee_factor: float | None = None,
@@ -335,6 +343,7 @@ def build_taker_config(
             tor_socks_port=tor_socks_port,
             max_abs_fee=max_abs_fee,
             max_rel_fee=max_rel_fee,
+            max_sweep_fee_change=max_sweep_fee_change,
             fee_rate=fee_rate,
             block_target=block_target,
             tx_fee_factor=tx_fee_factor,

@@ -418,14 +418,13 @@ _POLICY_FIELD_MAP: dict[str, tuple[str, str]] = {
     "tx_fees_factor": ("taker", "tx_fee_factor"),
     "max_cj_fee_abs": ("taker", "max_cj_fee_abs"),
     "max_cj_fee_rel": ("taker", "max_cj_fee_rel"),
+    "max_sweep_fee_change": ("taker", "max_sweep_fee_change"),
     "minimum_makers": ("taker", "minimum_makers"),
     "gaplimit": ("wallet", "gap_limit"),
 }
 
 # Sensible defaults for fields the reference has but we don't model.
-_POLICY_DEFAULTS: dict[str, str] = {
-    "max_sweep_fee_change": "0.8",
-}
+_POLICY_DEFAULTS: dict[str, str] = {}
 
 
 @router.post("/wallet/{walletname}/configget", operation_id="configget")

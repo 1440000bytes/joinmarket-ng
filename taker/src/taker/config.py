@@ -109,6 +109,11 @@ class TakerConfig(WalletConfig):
     max_cj_fee: MaxCjFee = Field(
         default_factory=MaxCjFee, description="Maximum CoinJoin fee limits"
     )
+    max_sweep_fee_change: float = Field(
+        default=0.8,
+        ge=0.0,
+        description="Relative fee tolerance for sweep transactions (reference default 0.8)",
+    )
     tx_fee_factor: float = Field(
         default=0.2,
         ge=0.0,

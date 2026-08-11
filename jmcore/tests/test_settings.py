@@ -259,6 +259,7 @@ class TestSettingsDefaults:
         assert settings.taker.minimum_makers == 4
         assert settings.taker.max_cj_fee_abs == 500
         assert settings.taker.max_cj_fee_rel == "0.001"
+        assert settings.taker.max_sweep_fee_change == 0.8
         assert settings.taker.tx_broadcast == "random-peer"
 
 

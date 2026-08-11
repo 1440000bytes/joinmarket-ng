@@ -454,7 +454,7 @@ class TestConfigGet:
         self,
         authed_client: tuple[TestClient, str],
     ) -> None:
-        """max_sweep_fee_change returns hardcoded default from _POLICY_DEFAULTS."""
+        """max_sweep_fee_change returns value from settings and supports overrides."""
         client, token = authed_client
         resp = client.post(
             "/api/v1/wallet/test_wallet.jmdat/configget",
@@ -464,6 +464,17 @@ class TestConfigGet:
         assert resp.status_code == 200
         data = resp.json()
         assert data["configvalue"] == "0.8"
+
+        # Verify configset override works
+        state = get_daemon_state()
+        state.config_overrides["POLICY"] = {"max_sweep_fee_change": "0.5"}
+        resp2 = client.post(
+            "/api/v1/wallet/test_wallet.jmdat/configget",
+            json={"section": "POLICY", "field": "max_sweep_fee_change"},
+            headers=_auth_headers(token),
+        )
+        assert resp2.status_code == 200
+        assert resp2.json()["configvalue"] == "0.5"
 
     def test_get_from_overrides(self, authed_client: tuple[TestClient, str]) -> None:
         client, token = authed_client

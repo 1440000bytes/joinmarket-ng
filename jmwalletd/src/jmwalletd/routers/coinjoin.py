@@ -76,6 +76,7 @@ def build_coinjoin_taker_config(
         counterparties=int(body.counterparties),
         max_abs_fee=fee_overrides.max_cj_fee_abs,
         max_rel_fee=fee_overrides.max_cj_fee_rel,
+        max_sweep_fee_change=fee_overrides.max_sweep_fee_change,
         fee_rate=fee_overrides.fee_rate,
         block_target=fee_overrides.block_target,
         tx_fee_factor=fee_overrides.tx_fee_factor,

@@ -69,6 +69,7 @@ class TestBuildTakerConfig:
         settings.taker.counterparty_count = 4
         settings.taker.max_cj_fee_abs = 1000
         settings.taker.max_cj_fee_rel = "0.002"
+        settings.taker.max_sweep_fee_change = 0.8
         settings.taker.fee_rate = None  # Not set in config
         settings.taker.fee_block_target = None  # Not set in config
         settings.taker.bondless_makers_allowance = 0.1
@@ -674,3 +675,28 @@ class TestBuildTakerConfig:
         )
 
         assert config.nick_auth_directory_ids == expected
+
+    def test_max_sweep_fee_change_flow_and_override(
+        self, sample_mnemonic: str, mock_settings: MagicMock
+    ) -> None:
+        """max_sweep_fee_change flows from settings to TakerConfig and accepts override."""
+        config_default = build_taker_config(
+            settings=mock_settings,
+            mnemonic=sample_mnemonic,
+            passphrase="",
+            destination="bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
+            amount=100000,
+            mixdepth=0,
+        )
+        assert config_default.max_sweep_fee_change == 0.8
+
+        config_override = build_taker_config(
+            settings=mock_settings,
+            mnemonic=sample_mnemonic,
+            passphrase="",
+            destination="bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
+            amount=100000,
+            mixdepth=0,
+            max_sweep_fee_change=0.5,
+        )
+        assert config_override.max_sweep_fee_change == 0.5

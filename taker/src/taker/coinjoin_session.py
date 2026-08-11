@@ -1081,6 +1081,18 @@ class CoinJoinSession:
 
                 # The residual becomes additional miner fee (no taker change in sweep)
 
+                # Enforce max_sweep_fee_change limit on residual fee drift
+                base_miner_fee = tx_fee + maker_txfee
+                if base_miner_fee > 0 and self.config.max_sweep_fee_change is not None:
+                    fee_change_ratio = residual / base_miner_fee
+                    if fee_change_ratio > self.config.max_sweep_fee_change:
+                        logger.error(
+                            f"Sweep failed: fee change ratio {fee_change_ratio:.2f} exceeds "
+                            f"max_sweep_fee_change limit of {self.config.max_sweep_fee_change:.2f} "
+                            f"(residual={residual} sats vs base_miner_fee={base_miner_fee} sats)."
+                        )
+                        return False
+
                 # The budget was estimated from an assumed maker input count. If
                 # counterparties contributed far more inputs than assumed, the
                 # fixed budget spread over the larger transaction can fall below
