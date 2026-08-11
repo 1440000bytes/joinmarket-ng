@@ -7,6 +7,215 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-08-11
+
+Security hardening and way more!
+
+### Added
+
+- Improve fidelity bond recovery reliability on Neutrino by using the new forced-rescan server capability ([561af745](../../commit/561af7451d800bcd2fed8adfce278efa24a65b04))
+- Verify device signatures when finalizing fidelity bond PSBTs, making pre-funding hardware wallet compatibility tests conclusive ([60a33d62](../../commit/60a33d6243b06901db0cd29d99097b553442ebda))
+- Authenticate directory nick ownership with negotiated signing ([d3f3cce4](../../commit/d3f3cce4b2e4a95b523638253359ee3cdf8991b7))
+
+### Fixed
+
+- Apply wallet environment settings during wallet creation and recovery ([618ad062](../../commit/618ad062cba94da318d91853c6c7cef060b059ae))
+- Automatically discover existing fidelity bonds when importing an sw-fb wallet ([8f866776](../../commit/8f866776a7164203a1b99fd8b13a1822715b0d65))
+- Reject forged sender identities in directory-routed messages ([c08daa5f](../../commit/c08daa5f8a231bed6420726e768a34b1ce91263a))
+- Authenticate private messages and bind direct connections to handshaked nicks ([e17d6775](../../commit/e17d6775d19c88bbc30a4f23203eb3921917573e))
+- Align PoDLE validation and revelation encoding with the deployed protocol ([9b08c9a0](../../commit/9b08c9a0723218d8abecac875ca791b7ec45f1e5))
+- Derive PoDLE proof nonces without runtime RNG dependence ([ff157b24](../../commit/ff157b2475f7d5fa727ecb7b73bad3f2b69460b5))
+- Require confirmed native SegWit maker liquidity ([134dd1bd](../../commit/134dd1bdc2b9817870b05c6c34b0b46369469c6f))
+- Exclude and atomically reserve maker inputs through pending broadcast ([3a76a819](../../commit/3a76a819de7ad3cbde40a0b3f80ed3c7503e5d7c))
+- Prevent concurrent local PoDLE reuse without rejecting same-round commitment gossip ([dac27d53](../../commit/dac27d537743857e2249327c4ce08fa6ca2a9290))
+- Derive Neutrino UTXO confirmations from verified block data ([3059937f](../../commit/3059937fa04ae69d1b2c21fd584a39c20acb38b0))
+- Revalidate every CoinJoin input immediately before broadcast ([78586a6b](../../commit/78586a6ba289b48f6a4a7398c50c6a73682b2878))
+- Keep CoinJoin equal and change addresses distinct in one-mixdepth wallets ([9681bef8](../../commit/9681bef8e5ecaa2356910da91bfa641fc8b43927))
+- Harden wallet entropy sourcing and secret file permissions ([131ee2cc](../../commit/131ee2cc303dd4c608e773618a8249f54a8d7851))
+- Use operating-system randomness for adversary-visible choices ([f2eb2c35](../../commit/f2eb2c357f1b2751dff283db5c20fe486d5615fb))
+- Validate and normalize mnemonics in standalone bond signers ([80e0f729](../../commit/80e0f729c6c3726989f8de3f8fda23eca38a5d35))
+- Detect maker broadcasts through the Neutrino mempool tracker ([65a17635](../../commit/65a176359da37d6cdb7a4d332aad788df7b0982a))
+- Apply LOGGING__LEVEL setting in jmwalletd log buffer and stderr sinks ([63111038](../../commit/63111038384699bb30065913fcbb5fe831640cb7))
+- Prevent stale log handlers from bypassing configured log levels ([998a05f9](../../commit/998a05f9a5df8259071f043c1185ea3b96faced8))
+- Prevent stale CoinJoin cleanup from releasing inputs owned by another round ([84fb1b30](../../commit/84fb1b3078e4b2e0b2fb31525d84a0aebb6acea1))
+- Bound cleanup of timed-out maker sessions and preserve signed input leases ([ccf363c6](../../commit/ccf363c61147f9e613a9da91b3ebe2cd81cc764a))
+- Keep PoDLE commitments reserved when blacklist persistence fails ([ccf363c6](../../commit/ccf363c61147f9e613a9da91b3ebe2cd81cc764a))
+- Authenticate direct peer nick bindings before routing messages ([ccf363c6](../../commit/ccf363c61147f9e613a9da91b3ebe2cd81cc764a))
+- Keep failed wallet creation retryable without orphan wallet files ([09da6a51](../../commit/09da6a51ef717cb7aa9497ee8882f5fec66494cd))
+- Install the orderbook watcher CLI with the default profile ([6ba29d83](../../commit/6ba29d83ec0af6b2522cff6008b9c2863a172724))
+- Avoid fidelity bond privacy warnings for CoinJoin-private md0 funds ([0cee709f](../../commit/0cee709fdad611548014bac763f891e815f1a037))
+- Use libsecp256k1 for secret PoDLE response scalar arithmetic ([437a50e4](../../commit/437a50e4af47276d8b9fab27c1e4d485b7146fdf))
+- Reject expired fidelity bond certificates during maker selection ([b3ce730f](../../commit/b3ce730fddf55c350c2a2b84537254108eda8cdd))
+- Align wallet certificate expiry checks with reference semantics ([1208cd7b](../../commit/1208cd7b35fae940184b987c3bf107b6378e1227))
+- Exclude expired fidelity bond certificates from watcher values and statistics ([479b238c](../../commit/479b238cd21284f93d6859e13e8cf0fe268fce2f))
+- Preserve distinct fidelity bond script claims during directory aggregation ([dc3a4d62](../../commit/dc3a4d628a45b39c933ec8bb8497a1e5be0bb54a))
+- Show decaying bond value with a warning when its advertised certificate expires ([8c32cfc3](../../commit/8c32cfc399817984e757b1fffd696764dc310ec9))
+- Support Mempool instances that only expose the batch outspends endpoint ([5b74cc09](../../commit/5b74cc09a1db9e4b50144ffcc6f21d0afabe0a36))
+- Keep fidelity bond values visible during temporary block-height outages ([1a94d0cf](../../commit/1a94d0cf9019ba5c05ae263da7e8200101558549))
+- Diagnose Jade CBOR transport failures before bond signing and add secure BitBox01 password handling ([e43d3632](../../commit/e43d363276e340bb52f28092fccb0ad3dfc1aaef))
+- Stop makers that require renewal of an expired fidelity bond certificate ([6d1c5eb4](../../commit/6d1c5eb4e467701bd680f59d25dc6fccf92f601d))
+- Clean up maker resources after daemon-managed startup failures ([dced45f0](../../commit/dced45f040da18a40d631c1dee64ccbabf945f39))
+- Correct maker input totals and remove changing Connected rows from JAM earn reports ([9ac71552](../../commit/9ac7155273d17036814f46ee7f66485bb086f108))
+- Prevent maker address reuse and cross-wallet earnings reports when history or daemon lifecycle operations fail ([68347e29](../../commit/68347e29365fb349b044104b1f2fb262120d5056))
+- Preserve renewed fidelity bond claims and distinguish stale or invalid bond verification from active maker eligibility ([0f9da0f2](../../commit/0f9da0f2bc8043f035ab0a77f86a3701dd18c4e9))
+- Fail external fidelity bond workflows when the signer adds no signature or certificate validity is unusable ([92b8ed63](../../commit/92b8ed6321710f06eedb2fb35210f712405b28f5))
+- Limit the orderbook watcher web server to loopback outside container deployments by default ([750b3506](../../commit/750b3506c779c0f9e5b797d7fe3265183629174c))
+- Correct dust thresholds ([9b47e774](../../commit/9b47e7743c0ef42d8a42136e87b53ec22496d922))
+- Log a security error when loading a wallet with an invalid BIP39 checksum ([4395beec](../../commit/4395beec0d43334c0e7f6253bb0e07c3417a7cec))
+- Prevent advertised onion locations from blocking maker registration ([a10ab24f](../../commit/a10ab24f2218a1583a3df7aaa1c2070845339629))
+- Harden directory nick authentication against relay and concurrency failures ([9c1b75cf](../../commit/9c1b75cf0886263b4d99c9cd4260dadcb4034cc5))
+- Simplify directory nick authentication wire messages ([2f58c889](../../commit/2f58c8895a9dd104ce17ff811c17656197241806))
+- Reject out-of-order directory authentication messages ([c9f8f2d7](../../commit/c9f8f2d7c4591651e133a47477c6f2afa7391803))
+- Preserve odd wire codes for directory nick authentication ([4bdf990f](../../commit/4bdf990f4e89eec1088124098cbd5e94f1c032ac))
+- Keep taker CoinJoins pending until block confirmation and report the active Bitcoin network ([5dd505ce](../../commit/5dd505ce41584bc7d84a176194420603dc21d64a))
+- Show nick authentication and ping shortnames in the orderbook watcher ([fcc03cd5](../../commit/fcc03cd5d1f68d0f944ddcc9b4488c7c17bb0b3a))
+- Record direct send transactions in history file at broadcast time ([15dfbaf8](../../commit/15dfbaf8aa0b2a8e13e76a3d855262b584bc670d))
+- Make daemon direct-send history records reliable across backend and multi-wallet edge cases ([c828fe73](../../commit/c828fe7359cc7e5c7f6c27082ae33ae03c806b9b))
+- Make CLI direct-send history reliable when backends omit transaction IDs or history persistence fails ([2dbb5b09](../../commit/2dbb5b09d703422a22f5c55573ea6fa5131de27f))
+- Make jm-wallet address subcommand help available without loading or unlocking a wallet ([ea48cda4](../../commit/ea48cda482b7c6d06aa19a3ee9bed163b2d9e709))
+- Allow makers to merge recorded CoinJoin outputs in mixdepth 0 ([b248d35c](../../commit/b248d35cbfdc940a5fe5164caf4f0d423f3bfe5c))
+- Preserve exact CoinJoin provenance and reserved-input selection rules across wallet restarts ([731c41dc](../../commit/731c41dc4347b6b1879747f4df521fe055c1bcc0))
+- Align maker offer ranges with exact fillable liquidity and relative fee bounds ([b2dada4e](../../commit/b2dada4e2e1d53407fd4e41db9ed070149460b79))
+- Prevent taker rounds from selecting reserved inputs or accepting mismatched destination outputs ([bcff809e](../../commit/bcff809eb3fa9566106c5aeaae3943959187de73))
+- Keep tumbler plans aligned with spendable capacity and resume confirmation waits without replay ([68145b2b](../../commit/68145b2b6de45d8d23302fc8c3ad10a4eca26743))
+- Nullify CoinJoin-specific fields (cj_amount, source_mixdepth) on non-collaborative deposit and send history entries ([48a85278](../../commit/48a85278ab08947289638df16e893dcb39f40649))
+- Report direct-send and deposit amounts correctly across history consumers ([c8f7126a](../../commit/c8f7126ab3c59071b19bcd6871355dea757700c9))
+
+### Configuration Changes
+
+Existing `config.toml` files are not updated automatically. Review the bundled template changes below and apply the relevant options manually.
+
+````diff
+--- config.toml.template (0.35.0)
++++ config.toml.template (0.36.0)
+@@ -1,6 +1,11 @@
+ # JoinMarket-NG Configuration
+ # Uncomment and modify settings as needed. Defaults are sensible for most users.
+ # See documentation: https://joinmarket-ng.github.io/joinmarket-ng/
++#
++# Every nested setting has an equivalent environment variable. Uppercase the
++# section and key, then join them with a double underscore. For example:
++# [wallet] background_full_rescan -> WALLET__BACKGROUND_FULL_RESCAN
++# Environment variables take precedence over values in this file.
+
+ # ============================================================================
+ # Core Settings
+@@ -160,6 +165,15 @@
+ # Override with a custom list if needed:
+ # directory_servers = ["custom1.onion:5222", "custom2.onion:5222"]
+
++# Directory nick authentication policy (JMP-0005):
++# "prefer_verified" authenticates when supported and falls back to legacy servers.
++# "require_verified" rejects legacy servers. "disabled" uses the legacy handshake.
++# nick_auth_mode = "prefer_verified"
++# Expected identity for each selected directory endpoint. Keys must exactly match
++# the host:port string used after directory address selection. V3 onion identities
++# are derived automatically; explicit entries are required for clearnet and test IDs.
++# nick_auth_directory_ids = { "127.0.0.1:5222" = "test:local-directory" }
++
+ # ============================================================================
+ # Wallet Settings
+ # ============================================================================
+@@ -183,8 +197,10 @@
+ # See docs/technical/wallet-scanning.md.
+ # scan_range = 1000
+
+-# Dust threshold in satoshis
+-# dust_threshold = 27300
++# JoinMarket fixes minimum maker change at 27300 sats so makers and takers
++# coordinate on the same value. Taker-owned change uses a separate fixed
++# threshold of 2730 sats, matching the reference implementation.
++# dust_threshold = 27300  # Protocol constant, do not change
+
+ # Forced address-reuse defense (privacy). When a UTXO arrives on a wallet
+ # address that was previously used and is now empty, it is AUTOMATICALLY frozen
+@@ -387,30 +403,24 @@
+ # size_factor = 0.1
+
+ # Minimum confirmations for UTXOs offered into coinjoins.
+-# Default 0 lets the maker offer unconfirmed (mempool) UTXOs, which
+-# improves liquidity. The PoDLE commitment lives on a separate UTXO and
+-# is still gated by taker_utxo_age (taker side, default 5). Raise this
+-# to 1+ if you want to trade liquidity for RBF/eviction/reorg safety.
+-# min_confirmations = 0
++# Base-protocol takers reject unconfirmed maker inputs, so this must be at
++# least 1. The PoDLE commitment lives on a separate taker UTXO and is still
++# gated by taker_utxo_age (default 5).
++# min_confirmations = 1
+
+ # UTXO merge algorithm: "default", "gradual", "greedy", "random"
+ # merge_algorithm = "default"
+
+ # Mixdepth 0 privacy restriction.
+ # By default, UTXOs in mixdepth 0 are restricted to a single UTXO per CoinJoin
+-# to prevent linking deposits and fidelity bonds.  CoinJoin outputs (cj-out)
+-# are always exempt from this restriction because they already have CoinJoin
+-# privacy.  Set to true to disable the restriction entirely and allow merging
+-# all md0 UTXOs (experienced makers only -- reduces privacy).
++# to prevent linking deposits and fidelity bonds. Outputs with exact protocol
++# CoinJoin provenance are always exempt because they already have CoinJoin
++# privacy. Set to true to disable the restriction entirely and allow merging
++# all md0 UTXOs (experienced makers only, reduces privacy).
+ # allow_mixdepth_zero_merge = false
+
+-# Fidelity bond settings
+-# Set to true to run without a fidelity bond even if bonds exist in the registry.
+-# This can be useful for privacy - bonds are public and linkable to your offers.
+-# no_fidelity_bond = false
+-
+ # Timeouts and intervals
+-# session_timeout_sec = 300
++# session_timeout_sec = 300      # Range: 60-86400 seconds
+ # rescan_interval_sec = 600
+ # pending_tx_timeout_min = 60   # Minutes before marking unbroadcast CoinJoins as failed
+ # pending_tx_abandon_hours = 72  # Hours before abandoning a broadcast but unconfirmed tx
+@@ -424,7 +434,7 @@
+ # onion_host = ""  # Static hidden service address (e.g., 'mymaker...onion'). When not set, Tor control auto-generates one.
+ # onion_serving_host = "127.0.0.1"
+ # onion_serving_port = 5222
+-# tor_target_host = "127.0.0.1"
++# The hidden-service target is configured as [tor] target_host above.
+
+ # Message rate limiting (protects against spam/DoS from peers)
+ # message_rate_limit = 10   # Messages per second per peer (sustained)
+@@ -496,8 +506,8 @@
+ # bondless_require_zero_fee = true
+
+ # Timeouts and intervals
+-# maker_timeout_sec = 60
+-# order_wait_time = 120.0        # Max seconds to wait (hard ceiling)
++# maker_timeout_sec = 60         # Range: 10-3600 seconds
++# order_wait_time = 120.0        # Max seconds to wait (range: 1-3600)
+ # orderbook_min_wait = 30.0      # Min seconds before early exit is allowed
+ # orderbook_quiet_period = 15.0  # Seconds of silence to trigger early exit
+ # rescan_interval_sec = 600
+@@ -544,6 +554,15 @@
+ # host = "127.0.0.1"
+ # port = 5222
+
++# Directory nick authentication (JMP-0005). "prefer_verified" negotiates the
++# extension while accepting legacy clients, "require_verified" rejects clients
++# without it, and "disabled" keeps the legacy handshake only.
++# nick_auth_mode = "prefer_verified"
++# Stable identifier for this directory endpoint. Production onion directories
++# use their canonical "host.onion:port" endpoint; local tests may use a test ID.
++# nick_auth_directory_id = "test:jm-directory-5222"  # Local/test example only
++# nick_auth_timeout = 30.0
++
+ # Limits
+ # max_peers = 10000
+ # max_message_size = 2097152  # 2MB
+@@ -577,7 +596,7 @@
+
+ [orderbook_watcher]
+ # HTTP API settings
+-# http_host = "0.0.0.0"
++# http_host = "127.0.0.1"
+ # http_port = 8000
+
+ # Update interval in seconds
+````
+
 ## [0.35.0] - 2026-07-27
 
 Automatic histroy reconstruction on import, network fee estimation for neutrino, UTXO selector with all mixdepths, CLI alphabetic sorting of subcommands and options, security hardening, neutrino taker flow improvements, and bug fixes.
@@ -3380,7 +3589,8 @@ This release did not change the bundled `config.toml.template`.
 - Pre-built image support for directory server compose.
 - Tor configuration instructions.
 
-[Unreleased]: ../../compare/0.35.0...HEAD
+[Unreleased]: ../../compare/0.36.0...HEAD
+[0.36.0]: ../../compare/0.35.0...0.36.0
 [0.35.0]: ../../compare/0.34.2...0.35.0
 [0.34.2]: ../../compare/0.34.1...0.34.2
 [0.34.1]: ../../compare/0.34.0...0.34.1
