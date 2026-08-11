@@ -208,6 +208,16 @@ def send(
             help="Interactively select UTXOs (fzf-like TUI)",
         ),
     ] = False,
+    input_utxo: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--input-utxo",
+            help="Explicit input UTXO as txid:vout (repeatable). Spends exactly "
+            "the given UTXOs (also for sweeps) instead of auto-selecting; every "
+            "UTXO must already be unfrozen and belong to --mixdepth. Mutually "
+            "exclusive with --select-utxos.",
+        ),
+    ] = None,
     data_dir: Annotated[
         Path | None,
         typer.Option(
@@ -236,6 +246,10 @@ def send(
 
     if fee_rate is not None and block_target is not None:
         logger.error("Cannot specify both --fee-rate and --block-target")
+        raise typer.Exit(1)
+
+    if select_utxos and input_utxo:
+        logger.error("Cannot specify both --select-utxos and --input-utxo")
         raise typer.Exit(1)
 
     # Effective cap comes from settings (with hard-coded fallback). The same
@@ -301,6 +315,7 @@ def send(
             max_fee_rate_sat_vb=max_fee_rate,
             max_sats_freeze_reuse=settings.wallet.max_sats_freeze_reuse,
             reconstruct_history=settings.wallet.reconstruct_history,
+            input_utxos=input_utxo,
         )
     )
 
@@ -322,6 +337,7 @@ async def _send_transaction(
     max_fee_rate_sat_vb: float = MAX_MANUAL_FEE_RATE_SAT_VB,
     max_sats_freeze_reuse: int = -1,
     reconstruct_history: bool = True,
+    input_utxos: list[str] | None = None,
 ) -> None:
     """Send transaction implementation."""
     from jmwallet.backends.descriptor_wallet import (
@@ -437,13 +453,30 @@ async def _send_transaction(
         # backends (neutrino) scan the bond addresses directly inside this call.
         await wallet.sync_with_registered_bonds()
 
-        # Pick the inputs (interactive or automatic; may derive the mixdepth)
-        selection = await _select_input_utxos(
-            wallet, backend_settings, amount, mixdepth, interactive_utxo_selection
-        )
-        if selection is None:
-            return
-        utxos, mixdepth = selection
+        # Pick the inputs: explicit --input-utxo, interactive, or automatic.
+        if input_utxos:
+            from jmwallet.wallet.spend import resolve_input_utxos
+
+            resolved_mixdepth = mixdepth if mixdepth is not None else 0
+            try:
+                utxos, _locktime_cutoff = await resolve_input_utxos(
+                    wallet=wallet,
+                    backend=backend,
+                    mixdepth=resolved_mixdepth,
+                    input_utxos=input_utxos,
+                )
+            except ValueError as e:
+                logger.error(str(e))
+                raise typer.Exit(1)
+            mixdepth = resolved_mixdepth
+            logger.info(f"Using {len(utxos)} explicitly selected UTXO(s) from mixdepth {mixdepth}")
+        else:
+            selection = await _select_input_utxos(
+                wallet, backend_settings, amount, mixdepth, interactive_utxo_selection
+            )
+            if selection is None:
+                return
+            utxos, mixdepth = selection
 
         # Calculate totals based on selected UTXOs
         total_input = sum(u.value for u in utxos)

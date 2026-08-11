@@ -2944,3 +2944,105 @@ def test_rescan_fails_fast_on_neutrino_backend(monkeypatch) -> None:
 
         assert result.exit_code == 2, f"expected exit 2, got {result.exit_code}: {result.stdout}"
         descriptor_ctor.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# send --input-utxo (issue #587)
+# ---------------------------------------------------------------------------
+
+
+def test_send_rejects_select_utxos_and_input_utxo_together():
+    """--select-utxos and --input-utxo are mutually exclusive."""
+    with patch("jmwallet.cli.send.resolve_mnemonic") as mock_resolve:
+        result = runner.invoke(
+            app,
+            [
+                "send",
+                "bcrt1qtestdestination000000000000000000000000000",
+                "--amount",
+                "1000",
+                "--network",
+                "regtest",
+                "--backend",
+                "descriptor_wallet",
+                "--select-utxos",
+                "--input-utxo",
+                f"{'aa' * 32}:0",
+            ],
+            env={
+                "MNEMONIC": "abandon abandon abandon abandon abandon abandon "
+                "abandon abandon abandon abandon abandon about"
+            },
+        )
+
+    assert result.exit_code == 1
+    mock_resolve.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_with_input_utxo_spends_only_that_utxo(tmp_path: Path) -> None:
+    """--input-utxo spends exactly the named UTXO, skipping auto-selection."""
+    from jmwallet.wallet.models import UTXOInfo
+
+    with _mock_send_execution(tmp_path) as (backend_settings, mocks):
+        other_utxo = UTXOInfo(
+            txid="b" * 64,
+            vout=1,
+            value=500_000,
+            address="bcrt1qq6hag67dl53wl99vzg42z8eyzfz2xlkvwk6f7m",
+            confirmations=6,
+            scriptpubkey="0014" + "22" * 20,
+            path="m/84'/1'/0'/0/1",
+            mixdepth=0,
+        )
+        existing_utxos = mocks.wallet.get_utxos.return_value
+        mocks.wallet.get_utxos = AsyncMock(return_value=[*existing_utxos, other_utxo])
+
+        from jmwallet.cli.send import _send_transaction
+
+        await _send_transaction(
+            mnemonic="abandon " * 11 + "about",
+            destination="bcrt1qq6hag67dl53wl99vzg42z8eyzfz2xlkvwk6f7m",
+            amount=0,
+            mixdepth=0,
+            fee_rate=1.0,
+            block_target=None,
+            backend_settings=backend_settings,
+            broadcast=True,
+            skip_confirmation=True,
+            interactive_utxo_selection=False,
+            input_utxos=[f"{'a' * 64}:0"],
+        )
+
+    # Only the explicitly named UTXO (value 100_000) was signed and spent;
+    # the other 500_000-sat UTXO must not have been swept in.
+    assert mocks.wallet.sign_input.call_count == 1
+    signed_utxo = mocks.wallet.sign_input.call_args.args[2]
+    assert (signed_utxo.txid, signed_utxo.vout) == ("a" * 64, 0)
+
+
+@pytest.mark.asyncio
+async def test_send_with_unknown_input_utxo_exits_without_broadcasting(tmp_path: Path) -> None:
+    """An input UTXO that doesn't exist must fail loudly, not fall back to auto-selection."""
+    with _mock_send_execution(tmp_path) as (backend_settings, mocks):
+        mocks.wallet.utxo_cache = {}
+
+        from jmwallet.cli.send import _send_transaction
+
+        with pytest.raises(typer.Exit):
+            await _send_transaction(
+                mnemonic="abandon " * 11 + "about",
+                destination="bcrt1qq6hag67dl53wl99vzg42z8eyzfz2xlkvwk6f7m",
+                amount=0,
+                mixdepth=0,
+                fee_rate=1.0,
+                block_target=None,
+                backend_settings=backend_settings,
+                broadcast=True,
+                skip_confirmation=True,
+                interactive_utxo_selection=False,
+                input_utxos=[f"{'c' * 64}:0"],
+            )
+
+    mocks.backend.broadcast_transaction.assert_not_awaited()
+    mocks.wallet.sign_input.assert_not_called()
