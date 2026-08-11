@@ -23,6 +23,7 @@ from jmwallet.wallet.spend import (
     direct_send,
     enforce_fee_rate_cap,
     estimate_fee,
+    parse_outpoint,
     prepare_direct_send,
     select_spendable_utxos,
 )
@@ -386,6 +387,9 @@ def _make_mock_wallet(utxos: list[UTXOInfo], change_addr: str = REGTEST_P2WPKH_A
     wallet = MagicMock()
     wallet.network = "regtest"
     wallet.get_utxos = AsyncMock(return_value=utxos)
+    # Real WalletService always exposes a dict here; explicit-input resolution
+    # reads it to tell "wrong mixdepth" apart from "not found".
+    wallet.utxo_cache = {0: utxos}
     # Raise ValueError so direct_send falls back to get_utxos for coin selection
     wallet.select_utxos = MagicMock(side_effect=ValueError("no coin selection in tests"))
     wallet.get_key_for_address = MagicMock(return_value=_make_mock_key())
@@ -969,3 +973,350 @@ class TestPrepareDirectSend:
         assert result.change_address == ""
         assert result.source_addresses == ["bcrt1qinput"]
         backend.broadcast_transaction.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# parse_outpoint
+# ---------------------------------------------------------------------------
+
+
+class TestParseOutpoint:
+    """Unit tests for txid:vout parsing (issue #587)."""
+
+    def test_valid(self) -> None:
+        assert parse_outpoint(f"{'aa' * 32}:3") == ("aa" * 32, 3)
+
+    def test_uppercase_txid_is_normalized(self) -> None:
+        assert parse_outpoint(f"{'AB' * 32}:0") == ("ab" * 32, 0)
+
+    def test_surrounding_whitespace_is_tolerated(self) -> None:
+        assert parse_outpoint(f"  {'aa' * 32}:1  ") == ("aa" * 32, 1)
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "aa" * 32,  # no separator
+            f"{'aa' * 31}:0",  # txid too short
+            f"{'aa' * 33}:0",  # txid too long
+            f"{'zz' * 32}:0",  # not hex
+            f"{'aa' * 32}:",  # missing vout
+            f"{'aa' * 32}:-1",  # negative vout
+            f"{'aa' * 32}:x",  # non-numeric vout
+            f"{'aa' * 32}:1.0",  # non-integer vout
+            "",
+        ],
+    )
+    def test_malformed_raises(self, raw: str) -> None:
+        with pytest.raises(ValueError, match="Invalid input UTXO"):
+            parse_outpoint(raw)
+
+
+# ---------------------------------------------------------------------------
+# prepare_direct_send with explicit input_utxos (issue #587)
+# ---------------------------------------------------------------------------
+
+
+class TestPrepareDirectSendExplicitInputs:
+    """Explicit coin control: spend exactly the listed UTXOs, or fail loudly."""
+
+    @pytest.mark.anyio
+    async def test_spends_only_the_listed_utxos(self) -> None:
+        chosen = _make_utxo(txid="aa" * 32, vout=0, value=200_000)
+        other = _make_utxo(txid="bb" * 32, vout=1, value=500_000)
+        wallet = _make_mock_wallet([chosen, other])
+        backend = _make_mock_backend()
+
+        result = await prepare_direct_send(
+            wallet=wallet,
+            backend=backend,
+            mixdepth=0,
+            amount_sats=50_000,
+            destination=REGTEST_P2WPKH_ADDR,
+            fee_rate=1.0,
+            input_utxos=[f"{'aa' * 32}:0"],
+        )
+
+        assert result.selected_utxos == [("aa" * 32, 0)]
+        assert result.num_inputs == 1
+        # Automatic coin selection must not run at all.
+        wallet.select_utxos.assert_not_called()
+
+    @pytest.mark.anyio
+    async def test_input_order_is_preserved(self) -> None:
+        first = _make_utxo(txid="aa" * 32, vout=0, value=200_000)
+        second = _make_utxo(txid="bb" * 32, vout=1, value=200_000)
+        wallet = _make_mock_wallet([first, second])
+        backend = _make_mock_backend()
+
+        result = await prepare_direct_send(
+            wallet=wallet,
+            backend=backend,
+            mixdepth=0,
+            amount_sats=50_000,
+            destination=REGTEST_P2WPKH_ADDR,
+            fee_rate=1.0,
+            input_utxos=[f"{'bb' * 32}:1", f"{'aa' * 32}:0"],
+        )
+
+        assert result.selected_utxos == [("bb" * 32, 1), ("aa" * 32, 0)]
+
+    @pytest.mark.anyio
+    async def test_sweep_spends_exactly_the_listed_utxos(self) -> None:
+        """amount_sats=0 + explicit inputs sweeps those inputs, not the mixdepth."""
+        chosen = _make_utxo(txid="aa" * 32, vout=0, value=200_000)
+        untouched = _make_utxo(txid="bb" * 32, vout=1, value=500_000)
+        wallet = _make_mock_wallet([chosen, untouched])
+        backend = _make_mock_backend()
+
+        result = await prepare_direct_send(
+            wallet=wallet,
+            backend=backend,
+            mixdepth=0,
+            amount_sats=0,
+            destination=REGTEST_P2WPKH_ADDR,
+            fee_rate=1.0,
+            input_utxos=[f"{'aa' * 32}:0"],
+        )
+
+        assert result.selected_utxos == [("aa" * 32, 0)]
+        assert result.change_amount == 0
+        assert result.send_amount == 200_000 - result.fee
+
+    @pytest.mark.anyio
+    async def test_empty_list_is_an_error(self) -> None:
+        wallet = _make_mock_wallet([_make_utxo(value=200_000)])
+        backend = _make_mock_backend()
+
+        with pytest.raises(ValueError, match="must not be empty"):
+            await prepare_direct_send(
+                wallet=wallet,
+                backend=backend,
+                mixdepth=0,
+                amount_sats=50_000,
+                destination=REGTEST_P2WPKH_ADDR,
+                fee_rate=1.0,
+                input_utxos=[],
+            )
+
+    @pytest.mark.anyio
+    async def test_frozen_utxo_is_rejected(self) -> None:
+        frozen = _make_utxo(txid="aa" * 32, vout=0, value=200_000, frozen=True)
+        wallet = _make_mock_wallet([frozen])
+        backend = _make_mock_backend()
+
+        with pytest.raises(ValueError, match="is frozen"):
+            await prepare_direct_send(
+                wallet=wallet,
+                backend=backend,
+                mixdepth=0,
+                amount_sats=50_000,
+                destination=REGTEST_P2WPKH_ADDR,
+                fee_rate=1.0,
+                input_utxos=[f"{'aa' * 32}:0"],
+            )
+
+    @pytest.mark.anyio
+    async def test_unknown_utxo_is_rejected(self) -> None:
+        wallet = _make_mock_wallet([_make_utxo(txid="aa" * 32, vout=0, value=200_000)])
+        backend = _make_mock_backend()
+
+        with pytest.raises(ValueError, match="not found in mixdepth 0"):
+            await prepare_direct_send(
+                wallet=wallet,
+                backend=backend,
+                mixdepth=0,
+                amount_sats=50_000,
+                destination=REGTEST_P2WPKH_ADDR,
+                fee_rate=1.0,
+                input_utxos=[f"{'cc' * 32}:0"],
+            )
+
+    @pytest.mark.anyio
+    async def test_utxo_from_another_mixdepth_names_that_mixdepth(self) -> None:
+        in_md0 = _make_utxo(txid="aa" * 32, vout=0, value=200_000)
+        in_md2 = _make_utxo(txid="bb" * 32, vout=0, value=200_000, mixdepth=2)
+        wallet = _make_mock_wallet([in_md0])
+        wallet.utxo_cache = {0: [in_md0], 2: [in_md2]}
+        backend = _make_mock_backend()
+
+        with pytest.raises(ValueError, match="is in mixdepth 2, not the requested mixdepth 0"):
+            await prepare_direct_send(
+                wallet=wallet,
+                backend=backend,
+                mixdepth=0,
+                amount_sats=50_000,
+                destination=REGTEST_P2WPKH_ADDR,
+                fee_rate=1.0,
+                input_utxos=[f"{'bb' * 32}:0"],
+            )
+
+    @pytest.mark.anyio
+    async def test_duplicate_outpoint_is_rejected(self) -> None:
+        wallet = _make_mock_wallet([_make_utxo(txid="aa" * 32, vout=0, value=200_000)])
+        backend = _make_mock_backend()
+
+        with pytest.raises(ValueError, match="Duplicate input UTXO"):
+            await prepare_direct_send(
+                wallet=wallet,
+                backend=backend,
+                mixdepth=0,
+                amount_sats=50_000,
+                destination=REGTEST_P2WPKH_ADDR,
+                fee_rate=1.0,
+                input_utxos=[f"{'aa' * 32}:0", f"{'AA' * 32}:0"],
+            )
+
+    @pytest.mark.anyio
+    async def test_insufficient_value_is_rejected_without_fallback(self) -> None:
+        """A too-small explicit input must error, not silently pull in the big one."""
+        small = _make_utxo(txid="aa" * 32, vout=0, value=10_000)
+        big = _make_utxo(txid="bb" * 32, vout=1, value=5_000_000)
+        wallet = _make_mock_wallet([small, big])
+        backend = _make_mock_backend()
+
+        with pytest.raises(ValueError, match="Insufficient funds"):
+            await prepare_direct_send(
+                wallet=wallet,
+                backend=backend,
+                mixdepth=0,
+                amount_sats=1_000_000,
+                destination=REGTEST_P2WPKH_ADDR,
+                fee_rate=1.0,
+                input_utxos=[f"{'aa' * 32}:0"],
+            )
+
+    @pytest.mark.anyio
+    async def test_expired_fidelity_bond_can_be_selected_explicitly(self) -> None:
+        past_locktime = int(time.time()) - 100_000
+        bond = _make_utxo(
+            txid="aa" * 32,
+            vout=0,
+            value=500_000,
+            scriptpubkey=_bond_scriptpubkey(past_locktime),
+            locktime=past_locktime,
+        )
+        wallet = _make_mock_wallet([bond, _make_utxo(txid="bb" * 32, vout=1, value=100_000)])
+        backend = _make_mock_backend()
+
+        result = await prepare_direct_send(
+            wallet=wallet,
+            backend=backend,
+            mixdepth=0,
+            amount_sats=0,
+            destination=REGTEST_P2WPKH_ADDR,
+            fee_rate=1.0,
+            input_utxos=[f"{'aa' * 32}:0"],
+        )
+
+        assert result.selected_utxos == [("aa" * 32, 0)]
+        assert int.from_bytes(bytes.fromhex(result.tx_hex)[-4:], "little") == past_locktime
+
+    @pytest.mark.anyio
+    async def test_unexpired_fidelity_bond_is_rejected(self) -> None:
+        future_locktime = int(time.time()) + 100_000
+        bond = _make_utxo(
+            txid="aa" * 32,
+            vout=0,
+            value=500_000,
+            scriptpubkey=_bond_scriptpubkey(future_locktime),
+            locktime=future_locktime,
+        )
+        wallet = _make_mock_wallet([bond])
+        backend = _make_mock_backend()
+
+        with pytest.raises(ValueError, match="timelock .* has not passed chain time"):
+            await prepare_direct_send(
+                wallet=wallet,
+                backend=backend,
+                mixdepth=0,
+                amount_sats=0,
+                destination=REGTEST_P2WPKH_ADDR,
+                fee_rate=1.0,
+                input_utxos=[f"{'aa' * 32}:0"],
+            )
+
+    @pytest.mark.anyio
+    async def test_unsignable_fidelity_bond_is_rejected(self) -> None:
+        """An expired bond whose script this wallet does not derive is refused."""
+        past_locktime = int(time.time()) - 100_000
+        bond = _make_utxo(
+            txid="aa" * 32,
+            vout=0,
+            value=500_000,
+            scriptpubkey="0020" + "cd" * 32,  # does not match mk_freeze_script
+            locktime=past_locktime,
+        )
+        wallet = _make_mock_wallet([bond])
+        backend = _make_mock_backend()
+
+        with pytest.raises(ValueError, match="cannot sign"):
+            await prepare_direct_send(
+                wallet=wallet,
+                backend=backend,
+                mixdepth=0,
+                amount_sats=0,
+                destination=REGTEST_P2WPKH_ADDR,
+                fee_rate=1.0,
+                input_utxos=[f"{'aa' * 32}:0"],
+            )
+
+    @pytest.mark.anyio
+    async def test_no_median_time_past_lookup_without_bonds(self) -> None:
+        wallet = _make_mock_wallet([_make_utxo(txid="aa" * 32, vout=0, value=200_000)])
+        backend = _make_mock_backend()
+
+        await prepare_direct_send(
+            wallet=wallet,
+            backend=backend,
+            mixdepth=0,
+            amount_sats=50_000,
+            destination=REGTEST_P2WPKH_ADDR,
+            fee_rate=1.0,
+            input_utxos=[f"{'aa' * 32}:0"],
+        )
+
+        backend.get_median_time_past.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_omitting_input_utxos_keeps_automatic_selection(self) -> None:
+        """Backward compatibility: omitting the argument selects as before."""
+        utxos = [_make_utxo(txid="aa" * 32, vout=0, value=200_000)]
+        wallet = _make_mock_wallet(utxos)
+        backend = _make_mock_backend()
+
+        result = await prepare_direct_send(
+            wallet=wallet,
+            backend=backend,
+            mixdepth=0,
+            amount_sats=50_000,
+            destination=REGTEST_P2WPKH_ADDR,
+            fee_rate=1.0,
+        )
+
+        assert result.selected_utxos == [("aa" * 32, 0)]
+        wallet.select_utxos.assert_called_once()
+
+
+class TestDirectSendExplicitInputs:
+    """input_utxos must reach prepare_direct_send through direct_send."""
+
+    @pytest.mark.anyio
+    async def test_passthrough(self) -> None:
+        chosen = _make_utxo(txid="aa" * 32, vout=0, value=200_000)
+        other = _make_utxo(txid="bb" * 32, vout=1, value=900_000)
+        wallet = _make_mock_wallet([chosen, other])
+        backend = _make_mock_backend()
+
+        result = await direct_send(
+            wallet=wallet,
+            backend=backend,
+            mixdepth=0,
+            amount_sats=50_000,
+            destination=REGTEST_P2WPKH_ADDR,
+            fee_rate=1.0,
+            input_utxos=[f"{'aa' * 32}:0"],
+        )
+
+        assert result.num_inputs == 1
+        assert [i["outpoint"] for i in result.inputs] == [f"{'aa' * 32}:0"]
+        backend.broadcast_transaction.assert_called_once()

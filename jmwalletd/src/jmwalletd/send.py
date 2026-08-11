@@ -36,6 +36,7 @@ async def do_direct_send(
     fee_target_blocks: int | None = None,
     tx_fee_factor: float = 0.0,
     max_fee_rate_sat_vb: float = DEFAULT_MAX_FEE_RATE_SAT_VB,
+    input_utxos: list[str] | None = None,
 ) -> DirectSendResult:
     """Build, sign, broadcast, and record a direct (non-coinjoin) transaction.
 
@@ -43,6 +44,10 @@ async def do_direct_send(
     drives backend estimation (``None`` keeps the spend module's default
     target). ``tx_fee_factor`` applies the reference fee-rate randomization,
     and ``max_fee_rate_sat_vb`` applies the operator's configured hard cap.
+    ``input_utxos``, when given, spends exactly those ``txid:vout`` outpoints
+    instead of running automatic coin selection (issue #587); see
+    :func:`jmwallet.wallet.spend.prepare_direct_send` for the validation
+    rules.
 
     Follows the same two-phase history-write pattern as the CLI send command:
 
@@ -89,6 +94,7 @@ async def do_direct_send(
         fee_rate=fee_rate,
         tx_fee_factor=tx_fee_factor,
         max_fee_rate_sat_vb=max_fee_rate_sat_vb,
+        input_utxos=input_utxos,
         **extra_kwargs,
     )
 

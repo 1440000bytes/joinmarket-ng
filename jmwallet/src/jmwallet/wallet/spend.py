@@ -206,6 +206,119 @@ def select_spendable_utxos(
     return result
 
 
+def parse_outpoint(raw: str) -> tuple[str, int]:
+    """Parse a ``txid:vout`` outpoint string into ``(txid, vout)``.
+
+    The txid is lowercased so callers can compare it against
+    :attr:`UTXOInfo.txid` without worrying about the case the client used.
+
+    Raises:
+        ValueError: If the string is not a well-formed outpoint.
+    """
+    text = raw.strip()
+    txid, separator, vout_text = text.rpartition(":")
+    if not separator:
+        msg = f"Invalid input UTXO {raw!r}: expected format 'txid:vout'"
+        raise ValueError(msg)
+    if len(txid) != 64 or any(c not in "0123456789abcdefABCDEF" for c in txid):
+        msg = f"Invalid input UTXO {raw!r}: {txid!r} is not a 64-character hex txid"
+        raise ValueError(msg)
+    if not (vout_text.isascii() and vout_text.isdigit()):
+        msg = f"Invalid input UTXO {raw!r}: vout {vout_text!r} is not a non-negative integer"
+        raise ValueError(msg)
+    return txid.lower(), int(vout_text)
+
+
+def _find_owning_mixdepth(wallet: WalletService, txid: str, vout: int) -> int | None:
+    """Look for an outpoint in already-synced mixdepths other than the requested one.
+
+    Reads only :attr:`WalletService.utxo_cache` so an error path never triggers
+    a fresh sync. Returns ``None`` when the outpoint is not in the cache, which
+    just means we cannot say more than "not found".
+    """
+    for other_mixdepth, cached in wallet.utxo_cache.items():
+        for utxo in cached:
+            if utxo.txid == txid and utxo.vout == vout:
+                return other_mixdepth
+    return None
+
+
+async def resolve_input_utxos(
+    *,
+    wallet: WalletService,
+    backend: BlockchainBackend,
+    mixdepth: int,
+    input_utxos: list[str],
+) -> tuple[list[UTXOInfo], int | None]:
+    """Resolve explicit ``txid:vout`` strings into spendable :class:`UTXOInfo`.
+
+    Every listed outpoint must exist in *mixdepth*, be unfrozen, and be
+    signable by this wallet. Fidelity bonds are admitted only when their
+    timelock has already expired against chain median-time-past, since the
+    caller selected them deliberately. There is no fallback to automatic
+    selection: anything unusable raises :class:`ValueError` naming the reason.
+
+    Returns ``(utxos, locktime_cutoff)`` with the UTXOs in the order given.
+    ``locktime_cutoff`` is the median-time-past that was fetched to validate
+    fidelity bonds, or *None* when no bond was selected.
+    """
+    if not input_utxos:
+        msg = "input_utxos must not be empty; omit it to use automatic coin selection"
+        raise ValueError(msg)
+
+    outpoints: list[tuple[str, int]] = []
+    seen: set[tuple[str, int]] = set()
+    for raw in input_utxos:
+        outpoint = parse_outpoint(raw)
+        if outpoint in seen:
+            msg = f"Duplicate input UTXO {outpoint[0]}:{outpoint[1]}"
+            raise ValueError(msg)
+        seen.add(outpoint)
+        outpoints.append(outpoint)
+
+    available = {(u.txid, u.vout): u for u in await wallet.get_utxos(mixdepth)}
+
+    utxos: list[UTXOInfo] = []
+    for txid, vout in outpoints:
+        utxo = available.get((txid, vout))
+        if utxo is None:
+            owner = _find_owning_mixdepth(wallet, txid, vout)
+            if owner is not None:
+                msg = (
+                    f"Input UTXO {txid}:{vout} is in mixdepth {owner}, "
+                    f"not the requested mixdepth {mixdepth}"
+                )
+            else:
+                msg = f"Input UTXO {txid}:{vout} not found in mixdepth {mixdepth}"
+            raise ValueError(msg)
+        if utxo.frozen:
+            msg = f"Input UTXO {txid}:{vout} is frozen; unfreeze it before spending"
+            raise ValueError(msg)
+        utxos.append(utxo)
+
+    # Fidelity bonds need chain time to check expiry, so only pay for the
+    # median-time-past round trip when one was actually selected.
+    locktime_cutoff: int | None = None
+    if any(u.is_fidelity_bond for u in utxos):
+        locktime_cutoff = await backend.get_median_time_past()
+        for utxo in utxos:
+            if not utxo.is_fidelity_bond:
+                continue
+            if utxo.locktime is None or utxo.locktime >= locktime_cutoff:
+                msg = (
+                    f"Input UTXO {utxo.txid}:{utxo.vout} is a fidelity bond whose "
+                    f"timelock {utxo.locktime} has not passed chain time {locktime_cutoff}"
+                )
+                raise ValueError(msg)
+            if not _is_signable_fidelity_bond(wallet, utxo):
+                msg = (
+                    f"Input UTXO {utxo.txid}:{utxo.vout} is a fidelity bond this wallet cannot sign"
+                )
+                raise ValueError(msg)
+
+    return utxos, locktime_cutoff
+
+
 def _is_signable_fidelity_bond(wallet: WalletService, utxo: UTXOInfo) -> bool:
     """Return whether this wallet derives the script key for a bond UTXO."""
     if not utxo.is_fidelity_bond or utxo.locktime is None or not utxo.is_p2wsh:
@@ -379,8 +492,14 @@ async def prepare_direct_send(
     fee_target_blocks: int = 6,
     tx_fee_factor: float = 0.0,
     max_fee_rate_sat_vb: float = DEFAULT_MAX_FEE_RATE_SAT_VB,
+    input_utxos: list[str] | None = None,
 ) -> SignedDirectTx:
     """Build and sign a direct-send transaction WITHOUT broadcasting.
+
+    When *input_utxos* is given as a list of ``txid:vout`` strings, exactly
+    those UTXOs are spent and automatic coin selection is skipped entirely;
+    anything unusable raises :class:`ValueError` rather than falling back. An
+    empty list is an error — omit the argument for automatic selection.
 
     Returns a :class:`SignedDirectTx` containing the signed hex and all
     metadata needed to broadcast and record a history entry. Callers that want
@@ -416,7 +535,16 @@ async def prepare_direct_send(
     # --- UTXO selection ---
     utxos: list[UTXOInfo]
     locktime_cutoff: int | None = None
-    if amount_sats == 0:
+    if input_utxos is not None:
+        # Explicit coin control (issue #587): spend exactly what was listed,
+        # including for sweeps, with no fallback to automatic selection.
+        utxos, locktime_cutoff = await resolve_input_utxos(
+            wallet=wallet,
+            backend=backend,
+            mixdepth=mixdepth,
+            input_utxos=input_utxos,
+        )
+    elif amount_sats == 0:
         # Sweep regular coins by default. If there are none, admit expired
         # hot-wallet bonds. This supports explicit bond-redemption flows that
         # freeze every other coin without making bonds part of normal
@@ -561,6 +689,7 @@ async def direct_send(
     fee_target_blocks: int = 6,
     tx_fee_factor: float = 0.0,
     max_fee_rate_sat_vb: float = DEFAULT_MAX_FEE_RATE_SAT_VB,
+    input_utxos: list[str] | None = None,
 ) -> DirectSendResult:
     """Build, sign, and broadcast a direct (non-CoinJoin) transaction.
 
@@ -591,6 +720,12 @@ async def direct_send(
         :class:`ExcessiveFeeRateError` when it exceeds this value.  Defaults
         to :data:`DEFAULT_MAX_FEE_RATE_SAT_VB`; daemon and CLI callers wire
         this from ``settings.wallet.max_fee_rate_sat_vb``.
+    input_utxos:
+        Optional explicit list of ``txid:vout`` outpoints to spend.  When
+        given, coin selection is skipped and exactly these UTXOs are used
+        (also for sweeps); they must all be unfrozen and in *mixdepth*, or
+        :class:`ValueError` is raised naming the reason.  An empty list is an
+        error; pass *None* for automatic selection.
 
     Returns
     -------
@@ -606,6 +741,7 @@ async def direct_send(
         fee_target_blocks=fee_target_blocks,
         tx_fee_factor=tx_fee_factor,
         max_fee_rate_sat_vb=max_fee_rate_sat_vb,
+        input_utxos=input_utxos,
     )
 
     tx_bytes_len = len(bytes.fromhex(prepared.tx_hex))

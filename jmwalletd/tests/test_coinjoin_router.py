@@ -144,6 +144,89 @@ class TestDirectSend:
         )
         assert resp.status_code == 400
 
+    @patch("jmwalletd.send.do_direct_send")
+    def test_direct_send_forwards_input_utxos(
+        self,
+        mock_send: AsyncMock,
+        authed_client: tuple[TestClient, str],
+    ) -> None:
+        """Explicit input UTXOs (issue #587) reach do_direct_send unchanged."""
+        client, token = authed_client
+        mock_send.return_value = Mock(
+            txid="txid123",
+            tx_hex="rawhex",
+            hex="rawhex",
+            inputs=[],
+            outputs=[],
+            locktime=0,
+            version=2,
+        )
+        outpoint = f"{'aa' * 32}:0"
+
+        resp = client.post(
+            "/api/v1/wallet/test_wallet.jmdat/taker/direct-send",
+            json={
+                "mixdepth": 0,
+                "amount_sats": 1000,
+                "destination": "bcrt1qdest",
+                "input_utxos": [outpoint],
+            },
+            headers=_auth_headers(token),
+        )
+
+        assert resp.status_code == 200
+        assert mock_send.call_args.kwargs["input_utxos"] == [outpoint]
+
+    @patch("jmwalletd.send.do_direct_send")
+    def test_direct_send_omitted_input_utxos_is_none(
+        self,
+        mock_send: AsyncMock,
+        authed_client: tuple[TestClient, str],
+    ) -> None:
+        client, token = authed_client
+        mock_send.return_value = Mock(
+            txid="txid123",
+            tx_hex="rawhex",
+            hex="rawhex",
+            inputs=[],
+            outputs=[],
+            locktime=0,
+            version=2,
+        )
+
+        resp = client.post(
+            "/api/v1/wallet/test_wallet.jmdat/taker/direct-send",
+            json={"mixdepth": 0, "amount_sats": 1000, "destination": "bcrt1qdest"},
+            headers=_auth_headers(token),
+        )
+
+        assert resp.status_code == 200
+        assert mock_send.call_args.kwargs["input_utxos"] is None
+
+    @patch("jmwalletd.send.do_direct_send")
+    def test_direct_send_rejects_unusable_input_utxo(
+        self,
+        mock_send: AsyncMock,
+        authed_client: tuple[TestClient, str],
+    ) -> None:
+        """A ValueError from the wallet layer (frozen/not-found/etc.) becomes a 400."""
+        client, token = authed_client
+        mock_send.side_effect = ValueError(f"Input UTXO {'aa' * 32}:0 not found in mixdepth 0")
+
+        resp = client.post(
+            "/api/v1/wallet/test_wallet.jmdat/taker/direct-send",
+            json={
+                "mixdepth": 0,
+                "amount_sats": 1000,
+                "destination": "bcrt1qdest",
+                "input_utxos": [f"{'aa' * 32}:0"],
+            },
+            headers=_auth_headers(token),
+        )
+
+        assert resp.status_code == 400
+        assert "not found in mixdepth 0" in resp.json()["message"]
+
 
 class TestDoCoinjoin:
     def test_start_coinjoin_requires_mnemonic(self, authed_client: tuple[TestClient, str]) -> None:

@@ -212,6 +212,47 @@ async def test_direct_send_forwards_fee_overrides(
 @patch("jmwalletd.send.create_send_history_entry")
 @patch("jmwalletd.send.prepare_direct_send", new_callable=AsyncMock)
 @patch("jmwalletd._backend.get_backend", new_callable=AsyncMock)
+async def test_direct_send_forwards_input_utxos(
+    mock_get_backend: AsyncMock,
+    mock_prepare_direct_send: AsyncMock,
+    mock_create_entry: MagicMock,
+    mock_append_entry: MagicMock,
+    mock_update_entry: MagicMock,
+) -> None:
+    """Explicit input UTXOs (issue #587) reach prepare_direct_send unchanged."""
+    wallet = MagicMock(data_dir=None, network="regtest", wallet_fingerprint="aabbccdd")
+    wallet.sync_with_registered_bonds = AsyncMock()
+    backend = MagicMock()
+    backend.broadcast_transaction = AsyncMock(return_value="txid_123")
+    mock_get_backend.return_value = backend
+    mock_prepare_direct_send.return_value = _make_prepared_tx()
+
+    await do_direct_send(
+        wallet_service=wallet,
+        mixdepth=0,
+        amount_sats=50_000,
+        destination="bcrt1qdestination",
+        input_utxos=[f"{'aa' * 32}:0"],
+    )
+
+    assert mock_prepare_direct_send.call_args.kwargs["input_utxos"] == [f"{'aa' * 32}:0"]
+
+    await do_direct_send(
+        wallet_service=wallet,
+        mixdepth=0,
+        amount_sats=50_000,
+        destination="bcrt1qdestination",
+    )
+
+    assert mock_prepare_direct_send.call_args.kwargs["input_utxos"] is None
+
+
+@pytest.mark.asyncio
+@patch("jmwalletd.send.update_send_awaiting_broadcast")
+@patch("jmwalletd.send.append_history_entry")
+@patch("jmwalletd.send.create_send_history_entry")
+@patch("jmwalletd.send.prepare_direct_send", new_callable=AsyncMock)
+@patch("jmwalletd._backend.get_backend", new_callable=AsyncMock)
 async def test_direct_send_uses_local_txid_when_backend_omits_it(
     mock_get_backend: AsyncMock,
     mock_prepare_direct_send: AsyncMock,
