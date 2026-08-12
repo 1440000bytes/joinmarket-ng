@@ -184,6 +184,11 @@ class TestTakerConfig:
         with pytest.raises(ValidationError):
             TakerConfig(mnemonic=sample_mnemonic, tx_fee_factor=-0.1)
 
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+    def test_max_sweep_fee_change_must_be_finite(self, sample_mnemonic: str, value: float) -> None:
+        with pytest.raises(ValidationError):
+            TakerConfig(mnemonic=sample_mnemonic, max_sweep_fee_change=value)
+
     def test_mixdepth_count_bounds(self, sample_mnemonic: str) -> None:
         """Test mixdepth count validation."""
         # Valid

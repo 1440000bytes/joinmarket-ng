@@ -1079,18 +1079,32 @@ class CoinJoinSession:
                         "This may indicate a fee calculation mismatch."
                     )
 
-                # The residual becomes additional miner fee (no taker change in sweep)
-
-                # Enforce max_sweep_fee_change limit on residual fee drift
-                base_miner_fee = tx_fee + maker_txfee
-                if base_miner_fee > 0 and self.config.max_sweep_fee_change is not None:
-                    fee_change_ratio = residual / base_miner_fee
-                    if fee_change_ratio > self.config.max_sweep_fee_change:
-                        logger.error(
-                            f"Sweep failed: fee change ratio {fee_change_ratio:.2f} exceeds "
-                            f"max_sweep_fee_change limit of {self.config.max_sweep_fee_change:.2f} "
-                            f"(residual={residual} sats vs base_miner_fee={base_miner_fee} sats)."
+                # The residual becomes additional miner fee (no taker change in sweep).
+                # Check the finalized transaction shape against the deterministic
+                # base-rate budget used to calculate the amount sent in !fill.
+                if self.config.max_sweep_fee_change is not None:
+                    if tx_fee <= 0:
+                        self.last_failure_reason = (
+                            "Sweep fee budget must be positive after order selection; "
+                            "retry the CoinJoin."
                         )
+                        logger.error(f"Sweep failed: {self.last_failure_reason}")
+                        return False
+
+                    actual_base_fee = self._estimate_tx_fee(
+                        num_inputs, num_outputs, use_base_rate=True
+                    )
+                    fee_ratio = actual_base_fee / tx_fee
+                    tolerance = self.config.max_sweep_fee_change
+                    if fee_ratio < 1 - tolerance or fee_ratio > 1 + tolerance:
+                        self.last_failure_reason = (
+                            "Sweep transaction fee estimate differs from the selected fee budget: "
+                            f"estimated {actual_base_fee} sats for {num_inputs} inputs and "
+                            f"{num_outputs} outputs, budget {tx_fee} sats, "
+                            f"tolerance {tolerance:.2f}. "
+                            "Retry the CoinJoin with different makers."
+                        )
+                        logger.error(f"Sweep failed: {self.last_failure_reason}")
                         return False
 
                 # The budget was estimated from an assumed maker input count. If

@@ -1024,6 +1024,51 @@ class TestSweepCjAmountPreservation:
         # This is the expected behavior: fee amount is stable, rate may vary
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("actual_base_fee", "expected_result"),
+        [
+            (559, False),  # Below 80% of the 700-sat budget.
+            (560, True),  # At the lower boundary.
+            (840, True),  # At the upper boundary.
+            (841, False),  # Above 120% of the budget.
+        ],
+    )
+    async def test_sweep_fee_budget_tolerance_is_symmetric(
+        self,
+        mock_wallet_for_sweep,
+        mock_backend_for_sweep,
+        taker_config_for_sweep,
+        actual_base_fee: int,
+        expected_result: bool,
+    ) -> None:
+        """Sweep checks actual transaction shape symmetrically against its budget."""
+        taker_config_for_sweep.max_sweep_fee_change = 0.2
+        taker = Taker(mock_wallet_for_sweep, mock_backend_for_sweep, taker_config_for_sweep)
+        session = taker._session
+        session.is_sweep = True
+        session.preselected_utxos = mock_wallet_for_sweep.get_all_utxos()
+        session._fee_rate = 1.0
+        session._sweep_tx_fee_budget = 700
+        session.cj_amount = sum(utxo.value for utxo in session.preselected_utxos) - 700
+
+        nick, maker_session = self._make_single_utxo_maker_session()
+        session.maker_sessions = {nick: maker_session}
+
+        with patch.object(session, "_estimate_tx_fee", return_value=actual_base_fee) as estimate:
+            result = await session._phase_build_tx(
+                destination="bcrt1qqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcruj60yu",
+                mixdepth=3,
+            )
+
+        assert result is expected_result
+        estimate.assert_any_call(3, 3, use_base_rate=True)
+        if expected_result:
+            assert session.last_failure_reason is None
+        else:
+            assert session.last_failure_reason is not None
+            assert "fee estimate differs" in session.last_failure_reason
+
+    @pytest.mark.asyncio
     async def test_sweep_aborts_when_effective_fee_rate_below_relay_floor(
         self, mock_wallet_for_sweep, mock_backend_for_sweep, taker_config_for_sweep
     ):

@@ -112,6 +112,7 @@ class TakerConfig(WalletConfig):
     max_sweep_fee_change: float = Field(
         default=0.8,
         ge=0.0,
+        allow_inf_nan=False,
         description="Relative fee tolerance for sweep transactions (reference default 0.8)",
     )
     tx_fee_factor: float = Field(

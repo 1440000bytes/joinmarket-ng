@@ -722,6 +722,11 @@ class TestTakerSettingsMaxCjFeeRelNormalization:
         settings = TakerSettings(max_cj_fee_rel="0.001")
         assert settings.max_cj_fee_rel == "0.001"
 
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+    def test_max_sweep_fee_change_must_be_finite(self, value: float) -> None:
+        with pytest.raises(ValueError):
+            TakerSettings(max_sweep_fee_change=value)
+
 
 class TestTakerSettingsPodleFields:
     """PoDLE commitment knobs must be exposed on TakerSettings.

@@ -880,9 +880,16 @@ class TestBuildTumblerTakerConfig:
             mnemonic="dummy",
             jm_settings=self._settings(),
             taker_config_cls=fake_taker_config_cls,
-            config_overrides={"POLICY": {"tx_fees": "5000", "max_cj_fee_abs": "30000"}},
+            config_overrides={
+                "POLICY": {
+                    "tx_fees": "5000",
+                    "max_cj_fee_abs": "30000",
+                    "max_sweep_fee_change": "1.25",
+                }
+            },
         )
 
         assert captured["fee_rate"] == 5.0
         assert captured["fee_block_target"] is None
+        assert captured["max_sweep_fee_change"] == 1.25
         assert captured["max_cj_fee"].abs_fee == 30000

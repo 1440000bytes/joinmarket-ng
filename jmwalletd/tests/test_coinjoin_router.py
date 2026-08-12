@@ -527,6 +527,7 @@ class TestBuildCoinjoinTakerConfig:
                 "POLICY": {
                     "max_cj_fee_abs": "30000",
                     "max_cj_fee_rel": "0.0003",
+                    "max_sweep_fee_change": "1.25",
                     "tx_fees_factor": "0.5",
                 }
             },
@@ -534,6 +535,7 @@ class TestBuildCoinjoinTakerConfig:
         max_cj_fee: Any = captured["max_cj_fee"]
         assert max_cj_fee.abs_fee == 30000
         assert max_cj_fee.rel_fee == "0.0003"
+        assert captured["max_sweep_fee_change"] == 1.25
         assert captured["tx_fee_factor"] == 0.5
 
     def test_invalid_configset_values_fall_back_to_settings(self) -> None:
