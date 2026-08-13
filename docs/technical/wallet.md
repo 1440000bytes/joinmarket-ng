@@ -167,12 +167,16 @@ backlog needs this; coins received while running are either this wallet's own
 CoinJoins (recorded in history) or genuine deposits.
 
 The reconstructed `cj-out` status is display metadata, not spend authority. The
-mixdepth 0 merge restriction exempts only exact outpoints backed by this
-wallet's successful maker or taker protocol history. This deliberately accepts
+mixdepth 0 maker restriction starts with exact outpoints backed by this wallet's
+successful maker or taker protocol history. It also admits CoinJoin change when
+the authoritative protocol history proves recursively that every wallet input
+came from that maker-rotation lineage. Plain-send change does not propagate the
+lineage. Deposits, mixed ancestry, on-chain reconstruction, and incomplete
+legacy rows fail closed and remain single-UTXO only. This deliberately accepts
 false negatives after seed recovery: an unrelated payment can imitate the
 equal-output shape of a CoinJoin, so a heuristic classification must not grant
 permission to merge deposits. User labels likewise cannot grant or revoke the
-exemption. Protocol-backed outpoint provenance is persisted separately as the
+exemption. Exact CoinJoin-output roots are persisted separately as the
 `jm_coinjoin_output` BIP-329 extension.
 
 ### Backend Systems

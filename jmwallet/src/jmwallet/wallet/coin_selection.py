@@ -29,6 +29,7 @@ class CoinSelectionMixin:
         include_fidelity_bonds: bool = False,
         *,
         restrict_md0: bool = True,
+        md0_mergeable_outpoints: set[str] | None = None,
         exclude: set[tuple[str, int]] | None = None,
     ) -> list[UTXOInfo]:
         """
@@ -44,9 +45,13 @@ class CoinSelectionMixin:
                                     selection. Defaults to False to prevent accidentally
                                     spending bonds.
             restrict_md0: When True (default), mixdepth 0 UTXOs without exact
-                          protocol CoinJoin provenance are restricted to a single
-                          UTXO. Protocol CoinJoin outputs are exempt and can be
-                          merged. Set to False to disable the restriction.
+                          maker-rotation provenance are restricted to a single
+                          UTXO. Exact CoinJoin outputs and recursively proven
+                          CoinJoin-only change can be merged. Set to False to
+                          disable the restriction.
+            md0_mergeable_outpoints: Exact md0 outpoints authorized by the maker's
+                                     recursive rotation-lineage policy. When omitted,
+                                     only exact CoinJoin outputs are mergeable.
             exclude: ``(txid, vout)`` outpoints that must not be selected. Used to
                      skip inputs already locked by another in-flight CoinJoin round
                      (this or another process) so concurrent rounds never pick the
@@ -91,23 +96,32 @@ class CoinSelectionMixin:
                 return selected
 
             # Split eligible UTXOs by exact CoinJoin-output provenance.
-            cj_outs = [u for u in eligible if u.coinjoin_output]
-            non_cj = [u for u in eligible if not u.coinjoin_output]
+            mergeable = [
+                u
+                for u in eligible
+                if (
+                    u.outpoint in md0_mergeable_outpoints
+                    if md0_mergeable_outpoints is not None
+                    else u.coinjoin_output
+                )
+            ]
+            mergeable_outpoints = {u.outpoint for u in mergeable}
+            non_mergeable = [u for u in eligible if u.outpoint not in mergeable_outpoints]
 
             remaining = target_amount - total
 
             # Try CJ output pool first (can be merged safely)
-            cj_pool_value = sum(u.value for u in cj_outs)
-            if cj_pool_value >= remaining:
-                for utxo in cj_outs:
+            mergeable_pool_value = sum(u.value for u in mergeable)
+            if mergeable_pool_value >= remaining:
+                for utxo in mergeable:
                     selected.append(utxo)
                     total += utxo.value
                     if total >= target_amount:
                         return selected
 
             # Try single largest non-CJ UTXO
-            if non_cj and non_cj[0].value >= remaining:
-                selected.append(non_cj[0])
+            if non_mergeable and non_mergeable[0].value >= remaining:
+                selected.append(non_mergeable[0])
                 return selected
 
             if not eligible:
@@ -128,10 +142,10 @@ class CoinSelectionMixin:
                     )
                 raise ValueError("Insufficient funds: no eligible UTXOs in mixdepth 0")
 
-            largest_non_cj = non_cj[0].value if non_cj else 0
+            largest_non_mergeable = non_mergeable[0].value if non_mergeable else 0
             raise ValueError(
-                f"Insufficient funds: CJ-output pool has {cj_pool_value}, "
-                f"largest non-CJ UTXO has {largest_non_cj}, "
+                f"Insufficient funds: rotation-lineage pool has {mergeable_pool_value}, "
+                f"largest non-lineage UTXO has {largest_non_mergeable}, "
                 f"need {remaining}. "
                 f"Cannot merge non-CJ md0 UTXOs for privacy reasons."
             )
@@ -220,6 +234,7 @@ class CoinSelectionMixin:
         include_fidelity_bonds: bool = False,
         *,
         restrict_md0: bool = True,
+        md0_mergeable_outpoints: set[str] | None = None,
         exclude: set[tuple[str, int]] | None = None,
     ) -> list[UTXOInfo]:
         """
@@ -242,9 +257,13 @@ class CoinSelectionMixin:
                                     Defaults to False since they should never be
                                     automatically spent in CoinJoins.
             restrict_md0: When True (default), mixdepth 0 UTXOs without exact
-                          protocol CoinJoin provenance are restricted to a single
-                          UTXO. Proven CoinJoin outputs are exempt and can be
-                          merged. Set to False to disable the restriction.
+                          maker-rotation provenance are restricted to a single
+                          UTXO. Exact CoinJoin outputs and recursively proven
+                          CoinJoin-only change can be merged. Set to False to
+                          disable the restriction.
+            md0_mergeable_outpoints: Exact md0 outpoints authorized by the maker's
+                                     recursive rotation-lineage policy. When omitted,
+                                     only exact CoinJoin outputs are mergeable.
             exclude: ``(txid, vout)`` outpoints that must not be selected. Used by
                      makers to avoid committing the same UTXO to two concurrent
                      CoinJoin sessions (which would create conflicting, mutually
@@ -277,33 +296,41 @@ class CoinSelectionMixin:
             if not eligible:
                 raise ValueError("Insufficient funds: no eligible UTXOs in mixdepth 0")
 
-            # CJ outputs can be merged; non-CJ outputs are single-UTXO only
-            cj_outs = [u for u in eligible if u.coinjoin_output]
-            non_cj = [u for u in eligible if not u.coinjoin_output]
+            mergeable = [
+                u
+                for u in eligible
+                if (
+                    u.outpoint in md0_mergeable_outpoints
+                    if md0_mergeable_outpoints is not None
+                    else u.coinjoin_output
+                )
+            ]
+            mergeable_outpoints = {u.outpoint for u in mergeable}
+            non_mergeable = [u for u in eligible if u.outpoint not in mergeable_outpoints]
 
-            cj_pool_value = sum(u.value for u in cj_outs)
-            largest_non_cj = non_cj[0].value if non_cj else 0
+            mergeable_pool_value = sum(u.value for u in mergeable)
+            largest_non_mergeable = non_mergeable[0].value if non_mergeable else 0
 
-            if cj_pool_value >= target_amount:
-                # Select from CJ outputs (greedy by value, then apply merge)
+            if mergeable_pool_value >= target_amount:
+                # Select from rotation lineage (greedy by value, then apply merge)
                 selected: list[UTXOInfo] = []
                 total = 0
-                for utxo in cj_outs:
+                for utxo in mergeable:
                     selected.append(utxo)
                     total += utxo.value
                     if total >= target_amount:
                         break
                 # Apply merge algorithm to remaining CJ outputs only
                 min_count = len(selected)
-                remaining_cj = cj_outs[min_count:]
-                selected = self._apply_merge_extras(selected, remaining_cj, merge_algorithm)
+                remaining_mergeable = mergeable[min_count:]
+                selected = self._apply_merge_extras(selected, remaining_mergeable, merge_algorithm)
                 return selected
-            elif largest_non_cj >= target_amount:
-                return [non_cj[0]]
+            elif largest_non_mergeable >= target_amount:
+                return [non_mergeable[0]]
             else:
                 raise ValueError(
-                    f"Insufficient funds: CJ-output pool has {cj_pool_value}, "
-                    f"largest non-CJ UTXO has {largest_non_cj}, "
+                    f"Insufficient funds: rotation-lineage pool has {mergeable_pool_value}, "
+                    f"largest non-lineage UTXO has {largest_non_mergeable}, "
                     f"need {target_amount}. "
                     f"Cannot merge non-CJ md0 UTXOs for privacy reasons."
                 )

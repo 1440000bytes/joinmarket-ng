@@ -9,7 +9,8 @@ Tests cover:
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -629,6 +630,41 @@ class TestMd0CjOutputExemption:
         assert len(selected) == 5
         assert sum(u.value for u in selected) == 250_000
 
+    def test_rotation_lineage_can_merge_equal_output_and_clean_change(
+        self, wallet_with_cj_labels: WalletService
+    ) -> None:
+        """Maker rotation may combine an equal output and proven clean change."""
+        equal_output = wallet_with_cj_labels.utxo_cache[0][0]
+        clean_change = next(
+            utxo for utxo in wallet_with_cj_labels.utxo_cache[0] if utxo.label == "cj-change"
+        )
+
+        selected = wallet_with_cj_labels.select_utxos_with_merge(
+            0,
+            120_000,
+            min_confirmations=1,
+            md0_mergeable_outpoints={equal_output.outpoint, clean_change.outpoint},
+        )
+
+        assert {utxo.outpoint for utxo in selected} == {
+            equal_output.outpoint,
+            clean_change.outpoint,
+        }
+
+    def test_rotation_lineage_does_not_admit_deposit_derived_change(
+        self, wallet_with_cj_labels: WalletService
+    ) -> None:
+        """Change outside the proven rotation set remains single-UTXO only."""
+        equal_output = wallet_with_cj_labels.utxo_cache[0][0]
+
+        with pytest.raises(ValueError, match="Cannot merge non-CJ md0 UTXOs"):
+            wallet_with_cj_labels.select_utxos_with_merge(
+                0,
+                120_000,
+                min_confirmations=1,
+                md0_mergeable_outpoints={equal_output.outpoint},
+            )
+
 
 class TestGetBalanceForOffersCjExemption:
     """Tests for get_balance_for_offers() with CJ output exemption."""
@@ -680,6 +716,23 @@ class TestGetBalanceForOffersCjExemption:
         assert balance == 70_000
 
     @pytest.mark.asyncio
+    async def test_md0_rotation_lineage_capacity_includes_clean_change(
+        self, wallet_with_cj_labels: WalletService
+    ) -> None:
+        equal_output = wallet_with_cj_labels.utxo_cache[0][0]
+        clean_change = next(
+            utxo for utxo in wallet_with_cj_labels.utxo_cache[0] if utxo.label == "cj-change"
+        )
+
+        balance = await wallet_with_cj_labels.get_balance_for_offers(
+            0,
+            min_confirmations=1,
+            md0_mergeable_outpoints={equal_output.outpoint, clean_change.outpoint},
+        )
+
+        assert balance == equal_output.value + clean_change.value
+
+    @pytest.mark.asyncio
     async def test_user_cj_out_labels_do_not_inflate_offer_balance(
         self, wallet_with_cj_labels: WalletService
     ):
@@ -689,6 +742,70 @@ class TestGetBalanceForOffersCjExemption:
             utxo.label = "cj-out"
 
         assert await wallet_with_cj_labels.get_balance_for_offers(0, min_confirmations=1) == 70_000
+
+
+class TestMakerRotationLineageService:
+    """Tests for combining persisted roots with strict protocol history."""
+
+    @pytest.mark.asyncio
+    async def test_without_data_dir_fails_closed(
+        self, wallet_with_cj_labels: WalletService
+    ) -> None:
+        wallet_with_cj_labels.data_dir = None
+
+        assert await wallet_with_cj_labels.get_maker_rotation_lineage_outpoints() == set()
+
+    @pytest.mark.asyncio
+    async def test_history_lineage_uses_strict_authoritative_result(
+        self, wallet_with_cj_labels: WalletService, tmp_path: Path
+    ) -> None:
+        wallet_with_cj_labels.data_dir = tmp_path
+        strict_change = next(
+            utxo for utxo in wallet_with_cj_labels.utxo_cache[0] if utxo.label == "cj-change"
+        )
+
+        with patch(
+            "jmwallet.history.get_maker_rotation_lineage_outpoints",
+            return_value={strict_change.outpoint},
+        ) as get_lineage:
+            lineage = await wallet_with_cj_labels.get_maker_rotation_lineage_outpoints()
+
+        assert lineage == {strict_change.outpoint}
+        get_lineage.assert_called_once_with(
+            wallet_with_cj_labels.utxo_cache[0],
+            network=wallet_with_cj_labels.network,
+            data_dir=tmp_path,
+            wallet_fingerprint=wallet_with_cj_labels.wallet_fingerprint,
+        )
+
+    @pytest.mark.asyncio
+    async def test_hydrates_md0_before_computing_lineage(
+        self, wallet_with_cj_labels: WalletService, tmp_path: Path
+    ) -> None:
+        md0_utxos = wallet_with_cj_labels.utxo_cache.pop(0)
+        wallet_with_cj_labels.data_dir = tmp_path
+
+        async def sync_md0(mixdepth: int) -> list[UTXOInfo]:
+            assert mixdepth == 0
+            wallet_with_cj_labels.utxo_cache[0] = md0_utxos
+            return md0_utxos
+
+        with (
+            patch.object(wallet_with_cj_labels, "sync_mixdepth", side_effect=sync_md0),
+            patch(
+                "jmwallet.history.get_maker_rotation_lineage_outpoints",
+                return_value={md0_utxos[0].outpoint},
+            ) as get_lineage,
+        ):
+            lineage = await wallet_with_cj_labels.get_maker_rotation_lineage_outpoints()
+
+        assert lineage == {md0_utxos[0].outpoint}
+        get_lineage.assert_called_once_with(
+            md0_utxos,
+            network=wallet_with_cj_labels.network,
+            data_dir=tmp_path,
+            wallet_fingerprint=wallet_with_cj_labels.wallet_fingerprint,
+        )
 
 
 class TestGetBalanceForOffersMd0:

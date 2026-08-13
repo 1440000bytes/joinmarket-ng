@@ -549,6 +549,7 @@ async def test_select_our_utxos_forwards_exclude_to_wallet():
     mock_wallet.get_change_address.return_value = "bcrt1qcjorchange"
     # No inputs locked by other rounds; reservation of our chosen inputs succeeds.
     mock_wallet.get_locked_input_outpoints.return_value = set()
+    mock_wallet.get_maker_rotation_lineage_outpoints = AsyncMock(return_value={"de" * 32 + ":2"})
     mock_wallet.reserve_coinjoin_inputs.return_value = True
     selected_utxo = UTXOInfo(
         txid="ab" * 32,
@@ -595,6 +596,10 @@ async def test_select_our_utxos_forwards_exclude_to_wallet():
     assert mock_wallet.select_utxos_with_merge.call_args.kwargs["exclude"] == (committed_elsewhere)
     for call in mock_wallet.get_balance_for_offers.call_args_list:
         assert call.kwargs["exclude"] == committed_elsewhere
+        assert call.kwargs["md0_mergeable_outpoints"] == {"de" * 32 + ":2"}
+    assert mock_wallet.select_utxos_with_merge.call_args.kwargs["md0_mergeable_outpoints"] == {
+        "de" * 32 + ":2"
+    }
     required_input.assert_called_once_with(offer, 1_000_000)
     # Selection must reserve enough value for a non-dust change output.
     assert mock_wallet.select_utxos_with_merge.call_args.args[1] == required_maker_input(
@@ -674,6 +679,7 @@ async def test_select_our_utxos_falls_back_after_lock_conflict():
     mock_wallet = MagicMock()
     mock_wallet.mixdepth_count = 2
     mock_wallet.get_balance_for_offers = AsyncMock(side_effect=[10_000_000, 9_000_000])
+    mock_wallet.get_maker_rotation_lineage_outpoints = AsyncMock(return_value={"ab" * 32 + ":0"})
     mock_wallet.get_locked_input_outpoints.return_value = set()
     mock_wallet.get_next_address_index.return_value = 0
     mock_wallet.get_change_address.return_value = "bcrt1qreservedfallback"
@@ -736,6 +742,7 @@ async def test_select_our_utxos_one_mixdepth_uses_distinct_internal_addresses():
     wallet = MagicMock()
     wallet.mixdepth_count = 1
     wallet.get_balance_for_offers = AsyncMock(return_value=10_000_000)
+    wallet.get_maker_rotation_lineage_outpoints = AsyncMock(return_value={"ab" * 32 + ":0"})
     wallet.get_locked_input_outpoints.return_value = set()
     wallet.reserve_coinjoin_inputs.return_value = True
     selected = UTXOInfo(
@@ -786,6 +793,7 @@ async def test_select_our_utxos_releases_lock_after_address_failure():
     mock_wallet = MagicMock()
     mock_wallet.mixdepth_count = 1
     mock_wallet.get_balance_for_offers = AsyncMock(return_value=10_000_000)
+    mock_wallet.get_maker_rotation_lineage_outpoints = AsyncMock(return_value={"ab" * 32 + ":0"})
     mock_wallet.get_locked_input_outpoints.return_value = set()
     selected = UTXOInfo(
         txid="ab" * 32,

@@ -1116,6 +1116,7 @@ class TestWalletRescanAndOfferUpdate:
         wallet.get_total_balance = AsyncMock(return_value=1_000_000)
         wallet.get_balance = AsyncMock(return_value=500_000)
         wallet.get_balance_for_offers = AsyncMock(return_value=500_000)
+        wallet.get_maker_rotation_lineage_outpoints = AsyncMock(return_value={"ab" * 32 + ":0"})
         return wallet
 
     @pytest.fixture
@@ -1198,6 +1199,9 @@ class TestWalletRescanAndOfferUpdate:
         maker_bot.offer_manager.create_offers.assert_called_once()
         maker_bot._announce_offers.assert_called_once()
         assert maker_bot.current_offers[0].maxsize == 524_288
+        assert mock_wallet.get_maker_rotation_lineage_outpoints.await_count == 2
+        for call in mock_wallet.get_balance_for_offers.call_args_list:
+            assert call.kwargs["md0_mergeable_outpoints"] == {"ab" * 32 + ":0"}
 
     @pytest.mark.asyncio
     async def test_resync_wallet_no_update_when_balance_unchanged(self, maker_bot, mock_wallet):

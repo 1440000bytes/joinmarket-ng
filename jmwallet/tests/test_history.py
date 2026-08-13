@@ -40,6 +40,7 @@ from jmwallet.history import (
     get_coinjoin_lineage_outpoints,
     get_history_stats,
     get_history_stats_for_period,
+    get_maker_rotation_lineage_outpoints,
     get_pending_transactions,
     get_protocol_coinjoin_output_outpoints,
     get_used_addresses,
@@ -2580,6 +2581,7 @@ class TestCoinjoinLineageOutpoints:
         network: str = "regtest",
         wallet_fingerprint: str = "a1b2c3d4",
         source_addresses_override: str | None = None,
+        destination_vout: int = -1,
     ) -> TransactionHistoryEntry:
         input_pairs = inputs or []
         return TransactionHistoryEntry(
@@ -2589,6 +2591,7 @@ class TestCoinjoinLineageOutpoints:
             txid=f"{tx_number:064x}",
             cj_amount=100_000,
             destination_address=destination,
+            destination_vout=destination_vout,
             change_address=change,
             utxos_used=",".join(outpoint for outpoint, _address in input_pairs),
             source_addresses=(
@@ -2839,6 +2842,229 @@ class TestCoinjoinLineageOutpoints:
             )
             == set()
         )
+
+
+class TestMakerRotationLineageOutpoints:
+    """Tests for strict provenance used by maker rotation decisions."""
+
+    _entry = staticmethod(TestCoinjoinLineageOutpoints._entry)
+    _outpoint = staticmethod(TestCoinjoinLineageOutpoints._outpoint)
+    _utxo = staticmethod(TestCoinjoinLineageOutpoints._utxo)
+    _append = staticmethod(TestCoinjoinLineageOutpoints._append)
+
+    def test_recursively_propagates_protocol_coinjoin_change(self, temp_data_dir: Path) -> None:
+        entries = [
+            self._entry(
+                tx_number=100,
+                destination="equal-100",
+                change="deposit-change",
+                inputs=[(self._outpoint(0, 0), "deposit")],
+                destination_vout=0,
+            ),
+            self._entry(
+                tx_number=101,
+                destination="equal-101",
+                change="change-101",
+                inputs=[(self._outpoint(100, 0), "equal-100")],
+                destination_vout=0,
+            ),
+            self._entry(
+                tx_number=102,
+                destination="equal-102",
+                change="change-102",
+                inputs=[(self._outpoint(101, 1), "change-101")],
+                destination_vout=0,
+            ),
+        ]
+        self._append(entries, temp_data_dir)
+        current = [
+            self._utxo(102, 0, "equal-102"),
+            self._utxo(102, 1, "change-102"),
+        ]
+
+        assert get_maker_rotation_lineage_outpoints(
+            current,
+            network="regtest",
+            data_dir=temp_data_dir,
+            wallet_fingerprint="a1b2c3d4",
+        ) == {self._outpoint(102, 0), self._outpoint(102, 1)}
+
+    def test_excludes_protocol_send_change(self, temp_data_dir: Path) -> None:
+        entries = [
+            self._entry(
+                tx_number=110,
+                destination="equal-110",
+                change="deposit-change",
+                inputs=[(self._outpoint(0, 0), "deposit")],
+                destination_vout=0,
+            ),
+            self._entry(
+                tx_number=111,
+                destination="external-payment",
+                change="send-change",
+                inputs=[(self._outpoint(110, 0), "equal-110")],
+                role="send",
+            ),
+            self._entry(
+                tx_number=112,
+                destination="equal-112",
+                change="change-112",
+                inputs=[(self._outpoint(111, 1), "send-change")],
+                destination_vout=0,
+            ),
+        ]
+        self._append(entries, temp_data_dir)
+        current = [
+            self._utxo(112, 0, "equal-112"),
+            self._utxo(112, 1, "change-112"),
+        ]
+
+        assert get_maker_rotation_lineage_outpoints(
+            current,
+            network="regtest",
+            data_dir=temp_data_dir,
+            wallet_fingerprint="a1b2c3d4",
+        ) == {self._outpoint(112, 0)}
+        assert get_coinjoin_lineage_outpoints(
+            current,
+            network="regtest",
+            data_dir=temp_data_dir,
+            wallet_fingerprint="a1b2c3d4",
+        ) == {self._outpoint(112, 0), self._outpoint(112, 1)}
+
+    def test_excludes_change_with_mixed_or_deposit_ancestry(self, temp_data_dir: Path) -> None:
+        entries = [
+            self._entry(
+                tx_number=120,
+                destination="equal-120",
+                change="deposit-change",
+                inputs=[(self._outpoint(0, 0), "deposit")],
+                destination_vout=0,
+            ),
+            self._entry(
+                tx_number=121,
+                destination="equal-121",
+                change="mixed-change",
+                inputs=[
+                    (self._outpoint(120, 0), "equal-120"),
+                    (self._outpoint(1, 0), "deposit"),
+                ],
+                destination_vout=0,
+            ),
+        ]
+        self._append(entries, temp_data_dir)
+        current = [
+            self._utxo(121, 0, "equal-121"),
+            self._utxo(121, 1, "mixed-change"),
+        ]
+
+        assert get_maker_rotation_lineage_outpoints(
+            current,
+            network="regtest",
+            data_dir=temp_data_dir,
+            wallet_fingerprint="a1b2c3d4",
+        ) == {self._outpoint(121, 0)}
+
+    def test_excludes_onchain_roots_and_incomplete_change_metadata(
+        self, temp_data_dir: Path
+    ) -> None:
+        entries = [
+            self._entry(
+                tx_number=130,
+                destination="onchain-equal",
+                change="",
+                inputs=[(self._outpoint(0, 0), "deposit")],
+                source="onchain",
+                destination_vout=0,
+            ),
+            self._entry(
+                tx_number=131,
+                destination="equal-131",
+                change="incomplete-change",
+                inputs=[(self._outpoint(130, 0), "onchain-equal")],
+                source_addresses_override="",
+                destination_vout=0,
+            ),
+        ]
+        self._append(entries, temp_data_dir)
+        current = [
+            self._utxo(130, 0, "onchain-equal"),
+            self._utxo(131, 0, "equal-131"),
+            self._utxo(131, 1, "incomplete-change"),
+        ]
+
+        assert get_maker_rotation_lineage_outpoints(
+            current,
+            network="regtest",
+            data_dir=temp_data_dir,
+            wallet_fingerprint="a1b2c3d4",
+        ) == {self._outpoint(131, 0)}
+
+    def test_failed_or_out_of_scope_roots_are_excluded(self, temp_data_dir: Path) -> None:
+        entries = [
+            self._entry(
+                tx_number=140,
+                destination="failed-equal",
+                change="",
+                inputs=[(self._outpoint(0, 0), "deposit")],
+                success=False,
+                destination_vout=0,
+            ),
+            self._entry(
+                tx_number=141,
+                destination="other-network-equal",
+                change="",
+                inputs=[(self._outpoint(0, 0), "deposit")],
+                network="signet",
+                destination_vout=0,
+            ),
+            self._entry(
+                tx_number=142,
+                destination="other-wallet-equal",
+                change="",
+                inputs=[(self._outpoint(0, 0), "deposit")],
+                wallet_fingerprint="deadbeef",
+                destination_vout=0,
+            ),
+        ]
+        self._append(entries, temp_data_dir)
+        current = [
+            self._utxo(140, 0, "failed-equal"),
+            self._utxo(141, 0, "other-network-equal"),
+            self._utxo(142, 0, "other-wallet-equal"),
+        ]
+
+        assert (
+            get_maker_rotation_lineage_outpoints(
+                current,
+                network="regtest",
+                data_dir=temp_data_dir,
+                wallet_fingerprint="a1b2c3d4",
+            )
+            == set()
+        )
+
+    def test_ambiguous_reused_change_output_fails_closed(self, temp_data_dir: Path) -> None:
+        entry = self._entry(
+            tx_number=150,
+            destination="equal-150",
+            change="reused-change",
+            inputs=[(self._outpoint(0, 0), "deposit")],
+            destination_vout=0,
+        )
+        self._append([entry], temp_data_dir)
+        current = [
+            self._utxo(150, 0, "equal-150"),
+            self._utxo(150, 1, "reused-change"),
+            self._utxo(150, 2, "reused-change"),
+        ]
+
+        assert get_maker_rotation_lineage_outpoints(
+            current,
+            network="regtest",
+            data_dir=temp_data_dir,
+            wallet_fingerprint="a1b2c3d4",
+        ) == {self._outpoint(150, 0)}
 
 
 class TestAddressHistoryTypesAfterConfirmation:

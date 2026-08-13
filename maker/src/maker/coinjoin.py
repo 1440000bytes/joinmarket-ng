@@ -656,6 +656,11 @@ class CoinJoinSession:
             # the selector so the chosen mixdepth is actually fillable.
             exclude = set(exclude_utxos or set())
             exclude |= self.wallet.get_locked_input_outpoints()
+            md0_mergeable_outpoints = (
+                await self.wallet.get_maker_rotation_lineage_outpoints()
+                if self.restrict_md0
+                else None
+            )
 
             balances = {}
             for md in range(self.wallet.mixdepth_count):
@@ -664,6 +669,7 @@ class CoinJoinSession:
                     md,
                     min_confirmations=self.min_confirmations,
                     restrict_md0=self.restrict_md0,
+                    md0_mergeable_outpoints=md0_mergeable_outpoints,
                     exclude=exclude,
                 )
                 if active_check is not None and not active_check():
@@ -694,6 +700,7 @@ class CoinJoinSession:
                         self.min_confirmations,
                         merge_algorithm=self.merge_algorithm,
                         restrict_md0=self.restrict_md0,
+                        md0_mergeable_outpoints=md0_mergeable_outpoints,
                         exclude=exclude,
                     )
                 except ValueError as e:

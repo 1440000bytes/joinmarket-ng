@@ -171,6 +171,7 @@ class TestOfferManagerMultiOffer:
         wallet.utxo_cache = {}
         wallet.get_balance = AsyncMock(return_value=1_000_000)
         wallet.get_balance_for_offers = AsyncMock(return_value=1_000_000)
+        wallet.get_maker_rotation_lineage_outpoints = AsyncMock(return_value={"ab" * 32 + ":0"})
         return wallet
 
     @pytest.fixture
@@ -233,6 +234,25 @@ class TestOfferManagerMultiOffer:
         assert offers[0].oid == 0
         assert offers[0].ordertype == OfferType.SW0_RELATIVE
         assert offers[0].cjfee == "0.001"
+        mock_wallet.get_maker_rotation_lineage_outpoints.assert_awaited_once_with()
+        for call in mock_wallet.get_balance_for_offers.call_args_list:
+            assert call.kwargs["md0_mergeable_outpoints"] == {"ab" * 32 + ":0"}
+
+    @pytest.mark.asyncio
+    async def test_unrestricted_md0_skips_rotation_lineage(
+        self, mock_wallet, config_single_offer
+    ) -> None:
+        config_single_offer.allow_mixdepth_zero_merge = True
+        manager = OfferManager(mock_wallet, config_single_offer, "J5TestMaker")
+
+        with patch("maker.offers.get_best_fidelity_bond", new=AsyncMock(return_value=None)):
+            offers = await manager.create_offers()
+
+        assert offers
+        mock_wallet.get_maker_rotation_lineage_outpoints.assert_not_awaited()
+        for call in mock_wallet.get_balance_for_offers.call_args_list:
+            assert call.kwargs["restrict_md0"] is False
+            assert call.kwargs["md0_mergeable_outpoints"] is None
 
     @pytest.mark.asyncio
     async def test_relative_offer_maxsize_matches_fillable_balance(
@@ -1471,6 +1491,7 @@ class TestOfferRandomization:
         wallet.utxo_cache = {}
         wallet.get_balance = AsyncMock(return_value=10_000_000)
         wallet.get_balance_for_offers = AsyncMock(return_value=10_000_000)
+        wallet.get_maker_rotation_lineage_outpoints = AsyncMock(return_value=set())
         return wallet
 
     @pytest.fixture
@@ -1669,6 +1690,7 @@ class TestDualOfferAutoSplit:
         wallet.utxo_cache = {}
         wallet.get_balance = AsyncMock(return_value=10_000_000)
         wallet.get_balance_for_offers = AsyncMock(return_value=10_000_000)
+        wallet.get_maker_rotation_lineage_outpoints = AsyncMock(return_value=set())
         return wallet
 
     @staticmethod
@@ -2092,6 +2114,7 @@ class TestDualOfferAutoSplit:
         wallet.utxo_cache = {}
         wallet.get_balance = AsyncMock(return_value=200_000)
         wallet.get_balance_for_offers = AsyncMock(return_value=200_000)
+        wallet.get_maker_rotation_lineage_outpoints = AsyncMock(return_value=set())
 
         cfg = self._dual_config(rel_fee="0.005", abs_fee=1000, rel_min=50_000, abs_min=50_000)
         manager = OfferManager(wallet, cfg, "J5TestMaker")

@@ -569,6 +569,7 @@ class WalletService(WalletSyncMixin, CoinSelectionMixin, WalletDisplayMixin, Wal
         min_confirmations: int = 0,
         *,
         restrict_md0: bool = True,
+        md0_mergeable_outpoints: set[str] | None = None,
         exclude: set[tuple[str, int]] | None = None,
     ) -> int:
         """Get balance available to automatic CoinJoin input selection.
@@ -578,18 +579,17 @@ class WalletService(WalletSyncMixin, CoinSelectionMixin, WalletDisplayMixin, Wal
         not contribute. The md0 privacy restriction uses the same effective
         capacity as selection.
 
-        For mixdepth 0 (when ``restrict_md0`` is True), UTXOs that are **not**
-        CoinJoin outputs are restricted to a single UTXO to avoid linking
-        deposits or fidelity bonds. CoinJoin outputs with exact persisted provenance
-        are exempt because they already have CoinJoin privacy and can be
-        safely merged.
+        For mixdepth 0 (when ``restrict_md0`` is True), UTXOs outside the
+        supplied maker-rotation lineage are restricted to a single UTXO to
+        avoid linking deposits or fidelity bonds. Without an explicit lineage,
+        exact persisted CoinJoin outputs remain the mergeable fallback.
 
         Inputs reserved by another in-flight session can be excluded so offer
         and selection calculations use actually available liquidity.
 
         The effective mixdepth-0 balance is therefore::
 
-            max(sum_of_cj_outputs, largest_non_cj_output)
+            max(sum_of_rotation_lineage, largest_non_lineage_output)
 
         When ``restrict_md0`` is False (opt-in via config), mixdepth 0 is
         treated the same as any other mixdepth.
@@ -610,10 +610,20 @@ class WalletService(WalletSyncMixin, CoinSelectionMixin, WalletDisplayMixin, Wal
             return 0
 
         if mixdepth == 0 and restrict_md0:
-            cj_pool = sum(u.value for u in eligible if u.coinjoin_output)
-            non_cj = [u for u in eligible if not u.coinjoin_output]
-            largest_single = max((u.value for u in non_cj), default=0)
-            return max(cj_pool, largest_single)
+            mergeable = [
+                u
+                for u in eligible
+                if (
+                    u.outpoint in md0_mergeable_outpoints
+                    if md0_mergeable_outpoints is not None
+                    else u.coinjoin_output
+                )
+            ]
+            mergeable_outpoints = {u.outpoint for u in mergeable}
+            non_mergeable = [u for u in eligible if u.outpoint not in mergeable_outpoints]
+            mergeable_pool = sum(u.value for u in mergeable)
+            largest_single = max((u.value for u in non_mergeable), default=0)
+            return max(mergeable_pool, largest_single)
 
         return sum(u.value for u in eligible)
 
@@ -623,6 +633,7 @@ class WalletService(WalletSyncMixin, CoinSelectionMixin, WalletDisplayMixin, Wal
         min_confirmations: int = 0,
         *,
         restrict_md0: bool = True,
+        md0_mergeable_outpoints: set[str] | None = None,
         exclude: set[tuple[str, int]] | None = None,
     ) -> int:
         """Return maker offer capacity using shared CoinJoin eligibility rules."""
@@ -630,7 +641,29 @@ class WalletService(WalletSyncMixin, CoinSelectionMixin, WalletDisplayMixin, Wal
             mixdepth,
             min_confirmations,
             restrict_md0=restrict_md0,
+            md0_mergeable_outpoints=md0_mergeable_outpoints,
             exclude=exclude,
+        )
+
+    async def get_maker_rotation_lineage_outpoints(self) -> set[str]:
+        """Return md0 outpoints safe to combine within maker rotation.
+
+        This stricter maker policy requires authoritative exact-vout history for
+        roots and recursively proven CoinJoin change. Persisted metadata alone
+        is insufficient because legacy address/amount fallback can authorize
+        more than one same-address output.
+        """
+        md0_utxos = await self.get_utxos(0)
+        if self.data_dir is None:
+            return set()
+
+        from jmwallet.history import get_maker_rotation_lineage_outpoints
+
+        return get_maker_rotation_lineage_outpoints(
+            md0_utxos,
+            network=self.network,
+            data_dir=self.data_dir,
+            wallet_fingerprint=self.wallet_fingerprint,
         )
 
     async def get_utxos(self, mixdepth: int) -> list[UTXOInfo]:

@@ -2043,6 +2043,28 @@ def get_protocol_coinjoin_output_outpoints(
     }
 
 
+def _index_outpoint_addresses(
+    targets: Iterable[UTXOInfo],
+    entry_inputs: Iterable[list[tuple[str, str]] | None],
+) -> tuple[dict[str, str], set[str]]:
+    """Index known outpoints by address, excluding conflicting metadata."""
+    outpoint_addresses = {utxo.outpoint: utxo.address for utxo in targets}
+    ambiguous_outpoints: set[str] = set()
+    for inputs in entry_inputs:
+        if inputs is None:
+            continue
+        for outpoint, address in inputs:
+            existing = outpoint_addresses.get(outpoint)
+            if existing is not None and existing != address:
+                ambiguous_outpoints.add(outpoint)
+                continue
+            outpoint_addresses[outpoint] = address
+
+    for outpoint in ambiguous_outpoints:
+        outpoint_addresses.pop(outpoint, None)
+    return outpoint_addresses, ambiguous_outpoints
+
+
 def get_coinjoin_lineage_outpoints(
     current_utxos: Iterable[UTXOInfo],
     *,
@@ -2077,8 +2099,6 @@ def get_coinjoin_lineage_outpoints(
 
     # Build an exact outpoint -> address index from current coins and from every
     # later transaction that recorded the outpoint as one of its wallet inputs.
-    outpoint_addresses = {utxo.outpoint: utxo.address for utxo in targets}
-    ambiguous_outpoints: set[str] = set()
     entry_inputs: dict[int, list[tuple[str, str]] | None] = {}
     for index, entry in enumerate(entries):
         outpoints = [value.strip() for value in entry.utxos_used.split(",") if value.strip()]
@@ -2089,17 +2109,9 @@ def get_coinjoin_lineage_outpoints(
             else None
         )
         entry_inputs[index] = pairs if pairs else None
-        if pairs is None:
-            continue
-        for outpoint, address in pairs:
-            existing = outpoint_addresses.get(outpoint)
-            if existing is not None and existing != address:
-                ambiguous_outpoints.add(outpoint)
-                continue
-            outpoint_addresses[outpoint] = address
-
-    for outpoint in ambiguous_outpoints:
-        outpoint_addresses.pop(outpoint, None)
+    outpoint_addresses, _ambiguous_outpoints = _index_outpoint_addresses(
+        targets, entry_inputs.values()
+    )
 
     outputs_by_tx_address: dict[tuple[str, str], set[str]] = defaultdict(set)
     for outpoint, address in outpoint_addresses.items():
@@ -2154,6 +2166,156 @@ def get_coinjoin_lineage_outpoints(
     queue = deque(lineage)
     for change_outpoint, input_outpoints in requirements.items():
         if change_outpoint in invalid_change_outpoints or change_outpoint in lineage:
+            continue
+        missing = input_outpoints - lineage
+        if not missing:
+            lineage.add(change_outpoint)
+            queue.append(change_outpoint)
+            continue
+        unresolved[change_outpoint] = missing
+        for input_outpoint in missing:
+            dependents[input_outpoint].add(change_outpoint)
+
+    while queue:
+        private_outpoint = queue.popleft()
+        for change_outpoint in dependents.pop(private_outpoint, set()):
+            remaining_inputs = unresolved.get(change_outpoint)
+            if remaining_inputs is None:
+                continue
+            remaining_inputs.discard(private_outpoint)
+            if remaining_inputs:
+                continue
+            unresolved.pop(change_outpoint)
+            lineage.add(change_outpoint)
+            queue.append(change_outpoint)
+
+    return lineage & target_outpoints
+
+
+def _parse_complete_input_metadata(entry: TransactionHistoryEntry) -> list[tuple[str, str]] | None:
+    """Return validated input outpoint/address pairs, or None when incomplete."""
+    outpoints = [value.strip() for value in entry.utxos_used.split(",")]
+    addresses = [value.strip() for value in entry.source_addresses.split(",")]
+    if (
+        not outpoints
+        or len(outpoints) != len(addresses)
+        or any(
+            not outpoint or not address
+            for outpoint, address in zip(outpoints, addresses, strict=True)
+        )
+        or len(set(outpoints)) != len(outpoints)
+    ):
+        return None
+
+    for outpoint in outpoints:
+        txid, separator, vout = outpoint.rpartition(":")
+        if not separator or len(txid) != 64 or not vout.isdecimal():
+            return None
+        try:
+            bytes.fromhex(txid)
+        except ValueError:
+            return None
+
+    return list(zip(outpoints, addresses, strict=True))
+
+
+def get_maker_rotation_lineage_outpoints(
+    current_utxos: Iterable[UTXOInfo],
+    *,
+    network: str,
+    data_dir: Path | None = None,
+    wallet_fingerprint: str | None = None,
+) -> set[str]:
+    """Return current outpoints eligible for strict maker rotation lineage.
+
+    Roots must be exact successful protocol CoinJoin outputs recorded by a maker
+    or taker row. Change propagates only through successful protocol maker/taker
+    CoinJoin rows whose complete input outpoint/address metadata proves that all
+    inputs are already in the lineage. Ambiguous, reconstructed, legacy, failed,
+    mixed, and out-of-scope history fails closed.
+
+    Unlike :func:`get_coinjoin_lineage_outpoints`, this helper deliberately does
+    not propagate lineage through plain protocol sends. It is intended for maker
+    rotation decisions, where only a continuous protocol CoinJoin lineage is
+    acceptable.
+    """
+    targets = list(current_utxos)
+    target_outpoints = {utxo.outpoint for utxo in targets}
+    targets_by_outpoint = {utxo.outpoint: utxo for utxo in targets}
+    entries = [
+        entry
+        for entry in read_history(data_dir, wallet_fingerprint=wallet_fingerprint)
+        if entry.network == network
+    ]
+    entry_inputs = {
+        index: _parse_complete_input_metadata(entry) for index, entry in enumerate(entries)
+    }
+    outpoint_addresses, ambiguous_outpoints = _index_outpoint_addresses(
+        targets, entry_inputs.values()
+    )
+
+    outputs_by_tx_address: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for outpoint, address in outpoint_addresses.items():
+        txid, separator, _vout = outpoint.rpartition(":")
+        if separator and txid:
+            outputs_by_tx_address[(txid, address)].add(outpoint)
+
+    lineage: set[str] = set()
+    invalid_outpoints = set(ambiguous_outpoints)
+    root_claims: set[str] = set()
+    for index, entry in enumerate(entries):
+        if not entry.txid or not entry.destination_address or entry.destination_vout < 0:
+            continue
+        root_outpoint = f"{entry.txid}:{entry.destination_vout}"
+        if outpoint_addresses.get(root_outpoint) != entry.destination_address:
+            continue
+        if root_outpoint in root_claims:
+            invalid_outpoints.add(root_outpoint)
+            continue
+        root_claims.add(root_outpoint)
+        if (
+            entry.success
+            and entry.source == "protocol"
+            and entry.role in ("maker", "taker")
+            and entry.cj_amount > 0
+        ):
+            current = targets_by_outpoint.get(root_outpoint)
+            if current is None or current.value == entry.cj_amount:
+                lineage.add(root_outpoint)
+        else:
+            invalid_outpoints.add(root_outpoint)
+
+    requirements: dict[str, set[str]] = {}
+    for index, entry in enumerate(entries):
+        if not entry.txid or not entry.change_address:
+            continue
+        change_outpoints = outputs_by_tx_address[(entry.txid, entry.change_address)]
+        if len(change_outpoints) != 1:
+            invalid_outpoints.update(change_outpoints)
+            continue
+        change_outpoint = next(iter(change_outpoints))
+        if change_outpoint in requirements:
+            invalid_outpoints.add(change_outpoint)
+            continue
+        inputs = entry_inputs[index]
+        if (
+            not entry.success
+            or entry.source != "protocol"
+            or entry.role not in ("maker", "taker")
+            or entry.cj_amount <= 0
+            or entry.destination_address == entry.change_address
+            or inputs is None
+        ):
+            invalid_outpoints.add(change_outpoint)
+            continue
+        requirements[change_outpoint] = {outpoint for outpoint, _address in inputs}
+
+    lineage.difference_update(invalid_outpoints)
+    unresolved: dict[str, set[str]] = {}
+    dependents: dict[str, set[str]] = defaultdict(set)
+    queue = deque(lineage)
+    for change_outpoint, input_outpoints in requirements.items():
+        if change_outpoint in invalid_outpoints or change_outpoint in lineage:
             continue
         missing = input_outpoints - lineage
         if not missing:

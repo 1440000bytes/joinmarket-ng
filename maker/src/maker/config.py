@@ -373,10 +373,10 @@ class MakerConfig(WalletConfig):
         default=False,
         description=(
             "When False (default), mixdepth 0 UTXOs are restricted to prevent "
-            "linking deposits/fidelity bonds via UTXO merging. Outputs with exact "
-            "protocol CoinJoin provenance are always exempt since they already "
-            "have CoinJoin privacy. Set to True to disable the restriction entirely "
-            "(experienced makers only)."
+            "linking deposits/fidelity bonds via UTXO merging. Exact CoinJoin outputs "
+            "and recursively proven CoinJoin-only change remain usable as maker "
+            "rotation liquidity. Set to True to disable the restriction entirely "
+            "(experienced makers only, reduces privacy)."
         ),
     )
 

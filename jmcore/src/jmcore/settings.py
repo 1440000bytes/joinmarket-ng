@@ -752,7 +752,8 @@ class MakerSettings(BaseModel):
     allow_mixdepth_zero_merge: bool = Field(
         default=False,
         description=(
-            "Disable the mixdepth 0 single-UTXO restriction "
+            "Allow all mixdepth 0 UTXOs to merge instead of limiting automatic "
+            "selection to maker-rotation lineage or one other UTXO "
             "(experienced makers only, reduces privacy)"
         ),
     )

@@ -412,11 +412,12 @@
 # merge_algorithm = "default"
 
 # Mixdepth 0 privacy restriction.
-# By default, UTXOs in mixdepth 0 are restricted to a single UTXO per CoinJoin
-# to prevent linking deposits and fidelity bonds. Outputs with exact protocol
-# CoinJoin provenance are always exempt because they already have CoinJoin
-# privacy. Set to true to disable the restriction entirely and allow merging
-# all md0 UTXOs (experienced makers only, reduces privacy).
+# By default, deposits and other unproven md0 UTXOs are restricted to one input
+# per CoinJoin. Exact protocol CoinJoin outputs and CoinJoin change recursively
+# proven to descend only from maker-rotation funds may be merged. Plain-send
+# change, deposit ancestry, reconstructed history, and incomplete history remain
+# restricted. Set to true to allow all md0 merges (usually unnecessary and
+# reduces privacy).
 # allow_mixdepth_zero_merge = false
 
 # Timeouts and intervals

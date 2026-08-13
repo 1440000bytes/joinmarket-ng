@@ -57,6 +57,13 @@ jm-maker start
 
 The bot syncs wallet state, builds offers, and waits for takers.
 
+By default, mixdepth 0 deposits and deposit-derived change remain isolated from
+maker rotation funds. When the final mixdepth wraps an equal CoinJoin output
+back to md0, the maker can continue using that output and recursively proven
+CoinJoin-only change without disabling the md0 safeguard. Missing or ambiguous
+history fails closed; an older or recovered wallet may need a taker sweep from
+md0 to restore liquidity that cannot be proven automatically.
+
 ### 4) Optional: tune fees
 
 ```bash

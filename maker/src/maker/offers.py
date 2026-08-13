@@ -81,13 +81,18 @@ class OfferManager:
         """
         try:
             locked_outpoints = self.wallet.get_locked_input_outpoints()
+            restrict_md0 = not self.config.allow_mixdepth_zero_merge
+            md0_mergeable_outpoints = (
+                await self.wallet.get_maker_rotation_lineage_outpoints() if restrict_md0 else None
+            )
             balances = {}
             for mixdepth in range(self.wallet.mixdepth_count):
                 # Use balance for offers (excludes fidelity bonds)
                 balance = await self.wallet.get_balance_for_offers(
                     mixdepth,
                     min_confirmations=self.config.min_confirmations,
-                    restrict_md0=not self.config.allow_mixdepth_zero_merge,
+                    restrict_md0=restrict_md0,
+                    md0_mergeable_outpoints=md0_mergeable_outpoints,
                     exclude=locked_outpoints,
                 )
                 balances[mixdepth] = balance

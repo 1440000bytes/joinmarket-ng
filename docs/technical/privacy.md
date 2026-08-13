@@ -11,6 +11,20 @@ An `INTERNAL` destination uses the next mixdepth and wraps from the final
 mixdepth to mixdepth 0. Explicit destinations are used as provided and may be in
 another wallet.
 
+The maker keeps that cyclic routing without treating every mixdepth 0 coin as
+interchangeable. Its default md0 merge pool contains exact protocol CoinJoin
+outputs and CoinJoin change only when authoritative local history proves,
+recursively, that every wallet input was already in that pool. Deposits,
+deposit-derived change, ordinary-send change, mixed ancestry, reconstructed
+history, and incomplete legacy history remain single-UTXO only. This keeps
+terminal maker funds liquid after they wrap to md0 without merging them with
+deposit or withdrawal ancestry.
+
+This lineage rule is compartment hygiene, not a claim that maker change is
+unlinkable. Change remains identifiable and its later reuse links rounds; input
+consolidation can reveal additional common ownership. Long-running makers
+should still minimize unnecessary inputs and avoid distinctive fee settings.
+
 Treat mixdepth boundaries as privacy boundaries when making manual sends. For
 the exact HD paths, address branches, and wallet behavior, see
 [Technical Wallet Notes](wallet.md#hd-structure).
