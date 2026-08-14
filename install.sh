@@ -410,6 +410,24 @@ resolve_to_commit_hash() {
     echo "$ref"
 }
 
+# Require an unambiguous full commit hash before release verification. The
+# resolver falls back to the original ref when GitHub is unavailable, which is
+# useful for explicit verification opt-outs but must not silently weaken the
+# default release install path.
+require_resolved_commit_hash() {
+    local version="$1"
+    local commit_hash="$2"
+
+    if [[ "$commit_hash" =~ ^[0-9a-fA-F]{40}$ ]]; then
+        return 0
+    fi
+
+    print_error "Could not resolve $version to a full commit hash."
+    print_error "Release signature verification cannot proceed, so the install was aborted."
+    print_error "Check GitHub connectivity or rerun with --skip-verify to bypass (NOT recommended)."
+    return 1
+}
+
 # Verify that the resolved commit hash for $version is attested by at least
 # one trusted GPG signature stored under signatures/<version>/ in the repo.
 #
@@ -881,23 +899,15 @@ install_packages() {
     # user passes --skip-verify. On success we pin the install to the
     # verified commit hash so a tag that gets repointed after verification
     # cannot smuggle in a different commit (TOCTOU).
-    if [[ -n "$install_commit" && "$install_commit" != "$VERSION" ]]; then
-        if ! verify_release_signature "$VERSION" "$install_commit"; then
-            exit 1
-        fi
-        if [[ "$SKIP_VERIFY" != "true" ]]; then
-            git_base="git+https://github.com/${GITHUB_REPO}.git@${install_commit}"
-            print_info "Pinned install to verified commit ${install_commit:0:12}"
-        fi
-    else
-        # Could not resolve to a commit (offline / API failure / dev mode).
-        # verify_release_signature requires a commit to compare against, so
-        # we only call it when we have one. In --dev mode SKIP_VERIFY is
-        # already true; otherwise this is best-effort and we fall through.
-        if [[ "$SKIP_VERIFY" != "true" ]]; then
-            print_warning "Could not resolve $VERSION to a commit hash; skipping signature verification."
-            print_warning "Rerun with a tagged --version to enable verification."
-        fi
+    if [[ "$SKIP_VERIFY" != "true" ]]; then
+        require_resolved_commit_hash "$VERSION" "$install_commit" || exit 1
+    fi
+    if ! verify_release_signature "$VERSION" "$install_commit"; then
+        exit 1
+    fi
+    if [[ "$SKIP_VERIFY" != "true" ]]; then
+        git_base="git+https://github.com/${GITHUB_REPO}.git@${install_commit}"
+        print_info "Pinned install to verified commit ${install_commit:0:12}"
     fi
     # Prepare dependency pinning anchored to the verified commit, then
     # decide how to pin: hash-checked by default (installing the verified
@@ -970,15 +980,11 @@ update_packages() {
 
     # Verify the resolved commit against GPG signatures stored in the repo.
     # See the matching block in install_packages() for design notes.
-    if [[ "$commit_hash" != "$VERSION" ]]; then
-        if ! verify_release_signature "$VERSION" "$commit_hash"; then
-            exit 1
-        fi
-    else
-        if [[ "$SKIP_VERIFY" != "true" ]]; then
-            print_warning "Could not resolve $VERSION to a commit hash; skipping signature verification."
-            print_warning "Rerun with a tagged --version to enable verification."
-        fi
+    if [[ "$SKIP_VERIFY" != "true" ]]; then
+        require_resolved_commit_hash "$VERSION" "$commit_hash" || exit 1
+    fi
+    if ! verify_release_signature "$VERSION" "$commit_hash"; then
+        exit 1
     fi
 
     local git_base="git+https://github.com/${GITHUB_REPO}.git@${commit_hash}"
