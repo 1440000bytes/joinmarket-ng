@@ -298,6 +298,41 @@ class WalletDisplayMixin:
             # Internal address with funds but not from CJ
             return "non-cj-change"
 
+    def get_utxo_label_from_wallet(self, address: str) -> str:
+        """Get label directly from wallet internals, bypassing history files.
+
+        Uses ``metadata_store.get_coinjoin_address_types()`` for on-chain
+        classification and ``address_cache`` to determine external vs internal
+        addresses.  This avoids the wallet-fingerprint scoping issue (#473)
+        that can cause ``get_utxo_label()`` to miss addresses.
+
+        Args:
+            address: The address to classify.
+
+        Returns:
+            One of ``"cj-out"``, ``"cj-change"``, ``"non-cj-change"``,
+            ``"flagged"``, ``"deposit"``.
+        """
+        store = getattr(self, "metadata_store", None)
+        onchain_types = store.get_coinjoin_address_types() if store else {}
+
+        is_external = False
+        if address in self.address_cache:
+            _, change, _ = self.address_cache[address]
+            is_external = change == 0
+
+        history_type = onchain_types.get(address)
+        if history_type == "cj_out":
+            return "cj-out"
+        elif history_type == "change":
+            return "cj-change"
+        elif history_type == "flagged":
+            return "flagged"
+        elif is_external:
+            return "deposit"
+        else:
+            return "non-cj-change"
+
     def get_next_after_last_used_address(
         self,
         mixdepth: int,

@@ -1680,3 +1680,47 @@ class TestReservedAddressPersistence:
         info = next(i for i in infos if i.address == addr)
         assert info.status == "reserved"
         assert info.label == "Bob"
+
+
+class TestGetUtxoLabelFromWallet:
+    """Tests for get_utxo_label_from_wallet() bypassing history files."""
+
+    def test_cj_out_external_address(self, wallet_service):
+        """External address marked as cj_out returns 'cj-out'."""
+        from unittest.mock import Mock
+
+        wallet_service.metadata_store = Mock()
+        wallet_service.metadata_store.get_coinjoin_address_types.return_value = {
+            "bcrt1cjout": "cj_out"
+        }
+        wallet_service.address_cache["bcrt1cjout"] = (0, 0, 5)  # external (change=0)
+        assert wallet_service.get_utxo_label_from_wallet("bcrt1cjout") == "cj-out"
+
+    def test_cj_change_internal_address(self, wallet_service):
+        """Internal change address returns 'cj-change'."""
+        from unittest.mock import Mock
+
+        wallet_service.metadata_store = Mock()
+        wallet_service.metadata_store.get_coinjoin_address_types.return_value = {
+            "bcrt1cjchange": "change"
+        }
+        wallet_service.address_cache["bcrt1cjchange"] = (0, 1, 3)  # internal (change=1)
+        assert wallet_service.get_utxo_label_from_wallet("bcrt1cjchange") == "cj-change"
+
+    def test_deposit_external_not_in_onchain(self, wallet_service):
+        """External address not in onchain_types returns 'deposit'."""
+        from unittest.mock import Mock
+
+        wallet_service.metadata_store = Mock()
+        wallet_service.metadata_store.get_coinjoin_address_types.return_value = {}
+        wallet_service.address_cache["bcrt1deposit"] = (0, 0, 7)  # external
+        assert wallet_service.get_utxo_label_from_wallet("bcrt1deposit") == "deposit"
+
+    def test_non_cj_change_internal_not_in_onchain(self, wallet_service):
+        """Internal address not in onchain_types returns 'non-cj-change'."""
+        from unittest.mock import Mock
+
+        wallet_service.metadata_store = Mock()
+        wallet_service.metadata_store.get_coinjoin_address_types.return_value = {}
+        wallet_service.address_cache["bcrt1noncj"] = (0, 1, 2)  # internal
+        assert wallet_service.get_utxo_label_from_wallet("bcrt1noncj") == "non-cj-change"

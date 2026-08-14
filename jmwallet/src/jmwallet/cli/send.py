@@ -93,7 +93,6 @@ async def _select_input_utxos(
             cannot run.
     """
     if interactive:
-        from jmwallet.history import get_utxo_label
         from jmwallet.utxo_selector import select_utxos_interactive
 
         utxos: list[UTXOInfo] = []
@@ -103,14 +102,12 @@ async def _select_input_utxos(
             logger.error("No UTXOs available")
             raise typer.Exit(1)
 
-        # Populate labels for each UTXO based on history
+        # Populate labels for each UTXO directly from wallet internals
+        # (bypasses history files to avoid fingerprint scoping issue #473)
         for utxo in utxos:
-            if utxo.label is None:
-                utxo.label = get_utxo_label(
-                    utxo.address,
-                    backend_settings.data_dir,
-                    wallet_fingerprint=wallet.wallet_fingerprint,
-                )
+            if not utxo.is_fidelity_bond:
+                utxo.label = wallet.get_utxo_label_from_wallet(utxo.address)
+            # FBs keep their original label (None) - selector shows [FB] only
 
         try:
             selected_utxos = select_utxos_interactive(utxos, amount, allowed_mixdepth=mixdepth)

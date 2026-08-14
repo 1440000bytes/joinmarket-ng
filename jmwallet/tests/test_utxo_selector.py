@@ -131,7 +131,7 @@ class TestFormatUtxoLine:
         utxo.label = "cj-out"
         line = format_utxo_line(utxo)
 
-        assert "(cj-out)" in line
+        assert "cj-out" in line
 
     def test_format_in_use_indicator(self, sample_utxos: list[UTXOInfo]) -> None:
         """Inputs committed to another CoinJoin are visibly marked."""
@@ -215,7 +215,7 @@ class TestFrozenUtxoFormatting:
         line = format_utxo_line(frozen_utxo, max_width=120)
 
         frozen_pos = line.index("[FROZEN]")
-        label_pos = line.index("(deposit)")
+        label_pos = line.index("deposit")
         assert frozen_pos > label_pos, (
             f"[FROZEN] at {frozen_pos} should come after (deposit) at {label_pos}: {line}"
         )

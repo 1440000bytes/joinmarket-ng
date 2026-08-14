@@ -69,7 +69,7 @@ def format_utxo_line(
         fb_indicator = " [FB-LOCKED]" if utxo.is_locked else " [FB]"
 
     # Label/note for UTXO type
-    label_str = f" ({utxo.label})" if utxo.label else ""
+    label_str = f" {utxo.label}" if utxo.label else ""
 
     # Frozen indicator (placed after label for consistency with --extended view)
     frozen_indicator = " [FROZEN]" if utxo.frozen else ""
