@@ -116,6 +116,7 @@ class NeutrinoBackend(BlockchainBackend):
     # resolved at call time in ``list_wallet_transactions_since``, which
     # degrades to an empty result with a one-time warning against old servers.
     supports_tx_enumeration: bool = True
+    supports_address_usage: bool = True
     _INITIAL_RESCAN_TIMEOUT_SECONDS: float = 1800.0
     _ONGOING_INITIAL_RESCAN_CHECK_TIMEOUT_SECONDS: float = 30.0
     _TRIVIAL_RESCAN_BLOCKS: int = 1000
@@ -194,6 +195,7 @@ class NeutrinoBackend(BlockchainBackend):
         # Cache for watched addresses (neutrino needs to know what to scan for)
         self._watched_addresses: set[str] = set()
         self._watched_outpoints: set[tuple[str, int]] = set()
+        self._address_usage_cache: set[str] | None = None
 
         # Security limits to prevent DoS via excessive watch list / rescan abuse
         self._max_watched_addresses: int = 10000  # Maximum addresses to track
@@ -578,6 +580,21 @@ class NeutrinoBackend(BlockchainBackend):
         for rec in result.get("transactions", []):
             if not isinstance(rec, dict):
                 continue
+            record_addresses = rec.get("addresses", [])
+            if isinstance(record_addresses, str):
+                record_addresses = [record_addresses]
+            if (
+                isinstance(record_addresses, list)
+                and record_addresses
+                and self._watched_addresses.isdisjoint(
+                    address for address in record_addresses if isinstance(address, str)
+                )
+            ):
+                # Transaction history is daemon-global. Exclude records that
+                # explicitly belong only to other wallets sharing the server.
+                # Address-less spend records remain candidates because a sweep
+                # can have no output back to this wallet.
+                continue
             txid = rec.get("txid")
             if not txid:
                 continue
@@ -598,6 +615,39 @@ class NeutrinoBackend(BlockchainBackend):
         new_cursor = result.get("cursor")
         cursor_str = str(new_cursor) if isinstance(new_cursor, int) else cursor
         return entries, cursor_str
+
+    async def get_address_usage(self, addresses: list[str]) -> set[str] | None:
+        """Return watched addresses with receive history, including spent outputs."""
+        if not addresses:
+            return set()
+        if not self._server_capabilities.detected:
+            await self._detect_server_capabilities()
+        if not self._server_capabilities.detected:
+            return None
+        if not self._server_capabilities.has_tx_enumeration:
+            return None
+
+        if self._address_usage_cache is None:
+            try:
+                result = await self._api_call("GET", "v1/transactions", params={"since_height": 0})
+            except Exception as exc:
+                logger.warning(f"Could not enumerate Neutrino address history: {exc}")
+                return None
+            if not isinstance(result, dict):
+                return None
+
+            used: set[str] = set()
+            for record in result.get("transactions", []):
+                if not isinstance(record, dict):
+                    continue
+                record_addresses = record.get("addresses", [])
+                if isinstance(record_addresses, str):
+                    record_addresses = [record_addresses]
+                if isinstance(record_addresses, list):
+                    used.update(address for address in record_addresses if isinstance(address, str))
+            self._address_usage_cache = used
+
+        return set(addresses) & self._address_usage_cache
 
     async def _api_call(
         self,
@@ -825,6 +875,10 @@ class NeutrinoBackend(BlockchainBackend):
         self._watched_addresses.add(address)
         logger.trace(f"Watching address: {address}")
 
+    def get_history_state_id(self) -> str:
+        """Scope durable history state to this Neutrino API instance."""
+        return f"{super().get_history_state_id()}|{self.neutrino_url}"
+
     async def add_watch_outpoint(self, txid: str, vout: int) -> None:
         """
         Add an outpoint to the local watch list.
@@ -1023,6 +1077,7 @@ class NeutrinoBackend(BlockchainBackend):
                     self._initial_rescan_done = True
                     self._initial_rescan_started = False
                     self._rescan_in_progress = False
+                    self._address_usage_cache = None
 
                     # Use the actual scanned tip from metadata for accuracy.
                     # This may be higher than *current_height* if new blocks
@@ -1083,6 +1138,7 @@ class NeutrinoBackend(BlockchainBackend):
                     _, post_tip = await self._get_rescan_coverage()
                     self._last_rescan_height = max(post_tip, current_height)
                     self._rescan_in_progress = False
+                    self._address_usage_cache = None
 
                     blocks_scanned = max(0, current_height - start_height)
                     if blocks_scanned > self._TRIVIAL_RESCAN_BLOCKS:
@@ -1941,7 +1997,7 @@ class NeutrinoBackend(BlockchainBackend):
             logger.warning(f"Failed to fetch peers: {e}")
             return []
 
-    async def ensure_addresses_scanned(self, addresses: list[str]) -> None:
+    async def ensure_addresses_scanned(self, addresses: list[str], *, force: bool = False) -> bool:
         """Rescan *addresses* over the wallet's full history.
 
         Neutrino only rescans new blocks for already-watched addresses, so an
@@ -1959,22 +2015,25 @@ class NeutrinoBackend(BlockchainBackend):
         old blocks are re-evaluated against the new address' filter.
         """
         if not addresses:
-            return
+            return False
 
         # Serialize backfills within this process: a second caller must not
         # observe the addresses as "watched" and query UTXOs while the first
         # caller's historical rescan is still pending or being rolled back.
         async with self._ensure_scan_lock:
-            await self._ensure_addresses_scanned_locked(addresses)
+            return await self._ensure_addresses_scanned_locked(addresses, force=force)
 
-    async def _ensure_addresses_scanned_locked(self, addresses: list[str]) -> None:
+    async def _ensure_addresses_scanned_locked(
+        self, addresses: list[str], *, force: bool = False
+    ) -> bool:
         # Only rescan addresses we are not already covering. ``add_watch_address``
         # is idempotent; we use the watched set to detect genuinely new ones.
-        new_addresses = [a for a in addresses if a not in self._watched_addresses]
+        newly_registered = [a for a in addresses if a not in self._watched_addresses]
+        addresses_to_scan = list(dict.fromkeys(addresses if force else newly_registered))
         for address in addresses:
             await self.add_watch_address(address)
-        if not new_addresses:
-            return
+        if not addresses_to_scan:
+            return False
 
         # Capability detection normally runs during ``wait_for_sync``, but this
         # method can be the first backend call (e.g. direct bond discovery on a
@@ -1997,7 +2056,7 @@ class NeutrinoBackend(BlockchainBackend):
                 start_height = persisted_start - 1
 
             logger.info(
-                f"Rescanning {len(new_addresses)} newly watched address(es) "
+                f"Rescanning {len(addresses_to_scan)} historically uncovered address(es) "
                 f"(e.g. fidelity bonds) from height {start_height} to backfill history"
             )
             # Issue the rescan directly rather than via ``rescan_from_height`` so
@@ -2006,7 +2065,7 @@ class NeutrinoBackend(BlockchainBackend):
             # uses compact filters, so even a deep re-scan is bounded and fast.
             rescan_request: dict[str, Any] = {
                 "start_height": start_height,
-                "addresses": new_addresses,
+                "addresses": addresses_to_scan,
             }
             if force_rescan:
                 rescan_request["force"] = True
@@ -2066,10 +2125,12 @@ class NeutrinoBackend(BlockchainBackend):
                 self._last_rescan_height = max(self._last_rescan_height, post_tip, tip_height)
             # Force the next get_utxos to retry while async indexing settles.
             self._just_rescanned = True
+            self._address_usage_cache = None
+            return True
         except Exception as e:
             # Let callers retry on the same backend instance. The server-side
             # watch operation is idempotent, so re-registering is harmless.
-            self._watched_addresses.difference_update(new_addresses)
+            self._watched_addresses.difference_update(newly_registered)
             logger.error(f"Failed to rescan newly watched addresses: {e}")
             raise
 
@@ -2143,6 +2204,7 @@ class NeutrinoBackend(BlockchainBackend):
                     "addresses": addresses,
                 },
             )
+            self._address_usage_cache = None
             logger.info(f"Started rescan from height {start_height} for {len(addresses)} addresses")
 
         except Exception as e:
@@ -2157,6 +2219,7 @@ class NeutrinoBackend(BlockchainBackend):
         self.client = self._build_http_client()
         self._watched_addresses = set()
         self._watched_outpoints = set()
+        self._address_usage_cache = None
         self._filter_header_tip = 0
         self._synced = False
         self._initial_rescan_done = False

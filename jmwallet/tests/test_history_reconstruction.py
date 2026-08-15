@@ -42,6 +42,14 @@ from jmwallet.history_reconstruction import (
     classify_wallet_transaction,
     reconstruct_history_from_chain,
 )
+from jmwallet.history_state import (
+    clear_reconstruction_cursor,
+    has_reconstruction_address_coverage,
+    has_reconstruction_branch_coverage,
+    load_reconstruction_cursor,
+    record_reconstruction_address_coverage,
+    save_reconstruction_cursor,
+)
 from jmwallet.wallet.service import WalletService
 
 NETWORK = "regtest"
@@ -103,11 +111,15 @@ class FakeBackend:
         self.raw_by_txid = raw_by_txid
         self.block_times = block_times or {}
         self.enumerate_calls = 0
+        self.enumeration_cursors: list[str | None] = []
 
     async def list_wallet_transactions_since(
         self, cursor: str | None
     ) -> tuple[list[WalletTxEntry], str | None]:
         self.enumerate_calls += 1
+        self.enumeration_cursors.append(cursor)
+        if cursor == "tip":
+            return [], "tip"
         return list(self.entries), "tip"
 
     async def get_transaction(self, txid: str) -> Transaction | None:
@@ -415,8 +427,48 @@ class TestReconstructHistoryFromChain:
 
         second = await _run(backend, tmp_path)
         assert second.created == 0
-        assert second.skipped_existing == 3
+        assert second.skipped_existing == 0
+        assert backend.enumeration_cursors == [None, "tip"]
         assert len(read_history(tmp_path, wallet_fingerprint=FINGERPRINT)) == 3
+
+    @pytest.mark.asyncio
+    async def test_incremental_spend_resolves_prevout_before_cursor(self, tmp_path: Path) -> None:
+        backend, txids = _scenario()
+        await _run(backend, tmp_path)
+        incremental_raw = _raw_tx([(txids["send"], 1)], [(17_000, FOREIGN_B)])
+        incremental_txid = get_txid(incremental_raw)
+        incremental_entry = WalletTxEntry(
+            txid=incremental_txid,
+            confirmations=2,
+            block_height=110,
+            raw=incremental_raw,
+        )
+        backend.entries.append(incremental_entry)
+        backend.raw_by_txid[incremental_txid] = incremental_raw
+        backend.list_wallet_transactions_since = AsyncMock(  # type: ignore[method-assign]
+            return_value=([incremental_entry], "tip2")
+        )
+
+        result = await _run(backend, tmp_path)
+
+        assert result.created == 1
+        incremental_rows = [
+            entry
+            for entry in read_history(tmp_path, wallet_fingerprint=FINGERPRINT)
+            if entry.txid == incremental_txid
+        ]
+        assert len(incremental_rows) == 1
+        assert incremental_rows[0].role == "send"
+        assert incremental_rows[0].amount == 17_000
+        assert (
+            load_reconstruction_cursor(
+                tmp_path,
+                wallet_fingerprint=FINGERPRINT,
+                network=NETWORK,
+                backend=backend,  # type: ignore[arg-type]
+            )
+            == "tip2"
+        )
 
     @pytest.mark.asyncio
     async def test_protocol_entries_always_win(self, tmp_path: Path) -> None:
@@ -466,7 +518,169 @@ class TestReconstructHistoryFromChain:
         backend, _txids = _scenario()
         result = await _run(backend, tmp_path, max_transactions=1)
         assert result.created == 1
+        assert result.scanned == 1
         assert result.capped is True
+
+        # A partial baseline cannot advance the backend cursor past backlog.
+        await _run(backend, tmp_path, max_transactions=1)
+        assert backend.enumeration_cursors == [None, None]
+
+    @pytest.mark.asyncio
+    async def test_unrelated_candidates_do_not_consume_cap(self, tmp_path: Path) -> None:
+        backend, txids = _scenario()
+        unrelated_raw = _raw_tx([("dd" * 32, 0)], [(25_000, FOREIGN_A)])
+        unrelated_txid = get_txid(unrelated_raw)
+        backend.entries.insert(
+            0,
+            WalletTxEntry(txid=unrelated_txid, confirmations=12, block_height=99),
+        )
+        backend.raw_by_txid[unrelated_txid] = unrelated_raw
+
+        result = await _run(backend, tmp_path, max_transactions=1)
+
+        assert result.created == 1
+        assert result.scanned == 1
+        assert result.capped is True
+        assert [entry.txid for entry in read_history(tmp_path)] == [txids["fund"]]
+
+    @pytest.mark.asyncio
+    async def test_failed_transaction_read_does_not_advance_cursor(self, tmp_path: Path) -> None:
+        backend, txids = _scenario()
+        del backend.raw_by_txid[txids["fund"]]
+
+        result = await _run(backend, tmp_path)
+
+        assert result.created == 1
+        assert (
+            load_reconstruction_cursor(
+                tmp_path,
+                wallet_fingerprint=FINGERPRINT,
+                network=NETWORK,
+                backend=backend,  # type: ignore[arg-type]
+            )
+            is None
+        )
+
+    @pytest.mark.asyncio
+    async def test_completed_baseline_cursor_can_be_cleared(self, tmp_path: Path) -> None:
+        backend, _txids = _scenario()
+        await _run(backend, tmp_path)
+        assert (
+            load_reconstruction_cursor(
+                tmp_path,
+                wallet_fingerprint=FINGERPRINT,
+                network=NETWORK,
+                backend=backend,  # type: ignore[arg-type]
+            )
+            == "tip"
+        )
+
+        clear_reconstruction_cursor(tmp_path, wallet_fingerprint=FINGERPRINT)
+        await _run(backend, tmp_path)
+        assert backend.enumeration_cursors == [None, None]
+
+    @pytest.mark.asyncio
+    async def test_checkpoint_is_scoped_to_network(self, tmp_path: Path) -> None:
+        backend, _txids = _scenario()
+        await _run(backend, tmp_path)
+
+        assert (
+            load_reconstruction_cursor(
+                tmp_path,
+                wallet_fingerprint=FINGERPRINT,
+                network="mainnet",
+                backend=backend,  # type: ignore[arg-type]
+            )
+            is None
+        )
+
+    def test_checkpoint_records_initial_address_coverage(self, tmp_path: Path) -> None:
+        backend, _txids = _scenario()
+        record_reconstruction_address_coverage(
+            tmp_path,
+            wallet_fingerprint=FINGERPRINT,
+            network=NETWORK,
+            backend=backend,  # type: ignore[arg-type]
+            branch_ends={"0:0": 0, "0:1": 1, "1:0": 0, "1:1": 0},
+        )
+        assert (
+            load_reconstruction_cursor(
+                tmp_path,
+                wallet_fingerprint=FINGERPRINT,
+                network=NETWORK,
+                backend=backend,  # type: ignore[arg-type]
+            )
+            is None
+        )
+        save_reconstruction_cursor(
+            tmp_path,
+            wallet_fingerprint=FINGERPRINT,
+            network=NETWORK,
+            backend=backend,  # type: ignore[arg-type]
+            cursor="tip",
+            address_paths=ADDRESS_PATHS,
+        )
+
+        assert has_reconstruction_address_coverage(
+            tmp_path,
+            wallet_fingerprint=FINGERPRINT,
+            network=NETWORK,
+            backend=backend,  # type: ignore[arg-type]
+            mixdepth_count=2,
+            range_end=0,
+        )
+        assert not has_reconstruction_address_coverage(
+            tmp_path,
+            wallet_fingerprint=FINGERPRINT,
+            network=NETWORK,
+            backend=backend,  # type: ignore[arg-type]
+            mixdepth_count=2,
+            range_end=1,
+        )
+        assert has_reconstruction_branch_coverage(
+            tmp_path,
+            wallet_fingerprint=FINGERPRINT,
+            network=NETWORK,
+            backend=backend,  # type: ignore[arg-type]
+            mixdepth=0,
+            change=1,
+            range_end=1,
+        )
+        clear_reconstruction_cursor(tmp_path, wallet_fingerprint=FINGERPRINT)
+        assert has_reconstruction_address_coverage(
+            tmp_path,
+            wallet_fingerprint=FINGERPRINT,
+            network=NETWORK,
+            backend=backend,  # type: ignore[arg-type]
+            mixdepth_count=2,
+            range_end=0,
+        )
+
+    @pytest.mark.asyncio
+    async def test_checkpoint_is_scoped_to_backend_instance(self, tmp_path: Path) -> None:
+        first = DescriptorWalletBackend(rpc_url="http://core-a:18443", wallet_name="jm")
+        second = DescriptorWalletBackend(rpc_url="http://core-b:18443", wallet_name="jm")
+        try:
+            save_reconstruction_cursor(
+                tmp_path,
+                wallet_fingerprint=FINGERPRINT,
+                network=NETWORK,
+                backend=first,
+                cursor="blockhash",
+            )
+
+            assert (
+                load_reconstruction_cursor(
+                    tmp_path,
+                    wallet_fingerprint=FINGERPRINT,
+                    network=NETWORK,
+                    backend=second,
+                )
+                is None
+            )
+        finally:
+            await first.close()
+            await second.close()
 
     @pytest.mark.asyncio
     async def test_rejects_invalid_transaction_cap(self, tmp_path: Path) -> None:

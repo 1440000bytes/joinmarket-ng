@@ -323,8 +323,25 @@ async def reconstruct_history_from_chain(
         logger.debug("Backend does not support tx enumeration; skipping history reconstruction")
         return result
 
-    wallet_entries, _cursor = await backend.list_wallet_transactions_since(None)
+    from jmwallet.history_state import load_reconstruction_cursor, save_reconstruction_cursor
+
+    cursor = load_reconstruction_cursor(
+        data_dir,
+        wallet_fingerprint=wallet_fingerprint,
+        network=network,
+        backend=backend,
+    )
+    wallet_entries, next_cursor = await backend.list_wallet_transactions_since(cursor)
     if not wallet_entries:
+        if next_cursor:
+            save_reconstruction_cursor(
+                data_dir,
+                wallet_fingerprint=wallet_fingerprint,
+                network=network,
+                backend=backend,
+                cursor=next_cursor,
+                address_paths=address_paths,
+            )
         return result
 
     # Deduplicate by txid, preferring the deepest-confirmed record.
@@ -358,9 +375,11 @@ async def reconstruct_history_from_chain(
     parsed_cache: dict[str, ParsedTransaction | None] = {}
     tx_block_time: dict[str, int] = {}
     height_time_cache: dict[int, int] = {}
+    cursor_safe = True
 
     async def get_parsed(txid: str) -> ParsedTransaction | None:
         """Parse a wallet tx, preferring inline raw hex from the enumeration."""
+        nonlocal cursor_safe
         if txid in parsed_cache:
             return parsed_cache[txid]
         raw = by_txid[txid].raw if txid in by_txid else ""
@@ -380,6 +399,8 @@ async def reconstruct_history_from_chain(
                 parsed = parse_transaction(raw)
             except Exception as exc:  # pragma: no cover - defensive
                 logger.debug(f"Could not parse tx {txid[:16]}...: {exc}")
+        if parsed is None:
+            cursor_safe = False
         parsed_cache[txid] = parsed
         return parsed
 
@@ -403,17 +424,7 @@ async def reconstruct_history_from_chain(
         if entry.txid in known_txids:
             result.skipped_existing += 1
             continue
-        if result.scanned >= max_transactions:
-            result.capped = True
-            logger.warning(
-                f"History reconstruction hit the {max_transactions}-transaction cap; "
-                "run `jm-wallet reconstruct-history --keep-existing` to continue "
-                "without rebuilding the same rows."
-            )
-            break
-
         parsed = await get_parsed(entry.txid)
-        result.scanned += 1
         if parsed is None:
             continue
 
@@ -434,17 +445,24 @@ async def reconstruct_history_from_chain(
 
         owned_inputs: list[OwnedInput] = []
         all_inputs_ours = True
+        inputs_complete = True
         for tin in parsed.inputs:
             prev_txid = tin.txid
-            # A prevout paying this wallet necessarily belongs to a wallet
-            # transaction, so any prev txid outside the enumeration set is
-            # someone else's coin.
-            if prev_txid not in wallet_txids:
+            # A baseline wallet prevout is in the current enumeration. On an
+            # incremental pass it can predate the cursor, in which case its
+            # reconstructed/protocol history row proves it is wallet-related.
+            if prev_txid not in wallet_txids and prev_txid not in known_txids:
                 all_inputs_ours = False
                 continue
             prev_parsed = await get_parsed(prev_txid)
-            if prev_parsed is None or tin.vout >= len(prev_parsed.outputs):
+            if prev_parsed is None:
                 all_inputs_ours = False
+                inputs_complete = False
+                continue
+            if tin.vout >= len(prev_parsed.outputs):
+                all_inputs_ours = False
+                inputs_complete = False
+                cursor_safe = False
                 continue
             prev_out = prev_parsed.outputs[tin.vout]
             owner = script_owner.get(bytes(prev_out.script))
@@ -461,11 +479,27 @@ async def reconstruct_history_from_chain(
                 )
             )
 
+        if not inputs_complete:
+            continue
+
         classified = classify_wallet_transaction(
             parsed, owned_inputs, owned_outputs, all_inputs_ours, network
         )
         if classified is None:
             continue
+
+        # Neutrino transaction history is daemon-global, so unrelated records
+        # can reach this point as candidates. The safety cap applies only after
+        # ownership is proven and the transaction can produce a wallet row.
+        if result.scanned >= max_transactions:
+            result.capped = True
+            logger.warning(
+                f"History reconstruction hit the {max_transactions}-transaction cap; "
+                "run `jm-wallet reconstruct-history --keep-existing` to continue "
+                "without rebuilding the same rows."
+            )
+            break
+        result.scanned += 1
 
         timestamp = await get_timestamp(entry)
         history_entry = TransactionHistoryEntry(
@@ -504,4 +538,15 @@ async def reconstruct_history_from_chain(
             f"Reconstructed {result.created} history entries from "
             f"{result.scanned} on-chain transaction(s)."
         )
+    if not result.capped and cursor_safe and next_cursor:
+        save_reconstruction_cursor(
+            data_dir,
+            wallet_fingerprint=wallet_fingerprint,
+            network=network,
+            backend=backend,
+            cursor=next_cursor,
+            address_paths=address_paths,
+        )
+    elif not cursor_safe:
+        logger.warning("History reconstruction was incomplete; checkpoint was not advanced")
     return result

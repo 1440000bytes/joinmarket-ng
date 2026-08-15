@@ -50,6 +50,13 @@ only widen coverage, never shrink it below the configured
 the BIP44 `gap_limit`. CLI mnemonic recovery can use `jm-wallet recover-bonds`
 when the bond coverage was not set up by an older version.
 
+For Neutrino, each newly derived regular-address batch is historically backfilled
+before it is considered empty. On neutrino-api 1.4.0+ with transaction history
+enabled, spent-only receive addresses count as used and discovery continues until
+the full trailing gap is empty. Older servers cannot distinguish a spent-only
+address from an unused one and retain the UTXO-only fallback; upgrade before using
+Neutrino for seed recovery of a wallet with substantial prior activity.
+
 When Neutrino adds the 960 recovery candidates after its initial sync,
 JoinMarket requests a forced historical rescan so persisted global coverage
 does not hide transactions for those newly watched addresses. Servers without

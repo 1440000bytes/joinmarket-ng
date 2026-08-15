@@ -20,6 +20,7 @@ from jmwallet.history import (
     get_address_history_types,
     get_utxo_label,
 )
+from jmwallet.wallet.bip32 import HDKey
 from jmwallet.wallet.models import UTXOInfo
 from jmwallet.wallet.service import WalletService
 
@@ -462,6 +463,36 @@ class TestGetNextAddressIndex:
             assert wallet.get_address(0, 0, 0) == addr
         finally:
             wallet.master_key.derive = original_derive
+
+    def test_regular_key_derivation_reuses_account_and_branch_parents(self, wallet, monkeypatch):
+        """Regular address indices derive only from their cached branch parent."""
+        path = f"{wallet.root_path}/0'/0/0"
+        expected_address = wallet.master_key.derive(path).get_address(wallet.network)
+        expected_private_key = wallet.master_key.derive(path).get_private_key_bytes()
+        expected_xpub = wallet.master_key.derive(f"{wallet.root_path}/0'").get_xpub(wallet.network)
+        expected_zpub = wallet.master_key.derive(f"{wallet.root_path}/0'").get_zpub(wallet.network)
+
+        derivations: list[tuple[int, int]] = []
+        original_derive_child = HDKey._derive_child
+
+        def count_derive_child(self, child_index: int):
+            derivations.append((self.depth, child_index))
+            return original_derive_child(self, child_index)
+
+        monkeypatch.setattr(HDKey, "_derive_child", count_derive_child)
+
+        address = wallet.get_address(0, 0, 0)
+        assert address == expected_address
+        assert wallet.get_private_key(0, 0, 0) == expected_private_key
+        assert wallet.get_key_for_address(address).get_private_key_bytes() == expected_private_key
+        assert wallet.get_account_xpub(0) == expected_xpub
+        assert wallet.get_account_zpub(0) == expected_zpub
+
+        assert [depth for depth, _ in derivations].count(0) == 1
+        assert [depth for depth, _ in derivations].count(1) == 1
+        assert [depth for depth, _ in derivations].count(2) == 1
+        assert [depth for depth, _ in derivations].count(3) == 1
+        assert [depth for depth, _ in derivations].count(4) == 3
 
 
 class TestNextUnusedUnflaggedAddress:

@@ -100,6 +100,14 @@ rebuilding rows. Reconstructed maker guesses are excluded from the legacy
 yield-generator earnings report, whose fee fields are authoritative. History
 statistics include reconstructed rows and are labeled as estimates when present.
 
+Once a complete pass reaches the backend tip, a wallet-scoped transaction cursor
+makes later passes incremental. Capped passes deliberately do not advance that
+cursor, so `jm-wallet reconstruct-history --keep-existing` can continue the older
+backlog without skipping transactions. Successfully backfilled Neutrino branch
+coverage is persisted separately, avoiding repeated rescans while a capped backlog
+is processed. Purging reconstructed rows or widening historical address coverage
+invalidates the transaction cursor and causes a complete enumeration.
+
 ## Neutrino TLS Settings
 
 When using the `neutrino` backend with TLS enabled (default), set:

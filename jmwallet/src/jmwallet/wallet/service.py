@@ -89,6 +89,10 @@ class WalletService(
 
         coin_type = 0 if network == "mainnet" else 1
         self.root_path = f"m/84'/{coin_type}'"
+        # HDKey derivation is immutable, so account and regular branch parents
+        # can be reused safely while deriving many address indices.
+        self._account_key_cache: dict[int, HDKey] = {}
+        self._branch_key_cache: dict[tuple[int, int], HDKey] = {}
 
         # Log fingerprint for debugging (helps identify passphrase issues)
         fingerprint = self.master_key.derive("m/0").fingerprint.hex()
@@ -104,6 +108,7 @@ class WalletService(
 
         self.address_cache: dict[str, tuple[int, int, int]] = {}
         self._path_cache: dict[tuple[int, int, int], str] = {}
+        self._address_cache_range_end: int = -1
         self.utxo_cache: dict[int, list[UTXOInfo]] = {}
         # Forced-address-reuse defense state (issue #529, hardened for #542).
         #
@@ -330,6 +335,28 @@ class WalletService(
 
     # -- Key derivation & address generation (Group A) ----------------------
 
+    def _get_account_key(self, mixdepth: int) -> HDKey:
+        """Return the cached BIP84 account key for a mixdepth."""
+        account_key = self._account_key_cache.get(mixdepth)
+        if account_key is None:
+            account_path = f"{self.root_path}/{mixdepth}'"
+            account_key = self.master_key.derive(account_path)
+            self._account_key_cache[mixdepth] = account_key
+        return account_key
+
+    def _derive_key(self, mixdepth: int, change: int, index: int) -> HDKey:
+        """Derive a wallet key, caching only regular BIP84 branch parents."""
+        if change not in (0, 1):
+            path = f"{self.root_path}/{mixdepth}'/{change}/{index}"
+            return self.master_key.derive(path)
+
+        branch_key = self._branch_key_cache.get((mixdepth, change))
+        if branch_key is None:
+            account_key = self._get_account_key(mixdepth)
+            branch_key = account_key.derive(f"m/{change}")
+            self._branch_key_cache[(mixdepth, change)] = branch_key
+        return branch_key.derive(f"m/{index}")
+
     def get_address(self, mixdepth: int, change: int, index: int) -> str:
         """Get address for given path"""
         if mixdepth >= self.mixdepth_count:
@@ -341,8 +368,7 @@ class WalletService(
             self.address_cache[cached] = path_key
             return cached
 
-        path = f"{self.root_path}/{mixdepth}'/{change}/{index}"
-        key = self.master_key.derive(path)
+        key = self._derive_key(mixdepth, change, index)
         address = key.get_address(self.network)
 
         self.address_cache[address] = (mixdepth, change, index)
@@ -371,9 +397,7 @@ class WalletService(
         Returns:
             xpub/tpub string for the account
         """
-        account_path = f"{self.root_path}/{mixdepth}'"
-        account_key = self.master_key.derive(account_path)
-        return account_key.get_xpub(self.network)
+        return self._get_account_key(mixdepth).get_xpub(self.network)
 
     def get_account_zpub(self, mixdepth: int) -> str:
         """
@@ -388,9 +412,7 @@ class WalletService(
         Returns:
             zpub/vpub string for the account
         """
-        account_path = f"{self.root_path}/{mixdepth}'"
-        account_key = self.master_key.derive(account_path)
-        return account_key.get_zpub(self.network)
+        return self._get_account_key(mixdepth).get_zpub(self.network)
 
     def get_scan_descriptors(self, scan_range: int = DEFAULT_SCAN_RANGE) -> list[dict[str, Any]]:
         """
@@ -527,9 +549,7 @@ class WalletService(
 
     def get_private_key(self, mixdepth: int, change: int, index: int) -> bytes:
         """Get private key for given path"""
-        path = f"{self.root_path}/{mixdepth}'/{change}/{index}"
-        key = self.master_key.derive(path)
-        return key.get_private_key_bytes()
+        return self._derive_key(mixdepth, change, index).get_private_key_bytes()
 
     def get_key_for_address(self, address: str) -> HDKey | None:
         """Get HD key for a known address"""
@@ -540,8 +560,7 @@ class WalletService(
             return None
 
         mixdepth, change, index = path_info
-        path = f"{self.root_path}/{mixdepth}'/{change}/{index}"
-        return self.master_key.derive(path)
+        return self._derive_key(mixdepth, change, index)
 
     # -- Balance & UTXO queries (Group G) -----------------------------------
 

@@ -416,6 +416,7 @@ async def _reconstruct_history(
     )
     from jmwallet.backends.neutrino import NeutrinoBackend
     from jmwallet.history import purge_reconstructed_entries
+    from jmwallet.history_state import clear_reconstruction_cursor
     from jmwallet.wallet.service import WalletService
 
     wallet_fingerprint = get_mnemonic_fingerprint(mnemonic, bip39_passphrase)
@@ -484,6 +485,9 @@ async def _reconstruct_history(
             _require_neutrino_history_support(backend)
 
         if not keep_existing:
+            clear_reconstruction_cursor(
+                backend_settings.data_dir, wallet_fingerprint=wallet.wallet_fingerprint
+            )
             purged = purge_reconstructed_entries(
                 backend_settings.data_dir, wallet_fingerprint=wallet.wallet_fingerprint
             )

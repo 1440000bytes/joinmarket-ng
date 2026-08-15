@@ -562,9 +562,10 @@ class _FakeLightClientBackend(BlockchainBackend):
     async def add_watch_address(self, address: str) -> None:
         self._scanned.add(address)
 
-    async def ensure_addresses_scanned(self, addresses: list[str]) -> None:
+    async def ensure_addresses_scanned(self, addresses: list[str], *, force: bool = False) -> bool:
         self.ensure_calls.append(list(addresses))
         self._scanned.update(addresses)
+        return True
 
     async def get_utxos(self, addresses: list[str]) -> list[UTXO]:
         requested = {address.lower() for address in addresses}
@@ -637,7 +638,7 @@ async def test_sync_all_scans_bonds_on_light_client_backend(tmp_path: Path) -> N
 
     # The bond was historically rescanned before querying.
     assert backend.ensure_calls, "ensure_addresses_scanned was not called for the bond"
-    assert bond_address in backend.ensure_calls[0]
+    assert any(bond_address in addresses for addresses in backend.ensure_calls)
 
     # The bond UTXO is present in mixdepth 0 (both the returned mapping and the
     # cache), tagged as a fidelity bond with the :locktime path suffix.
@@ -680,7 +681,7 @@ async def test_light_client_scans_exact_registered_address_case_insensitively(
 
     result = await ws.sync_all([(BOND_ADDRESS, BOND_LOCKTIME, BOND_INDEX)])
 
-    assert BOND_ADDRESS in backend.ensure_calls[0]
+    assert any(BOND_ADDRESS in addresses for addresses in backend.ensure_calls)
     bonds = [u for u in result[0] if u.address.lower() == BOND_ADDRESS.lower()]
     assert len(bonds) == 1
     assert bonds[0].txid == "dd" * 32

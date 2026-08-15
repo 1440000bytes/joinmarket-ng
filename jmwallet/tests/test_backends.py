@@ -157,6 +157,7 @@ class TestNeutrinoBackend:
                         "height": 205,
                         "confirmed": True,
                         "direction": "receive",
+                        "addresses": ["bcrt1qours"],
                     },
                     {
                         "txid": "bb",
@@ -164,11 +165,21 @@ class TestNeutrinoBackend:
                         "height": 0,
                         "confirmed": False,
                         "direction": "spend",
+                        "addresses": [],
+                    },
+                    {
+                        "txid": "cc",
+                        "hex": "0202",
+                        "height": 204,
+                        "confirmed": True,
+                        "direction": "receive",
+                        "addresses": ["bcrt1qotherwallet"],
                     },
                 ],
                 "cursor": 205,
             }
         )
+        backend._watched_addresses.add("bcrt1qours")
 
         entries, cursor = await backend.list_wallet_transactions_since("200")
 
@@ -200,6 +211,33 @@ class TestNeutrinoBackend:
         assert cursor == "unsupported"
         backend._api_call.assert_not_awaited()
         assert backend._warned_no_tx_enumeration is True
+        await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_get_address_usage_includes_spent_receive_history(self):
+        """Transaction history distinguishes spent addresses from unused ones."""
+        backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="regtest")
+        backend._server_capabilities.detected = True
+        backend._server_capabilities.has_tx_enumeration = True
+        backend._api_call = AsyncMock(
+            return_value={
+                "transactions": [
+                    {
+                        "txid": "aa",
+                        "addresses": ["bcrt1qused", "bcrt1qother"],
+                        "confirmed": True,
+                    }
+                ],
+                "cursor": 100,
+            }
+        )
+
+        assert await backend.get_address_usage(["bcrt1qused", "bcrt1qunused"]) == {"bcrt1qused"}
+        # The full daemon-global history is cached across gap batches.
+        assert await backend.get_address_usage(["bcrt1qother"]) == {"bcrt1qother"}
+        backend._api_call.assert_awaited_once_with(
+            "GET", "v1/transactions", params={"since_height": 0}
+        )
         await backend.close()
 
     @pytest.mark.asyncio
@@ -1432,6 +1470,34 @@ class TestNeutrinoBackend:
             c for c in backend._api_call.call_args_list if c.args[:2] == ("POST", "v1/rescan")
         ]
         assert not rescan_calls, "should not rescan an already-watched address"
+        await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_ensure_addresses_scanned_forces_already_watched(self):
+        """Missing durable coverage can force a backfill after preregistration."""
+        backend = NeutrinoBackend(
+            neutrino_url="http://localhost:8334",
+            network="signet",
+            scan_start_height=100,
+        )
+        backend._server_capabilities.detected = True
+        backend._server_capabilities.has_force_rescan = True
+        backend._server_capabilities.has_rescan_status = True
+        backend.get_block_height = AsyncMock(return_value=1000)
+        backend._get_rescan_coverage = AsyncMock(return_value=(200, 1000))
+        backend._wait_for_rescan_status = AsyncMock(return_value={"last_error": ""})
+        backend._api_call = AsyncMock(return_value={})
+        addr = "tb1qpreregistered0000000000000000000000000000000xyz"
+        await backend.add_watch_address(addr)
+
+        assert await backend.ensure_addresses_scanned([addr], force=True) is True
+
+        backend._api_call.assert_awaited_once_with(
+            "POST",
+            "v1/rescan",
+            data={"start_height": 100, "addresses": [addr], "force": True},
+            expected_status_codes=frozenset({409}),
+        )
         await backend.close()
 
     @pytest.mark.asyncio
@@ -2762,6 +2828,16 @@ class TestSyncAllAddressPreregistration:
         # Stub out network calls
         backend.get_block_height = AsyncMock(return_value=100)
 
+        ensure_force_values: list[bool] = []
+
+        async def fake_ensure_scanned(addresses: list[str], *, force: bool = False) -> bool:
+            ensure_force_values.append(force)
+            for address in addresses:
+                await backend.add_watch_address(address)
+            return True
+
+        backend.ensure_addresses_scanned = fake_ensure_scanned  # type: ignore[method-assign]
+
         registered_before_first_utxo_call: set[str] = set()
 
         async def fake_get_utxos(addresses: list[str]) -> list:
@@ -2781,6 +2857,7 @@ class TestSyncAllAddressPreregistration:
         )
 
         await wallet.sync_all()
+        assert ensure_force_values[0] is True
 
         # All gap_limit addresses for both branches of mixdepth 0 must have been
         # registered before the first UTXO query fired.
@@ -2791,3 +2868,59 @@ class TestSyncAllAddressPreregistration:
                     f"Address m/…/0'/{change}/{index} ({addr}) was not pre-registered "
                     "with backend before initial rescan"
                 )
+
+    @pytest.mark.asyncio
+    async def test_spent_address_extends_gap_with_historical_backfill(self):
+        """A spent-only address keeps discovery moving into a backfilled batch."""
+        from _jmwallet_test_helpers import TEST_MNEMONIC
+
+        from jmwallet.backends.neutrino import NeutrinoBackend
+        from jmwallet.wallet.service import WalletService
+
+        backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="regtest")
+        wallet = WalletService(
+            mnemonic=TEST_MNEMONIC,
+            backend=backend,
+            network="regtest",
+            mixdepth_count=1,
+            gap_limit=2,
+        )
+        spent_address = wallet.get_address(0, 0, 1)
+        events: list[tuple[str, list[str]]] = []
+
+        async def ensure_scanned(addresses: list[str], *, force: bool = False) -> bool:
+            events.append(("ensure", list(addresses)))
+            new_addresses = [a for a in addresses if a not in backend._watched_addresses]
+            for address in addresses:
+                await backend.add_watch_address(address)
+            return bool(new_addresses)
+
+        async def get_utxos(addresses: list[str]) -> list:
+            events.append(("utxos", list(addresses)))
+            return []
+
+        async def get_usage(addresses: list[str]) -> set[str]:
+            return {spent_address} & set(addresses)
+
+        backend.ensure_addresses_scanned = ensure_scanned  # type: ignore[method-assign]
+        backend.get_utxos = get_utxos  # type: ignore[method-assign]
+        backend.get_address_usage = get_usage  # type: ignore[method-assign]
+
+        await wallet.sync_all()
+
+        initial_addresses = [
+            wallet.get_address(0, change, index)
+            for change in (0, 1)
+            for index in range(wallet.gap_limit)
+        ]
+        assert ("ensure", initial_addresses) in events
+        assert events.index(("ensure", initial_addresses)) < events.index(
+            ("utxos", initial_addresses[: wallet.gap_limit])
+        )
+        second_external_batch = [wallet.get_address(0, 0, 2), wallet.get_address(0, 0, 3)]
+        assert ("ensure", second_external_batch) in events
+        assert events.index(("ensure", second_external_batch)) < events.index(
+            ("utxos", second_external_batch)
+        )
+        assert spent_address in wallet.addresses_with_history
+        await backend.close()

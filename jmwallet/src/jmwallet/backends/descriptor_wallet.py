@@ -207,6 +207,10 @@ class DescriptorWalletBackend(BlockchainBackend):
         # "computed and the wallet has no transactions".
         self._oldest_tx_blocktime: int | None = None
 
+    def get_history_state_id(self) -> str:
+        """Scope durable history state to this Core RPC wallet."""
+        return f"{super().get_history_state_id()}|{self.rpc_url}|{self.wallet_name}"
+
     def set_wallet_creation_height(self, height: int | None) -> None:
         """Use wallet creation height to narrow smart scan range.
 
@@ -2421,18 +2425,18 @@ class DescriptorWalletBackend(BlockchainBackend):
         Get the maximum range end across all imported descriptors.
 
         Returns:
-            Maximum end index, or DEFAULT_GAP_LIMIT if no descriptors found.
+            Maximum inclusive end index, or the default range end if none exist.
         """
         ranges = await self.get_descriptor_ranges()
         if not ranges:
-            return DEFAULT_GAP_LIMIT
+            return DEFAULT_GAP_LIMIT - 1
 
         max_end = 0
         for start, end in ranges.values():
             if end > max_end:
                 max_end = end
 
-        return max_end if max_end > 0 else DEFAULT_GAP_LIMIT
+        return max_end if max_end > 0 else DEFAULT_GAP_LIMIT - 1
 
     async def upgrade_descriptor_ranges(
         self,

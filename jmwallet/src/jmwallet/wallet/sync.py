@@ -88,6 +88,7 @@ class WalletSyncMixin:
     data_dir: Path | None
     wallet_fingerprint: str
     address_cache: dict[str, tuple[int, int, int]]
+    _address_cache_range_end: int
     utxo_cache: dict[int, list[UTXOInfo]]
     addresses_with_history: set[str]
     metadata_store: Any  # UTXOMetadataStore | None (deferred import)
@@ -115,6 +116,9 @@ class WalletSyncMixin:
         raise NotImplementedError
 
     def get_account_xpub(self, mixdepth: int) -> str:
+        raise NotImplementedError
+
+    def _derive_key(self, mixdepth: int, change: int, index: int) -> HDKey:
         raise NotImplementedError
 
     def get_fidelity_bond_address(self, index: int, locktime: int) -> str:
@@ -238,6 +242,46 @@ class WalletSyncMixin:
             store.mark_addresses_used(new_addresses, origin)
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning(f"Could not persist {len(new_addresses)} used addresses: {exc}")
+
+    def _clear_reconstruction_cursor(self) -> None:
+        """Invalidate incremental history state after widening chain coverage."""
+        if self.data_dir is None:
+            return
+        from jmwallet.history_state import clear_reconstruction_cursor
+
+        clear_reconstruction_cursor(self.data_dir, wallet_fingerprint=self.wallet_fingerprint)
+
+    def _record_reconstruction_address_coverage(self, branch_ends: dict[str, int]) -> None:
+        """Persist regular Neutrino branches with completed historical coverage."""
+        if self.data_dir is None:
+            return
+        from jmwallet.history_state import record_reconstruction_address_coverage
+
+        record_reconstruction_address_coverage(
+            self.data_dir,
+            wallet_fingerprint=self.wallet_fingerprint,
+            network=self.network,
+            backend=self.backend,
+            branch_ends=branch_ends,
+        )
+
+    def _has_reconstruction_branch_coverage(
+        self, mixdepth: int, change: int, range_end: int
+    ) -> bool:
+        """Check durable historical coverage for one regular branch."""
+        if self.data_dir is None:
+            return False
+        from jmwallet.history_state import has_reconstruction_branch_coverage
+
+        return has_reconstruction_branch_coverage(
+            self.data_dir,
+            wallet_fingerprint=self.wallet_fingerprint,
+            network=self.network,
+            backend=self.backend,
+            mixdepth=mixdepth,
+            change=change,
+            range_end=range_end,
+        )
 
     # -- Imported-wallet CoinJoin label reconstruction ----------------------
 
@@ -532,8 +576,26 @@ class WalletSyncMixin:
                     address = self.get_address(mixdepth, change, index + i)
                     addresses.append(address)
 
+                if self.backend.supports_watch_address is True:
+                    batch_range_end = index + len(addresses) - 1
+                    if self._has_reconstruction_branch_coverage(mixdepth, change, batch_range_end):
+                        for address in addresses:
+                            await self.backend.add_watch_address(address)
+                    else:
+                        coverage_expanded = await self.backend.ensure_addresses_scanned(addresses)
+                        if coverage_expanded is True:
+                            self._clear_reconstruction_cursor()
+                            self._record_reconstruction_address_coverage(
+                                {f"{mixdepth}:{change}": batch_range_end}
+                            )
+
                 # Fetch UTXOs for the whole batch
                 backend_utxos = await self.backend.get_utxos(addresses)
+                used_addresses = (
+                    await self.backend.get_address_usage(addresses)
+                    if self.backend.supports_address_usage is True
+                    else None
+                )
 
                 # Group results by address
                 utxos_by_address: dict[str, list] = {addr: [] for addr in addresses}
@@ -545,9 +607,9 @@ class WalletSyncMixin:
                 for i, address in enumerate(addresses):
                     addr_utxos = utxos_by_address[address]
 
-                    if addr_utxos:
+                    if addr_utxos or (used_addresses is not None and address in used_addresses):
                         consecutive_empty = 0
-                        # Track that this address has had UTXOs
+                        # Track current or spent-only receive history.
                         self._record_history_address(address)
                         for utxo in addr_utxos:
                             path = f"{self.root_path}/{mixdepth}'/{change}/{index + i}"
@@ -650,7 +712,9 @@ class WalletSyncMixin:
         # new blocks for already-watched addresses; a bond address registered
         # after the initial sync would otherwise miss its (already-confirmed)
         # funding output. No-op for full-node/descriptor backends.
-        await self.backend.ensure_addresses_scanned(addresses)
+        coverage_expanded = await self.backend.ensure_addresses_scanned(addresses)
+        if coverage_expanded is True:
+            self._clear_reconstruction_cursor()
 
         # Fetch UTXOs for all addresses at once
         backend_utxos = await self.backend.get_utxos(addresses)
@@ -803,6 +867,7 @@ class WalletSyncMixin:
             )
             if not completed:
                 raise RuntimeError("Fidelity bond discovery rescan did not complete")
+            self._clear_reconstruction_cursor()
 
             # Query all UTXOs in a single call after rescan completes.
             all_addresses = list(all_address_to_locktime.keys())
@@ -825,7 +890,9 @@ class WalletSyncMixin:
             # funded before this call stays invisible whenever the initial
             # rescan already ran (e.g. a warm jmwalletd session). No-op for
             # backends without watch support.
-            await self.backend.ensure_addresses_scanned(all_addresses_list)
+            coverage_expanded = await self.backend.ensure_addresses_scanned(all_addresses_list)
+            if coverage_expanded is True:
+                self._clear_reconstruction_cursor()
             for batch_start in range(0, total_addrs, batch_size):
                 batch_addrs = all_addresses_list[batch_start : batch_start + batch_size]
                 batch_end = batch_start + len(batch_addrs)
@@ -972,15 +1039,49 @@ class WalletSyncMixin:
         # Without this, light-client backends (Neutrino) fire the initial rescan on the
         # first get_utxos call with only the *external* addresses registered, causing
         # change (internal) addresses to be missed entirely.
-        if self.backend.supports_watch_address:
+        if self.backend.supports_watch_address is True:
+            initial_addresses: list[str] = []
             for pre_mixdepth in range(self.mixdepth_count):
                 for pre_change in [0, 1]:
                     for pre_index in range(self.gap_limit):
-                        addr = self.get_address(pre_mixdepth, pre_change, pre_index)
-                        await self.backend.add_watch_address(addr)
+                        initial_addresses.append(
+                            self.get_address(pre_mixdepth, pre_change, pre_index)
+                        )
+
+            # A completed reconstruction checkpoint proves that this wallet's
+            # initial address set has already received historical coverage on
+            # this backend. Without one, force one all-branch backfill so
+            # daemon-global coverage from another wallet cannot hide history.
+            checkpoint_exists = False
+            if self.data_dir is not None:
+                from jmwallet.history_state import has_reconstruction_address_coverage
+
+                checkpoint_exists = has_reconstruction_address_coverage(
+                    self.data_dir,
+                    wallet_fingerprint=self.wallet_fingerprint,
+                    network=self.network,
+                    backend=self.backend,
+                    mixdepth_count=self.mixdepth_count,
+                    range_end=self.gap_limit - 1,
+                )
+            if checkpoint_exists:
+                for address in initial_addresses:
+                    await self.backend.add_watch_address(address)
+            else:
+                coverage_expanded = await self.backend.ensure_addresses_scanned(
+                    initial_addresses, force=True
+                )
+                if coverage_expanded is True:
+                    self._clear_reconstruction_cursor()
+                    self._record_reconstruction_address_coverage(
+                        {
+                            f"{mixdepth}:{change}": self.gap_limit - 1
+                            for mixdepth in range(self.mixdepth_count)
+                            for change in (0, 1)
+                        }
+                    )
             logger.debug(
-                f"Pre-registered {self.mixdepth_count * 2 * self.gap_limit} addresses "
-                "with backend before initial rescan"
+                f"Prepared {len(initial_addresses)} addresses with backend before initial rescan"
             )
 
         result = {}
@@ -1719,6 +1820,7 @@ class WalletSyncMixin:
                 logger.info("Descriptor wallet already set up, skipping import")
                 if rescan and rescan_existing:
                     await self.backend.start_background_rescan(0)
+                    self._clear_reconstruction_cursor()
                 return True
 
         # Generate descriptors for all mixdepths
@@ -1757,6 +1859,7 @@ class WalletSyncMixin:
             smart_scan=smart_scan,
             background_full_rescan=background_full_rescan,
         )
+        self._clear_reconstruction_cursor()
         logger.info("Descriptor wallet setup complete")
         return True
 
@@ -1835,6 +1938,8 @@ class WalletSyncMixin:
             address_lower = address.lower()
             self.address_cache[address_lower] = (0, FIDELITY_BOND_BRANCH, index)
             self.fidelity_bond_locktime_cache[address_lower] = locktime
+        if rescan:
+            self._clear_reconstruction_cursor()
         logger.info("Fidelity bond addresses imported")
         return True
 
@@ -1935,13 +2040,13 @@ class WalletSyncMixin:
 
         # Get the current descriptor range from Bitcoin Core and cache it
         # This is used by _find_address_path to know how far to scan
-        current_range = await self.backend.get_max_descriptor_range()
-        self._current_descriptor_range = current_range
-        logger.debug(f"Current descriptor range: [0, {current_range}]")
+        current_range_end = await self.backend.get_max_descriptor_range()
+        self._current_descriptor_range_end = current_range_end
+        logger.debug(f"Current descriptor range: [0, {current_range_end}]")
 
         # Pre-populate address cache for the entire descriptor range
         # This is more efficient than deriving addresses one by one during lookup
-        await self._populate_address_cache(current_range)
+        await self._populate_address_cache(current_range_end)
 
         # Get all wallet UTXOs at once
         all_utxos = await self.backend.get_all_utxos()
@@ -2195,7 +2300,7 @@ class WalletSyncMixin:
                 if addresses_beyond_range:
                     logger.debug(
                         f"Found {len(addresses_beyond_range)} address(es) from history "
-                        f"not in current range [0, {current_range}]; will filter and "
+                        f"not in current range [0, {current_range_end}]; will filter and "
                         f"search extended range if any are ours"
                     )
         except Exception as e:
@@ -2364,8 +2469,8 @@ class WalletSyncMixin:
             upgraded = await self.check_and_upgrade_descriptor_range(gap_limit=self.gap_limit)
             if upgraded:
                 # Re-populate address cache with the new range
-                new_range = await self.backend.get_max_descriptor_range()
-                await self._populate_address_cache(new_range)
+                new_range_end = await self.backend.get_max_descriptor_range()
+                await self._populate_address_cache(new_range_end)
         except Exception as e:
             logger.warning(f"Could not check/upgrade descriptor range: {e}")
 
@@ -2411,53 +2516,55 @@ class WalletSyncMixin:
             )
 
         # Get current range
-        current_range = await self.backend.get_max_descriptor_range()
-        logger.debug(f"Current descriptor range: [0, {current_range}]")
+        current_range_end = await self.backend.get_max_descriptor_range()
+        logger.debug(f"Current descriptor range: [0, {current_range_end}]")
 
         # Find highest used index across all mixdepths/branches
         highest_used = await self._find_highest_used_index_from_history()
 
         # Calculate required range
-        required_range = highest_used + gap_limit + 1
+        required_range_end = highest_used + gap_limit
 
         # Bitcoin Core rejects descriptor ranges spanning more than
         # MAX_DESCRIPTOR_RANGE indices ("Range is too large"). If a wallet has
         # used addresses beyond that, we can only track up to the limit; clamp
         # so the upgrade succeeds rather than failing wholesale.
-        if required_range > MAX_DESCRIPTOR_RANGE:
+        if required_range_end >= MAX_DESCRIPTOR_RANGE:
             logger.warning(
-                f"Required descriptor range {required_range} (highest used "
+                f"Required descriptor range end {required_range_end} (highest used "
                 f"{highest_used} + gap_limit {gap_limit}) exceeds Bitcoin Core's "
-                f"limit of {MAX_DESCRIPTOR_RANGE}; clamping to "
-                f"{MAX_DESCRIPTOR_RANGE}. Addresses beyond index "
+                f"maximum index of {MAX_DESCRIPTOR_RANGE - 1}; clamping. Addresses beyond index "
                 f"{MAX_DESCRIPTOR_RANGE - 1} cannot be tracked. See "
                 "docs/technical/wallet-scanning.md."
             )
-            required_range = MAX_DESCRIPTOR_RANGE
+            required_range_end = MAX_DESCRIPTOR_RANGE - 1
 
-        if required_range <= current_range:
+        if required_range_end <= current_range_end:
             logger.debug(
                 f"Descriptor range sufficient: highest used={highest_used}, "
-                f"current range={current_range}"
+                f"current range end={current_range_end}"
             )
             return False
 
         # Need to upgrade
         logger.info(
             f"Upgrading descriptor range: highest used={highest_used}, "
-            f"current={current_range}, new={required_range}"
+            f"current end={current_range_end}, new end={required_range_end}"
         )
 
-        # Generate descriptors with new range
-        descriptors = self._generate_import_descriptors(required_range)
+        # Descriptor generation accepts a count, while Core range APIs use an
+        # inclusive end index.
+        descriptors = self._generate_import_descriptors(required_range_end + 1)
 
         # Upgrade (no rescan needed - addresses already exist in blockchain)
-        await self.backend.upgrade_descriptor_ranges(descriptors, required_range, rescan=False)
+        await self.backend.upgrade_descriptor_ranges(descriptors, required_range_end, rescan=False)
+
+        self._clear_reconstruction_cursor()
 
         # Update our cached range
-        self._current_descriptor_range = required_range
+        self._current_descriptor_range_end = required_range_end
 
-        logger.info(f"Descriptor range upgraded to [0, {required_range}]")
+        logger.info(f"Descriptor range upgraded to [0, {required_range_end}]")
         return True
 
     async def _find_highest_used_index_from_history(self) -> int:
@@ -2490,30 +2597,31 @@ class WalletSyncMixin:
 
         return highest_index
 
-    async def _populate_address_cache(self, max_index: int) -> None:
+    async def _populate_address_cache(self, range_end: int) -> None:
         """
         Pre-populate the address cache for efficient address lookups.
 
-        This derives addresses for all mixdepths and branches up to max_index,
+        This derives addresses for all mixdepths and branches through range_end,
         storing them in the address_cache for O(1) lookups during sync.
 
         Args:
-            max_index: Maximum address index to derive (typically the descriptor range)
+            range_end: Inclusive descriptor range end reported by Bitcoin Core.
         """
         import time
 
-        # Only populate if we haven't already cached enough addresses
-        current_cache_size = len(self.address_cache)
-        expected_size = self.mixdepth_count * 2 * max_index  # mixdepths * branches * indices
-
-        # If cache already has enough entries, skip
-        if current_cache_size >= expected_size * 0.9:  # 90% threshold
-            logger.debug(f"Address cache already populated ({current_cache_size} entries)")
+        if range_end < 0:
+            return
+        if self._address_cache_range_end >= range_end:
+            logger.debug(
+                f"Address cache already populated through index {self._address_cache_range_end}"
+            )
             return
 
-        total_addresses = expected_size
+        start_index = self._address_cache_range_end + 1
+        indices_to_add = range_end - start_index + 1
+        total_addresses = self.mixdepth_count * 2 * indices_to_add
         logger.info(
-            f"Populating address cache for range [0, {max_index}] "
+            f"Populating address cache for range [{start_index}, {range_end}] "
             f"({total_addresses:,} addresses)..."
         )
 
@@ -2523,7 +2631,7 @@ class WalletSyncMixin:
 
         for mixdepth in range(self.mixdepth_count):
             for change in [0, 1]:
-                for index in range(max_index):
+                for index in range(start_index, range_end + 1):
                     # get_address automatically caches
                     self.get_address(mixdepth, change, index)
                     count += 1
@@ -2541,6 +2649,7 @@ class WalletSyncMixin:
                         )
                         last_log_time = current_time
 
+        self._address_cache_range_end = range_end
         elapsed = time.time() - start_time
         logger.info(
             f"Address cache populated with {len(self.address_cache):,} entries in {elapsed:.1f}s"
@@ -2559,8 +2668,8 @@ class WalletSyncMixin:
 
         Args:
             address: Bitcoin address
-            max_scan: Maximum index to scan per branch. If None, uses the current
-                     descriptor range from _current_descriptor_range or DEFAULT_SCAN_RANGE.
+            max_scan: Inclusive maximum index to scan per branch. If None, uses
+                the current descriptor range end or the default range end.
 
         Returns:
             Tuple of (mixdepth, change, index) or None if not found
@@ -2593,13 +2702,13 @@ class WalletSyncMixin:
 
         # Determine scan range - use the current descriptor range if available
         if max_scan is None:
-            max_scan = int(getattr(self, "_current_descriptor_range", DEFAULT_SCAN_RANGE))
+            max_scan = int(getattr(self, "_current_descriptor_range_end", DEFAULT_SCAN_RANGE - 1))
 
         # Try to find by deriving addresses (expensive but necessary)
         # We must scan up to the descriptor range to find all addresses
         for mixdepth in range(self.mixdepth_count):
             for change in [0, 1]:
-                for index in range(max_scan):
+                for index in range(max_scan + 1):
                     derived_addr = self.get_address(mixdepth, change, index)
                     if derived_addr == address:
                         return (mixdepth, change, index)
@@ -2627,18 +2736,20 @@ class WalletSyncMixin:
         if address in self.address_cache:
             return self.address_cache[address]
 
-        current_range = int(getattr(self, "_current_descriptor_range", DEFAULT_SCAN_RANGE))
-        extended_max = current_range + extend_by
+        current_range_end = int(
+            getattr(self, "_current_descriptor_range_end", DEFAULT_SCAN_RANGE - 1)
+        )
+        extended_end = current_range_end + extend_by
 
-        # Search from current_range to extended_max (the normal range was already searched)
+        # The normal range includes current_range_end, so start at the next index.
         for mixdepth in range(self.mixdepth_count):
             for change in [0, 1]:
-                for index in range(current_range, extended_max):
+                for index in range(current_range_end + 1, extended_end + 1):
                     derived_addr = self.get_address(mixdepth, change, index)
                     if derived_addr == address:
                         logger.info(
                             f"Found address at extended index {index} "
-                            f"(beyond current range {current_range})"
+                            f"(beyond current range end {current_range_end})"
                         )
                         return (mixdepth, change, index)
 
@@ -2665,9 +2776,7 @@ class WalletSyncMixin:
         pubkey = match.group(3).lower()
         for mixdepth in range(self.mixdepth_count):
             try:
-                derived_key = self.master_key.derive(
-                    f"{self.root_path}/{mixdepth}'/{change_from_desc}/{index}"
-                )
+                derived_key = self._derive_key(mixdepth, change_from_desc, index)
             except Exception:
                 continue
             derived_pubkey = derived_key.get_public_key_bytes(compressed=True).hex().lower()
@@ -2718,9 +2827,7 @@ class WalletSyncMixin:
             if change == change_from_desc:
                 # Verify by deriving the key and comparing pubkeys
                 try:
-                    derived_key = self.master_key.derive(
-                        f"{self.root_path}/{mixdepth}'/{change}/{index}"
-                    )
+                    derived_key = self._derive_key(mixdepth, change, index)
                     derived_pubkey = derived_key.get_public_key_bytes(compressed=True).hex()
                     if derived_pubkey == pubkey:
                         return (mixdepth, change, index)

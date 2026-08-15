@@ -26,6 +26,15 @@ command preserves protocol-recorded rows and marks reconstructed entries with `*
 in `jm-wallet history` output. Set `wallet.reconstruct_history = false` to disable
 automatic reconstruction.
 
+After an uncapped reconstruction pass completes, JoinMarket NG stores a per-wallet,
+per-backend cursor under the data directory's `state/` folder. Later wallet syncs
+enumerate only transactions after that cursor. `--keep-existing` retains this
+incremental baseline; `--purge-existing` clears it before rebuilding. A pass that
+hits `--max-transactions` does not advance the cursor, so rerunning with
+`--keep-existing` remains safe. Neutrino address-scan coverage is tracked
+independently, so capped continuation runs do not repeat completed historical
+rescans.
+
 CoinJoin detection, amount, and peer count come from the repeated equal-output
 structure. Maker/taker role and fees cannot be proven from public chain data, so
 those values are best-effort guesses. Counterparty nicknames and the split between

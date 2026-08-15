@@ -155,6 +155,9 @@ class BlockchainBackend(ABC):
     monitor stays idle for that backend.
     """
 
+    supports_address_usage: bool = False
+    """Whether ``get_address_usage`` can identify spent-only receive addresses."""
+
     async def add_watch_address(self, address: str) -> None:
         """Register an address for watching.
 
@@ -163,7 +166,7 @@ class BlockchainBackend(ABC):
         before a rescan).  Full-node backends can ignore this.
         """
 
-    async def ensure_addresses_scanned(self, addresses: list[str]) -> None:
+    async def ensure_addresses_scanned(self, addresses: list[str], *, force: bool = False) -> bool:
         """Ensure *addresses* have been scanned over the wallet's full history.
 
         Light-client backends (Neutrino) only rescan blocks that arrived since
@@ -176,7 +179,24 @@ class BlockchainBackend(ABC):
         backends can query any address on demand (and handle fidelity bonds via
         descriptor import), so they do not need this. Light-client backends
         override it to trigger a rescan from the wallet's scan start height.
+        ``force`` requires a backfill even when the addresses were registered
+        earlier in this process. Returns whether historical coverage was expanded.
         """
+        return False
+
+    async def get_address_usage(self, addresses: list[str]) -> set[str] | None:
+        """Return addresses known to have history, or ``None`` when unsupported.
+
+        UTXO-only backends cannot distinguish an unused address from one whose
+        outputs were all spent. History-capable light clients override this so
+        BIP44 gap discovery does not stop at spent-only addresses.
+        """
+        return None
+
+    def get_history_state_id(self) -> str:
+        """Return the stable backend-instance identity used by durable cursors."""
+        backend_type = type(self)
+        return f"{backend_type.__module__}.{backend_type.__qualname__}"
 
     def set_wallet_creation_height(self, height: int | None) -> None:
         """Provide the block height at which the wallet was created.
