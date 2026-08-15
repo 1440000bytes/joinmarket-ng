@@ -102,12 +102,11 @@ async def _select_input_utxos(
             logger.error("No UTXOs available")
             raise typer.Exit(1)
 
-        # Populate labels for each UTXO directly from wallet internals
-        # (bypasses history files to avoid fingerprint scoping issue #473)
+        # Populate only unlabeled non-bond UTXOs from wallet internals. BIP-329
+        # user labels and fidelity-bond labels must remain visible in the selector.
         for utxo in utxos:
-            if not utxo.is_fidelity_bond:
+            if utxo.label is None and not utxo.is_fidelity_bond:
                 utxo.label = wallet.get_utxo_label_from_wallet(utxo.address)
-            # FBs keep their original label (None) - selector shows [FB] only
 
         try:
             selected_utxos = select_utxos_interactive(utxos, amount, allowed_mixdepth=mixdepth)

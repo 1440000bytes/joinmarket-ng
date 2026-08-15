@@ -1724,3 +1724,45 @@ class TestGetUtxoLabelFromWallet:
         wallet_service.metadata_store.get_coinjoin_address_types.return_value = {}
         wallet_service.address_cache["bcrt1noncj"] = (0, 1, 2)  # internal
         assert wallet_service.get_utxo_label_from_wallet("bcrt1noncj") == "non-cj-change"
+
+    def test_local_history_wins_over_reconstructed_metadata(
+        self, wallet_service, temp_data_dir: Path
+    ) -> None:
+        """Local CoinJoin history overrides reconstructed imported-wallet labels."""
+        from unittest.mock import Mock
+
+        address = "bcrt1localcjout"
+        wallet_service.data_dir = temp_data_dir
+        wallet_service.address_cache[address] = (0, 0, 0)
+        wallet_service.metadata_store = Mock()
+        wallet_service.metadata_store.get_coinjoin_address_types.return_value = {address: "change"}
+
+        append_history_entry(
+            TransactionHistoryEntry(
+                timestamp="2024-01-01T00:00:00",
+                role="taker",
+                success=True,
+                txid="a" * 64,
+                destination_address=address,
+                wallet_fingerprint=wallet_service.wallet_fingerprint,
+            ),
+            temp_data_dir,
+        )
+        # A foreign wallet's later conflicting classification must be ignored.
+        append_history_entry(
+            TransactionHistoryEntry(
+                timestamp="2024-01-01T00:00:01",
+                role="taker",
+                success=True,
+                txid="b" * 64,
+                change_address=address,
+                wallet_fingerprint="otherwallet",
+            ),
+            temp_data_dir,
+        )
+
+        assert wallet_service.get_utxo_label_from_wallet(address) == "cj-out"
+
+    def test_unknown_address_falls_back_to_deposit(self, wallet_service) -> None:
+        """An address outside the derivation cache must not be assumed internal."""
+        assert wallet_service.get_utxo_label_from_wallet("bcrt1unknown") == "deposit"

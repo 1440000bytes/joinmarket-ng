@@ -1176,12 +1176,11 @@ class Taker(TakerMonitoringMixin):
                 self.state = TakerState.FAILED
                 return None
 
-            # Populate labels for each UTXO directly from wallet internals
-            # (bypasses history files to avoid fingerprint scoping issue #473)
+            # Populate only unlabeled non-bond UTXOs from wallet internals.
+            # Preserve BIP-329 user labels and fidelity-bond labels.
             for utxo in available_utxos:
-                if not utxo.is_fidelity_bond:
+                if utxo.label is None and not utxo.is_fidelity_bond:
                     utxo.label = self.wallet.get_utxo_label_from_wallet(utxo.address)
-                # FBs keep their original label (None) - selector shows [FB] only
 
             logger.info(
                 f"Launching interactive UTXO selector ({len(available_utxos)} available, "

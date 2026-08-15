@@ -22,6 +22,7 @@ def _make_wallet(utxos_by_md: dict[int, list]) -> AsyncMock:
     wallet.mixdepth_count = 5
     wallet.wallet_fingerprint = "deadbeef"
     wallet.get_utxos = AsyncMock(side_effect=lambda md: utxos_by_md.get(md, []))
+    wallet.get_utxo_label_from_wallet = Mock(return_value="deposit")
     wallet.get_locked_input_outpoints = Mock(return_value=set())
     wallet.select_utxos = Mock(side_effect=lambda md, *_args, **_kwargs: utxos_by_md.get(md, []))
     wallet.get_new_internal_address = Mock(return_value="bcrt1qinternaldest")
@@ -124,10 +125,14 @@ async def test_selector_receives_in_flight_inputs_as_excluded(
 async def test_selector_preserves_user_utxo_labels(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """History display defaults must not overwrite BIP-329 user annotations."""
+    """History defaults must not overwrite user or fidelity-bond annotations."""
     labeled = make_utxo(txid_char="a", mixdepth=0, confirmations=10)
     labeled.label = "personal note"
-    taker = Taker(_make_wallet({0: [labeled]}), _backend(), _make_config(tmp_path))
+    fidelity_bond = make_utxo(txid_char="b", mixdepth=0, confirmations=10)
+    fidelity_bond.label = "bond note"
+    fidelity_bond.locktime = 1
+    wallet = _make_wallet({0: [labeled, fidelity_bond]})
+    taker = Taker(wallet, _backend(), _make_config(tmp_path))
 
     captured: list = []
 
@@ -140,7 +145,8 @@ async def test_selector_preserves_user_utxo_labels(
     monkeypatch.setattr(jmwallet.utxo_selector, "select_utxos_interactive", fake_select)
 
     assert await taker._maybe_select_utxos_interactively(1_000_000, 0) == [labeled]
-    assert captured[0].label == "personal note"
+    assert [utxo.label for utxo in captured] == ["personal note", "bond note"]
+    wallet.get_utxo_label_from_wallet.assert_not_called()
 
 
 @pytest.mark.asyncio
