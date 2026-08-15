@@ -770,7 +770,11 @@ def _mock_send_execution(tmp_path: Path) -> Iterator[tuple[ResolvedBackendSettin
 
 
 async def _run_mock_send(
-    backend_settings: ResolvedBackendSettings, *, broadcast: bool = True
+    backend_settings: ResolvedBackendSettings,
+    *,
+    broadcast: bool = True,
+    skip_confirmation: bool = True,
+    interactive_utxo_selection: bool = False,
 ) -> None:
     from jmwallet.cli.send import _send_transaction
 
@@ -783,9 +787,86 @@ async def _run_mock_send(
         block_target=None,
         backend_settings=backend_settings,
         broadcast=broadcast,
-        skip_confirmation=True,
-        interactive_utxo_selection=False,
+        skip_confirmation=skip_confirmation,
+        interactive_utxo_selection=interactive_utxo_selection,
     )
+
+
+@pytest.mark.asyncio
+async def test_send_exits_one_when_interactive_utxo_selection_is_cancelled(
+    tmp_path: Path,
+) -> None:
+    """Cancelling UTXO selection must not sign or broadcast a transaction."""
+    with _mock_send_execution(tmp_path) as (backend_settings, mocks):
+        mocks.wallet.mixdepth_count = 1
+        mocks.wallet.get_utxo_label_from_wallet.return_value = "deposit"
+        with patch("jmwallet.utxo_selector.select_utxos_interactive", return_value=[]) as selector:
+            with pytest.raises(typer.Exit) as exc_info:
+                await _run_mock_send(backend_settings, interactive_utxo_selection=True)
+
+    assert exc_info.value.exit_code == 1
+    selector.assert_called_once()
+    mocks.wallet.sign_input.assert_not_called()
+    mocks.backend.broadcast_transaction.assert_not_awaited()
+    mocks.wallet.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_send_exits_one_when_transaction_confirmation_is_declined(
+    tmp_path: Path,
+) -> None:
+    """Declining confirmation must not sign or broadcast a transaction."""
+    with _mock_send_execution(tmp_path) as (backend_settings, mocks):
+        with patch(
+            "jmcore.confirmation.confirm_transaction", return_value=False
+        ) as mock_confirm_transaction:
+            with pytest.raises(typer.Exit) as exc_info:
+                await _run_mock_send(backend_settings, skip_confirmation=False)
+
+    assert exc_info.value.exit_code == 1
+    mock_confirm_transaction.assert_called_once()
+    mocks.wallet.sign_input.assert_not_called()
+    mocks.backend.broadcast_transaction.assert_not_awaited()
+    mocks.wallet.close.assert_awaited_once()
+
+
+def test_send_cli_preserves_async_cancellation_exit_code(tmp_path: Path) -> None:
+    """Typer must preserve the cancellation exit code raised by asyncio.run."""
+    settings = MagicMock()
+    settings.wallet.max_fee_rate_sat_vb = 1_000.0
+    resolved_mnemonic = MagicMock(
+        mnemonic="abandon " * 11 + "about",
+        bip39_passphrase="",
+        creation_height=None,
+    )
+
+    with _mock_send_execution(tmp_path) as (backend_settings, _mocks):
+        with (
+            patch("jmwallet.cli.send.setup_cli", return_value=settings),
+            patch("jmwallet.cli.send.resolve_mnemonic", return_value=resolved_mnemonic),
+            patch("jmwallet.cli.send.resolve_backend_settings", return_value=backend_settings),
+            patch(
+                "jmwallet.cli.send._send_transaction",
+                new=AsyncMock(side_effect=typer.Exit(1)),
+            ),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "send",
+                    "bcrt1qq6hag67dl53wl99vzg42z8eyzfz2xlkvwk6f7m",
+                    "--amount",
+                    "1",
+                    "--fee-rate",
+                    "1",
+                    "--network",
+                    "regtest",
+                    "--backend",
+                    "descriptor_wallet",
+                ],
+            )
+
+    assert result.exit_code == 1
 
 
 @pytest.mark.asyncio

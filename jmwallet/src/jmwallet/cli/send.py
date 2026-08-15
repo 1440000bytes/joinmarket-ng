@@ -539,11 +539,11 @@ async def _send_transaction(
                 },
                 skip_confirmation=skip_confirmation,
             )
-            if not confirmed:
-                logger.info("Transaction cancelled by user")
-                raise typer.Exit(1)
         except RuntimeError as e:
             logger.error(str(e))
+            raise typer.Exit(1)
+        if not confirmed:
+            logger.info("Transaction cancelled by user")
             raise typer.Exit(1)
 
         # Build unsigned transaction
