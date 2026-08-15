@@ -472,7 +472,7 @@ async def _send_transaction(
                 wallet, backend_settings, amount, mixdepth, interactive_utxo_selection
             )
             if selection is None:
-                return
+                raise typer.Exit(1)
             utxos, mixdepth = selection
 
         # Calculate totals based on selected UTXOs
@@ -542,7 +542,7 @@ async def _send_transaction(
             )
             if not confirmed:
                 logger.info("Transaction cancelled by user")
-                return
+                raise typer.Exit(1)
         except RuntimeError as e:
             logger.error(str(e))
             raise typer.Exit(1)
