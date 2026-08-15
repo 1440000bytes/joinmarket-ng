@@ -10,7 +10,7 @@ an audited library. The transaction is serialized via the in-tree
 from __future__ import annotations
 
 from bitcointx.core import CTransaction
-from bitcointx.core.script import SIGVERSION_WITNESS_V0, CScript, SignatureHash
+from bitcointx.core.script import SIGVERSION_WITNESS_V0, CScript, SIGHASH_Type, SignatureHash
 from coincurve import PrivateKey
 from jmcore.bitcoin import (
     ParsedTransaction,
@@ -77,7 +77,7 @@ def compute_sighash_segwit(
                 CScript(script_code),
                 ctx,
                 input_index,
-                sighash_type,
+                SIGHASH_Type(sighash_type),
                 amount=value,
                 sigversion=SIGVERSION_WITNESS_V0,
             )
@@ -205,6 +205,27 @@ def sign_p2wsh_input(
     return signature + bytes([sighash_type])
 
 
+def verify_p2wsh_signature(
+    tx: ParsedTransaction,
+    input_index: int,
+    witness_script: bytes,
+    value: int,
+    signature: bytes,
+    pubkey: bytes,
+) -> bool:
+    """Verify a P2WSH BIP143 signature against its witness script."""
+    from coincurve import PublicKey
+
+    try:
+        if not signature:
+            return False
+        sighash_type = signature[-1]
+        sighash = compute_sighash_segwit(tx, input_index, witness_script, value, sighash_type)
+        return PublicKey(pubkey).verify(signature[:-1], sighash, hasher=None)
+    except Exception:
+        return False
+
+
 def create_p2wsh_witness_stack(signature: bytes, witness_script: bytes) -> list[bytes]:
     """Create witness stack for P2WSH input.
 
@@ -238,4 +259,5 @@ __all__ = [
     "sign_p2wpkh_input",
     "sign_p2wsh_input",
     "verify_p2wpkh_signature",
+    "verify_p2wsh_signature",
 ]

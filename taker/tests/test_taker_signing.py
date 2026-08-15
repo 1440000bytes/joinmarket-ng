@@ -59,7 +59,7 @@ def taker_utxos(test_master_key: HDKey) -> list[UTXOInfo]:
             value=1_000_000,
             address=addr0,
             confirmations=10,
-            scriptpubkey="0014" + "00" * 20,  # P2WPKH placeholder
+            scriptpubkey=pubkey_to_p2wpkh_script(key0.get_public_key_bytes(compressed=True)).hex(),
             path="m/84'/1'/0'/0/0",
             mixdepth=0,
         ),
@@ -69,7 +69,7 @@ def taker_utxos(test_master_key: HDKey) -> list[UTXOInfo]:
             value=500_000,
             address=addr1,
             confirmations=5,
-            scriptpubkey="0014" + "11" * 20,  # P2WPKH placeholder
+            scriptpubkey=pubkey_to_p2wpkh_script(key1.get_public_key_bytes(compressed=True)).hex(),
             path="m/84'/1'/0'/0/1",
             mixdepth=0,
         ),

@@ -330,10 +330,24 @@ python scripts/finalize_bond_psbt.py --file signed-bond.psbt
 QR flow: sign `unsigned-bond.psbt` on the device, save the returned signed PSBT,
 and run `finalize_bond_psbt.py`.
 
-Mnemonic fallback:
+For a canonical JoinMarket wallet-derived bond, the offline wallet command can
+review the complete transaction and add the bond-key partial signature:
 
 ```bash
-python scripts/sign_bond_mnemonic.py --file unsigned-bond.psbt
+jm-wallet sign-psbt \
+  --input unsigned-bond.psbt \
+  --output signed-bond.psbt \
+  --mnemonic-file <external-wallet.mnemonic>
+python scripts/finalize_bond_psbt.py --file signed-bond.psbt
+```
+
+For an arbitrary external key path that is not the JoinMarket fidelity bond
+path, use the standalone mnemonic fallback with an explicit derivation path:
+
+```bash
+python scripts/sign_bond_mnemonic.py \
+  --file unsigned-bond.psbt \
+  --derivation-path "<external-key-path>"
 ```
 
 Inspect the finalized transaction before broadcasting it:

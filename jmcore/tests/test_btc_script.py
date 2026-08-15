@@ -4,12 +4,15 @@ Test Bitcoin script utilities.
 
 import hashlib
 
+import pytest
+
 from jmcore.btc_script import (
     BondAddressInfo,
     _decode_scriptnum,
     derive_bond_address,
     disassemble_script,
     mk_freeze_script,
+    parse_freeze_script,
     redeem_script_to_p2wsh_script,
 )
 
@@ -23,10 +26,33 @@ def test_mk_freeze_script():
 
     assert isinstance(script, bytes)
     assert len(script) > 0
-
     assert 0xB1 in script
     assert 0x75 in script
     assert 0xAC in script
+
+
+def test_parse_freeze_script_roundtrip() -> None:
+    pubkey = "02" + "11" * 32
+    locktime = 1_769_904_000
+    script = mk_freeze_script(pubkey, locktime)
+
+    parsed_locktime, parsed_pubkey = parse_freeze_script(script)
+
+    assert parsed_locktime == locktime
+    assert parsed_pubkey.hex() == pubkey
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        b"",
+        b"\x01\x01\xb1\x75\x21" + bytes.fromhex("02" + "11" * 32) + b"\x51",
+        b"\x01\x01\xb1\x75\x20" + b"\x11" * 32 + b"\xac",
+    ],
+)
+def test_parse_freeze_script_rejects_invalid_scripts(script: bytes) -> None:
+    with pytest.raises(ValueError, match="Fidelity bond"):
+        parse_freeze_script(script)
 
 
 def test_redeem_script_to_p2wsh():

@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from typing import TYPE_CHECKING
 
+from jmcore.bitcoin import pubkey_to_p2wpkh_script
 from jmcore.btc_script import mk_freeze_script
 
 from jmwallet.wallet.signing import (
@@ -91,6 +92,14 @@ class WalletSigningMixin:
                 is a P2WSH output without an associated locktime (which would
                 otherwise be impossible to sign).
         """
+        if input_index < 0 or input_index >= len(tx.inputs):
+            raise TransactionSigningError(f"Input index out of range: {input_index}")
+        tx_input = tx.inputs[input_index]
+        if tx_input.txid.lower() != utxo.txid.lower() or tx_input.vout != utxo.vout:
+            raise TransactionSigningError(
+                f"UTXO {utxo.txid}:{utxo.vout} does not match transaction input {input_index}"
+            )
+
         try:
             key = self.get_key_for_address(utxo.address)
         except Exception as exc:
@@ -113,6 +122,15 @@ class WalletSigningMixin:
                 raise TransactionSigningError(
                     f"Fidelity bond script does not match wallet key for {utxo.txid}:{utxo.vout}"
                 )
+            if tx.locktime < utxo.locktime:
+                raise TransactionSigningError(
+                    f"Transaction locktime {tx.locktime} is below fidelity bond locktime "
+                    f"{utxo.locktime}"
+                )
+            if tx_input.sequence == 0xFFFFFFFF:
+                raise TransactionSigningError(
+                    f"Transaction input {input_index} has a final sequence and cannot satisfy CLTV"
+                )
             signature = sign_p2wsh_input(
                 tx=tx,
                 input_index=input_index,
@@ -127,6 +145,18 @@ class WalletSigningMixin:
             # A P2WSH output we don't have a locktime for cannot be signed.
             raise TransactionSigningError(
                 f"Cannot sign P2WSH UTXO {utxo.txid}:{utxo.vout} - locktime not available"
+            )
+
+        if not utxo.is_p2wpkh:
+            raise TransactionSigningError(
+                f"Unsupported scriptPubKey for UTXO {utxo.txid}:{utxo.vout}; "
+                "only native P2WPKH and fidelity bond P2WSH inputs are supported"
+            )
+
+        expected_scriptpubkey = pubkey_to_p2wpkh_script(pubkey_bytes)
+        if utxo.scriptpubkey.lower() != expected_scriptpubkey.hex():
+            raise TransactionSigningError(
+                f"P2WPKH script does not match wallet key for {utxo.txid}:{utxo.vout}"
             )
 
         # Regular P2WPKH input.

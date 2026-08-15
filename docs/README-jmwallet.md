@@ -43,6 +43,23 @@ the source mixdepth (deselect everything to unpin); pass `--mixdepth` to pin
 it up front. Frozen, still-locked, and other-mixdepth UTXOs are shown for
 context but rendered unselectable.
 
+## Signing PSBTs
+
+`jm-wallet sign-psbt` inspects and partially signs wallet-owned PSBT v0 inputs
+offline. It does not connect to the configured backend and never broadcasts:
+
+```bash
+jm-wallet sign-psbt --input unsigned.psbt --output signed.psbt
+```
+
+Native P2WPKH wallet inputs and canonical JoinMarket fidelity bond P2WSH inputs
+are supported. Every input must provide `witness_utxo` data so the command can
+show the complete input total, outputs, fee, and estimated fee rate before it
+asks for confirmation. The signer independently matches derived keys to prevout
+scripts and permits only `SIGHASH_ALL`. `--scan-range` controls bounded fallback
+key discovery when a regular input has no BIP32 key origin. `signpsbt` is also
+accepted as a compatibility alias for the reference implementation command.
+
 ## Reserving deposit addresses
 
 When you hand out a deposit address (via `jm-wallet address new`, the
@@ -164,6 +181,8 @@ The full CLI reference below is auto-generated from command `--help` output.
 │                              address.                                        │
 │ showseed                     Display the BIP39 seed words (mnemonic) of an   │
 │                              existing wallet.                                │
+│ sign-psbt                    Inspect and partially sign wallet-owned native  │
+│                              SegWit PSBT inputs offline.                     │
 │ spend-bond                   Generate a PSBT to spend a cold storage         │
 │                              fidelity bond after locktime expires.           │
 │ sync-bonds                   Refresh funded status of bonds already in the   │
@@ -1165,6 +1184,18 @@ The full CLI reference below is auto-generated from command `--help` output.
 │                                                       estimation.            │
 │ --help                                                Show this message and  │
 │                                                       exit.                  │
+│ --input-utxo                                 TEXT     Explicit input UTXO as │
+│                                                       txid:vout              │
+│                                                       (repeatable). Spends   │
+│                                                       exactly the given      │
+│                                                       UTXOs (also for        │
+│                                                       sweeps) instead of     │
+│                                                       auto-selecting; every  │
+│                                                       UTXO must already be   │
+│                                                       unfrozen and belong to │
+│                                                       --mixdepth. Mutually   │
+│                                                       exclusive with         │
+│                                                       --select-utxos.        │
 │ --log-level            -l                    TEXT     Log level              │
 │ --mixdepth             -m                    INTEGER  Source mixdepth        │
 │                                                       (default 0; with       │
@@ -1227,6 +1258,58 @@ The full CLI reference below is auto-generated from command `--help` output.
 │    --yes            -y                         Skip the interactive 'Are you │
 │                                                sure?' confirmation. Use with │
 │                                                care.                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+</details>
+
+<details>
+<summary><code>jm-wallet sign-psbt --help</code></summary>
+
+```
+
+ Usage: jm-wallet sign-psbt [OPTIONS] [PSBT_BASE64]
+
+ Inspect and partially sign wallet-owned native SegWit PSBT inputs offline.
+
+ Supports regular P2WPKH wallet inputs and canonical JoinMarket fidelity bond
+ P2WSH inputs. Every input must include witness_utxo data so the complete fee
+ can be reviewed. The command never connects to a backend or broadcasts.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│   psbt_base64      [PSBT_BASE64]  Base64-encoded PSBT v0                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --config-file                   PATH                  Config file path       │
+│                                                       (default:              │
+│                                                       <data-dir>/config.tom… │
+│                                                       [env var:              │
+│                                                       JOINMARKET_CONFIG_FIL… │
+│ --data-dir                      PATH                  Data directory         │
+│                                                       (default:              │
+│                                                       ~/.joinmarket-ng or    │
+│                                                       $JOINMARKET_DATA_DIR)  │
+│                                                       [env var:              │
+│                                                       JOINMARKET_DATA_DIR]   │
+│ --help                                                Show this message and  │
+│                                                       exit.                  │
+│ --input                 -i      PATH                  Read a binary or       │
+│                                                       base64 PSBT from a     │
+│                                                       file                   │
+│ --log-level             -l      TEXT                  Log level              │
+│ --mnemonic-file         -f      PATH                  [env var:              │
+│                                                       MNEMONIC_FILE]         │
+│ --network               -n      TEXT                  Bitcoin network        │
+│ --output                -o      PATH                  Write the signed       │
+│                                                       base64 PSBT to a file  │
+│ --prompt-bip39-passph…                                Prompt for BIP39       │
+│                                                       passphrase             │
+│ --scan-range                    INTEGER RANGE         Fallback addresses per │
+│                                 [0<=x<=1000000]       branch to derive when  │
+│                                                       PSBT key origins are   │
+│                                                       absent                 │
+│ --yes                   -y                            Sign without the       │
+│                                                       confirmation prompt    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

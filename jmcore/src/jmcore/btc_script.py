@@ -41,6 +41,39 @@ def mk_freeze_script(pubkey_hex: str, locktime: int) -> bytes:
     return bytes(script)
 
 
+def parse_freeze_script(script_bytes: bytes) -> tuple[int, bytes]:
+    """Parse a canonical JoinMarket fidelity bond witness script.
+
+    Returns the locktime and compressed public key from
+    ``<locktime> OP_CLTV OP_DROP <pubkey> OP_CHECKSIG``. Noncanonical script
+    number or push encodings are rejected by reconstructing the script with
+    :func:`mk_freeze_script` and requiring an exact byte match.
+    """
+    try:
+        operations = list(CScript(script_bytes))
+    except Exception as exc:
+        raise ValueError(f"Invalid fidelity bond script: {exc}") from exc
+
+    if len(operations) != 5:
+        raise ValueError("Fidelity bond script must contain exactly five operations")
+    locktime_bytes, op_cltv, op_drop, pubkey, op_checksig = operations
+    if not isinstance(locktime_bytes, bytes):
+        raise ValueError("Fidelity bond locktime must use a script-number data push")
+    if op_cltv != OP_CHECKLOCKTIMEVERIFY or op_drop != OP_DROP:
+        raise ValueError("Fidelity bond script is missing OP_CLTV OP_DROP")
+    if op_checksig != OP_CHECKSIG:
+        raise ValueError("Fidelity bond script is missing OP_CHECKSIG")
+    if not isinstance(pubkey, bytes) or len(pubkey) != 33 or pubkey[0] not in (0x02, 0x03):
+        raise ValueError("Fidelity bond script must contain a compressed public key")
+
+    locktime = _decode_scriptnum(locktime_bytes)
+    if locktime <= 0:
+        raise ValueError("Fidelity bond locktime must be positive")
+    if mk_freeze_script(pubkey.hex(), locktime) != script_bytes:
+        raise ValueError("Fidelity bond script uses a noncanonical encoding")
+    return locktime, pubkey
+
+
 def disassemble_script(script_bytes: bytes) -> str:
     """
     Disassemble a Bitcoin script into human-readable form.
