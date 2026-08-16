@@ -275,6 +275,182 @@ check_python_version() {
     fi
 }
 
+# Inspect a top-level torrc without following %include files. The globals this
+# function sets are consumed immediately by the Tor setup helpers below.
+analyze_torrc() {
+    local torrc_path="$1"
+    local line=""
+    local trimmed=""
+    local option=""
+    local value=""
+
+    TORRC_HAS_INCLUDE=false
+    TORRC_HAS_MANAGED_BLOCK=false
+    TORRC_HAS_SOCKS_PORT=false
+    TORRC_HAS_CONTROL_PORT=false
+    TORRC_HAS_COOKIE_AUTH=false
+    TORRC_HAS_COOKIE_FILE=false
+    TORRC_AUTH_CONFLICT=false
+
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        trimmed="${line#"${line%%[![:space:]]*}"}"
+        if [[ "$trimmed" == "## JoinMarket-NG Configuration" ]]; then
+            TORRC_HAS_MANAGED_BLOCK=true
+        fi
+        [[ -z "$trimmed" || "${trimmed:0:1}" == "#" ]] && continue
+
+        option="${trimmed%%[[:space:]]*}"
+        [[ "$option" == "$trimmed" ]] && continue
+        value="${trimmed#"$option"}"
+        value="${value#"${value%%[![:space:]]*}"}"
+        value="${value%%[[:space:]#]*}"
+
+        case "$option" in
+            [%][Ii][Nn][Cc][Ll][Uu][Dd][Ee])
+                TORRC_HAS_INCLUDE=true
+                ;;
+            [Ss][Oo][Cc][Kk][Ss][Pp][Oo][Rr][Tt])
+                if [[ "$value" == "9050" || "$value" == "127.0.0.1:9050" || \
+                      "$value" == "localhost:9050" ]]; then
+                    TORRC_HAS_SOCKS_PORT=true
+                fi
+                ;;
+            [Cc][Oo][Nn][Tt][Rr][Oo][Ll][Pp][Oo][Rr][Tt])
+                if [[ "$value" == "9051" || "$value" == "127.0.0.1:9051" || \
+                      "$value" == "localhost:9051" ]]; then
+                    TORRC_HAS_CONTROL_PORT=true
+                fi
+                ;;
+            [Cc][Oo][Oo][Kk][Ii][Ee][Aa][Uu][Tt][Hh][Ee][Nn][Tt][Ii][Cc][Aa][Tt][Ii][Oo][Nn])
+                if [[ "$value" == "1" ]]; then
+                    TORRC_HAS_COOKIE_AUTH=true
+                else
+                    TORRC_AUTH_CONFLICT=true
+                fi
+                ;;
+            [Cc][Oo][Oo][Kk][Ii][Ee][Aa][Uu][Tt][Hh][Ff][Ii][Ll][Ee])
+                if [[ "$value" == "/run/tor/control.authcookie" ]]; then
+                    TORRC_HAS_COOKIE_FILE=true
+                else
+                    TORRC_AUTH_CONFLICT=true
+                fi
+                ;;
+        esac
+
+    done < "$torrc_path"
+}
+
+torrc_needs_joinmarket_config() {
+    [[ "$TORRC_HAS_SOCKS_PORT" != "true" || "$TORRC_HAS_CONTROL_PORT" != "true" || \
+       "$TORRC_HAS_COOKIE_AUTH" != "true" || "$TORRC_HAS_COOKIE_FILE" != "true" ]]
+}
+
+restart_tor_service() {
+    if [[ "$OS_TYPE" == "linux" ]] && command -v systemctl &> /dev/null; then
+        sudo systemctl restart tor
+    elif [[ "$OS_TYPE" == "macos" ]]; then
+        brew services restart tor 2>/dev/null || brew services start tor
+    fi
+}
+
+enable_tor_service() {
+    if [[ "$OS_TYPE" == "linux" ]] && command -v systemctl &> /dev/null; then
+        sudo systemctl enable tor || print_warning "Could not enable Tor to start at boot"
+    fi
+}
+
+print_tor_manual_guidance() {
+    local reason="$1"
+
+    print_warning "$reason"
+    print_warning "Tor configuration was not changed. Configure a SOCKS listener on 127.0.0.1:9050"
+    print_warning "and cookie-authenticated control access on 127.0.0.1:9051 manually, then restart Tor."
+    print_info "Use --skip-tor to leave Tor configuration entirely under manual control."
+}
+
+# Add only missing JoinMarket requirements to a candidate torrc, verify it,
+# then replace the live config after preserving a backup.
+configure_torrc() {
+    local torrc_path="$1"
+    local candidate=""
+    local backup_path=""
+
+    analyze_torrc "$torrc_path"
+
+    if [[ "$TORRC_HAS_INCLUDE" == "true" ]]; then
+        print_tor_manual_guidance "Active %include directives prevent safe duplicate detection."
+        return 0
+    fi
+
+    if [[ "$TORRC_AUTH_CONFLICT" == "true" ]]; then
+        print_tor_manual_guidance "Existing CookieAuthentication or CookieAuthFile settings will not be overridden."
+        return 0
+    fi
+
+    if ! torrc_needs_joinmarket_config; then
+        print_success "Tor is already configured for JoinMarket"
+        return 0
+    fi
+
+    if [[ "$TORRC_HAS_MANAGED_BLOCK" == "true" ]]; then
+        print_tor_manual_guidance "The existing JoinMarket-NG configuration block is incomplete."
+        return 0
+    fi
+
+    candidate=$(mktemp "${TMPDIR:-/tmp}/joinmarket-ng-torrc.XXXXXX") || {
+        print_error "Could not create a temporary Tor configuration"
+        return 1
+    }
+    cp "$torrc_path" "$candidate" || {
+        rm -f "$candidate"
+        print_error "Could not read $torrc_path"
+        return 1
+    }
+
+    {
+        printf '\n## JoinMarket-NG Configuration\n'
+        [[ "$TORRC_HAS_SOCKS_PORT" == "true" ]] || printf 'SocksPort 127.0.0.1:9050\n'
+        [[ "$TORRC_HAS_CONTROL_PORT" == "true" ]] || printf 'ControlPort 127.0.0.1:9051\n'
+        [[ "$TORRC_HAS_COOKIE_AUTH" == "true" ]] || printf 'CookieAuthentication 1\n'
+        [[ "$TORRC_HAS_COOKIE_FILE" == "true" ]] || printf 'CookieAuthFile /run/tor/control.authcookie\n'
+    } >> "$candidate"
+
+    if ! tor --verify-config -f "$candidate" > /dev/null 2>&1; then
+        rm -f "$candidate"
+        print_error "Tor rejected the proposed configuration; $torrc_path was not changed."
+        return 1
+    fi
+
+    backup_path="${torrc_path}.backup.$(date +%Y%m%d_%H%M%S)"
+    if ! sudo cp "$torrc_path" "$backup_path"; then
+        rm -f "$candidate"
+        print_error "Could not back up $torrc_path; Tor configuration was not changed."
+        return 1
+    fi
+
+    if ! sudo cp "$candidate" "$torrc_path"; then
+        rm -f "$candidate"
+        print_error "Could not replace $torrc_path; Tor configuration was not changed."
+        return 1
+    fi
+    rm -f "$candidate"
+
+    if ! restart_tor_service; then
+        print_error "Tor restart failed; restoring the previous configuration."
+        if sudo cp "$backup_path" "$torrc_path"; then
+            if ! restart_tor_service; then
+                print_error "Tor could not restart after restoring $backup_path."
+            fi
+        else
+            print_error "Could not restore $torrc_path from $backup_path."
+        fi
+        return 1
+    fi
+
+    enable_tor_service
+    print_success "Tor configured"
+}
+
 # Setup Tor
 setup_tor() {
     print_header "Setting Up Tor"
@@ -328,46 +504,33 @@ setup_tor() {
     fi
 
     if [ -n "$torrc_path" ] && [ -f "$torrc_path" ]; then
-        # Check for both ControlPort and CookieAuthFile - need both for proper setup
-        if ! grep -q "^ControlPort 127.0.0.1:9051" "$torrc_path" 2>/dev/null || \
-           ! grep -q "^CookieAuthFile /run/tor/control.authcookie" "$torrc_path" 2>/dev/null; then
-            echo ""
-            echo "Tor needs control port configuration for maker bots."
-            echo ""
-
-            if [[ "$AUTO_YES" == "true" ]]; then
-                REPLY="y"
-            else
-                read -p "Configure Tor control port now? [Y/n] " -n 1 -r </dev/tty
-                echo
-            fi
-
-            if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-                sudo cp "$torrc_path" "${torrc_path}.backup.$(date +%Y%m%d_%H%M%S)"
-                # Remove old JoinMarket-NG section if it exists (to replace with correct one)
-                if grep -q "## JoinMarket-NG Configuration" "$torrc_path" 2>/dev/null; then
-                    sudo sed -i '/^## JoinMarket-NG Configuration/,/^$/d' "$torrc_path"
-                fi
-                sudo bash -c "cat >> $torrc_path" << 'EOF'
-
-## JoinMarket-NG Configuration
-SocksPort 127.0.0.1:9050
-ControlPort 127.0.0.1:9051
-CookieAuthentication 1
-CookieAuthFile /run/tor/control.authcookie
-EOF
-                print_success "Tor configured"
-
-                # Restart Tor
-                if [[ "$OS_TYPE" == "linux" ]] && command -v systemctl &> /dev/null; then
-                    sudo systemctl restart tor
-                    sudo systemctl enable tor
-                elif [[ "$OS_TYPE" == "macos" ]]; then
-                    brew services restart tor 2>/dev/null || brew services start tor
-                fi
-            fi
-        else
+        analyze_torrc "$torrc_path"
+        if [[ "$TORRC_HAS_INCLUDE" == "true" ]]; then
+            print_tor_manual_guidance "Active %include directives prevent safe duplicate detection."
+            return 0
+        fi
+        if [[ "$TORRC_AUTH_CONFLICT" == "true" ]]; then
+            print_tor_manual_guidance "Existing CookieAuthentication or CookieAuthFile settings will not be overridden."
+            return 0
+        fi
+        if ! torrc_needs_joinmarket_config; then
             print_success "Tor is already configured for JoinMarket"
+            return 0
+        fi
+
+        echo ""
+        echo "Tor needs control port configuration for maker bots."
+        echo ""
+
+        if [[ "$AUTO_YES" == "true" ]]; then
+            REPLY="y"
+        else
+            read -p "Configure Tor control port now? [Y/n] " -n 1 -r </dev/tty
+            echo
+        fi
+
+        if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+            configure_torrc "$torrc_path"
         fi
     fi
 }

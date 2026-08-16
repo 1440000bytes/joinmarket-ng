@@ -274,6 +274,15 @@ python scripts/generate_completions.py
 - If you edit Tor config, restart Tor (`sudo systemctl restart tor` on Linux, `brew services restart tor` on macOS)
 - Directory server usually runs as a Tor hidden service in Docker (see [Directory Server](README-directory-server.md))
 
+The installer preserves existing top-level Tor settings. It only appends a
+JoinMarket-NG block for missing default listeners and cookie authentication;
+it does not replace custom cookie authentication or files. If `torrc` uses an
+active `%include`, or you use custom Tor authentication, configure the required
+listeners and cookie authentication manually, then restart Tor. If the cookie
+is outside the auto-detected locations, set `cookie_path` in the `[tor]` section
+of `config.toml`. Use `--skip-tor` to prevent the installer from changing Tor
+configuration entirely.
+
 On Debian/Ubuntu maker setups, Tor cookie auth often requires `debian-tor` group access:
 
 ```bash
