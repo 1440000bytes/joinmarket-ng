@@ -301,9 +301,9 @@ httpx==0.28.1 \
     # via
     #   httpx-socks
     #   joinmarket-orderbook-watcher (pyproject.toml)
-httpx-socks==0.12.0 \
-    --hash=sha256:36f2cc7ef3443494984c7b3384b5182b71524fd6e6188103ff8cd0297527247a \
-    --hash=sha256:40d444ae0a00fda1a16f70ac15f14ad4cd77b83b8066273e0d272c73d5342c82
+httpx-socks==0.13.1 \
+    --hash=sha256:771b4f3dbc8f62515a6f8a64f3e1dea9a7826a2521032351d3bd5cc008486bb6 \
+    --hash=sha256:9114898471eb0b2c1f67749f1d2b1c9d35c9f6c450d2f5c338033fc2d0af2d20
     # via joinmarket-orderbook-watcher (pyproject.toml)
 idna==3.18 \
     --hash=sha256:7f952cbe720b688055e3f87de14f5c3e5fdaa8bc3928985c4077ca689de849a2 \
@@ -732,9 +732,9 @@ python-dotenv==1.2.2 \
     --hash=sha256:1d8214789a24de455a8b8bd8ae6fe3c6b69a5e3d64aa8a8e5d68e694bbcb285a \
     --hash=sha256:2c371a91fbd7ba082c2c1dc1f8bf89ca22564a087c2c287cd9b662adde799cf3
     # via pydantic-settings
-python-socks==2.8.2 \
-    --hash=sha256:7cf785d0631e0659384a773b3c402bc22cccdc23894ba1d65f8524748ace1193 \
-    --hash=sha256:ffc493951854fa3fc0551e0434a09a7b9f9047f9ad666dce42cb94a52e8a34b6
+python-socks==3.0.0 \
+    --hash=sha256:c20ddf978b5c90467bf242757a11dcd00d7c8bd339901de1839b492d5571ab7f \
+    --hash=sha256:e06a421d4d7f3fc17ef2740ab6c291640364f6a362b94a1ae87a136c29bd0067
     # via httpx-socks
 sniffio==1.3.1 \
     --hash=sha256:2f6da418d1f1e0fddd844478f41680e794e6051915791a034ff65e5f100525a2 \
@@ -747,9 +747,9 @@ typing-extensions==4.16.0 \
     #   pydantic
     #   pydantic-core
     #   typing-inspection
-typing-inspection==0.4.3 \
-    --hash=sha256:5f42b23858a91e0b4ef521f5418f03a0da3c9216fd2995ef5e73463100e676cd \
-    --hash=sha256:c5f9ec1530b5c1e2c9bc34a84d9a3466ed1b2f3f2fa9f901368d9c5596210e4d
+typing-inspection==0.4.4 \
+    --hash=sha256:547274fa6b0a561ccf549cc9524b999a578e737d015d8709d021f9d0d13bea47 \
+    --hash=sha256:65b8397ba37ccbce054456aaccddfc91e6e3083c92824df348d96ca832f3f147
     # via
     #   pydantic
     #   pydantic-settings

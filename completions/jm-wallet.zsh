@@ -26,6 +26,8 @@ _jm_wallet() {
     'rescan:Rescan the blockchain to repair a descriptor wallet'\''s coverage.'
     'send:Send a simple transaction from wallet to an address.'
     'showseed:Display the BIP39 seed words (mnemonic) of an existing wallet.'
+    'sign-psbt:Inspect and partially sign wallet-owned native SegWit PSBT inputs offline.'
+    'signpsbt:Inspect and partially sign wallet-owned native SegWit PSBT inputs offline.'
     'spend-bond:Generate a PSBT to spend a cold storage fidelity bond after locktime expires.'
     'sync-bonds:Refresh funded status of bonds already in the registry (fast).'
     'validate:Validate a mnemonic phrase.'
@@ -300,6 +302,34 @@ _jm_wallet() {
             '--password=[Password for an encrypted mnemonic file. If not given, the MNEMONIC_PASSWORD env var is used, otherwise an interactive prompt is shown.]: :' \
             '--numbered[Print each seed word on its own line, prefixed with its index.]' \
             '--yes[Skip the interactive '\''Are you sure?'\'' confirmation. Use with care.]' \
+            '--help[Show this message and exit]'
+          ;;
+        sign-psbt)
+          _arguments \
+            '--input=[Read a binary or base64 PSBT from a file]:file:_files' \
+            '--output=[Write the signed base64 PSBT to a file]:file:_files' \
+            '--mnemonic-file=[]:file:_files' \
+            '--prompt-bip39-passphrase[Prompt for BIP39 passphrase]' \
+            '--network=[Bitcoin network]: :' \
+            '--scan-range=[Fallback addresses per branch to derive when PSBT key origins are absent]: :' \
+            '--yes[Sign without the confirmation prompt]' \
+            '--data-dir=[Data directory (default\: ~/.joinmarket-ng or $JOINMARKET_DATA_DIR)]:file:_files' \
+            '--config-file=[Config file path (default\: <data-dir>/config.toml)]:file:_files' \
+            '--log-level=[Log level]: :' \
+            '--help[Show this message and exit]'
+          ;;
+        signpsbt)
+          _arguments \
+            '--input=[Read a binary or base64 PSBT from a file]:file:_files' \
+            '--output=[Write the signed base64 PSBT to a file]:file:_files' \
+            '--mnemonic-file=[]:file:_files' \
+            '--prompt-bip39-passphrase[Prompt for BIP39 passphrase]' \
+            '--network=[Bitcoin network]: :' \
+            '--scan-range=[Fallback addresses per branch to derive when PSBT key origins are absent]: :' \
+            '--yes[Sign without the confirmation prompt]' \
+            '--data-dir=[Data directory (default\: ~/.joinmarket-ng or $JOINMARKET_DATA_DIR)]:file:_files' \
+            '--config-file=[Config file path (default\: <data-dir>/config.toml)]:file:_files' \
+            '--log-level=[Log level]: :' \
             '--help[Show this message and exit]'
           ;;
         spend-bond)

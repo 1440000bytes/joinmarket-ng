@@ -4,14 +4,14 @@
 # Base image digests for reproducible builds
 # Update with: ./scripts/update-base-images.sh
 ARG PYTHON_VERSION=3.14
-ARG PYTHON_SLIM_DIGEST=sha256:a7fb1e634c4a578f9e0bd6327f11a3cde11b7a9395f48e24360c0988bcc5c2bc
-ARG PYTHON_FULL_DIGEST=sha256:3a9d2dd3f18e5c7a9d8de7b3659418a4ab848ccd409fb9e91ef9d7a6a3520ba7
+ARG PYTHON_SLIM_DIGEST=sha256:ce40764625a4ff50df3548277632e7f96c4e77fe75fa848aae9885476e7df5a4
+ARG PYTHON_FULL_DIGEST=sha256:4fad23465a06cc5149a541fbec6f87e234a64dc0550f6bfdd2d290d8f03240df
 # Pin build tools for reproducible builds
 # setuptools version is stamped into WHEEL metadata (Generator: setuptools (x.y.z))
 # Different versions produce different WHEEL/RECORD files, breaking layer reproducibility
 # Update versions with: ./scripts/update-base-images.sh
 ARG SETUPTOOLS_VERSION=84.0.0
-ARG WHEEL_VERSION=0.47.0
+ARG WHEEL_VERSION=0.48.0
 # hatchling builds coincurve's wheel from source (no cp314 wheel upstream); its
 # version is recorded in WHEEL/RECORD, so pin it for reproducible layer digests.
 ARG HATCHLING_VERSION=1.30.1
