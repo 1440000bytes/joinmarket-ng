@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
+from hashlib import sha256
 from pathlib import Path
 
 from jmcore.secure_files import atomic_write_private, read_private_file
@@ -23,6 +24,7 @@ class ReconstructionCheckpoint(BaseModel):
     backend_id: str
     cursor: str | None = None
     regular_branch_ends: dict[str, int] = Field(default_factory=dict)
+    scanned_address_hashes: set[str] = Field(default_factory=set)
 
 
 def _backend_id(backend: BlockchainBackend) -> str:
@@ -38,6 +40,10 @@ def _checkpoint_path(data_dir: Path, wallet_fingerprint: str) -> Path:
     if not safe_fingerprint or any(c not in "0123456789abcdef" for c in safe_fingerprint):
         raise ValueError("wallet fingerprint must contain only hexadecimal characters")
     return data_dir / "state" / f"history_reconstruction_{safe_fingerprint}.json"
+
+
+def _address_hash(address: str) -> str:
+    return sha256(address.strip().lower().encode("ascii")).hexdigest()
 
 
 def load_reconstruction_cursor(
@@ -146,6 +152,7 @@ def save_reconstruction_cursor(
         key = f"{mixdepth}:{change}"
         regular_branch_ends[key] = max(regular_branch_ends.get(key, -1), index)
     existing_coverage: dict[str, int] = {}
+    existing_address_hashes: set[str] = set()
     try:
         existing = ReconstructionCheckpoint.model_validate_json(
             read_private_file(_checkpoint_path(data_dir, wallet_fingerprint))
@@ -156,6 +163,7 @@ def save_reconstruction_cursor(
             and existing.backend_id == _backend_id(backend)
         ):
             existing_coverage = existing.regular_branch_ends
+            existing_address_hashes = existing.scanned_address_hashes
     except (OSError, ValidationError, ValueError):
         pass
     for key, index in existing_coverage.items():
@@ -166,6 +174,7 @@ def save_reconstruction_cursor(
         backend_id=_backend_id(backend),
         cursor=cursor,
         regular_branch_ends=regular_branch_ends,
+        scanned_address_hashes=existing_address_hashes,
     )
     path = _checkpoint_path(data_dir, wallet_fingerprint)
     atomic_write_private(path, checkpoint.model_dump_json(indent=2).encode("utf-8") + b"\n")
@@ -183,6 +192,7 @@ def record_reconstruction_address_coverage(
     path = _checkpoint_path(data_dir, wallet_fingerprint)
     cursor: str | None = None
     regular_branch_ends: dict[str, int] = {}
+    scanned_address_hashes: set[str] = set()
     try:
         existing = ReconstructionCheckpoint.model_validate_json(read_private_file(path))
         if (
@@ -192,6 +202,7 @@ def record_reconstruction_address_coverage(
         ):
             cursor = existing.cursor
             regular_branch_ends.update(existing.regular_branch_ends)
+            scanned_address_hashes.update(existing.scanned_address_hashes)
     except (OSError, ValidationError, ValueError):
         pass
     for key, index in branch_ends.items():
@@ -202,6 +213,74 @@ def record_reconstruction_address_coverage(
         backend_id=_backend_id(backend),
         cursor=cursor,
         regular_branch_ends=regular_branch_ends,
+        scanned_address_hashes=scanned_address_hashes,
+    )
+    atomic_write_private(path, checkpoint.model_dump_json(indent=2).encode("utf-8") + b"\n")
+
+
+def get_uncovered_reconstruction_addresses(
+    data_dir: Path,
+    *,
+    wallet_fingerprint: str,
+    network: str,
+    backend: BlockchainBackend,
+    addresses: Iterable[str],
+) -> list[str]:
+    """Return explicit addresses without durable historical-scan coverage."""
+    unique_addresses = list(dict.fromkeys(address.strip().lower() for address in addresses))
+    try:
+        checkpoint = ReconstructionCheckpoint.model_validate_json(
+            read_private_file(_checkpoint_path(data_dir, wallet_fingerprint))
+        )
+    except (OSError, ValidationError, ValueError):
+        return unique_addresses
+    if (
+        checkpoint.version != 1
+        or checkpoint.wallet_fingerprint != wallet_fingerprint
+        or checkpoint.network != network
+        or checkpoint.backend_id != _backend_id(backend)
+    ):
+        return unique_addresses
+    return [
+        address
+        for address in unique_addresses
+        if _address_hash(address) not in checkpoint.scanned_address_hashes
+    ]
+
+
+def record_reconstruction_explicit_address_coverage(
+    data_dir: Path,
+    *,
+    wallet_fingerprint: str,
+    network: str,
+    backend: BlockchainBackend,
+    addresses: Iterable[str],
+) -> None:
+    """Persist explicit addresses that completed historical scanning."""
+    path = _checkpoint_path(data_dir, wallet_fingerprint)
+    cursor: str | None = None
+    regular_branch_ends: dict[str, int] = {}
+    scanned_address_hashes: set[str] = set()
+    try:
+        existing = ReconstructionCheckpoint.model_validate_json(read_private_file(path))
+        if (
+            existing.wallet_fingerprint == wallet_fingerprint
+            and existing.network == network
+            and existing.backend_id == _backend_id(backend)
+        ):
+            cursor = existing.cursor
+            regular_branch_ends.update(existing.regular_branch_ends)
+            scanned_address_hashes.update(existing.scanned_address_hashes)
+    except (OSError, ValidationError, ValueError):
+        pass
+    scanned_address_hashes.update(_address_hash(address) for address in addresses)
+    checkpoint = ReconstructionCheckpoint(
+        wallet_fingerprint=wallet_fingerprint,
+        network=network,
+        backend_id=_backend_id(backend),
+        cursor=cursor,
+        regular_branch_ends=regular_branch_ends,
+        scanned_address_hashes=scanned_address_hashes,
     )
     atomic_write_private(path, checkpoint.model_dump_json(indent=2).encode("utf-8") + b"\n")
 

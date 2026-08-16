@@ -342,6 +342,7 @@ async def test_discover_on_light_client_backfills_history_and_registers_bond(
     from jmwallet.wallet.bond_registry import load_registry
 
     backend = MockBackend()
+    backend.supports_watch_address = True
     wallet = WalletService(test_mnemonic, backend, network="regtest", data_dir=tmp_path)
 
     locktime = 1893456000

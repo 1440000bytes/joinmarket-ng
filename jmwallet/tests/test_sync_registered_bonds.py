@@ -150,7 +150,7 @@ async def test_sync_with_registered_bonds_first_time_setup(tmp_path: Path) -> No
 
 @pytest.mark.asyncio
 async def test_sync_with_registered_bonds_already_imported(tmp_path: Path) -> None:
-    """When the bond is already imported, sync runs without re-importing."""
+    """Repeated descriptor syncs do not re-import or rescan an existing bond."""
     ws = _make_wallet(tmp_path)
     _write_bond_registry(ws)
 
@@ -162,11 +162,14 @@ async def test_sync_with_registered_bonds_already_imported(tmp_path: Path) -> No
     ws.sync_with_descriptor_wallet = AsyncMock(return_value={0: []})
 
     await ws.sync_with_registered_bonds()
+    await ws.sync_with_registered_bonds()
 
     ws.setup_descriptor_wallet.assert_not_awaited()
     ws.import_fidelity_bond_addresses.assert_not_awaited()
-    ws.sync_with_descriptor_wallet.assert_awaited_once_with(
-        [(BOND_ADDRESS, BOND_LOCKTIME, BOND_INDEX)]
+    assert ws.sync_with_descriptor_wallet.await_count == 2
+    assert all(
+        call.args == ([(BOND_ADDRESS, BOND_LOCKTIME, BOND_INDEX)],)
+        for call in ws.sync_with_descriptor_wallet.await_args_list
     )
 
 
@@ -638,6 +641,7 @@ async def test_sync_all_scans_bonds_on_light_client_backend(tmp_path: Path) -> N
 
     # The bond was historically rescanned before querying.
     assert backend.ensure_calls, "ensure_addresses_scanned was not called for the bond"
+    assert len(backend.ensure_calls) == 1
     assert any(bond_address in addresses for addresses in backend.ensure_calls)
 
     # The bond UTXO is present in mixdepth 0 (both the returned mapping and the
@@ -649,6 +653,48 @@ async def test_sync_all_scans_bonds_on_light_client_backend(tmp_path: Path) -> N
     assert bond.is_fidelity_bond
     assert bond.path.endswith(f":{locktime}")
     assert any(u.address == bond_address for u in ws.utxo_cache.get(0, []))
+
+
+@pytest.mark.asyncio
+async def test_repeated_light_client_sync_does_not_rescan_bond_history(tmp_path: Path) -> None:
+    """A new process re-registers a covered bond without another deep rescan."""
+    from jmcore.timenumber import timenumber_to_timestamp
+
+    locktime = timenumber_to_timestamp(BOND_INDEX)
+    first_backend = _FakeLightClientBackend(bond_address="", bond_utxo=None)  # type: ignore[arg-type]
+    first_wallet = WalletService(
+        mnemonic=MNEMONIC,
+        backend=first_backend,
+        network="regtest",
+        data_dir=tmp_path,
+    )
+    bond_address = first_wallet.get_fidelity_bond_address(BOND_INDEX, locktime)
+    bond_utxo = UTXO(
+        txid="cf" * 32,
+        vout=0,
+        value=345_678,
+        address=bond_address,
+        confirmations=8,
+        scriptpubkey="0020" + "35" * 32,
+        height=990,
+    )
+    first_backend._bond_address = bond_address
+    first_backend._bond_utxo = bond_utxo
+    await first_wallet.sync_all([(bond_address, locktime, BOND_INDEX)])
+    assert len(first_backend.ensure_calls) == 1
+    assert any(bond_address in addresses for addresses in first_backend.ensure_calls)
+
+    second_backend = _FakeLightClientBackend(bond_address=bond_address, bond_utxo=bond_utxo)
+    second_wallet = WalletService(
+        mnemonic=MNEMONIC,
+        backend=second_backend,
+        network="regtest",
+        data_dir=tmp_path,
+    )
+    result = await second_wallet.sync_all([(bond_address, locktime, BOND_INDEX)])
+
+    assert second_backend.ensure_calls == []
+    assert any(utxo.address == bond_address for utxo in result[0])
 
 
 @pytest.mark.asyncio

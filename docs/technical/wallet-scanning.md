@@ -50,12 +50,13 @@ only widen coverage, never shrink it below the configured
 the BIP44 `gap_limit`. CLI mnemonic recovery can use `jm-wallet recover-bonds`
 when the bond coverage was not set up by an older version.
 
-For Neutrino, each newly derived regular-address batch is historically backfilled
-before it is considered empty. On neutrino-api 1.4.0+ with transaction history
-enabled, spent-only receive addresses count as used and discovery continues until
-the full trailing gap is empty. Older servers cannot distinguish a spent-only
-address from an unused one and retain the UTXO-only fallback; upgrade before using
-Neutrino for seed recovery of a wallet with substantial prior activity.
+For Neutrino, newly derived regular addresses are historically backfilled before
+they are considered empty. JoinMarket scans up to 100 indices per branch in each
+historical pass, persists that coverage, then evaluates the normal gap-sized
+batches without repeating the deep rescan. On neutrino-api 1.4.0+ with transaction
+history enabled, spent-only receive addresses count as used and discovery
+continues until the full trailing gap is empty. Older servers retain the UTXO-only
+fallback; upgrade before recovering a wallet with substantial prior activity.
 
 When Neutrino adds the 960 recovery candidates after its initial sync,
 JoinMarket requests a forced historical rescan so persisted global coverage
@@ -63,6 +64,11 @@ does not hide transactions for those newly watched addresses. Servers without
 the force capability fall back to requesting one block below the persisted
 coverage floor; reliable completion confirmation requires a neutrino-api
 version that exposes `GET /v1/rescan/status` (v0.7.0+).
+
+Completed coverage for registered bond addresses is stored as wallet-scoped
+hashes, so later processes re-register those addresses without repeating the
+historical rescan. Bitcoin Core descriptor wallets obtain the equivalent behavior
+from their persistent imported `addr()` descriptors.
 
 ### The 1,000,000 index limit
 

@@ -33,7 +33,8 @@ incremental baseline; `--purge-existing` clears it before rebuilding. A pass tha
 hits `--max-transactions` does not advance the cursor, so rerunning with
 `--keep-existing` remains safe. Neutrino address-scan coverage is tracked
 independently, so capped continuation runs do not repeat completed historical
-rescans.
+rescans. Explicit fidelity-bond addresses use hashed coverage markers for the
+same reason.
 
 CoinJoin detection, amount, and peer count come from the repeated equal-output
 structure. Maker/taker role and fees cannot be proven from public chain data, so

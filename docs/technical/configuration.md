@@ -105,7 +105,8 @@ makes later passes incremental. Capped passes deliberately do not advance that
 cursor, so `jm-wallet reconstruct-history --keep-existing` can continue the older
 backlog without skipping transactions. Successfully backfilled Neutrino branch
 coverage is persisted separately, avoiding repeated rescans while a capped backlog
-is processed. Purging reconstructed rows or widening historical address coverage
+is processed. This includes hashed coverage markers for explicit fidelity-bond
+addresses. Purging reconstructed rows or widening historical address coverage
 invalidates the transaction cursor and causes a complete enumeration.
 
 ## Neutrino TLS Settings

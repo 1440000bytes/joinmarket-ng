@@ -2811,7 +2811,7 @@ class TestSyncAllAddressPreregistration:
     the initial rescan fires so that change (internal) addresses are not missed."""
 
     @pytest.mark.asyncio
-    async def test_sync_all_preregisters_change_addresses(self):
+    async def test_sync_all_preregisters_change_addresses(self, tmp_path):
         """sync_all() must register both external AND internal addresses with the
         backend *before* the first get_utxos call so the initial neutrino rescan
         covers change addresses."""
@@ -2829,9 +2829,11 @@ class TestSyncAllAddressPreregistration:
         backend.get_block_height = AsyncMock(return_value=100)
 
         ensure_force_values: list[bool] = []
+        ensure_batches: list[list[str]] = []
 
         async def fake_ensure_scanned(addresses: list[str], *, force: bool = False) -> bool:
             ensure_force_values.append(force)
+            ensure_batches.append(list(addresses))
             for address in addresses:
                 await backend.add_watch_address(address)
             return True
@@ -2854,10 +2856,12 @@ class TestSyncAllAddressPreregistration:
             network="signet",
             mixdepth_count=1,
             gap_limit=6,
+            data_dir=tmp_path,
         )
 
         await wallet.sync_all()
-        assert ensure_force_values[0] is True
+        assert ensure_force_values == [True]
+        assert len(ensure_batches[0]) == 200
 
         # All gap_limit addresses for both branches of mixdepth 0 must have been
         # registered before the first UTXO query fired.
@@ -2870,7 +2874,7 @@ class TestSyncAllAddressPreregistration:
                 )
 
     @pytest.mark.asyncio
-    async def test_spent_address_extends_gap_with_historical_backfill(self):
+    async def test_spent_address_extends_gap_with_historical_backfill(self, tmp_path):
         """A spent-only address keeps discovery moving into a backfilled batch."""
         from _jmwallet_test_helpers import TEST_MNEMONIC
 
@@ -2884,6 +2888,7 @@ class TestSyncAllAddressPreregistration:
             network="regtest",
             mixdepth_count=1,
             gap_limit=2,
+            data_dir=tmp_path,
         )
         spent_address = wallet.get_address(0, 0, 1)
         events: list[tuple[str, list[str]]] = []
@@ -2909,17 +2914,16 @@ class TestSyncAllAddressPreregistration:
         await wallet.sync_all()
 
         initial_addresses = [
-            wallet.get_address(0, change, index)
-            for change in (0, 1)
-            for index in range(wallet.gap_limit)
+            wallet.get_address(0, change, index) for change in (0, 1) for index in range(100)
         ]
         assert ("ensure", initial_addresses) in events
         assert events.index(("ensure", initial_addresses)) < events.index(
             ("utxos", initial_addresses[: wallet.gap_limit])
         )
         second_external_batch = [wallet.get_address(0, 0, 2), wallet.get_address(0, 0, 3)]
-        assert ("ensure", second_external_batch) in events
-        assert events.index(("ensure", second_external_batch)) < events.index(
+        assert ("ensure", second_external_batch) not in events
+        assert set(second_external_batch).issubset(initial_addresses)
+        assert events.index(("ensure", initial_addresses)) < events.index(
             ("utxos", second_external_batch)
         )
         assert spent_address in wallet.addresses_with_history

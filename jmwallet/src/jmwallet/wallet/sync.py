@@ -25,6 +25,8 @@ from jmwallet.wallet.constants import (
 )
 from jmwallet.wallet.models import UTXOInfo
 
+NEUTRINO_HISTORICAL_BACKFILL_BATCH_SIZE = 100
+
 
 def _make_utxo_info(
     *,
@@ -281,6 +283,50 @@ class WalletSyncMixin:
             mixdepth=mixdepth,
             change=change,
             range_end=range_end,
+        )
+
+    async def _ensure_explicit_address_coverage(self, addresses: Iterable[str]) -> bool:
+        """Historically scan explicit addresses once per wallet/backend."""
+        if self.backend.supports_watch_address is not True:
+            return False
+        unique_addresses = list(dict.fromkeys(address.strip().lower() for address in addresses))
+        uncovered = unique_addresses
+        if self.data_dir is not None:
+            from jmwallet.history_state import get_uncovered_reconstruction_addresses
+
+            uncovered = get_uncovered_reconstruction_addresses(
+                self.data_dir,
+                wallet_fingerprint=self.wallet_fingerprint,
+                network=self.network,
+                backend=self.backend,
+                addresses=unique_addresses,
+            )
+
+        uncovered_set = set(uncovered)
+        for address in unique_addresses:
+            if address not in uncovered_set:
+                await self.backend.add_watch_address(address)
+        if not uncovered:
+            return False
+
+        coverage_expanded = await self.backend.ensure_addresses_scanned(uncovered, force=True)
+        if coverage_expanded is True:
+            self._clear_reconstruction_cursor()
+            self._record_explicit_address_coverage(uncovered)
+        return coverage_expanded
+
+    def _record_explicit_address_coverage(self, addresses: Iterable[str]) -> None:
+        """Persist explicit addresses after a completed historical scan."""
+        if self.data_dir is None:
+            return
+        from jmwallet.history_state import record_reconstruction_explicit_address_coverage
+
+        record_reconstruction_explicit_address_coverage(
+            self.data_dir,
+            wallet_fingerprint=self.wallet_fingerprint,
+            network=self.network,
+            backend=self.backend,
+            addresses=addresses,
         )
 
     # -- Imported-wallet CoinJoin label reconstruction ----------------------
@@ -582,11 +628,24 @@ class WalletSyncMixin:
                         for address in addresses:
                             await self.backend.add_watch_address(address)
                     else:
-                        coverage_expanded = await self.backend.ensure_addresses_scanned(addresses)
+                        coverage_range_end = max(
+                            batch_range_end,
+                            min(
+                                self.scan_range - 1,
+                                index + NEUTRINO_HISTORICAL_BACKFILL_BATCH_SIZE - 1,
+                            ),
+                        )
+                        coverage_addresses = [
+                            self.get_address(mixdepth, change, address_index)
+                            for address_index in range(index, coverage_range_end + 1)
+                        ]
+                        coverage_expanded = await self.backend.ensure_addresses_scanned(
+                            coverage_addresses
+                        )
                         if coverage_expanded is True:
                             self._clear_reconstruction_cursor()
                             self._record_reconstruction_address_coverage(
-                                {f"{mixdepth}:{change}": batch_range_end}
+                                {f"{mixdepth}:{change}": coverage_range_end}
                             )
 
                 # Fetch UTXOs for the whole batch
@@ -712,9 +771,7 @@ class WalletSyncMixin:
         # new blocks for already-watched addresses; a bond address registered
         # after the initial sync would otherwise miss its (already-confirmed)
         # funding output. No-op for full-node/descriptor backends.
-        coverage_expanded = await self.backend.ensure_addresses_scanned(addresses)
-        if coverage_expanded is True:
-            self._clear_reconstruction_cursor()
+        await self._ensure_explicit_address_coverage(addresses)
 
         # Fetch UTXOs for all addresses at once
         backend_utxos = await self.backend.get_utxos(addresses)
@@ -890,9 +947,7 @@ class WalletSyncMixin:
             # funded before this call stays invisible whenever the initial
             # rescan already ran (e.g. a warm jmwalletd session). No-op for
             # backends without watch support.
-            coverage_expanded = await self.backend.ensure_addresses_scanned(all_addresses_list)
-            if coverage_expanded is True:
-                self._clear_reconstruction_cursor()
+            await self._ensure_explicit_address_coverage(all_addresses_list)
             for batch_start in range(0, total_addrs, batch_size):
                 batch_addrs = all_addresses_list[batch_start : batch_start + batch_size]
                 batch_end = batch_start + len(batch_addrs)
@@ -1034,29 +1089,18 @@ class WalletSyncMixin:
             logger.warning("Descriptor scan failed, falling back to address scan")
 
         # Legacy address-by-address scanning
-        # Pre-register ALL wallet addresses (all mixdepths × both branches × gap_limit)
-        # with the backend before the first get_utxos call triggers any rescan.
+        # Pre-register regular wallet addresses across all mixdepths and both
+        # branches before the first get_utxos call triggers any rescan.
         # Without this, light-client backends (Neutrino) fire the initial rescan on the
         # first get_utxos call with only the *external* addresses registered, causing
         # change (internal) addresses to be missed entirely.
         if self.backend.supports_watch_address is True:
-            initial_addresses: list[str] = []
-            for pre_mixdepth in range(self.mixdepth_count):
-                for pre_change in [0, 1]:
-                    for pre_index in range(self.gap_limit):
-                        initial_addresses.append(
-                            self.get_address(pre_mixdepth, pre_change, pre_index)
-                        )
-
-            # A completed reconstruction checkpoint proves that this wallet's
-            # initial address set has already received historical coverage on
-            # this backend. Without one, force one all-branch backfill so
-            # daemon-global coverage from another wallet cannot hide history.
-            checkpoint_exists = False
+            initial_range_count = self.gap_limit
+            minimum_coverage_exists = False
             if self.data_dir is not None:
                 from jmwallet.history_state import has_reconstruction_address_coverage
 
-                checkpoint_exists = has_reconstruction_address_coverage(
+                minimum_coverage_exists = has_reconstruction_address_coverage(
                     self.data_dir,
                     wallet_fingerprint=self.wallet_fingerprint,
                     network=self.network,
@@ -1064,22 +1108,53 @@ class WalletSyncMixin:
                     mixdepth_count=self.mixdepth_count,
                     range_end=self.gap_limit - 1,
                 )
-            if checkpoint_exists:
+            if not minimum_coverage_exists:
+                initial_range_count = max(
+                    self.gap_limit,
+                    min(self.scan_range, NEUTRINO_HISTORICAL_BACKFILL_BATCH_SIZE),
+                )
+
+            initial_addresses: list[str] = []
+            for pre_mixdepth in range(self.mixdepth_count):
+                for pre_change in [0, 1]:
+                    for pre_index in range(initial_range_count):
+                        initial_addresses.append(
+                            self.get_address(pre_mixdepth, pre_change, pre_index)
+                        )
+
+            initial_bond_addresses: list[str] = []
+            if fidelity_bond_addresses:
+                expected_hrp = get_hrp(self.network)
+                initial_bond_addresses = list(
+                    dict.fromkeys(
+                        address.lower()
+                        for address, _locktime, _index in fidelity_bond_addresses
+                        if (address.split("1")[0].lower() if "1" in address else "") == expected_hrp
+                    )
+                )
+
+            # Durable branch coverage proves that this wallet's initial address
+            # set was historically scanned on this backend. Without it, cover a
+            # wider lookahead in one pass so active wallets do not need one deep
+            # rescan per gap-sized discovery batch.
+            if minimum_coverage_exists:
                 for address in initial_addresses:
                     await self.backend.add_watch_address(address)
             else:
                 coverage_expanded = await self.backend.ensure_addresses_scanned(
-                    initial_addresses, force=True
+                    [*initial_addresses, *initial_bond_addresses], force=True
                 )
                 if coverage_expanded is True:
                     self._clear_reconstruction_cursor()
                     self._record_reconstruction_address_coverage(
                         {
-                            f"{mixdepth}:{change}": self.gap_limit - 1
+                            f"{mixdepth}:{change}": initial_range_count - 1
                             for mixdepth in range(self.mixdepth_count)
                             for change in (0, 1)
                         }
                     )
+                    if initial_bond_addresses:
+                        self._record_explicit_address_coverage(initial_bond_addresses)
             logger.debug(
                 f"Prepared {len(initial_addresses)} addresses with backend before initial rescan"
             )
