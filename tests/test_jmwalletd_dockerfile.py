@@ -23,7 +23,7 @@ RELEASE_SCRIPTS = (
     REPO_ROOT / "scripts" / "verify-release.sh",
 )
 STANDALONE_NG_IMAGE = "ghcr.io/joinmarket-webui/jam-dev-standalone-ng:master"
-JAM_DOCKER_COMMIT = "bfdc7f85f244bbcf4bce93d62f5d7da260c4d552"
+JAM_DOCKER_COMMIT = "533a4f93940221b58182793a1c0636f84c2f54c7"
 STANDALONE_NG_CONTEXT = f"https://github.com/joinmarket-webui/jam-docker.git#{JAM_DOCKER_COMMIT}:standalone-ng"
 JAM_REPO_REF = "v2.0.0-beta.2"
 
