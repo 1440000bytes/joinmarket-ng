@@ -12,6 +12,15 @@ services:
       - DIRECTORY_SERVER__MAX_PEERS=10000
       - DIRECTORY_SERVER__NICK_AUTH_DIRECTORY_ID
       - LOGGING__LEVEL=INFO
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        if [ -z "$${DIRECTORY_SERVER__NICK_AUTH_DIRECTORY_ID:-}" ]; then
+          echo "DIRECTORY_SERVER__NICK_AUTH_DIRECTORY_ID must be set in directory_server/.env" >&2
+          exit 1
+        fi
+        exec jm-directory-server
     networks:
       - joinmarket_directory_internal
     restart: always

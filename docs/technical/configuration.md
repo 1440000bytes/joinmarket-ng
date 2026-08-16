@@ -120,7 +120,27 @@ When using the `neutrino` backend with TLS enabled (default), set:
 The `neutrino_url` must use `https://` when TLS is enabled.
 See [Neutrino TLS](neutrino-tls.md) and [Installation](../install.md) for the practical migration/setup steps.
 
-## Directory Server Heartbeat Settings
+## Directory Server Settings
+
+Public directory nodes must set `directory_server.nick_auth_directory_id`, or the equivalent
+`DIRECTORY_SERVER__NICK_AUTH_DIRECTORY_ID` environment variable, to their canonical lowercase
+Tor v3 endpoint including the port. For example:
+
+```toml
+[directory_server]
+nick_auth_directory_id = "your56characterhostname.onion:5222"
+```
+
+This identity binds signed nick ownership proofs to the directory endpoint selected by the
+client. If it is absent, the directory does not advertise or perform nick authentication, leaving
+nicks unverified. `test:` identities are only for local and automated test deployments.
+
+`nick_auth_mode` defaults to `prefer_verified`, which authenticates capable clients while
+retaining compatibility with legacy clients. Set it to `require_verified` to reject clients that
+do not support nick authentication. Setting it to `disabled` intentionally turns off the
+protection.
+
+### Heartbeat Settings
 
 The `[directory_server]` section supports heartbeat liveness controls:
 

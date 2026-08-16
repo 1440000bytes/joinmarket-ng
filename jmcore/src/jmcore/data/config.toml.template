@@ -556,13 +556,15 @@
 # host = "127.0.0.1"
 # port = 5222
 
-# Directory nick authentication (JMP-0005). "prefer_verified" negotiates the
-# extension while accepting legacy clients, "require_verified" rejects clients
-# without it, and "disabled" keeps the legacy handshake only.
+# Directory nick authentication (JMP-0005). Public directory nodes must set
+# nick_auth_directory_id to their canonical lowercase Tor v3 endpoint, including
+# the port. Without it, nick ownership authentication is not advertised or
+# performed. Never use a test ID for a public directory.
+# nick_auth_directory_id = "your56characterhostname.onion:5222"
+# "prefer_verified" authenticates capable clients while accepting legacy
+# clients, "require_verified" rejects clients without support, and "disabled"
+# intentionally turns off nick ownership authentication.
 # nick_auth_mode = "prefer_verified"
-# Stable identifier for this directory endpoint. Production onion directories
-# use their canonical "host.onion:port" endpoint; local tests may use a test ID.
-# nick_auth_directory_id = "test:jm-directory-5222"  # Local/test example only
 # nick_auth_timeout = 30.0
 
 # Limits

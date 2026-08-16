@@ -30,8 +30,7 @@ cat tor/data/hostname
 ```
 
 4. Create or update `.env` in the current `directory_server/` directory with the complete
-   endpoint so the directory can advertise the nick authentication extension and perform nick
-   ownership authentication:
+   endpoint. This setting is required for a public directory node:
 
 ```dotenv
 DIRECTORY_SERVER__NICK_AUTH_DIRECTORY_ID=your56characterhostname.onion:5222
@@ -39,8 +38,13 @@ DIRECTORY_SERVER__NICK_AUTH_DIRECTORY_ID=your56characterhostname.onion:5222
 
 5. Start the directory with `docker compose up -d directory_server`.
 
-Running the whole stack before this variable is set leaves nick authentication disabled. The
-directory logs a warning and its handshake does not advertise `nick_auth` in that state.
+The Compose deployment refuses to start the directory server if this variable is missing. Do not
+use `docker compose up` for the whole stack until it is set.
+
+`DIRECTORY_SERVER__NICK_AUTH_DIRECTORY_ID` binds each authentication challenge to this specific
+directory endpoint. Without it, the server cannot advertise nick authentication, clients do not
+prove ownership of their nicks, and another connection can claim an unverified nick. Treating the
+setting as optional disables this protection.
 
 #### Docker Notes
 
@@ -103,18 +107,21 @@ pip install -e ".[dev]"
 
 #### Configuration
 
-Create a `.env` file or set environment variables:
+Create a `.env` file or set environment variables. A public directory node must set
+`DIRECTORY_SERVER__NICK_AUTH_DIRECTORY_ID` to the exact onion endpoint through which clients
+reach it, including the port:
 
 ```bash
 # Network
-NETWORK=mainnet  # mainnet, testnet, signet, regtest
-HOST=127.0.0.1
-PORT=5222
+NETWORK_CONFIG__NETWORK=mainnet  # mainnet, testnet, signet, regtest
 
 # Server
-MAX_PEERS=10000
-MESSAGE_RATE_LIMIT=100
-LOG_LEVEL=INFO
+DIRECTORY_SERVER__HOST=127.0.0.1
+DIRECTORY_SERVER__PORT=5222
+DIRECTORY_SERVER__NICK_AUTH_DIRECTORY_ID=your56characterhostname.onion:5222
+DIRECTORY_SERVER__MAX_PEERS=10000
+DIRECTORY_SERVER__MESSAGE_RATE_LIMIT=100
+LOGGING__LEVEL=INFO
 ```
 
 Heartbeat liveness settings (section `[directory_server]` in `config.toml`):
@@ -132,12 +139,15 @@ Behavior summary:
 
 Nick ownership authentication settings (section `[directory_server]`):
 
+- `nick_auth_directory_id` is required for public directory nodes. It binds signed nick proofs to
+  the directory selected by the client and prevents proofs from being replayed to another
+  directory. Without it, nick ownership authentication is not advertised or performed.
+- Set `nick_auth_directory_id` to the canonical lowercase Tor v3 endpoint, including the port,
+  for example `your56characterhostname.onion:5222`. Local tests may use an explicit `test:`
+  identity, but public deployments must not.
 - `nick_auth_mode` defaults to `prefer_verified`, which authenticates upgraded clients while
   retaining legacy client compatibility. `require_verified` rejects legacy clients, and
-  `disabled` does not advertise the extension.
-- `nick_auth_directory_id` must be the canonical lowercase Tor v3 endpoint, including the port,
-  for example `your56characterhostname.onion:5222`. Authentication is not advertised until this
-  identity is configured. Local tests may use an explicit `test:` identity.
+  `disabled` intentionally turns off this security feature.
 - `nick_auth_timeout` controls the proof deadline and cannot exceed 30 seconds.
 
 The directory keys relay ownership by nick. A peer's self-declared onion location is
@@ -148,10 +158,10 @@ For local test deployments reached through an alias or forwarded port, configure
 `host:port`, and the value is the directory's configured `test:` identity. Production
 `.onion` identities are derived from and matched exactly against the selected endpoint.
 
-For the production Compose stack, retrieve the generated hostname first, configure the resulting
-`hostname.onion:5222` value as `DIRECTORY_SERVER__NICK_AUTH_DIRECTORY_ID`, then restart the
-directory server container. Do not use the container hostname as the identity for a public Tor
-endpoint.
+For the production Compose stack, retrieve the generated hostname first and configure the
+resulting `hostname.onion:5222` value as `DIRECTORY_SERVER__NICK_AUTH_DIRECTORY_ID` before
+starting the directory server container. Do not use the container hostname as the identity for a
+public Tor endpoint.
 
 ## Optional
 
