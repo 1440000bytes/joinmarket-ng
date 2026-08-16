@@ -816,7 +816,7 @@ async def _sync_bonds_async(
         utxos_by_address: dict[str, list[BondUtxo]] = {}
         for utxos_list in wallet.utxo_cache.values():
             for utxo in utxos_list:
-                utxos_by_address.setdefault(utxo.address, []).append(
+                utxos_by_address.setdefault(utxo.address.lower(), []).append(
                     BondUtxo(
                         txid=utxo.txid,
                         vout=utxo.vout,
@@ -827,9 +827,9 @@ async def _sync_bonds_async(
 
         funded = 0
         for bond in network_bonds:
-            addr_utxos = utxos_by_address.get(bond.address)
+            addr_utxos = utxos_by_address.get(bond.address.lower(), [])
+            registry.set_bond_utxos(bond.address, addr_utxos)
             if addr_utxos:
-                registry.set_bond_utxos(bond.address, addr_utxos)
                 funded += 1
 
         save_registry(registry, data_dir, wallet.wallet_fingerprint)
@@ -838,7 +838,7 @@ async def _sync_bonds_async(
         print(f"Funded bonds:   {funded}")
         print(f"Unfunded bonds: {len(network_bonds) - funded}")
         for bond in sorted(network_bonds, key=lambda b: b.locktime):
-            addr_utxos = utxos_by_address.get(bond.address)
+            addr_utxos = utxos_by_address.get(bond.address.lower(), [])
             if not addr_utxos:
                 status = "UNFUNDED"
             else:

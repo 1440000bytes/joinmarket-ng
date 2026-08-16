@@ -54,6 +54,41 @@ def test_list_bonds_offline_shows_unfunded_registered_bond(
     assert "UNFUNDED" in out
 
 
+def test_list_bonds_offline_shows_expired_unfunded_bond_without_stale_value(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    registry = BondRegistry()
+    bond = FidelityBondInfo(
+        address=UNFUNDED_ADDRESS,
+        locktime=1577836800,
+        locktime_human="2020-01-01 00:00:00",
+        index=0,
+        path="m/84'/1'/0'/2/0",
+        pubkey="02" + "00" * 32,
+        witness_script_hex="00" * 50,
+        network="regtest",
+        created_at="2025-01-01T00:00:00",
+        txid="aa" * 32,
+        vout=0,
+        value=123_456,
+        confirmations=5,
+        extra_utxos=[BondUtxo(txid="bb" * 32, vout=1, value=10_000, confirmations=4)],
+    )
+    registry.add_bond(bond)
+    registry.set_bond_utxos(UNFUNDED_ADDRESS, [])
+    save_registry(registry, tmp_path, FINGERPRINT)
+
+    _list_bonds_offline(data_dir=tmp_path, fingerprint=FINGERPRINT)
+
+    out = capsys.readouterr().out
+    row = next(line for line in out.splitlines() if UNFUNDED_ADDRESS in line)
+    assert "EXPIRED" in row
+    assert "(funded)" not in row
+    assert "123,456 sats" not in out
+    assert "10,000 sats" not in out
+    assert row.split()[-2] == "-"
+
+
 FUNDED_MULTI_ADDRESS = "bcrt1qmultibond000000000000000000000000000000xyz"
 
 

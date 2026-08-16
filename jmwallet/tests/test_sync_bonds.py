@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from jmwallet.cli.bonds import _sync_bonds_async
-from jmwallet.wallet.bond_registry import BondRegistry, FidelityBondInfo
+from jmwallet.wallet.bond_registry import BondRegistry, BondUtxo, FidelityBondInfo
 
 # BIP-39 test vector -- never use on mainnet.
 MNEMONIC = (
@@ -55,12 +55,14 @@ def _registry_with_unfunded_bond() -> BondRegistry:
 @pytest.mark.asyncio
 async def test_sync_bonds_updates_registry_with_funded_utxo() -> None:
     registry = _registry_with_unfunded_bond()
+    registry.bonds[0].address = BOND_ADDRESS.upper()
 
     wallet = MagicMock()
     wallet.wallet_fingerprint = "deadbeef"
     wallet.sync_with_registered_bonds = AsyncMock()
     wallet.close = AsyncMock()
-    # UTXO discovered on-chain at the registered bond address.
+    # UTXO discovered on-chain at the registered bond address. Bech32 address
+    # matching must be case-insensitive because the registry has uppercase data.
     wallet.utxo_cache = {
         0: [
             SimpleNamespace(
@@ -110,6 +112,64 @@ async def test_sync_bonds_updates_registry_with_funded_utxo() -> None:
     assert bond.txid == "ab" * 32
     assert bond.confirmations == 3
     assert saved and saved[0] is registry
+
+
+@pytest.mark.asyncio
+async def test_sync_bonds_clears_spent_bond_metadata_and_counts_unfunded(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An empty post-sync UTXO set must replace stale pre-sync registry data."""
+    registry = _registry_with_unfunded_bond()
+    registry.set_bond_utxos(
+        BOND_ADDRESS,
+        [
+            BondUtxo(txid="aa" * 32, vout=0, value=100_000, confirmations=4),
+            BondUtxo(txid="bb" * 32, vout=1, value=50_000, confirmations=3),
+        ],
+    )
+
+    wallet = MagicMock()
+    wallet.wallet_fingerprint = "deadbeef"
+    wallet.sync_with_registered_bonds = AsyncMock()
+    wallet.close = AsyncMock()
+    wallet.utxo_cache = {}
+
+    backend = MagicMock()
+    backend.create_wallet = AsyncMock()
+    saved: list[BondRegistry] = []
+
+    with (
+        patch(
+            "jmwallet.backends.descriptor_wallet.DescriptorWalletBackend",
+            return_value=backend,
+        ),
+        patch("jmwallet.backends.descriptor_wallet.generate_wallet_name", return_value="w"),
+        patch(
+            "jmwallet.backends.descriptor_wallet.get_mnemonic_fingerprint",
+            return_value="deadbeef",
+        ),
+        patch("jmwallet.wallet.service.WalletService", return_value=wallet),
+        patch("jmwallet.wallet.bond_registry.load_registry", return_value=registry),
+        patch(
+            "jmwallet.wallet.bond_registry.save_registry",
+            side_effect=lambda reg, *a, **k: saved.append(reg),
+        ),
+    ):
+        await _sync_bonds_async(MNEMONIC, _backend_settings())
+
+    bond = registry.get_bond_by_address(BOND_ADDRESS)
+    assert bond is not None
+    assert bond.txid is None
+    assert bond.vout is None
+    assert bond.value is None
+    assert bond.confirmations is None
+    assert bond.extra_utxos == []
+    assert saved and saved[0] is registry
+
+    out = capsys.readouterr().out
+    assert "Funded bonds:   0" in out
+    assert "Unfunded bonds: 1" in out
+    assert f"{BOND_ADDRESS}  UNFUNDED" in out
 
 
 @pytest.mark.asyncio

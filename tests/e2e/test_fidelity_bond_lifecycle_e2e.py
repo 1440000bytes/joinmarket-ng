@@ -32,10 +32,12 @@ import time
 from pathlib import Path
 
 import pytest
+from jmcore.cli_common import ResolvedBackendSettings
 from jmcore.timenumber import get_nearest_valid_locktime, timestamp_to_timenumber
 from loguru import logger
 
 from jmwallet.backends.descriptor_wallet import DescriptorWalletBackend
+from jmwallet.cli.bonds import _list_bonds_offline, _sync_bonds_async
 from jmwallet.cli.mnemonic import generate_mnemonic_secure
 from jmwallet.wallet.bond_registry import (
     create_bond_info,
@@ -71,7 +73,7 @@ def _locked_locktime() -> tuple[int, int]:
 
 async def _make_wallet(
     bitcoin_rpc_config: dict[str, str], data_dir: Path
-) -> WalletService:
+) -> tuple[WalletService, str]:
     """Create a WalletService on a fresh random mnemonic (no cross-run state)."""
     mnemonic = generate_mnemonic_secure(12)
     backend = DescriptorWalletBackend(
@@ -89,7 +91,7 @@ async def _make_wallet(
     wallet_name = f"fb_lifecycle_{ws.wallet_fingerprint}"
     backend.wallet_name = wallet_name
     await backend.create_wallet()
-    return ws
+    return ws, mnemonic
 
 
 def _register_bond(ws: WalletService, timenumber: int, locktime: int) -> str:
@@ -138,11 +140,13 @@ async def test_expired_bond_lifecycle_create_sync_spend(
     bitcoin_rpc_config: dict[str, str],
     ensure_blockchain_ready,
     tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Full lifecycle of an expired bond: create, fund, sync, sweep out."""
-    from tests.e2e.rpc_utils import mine_blocks
+    """Full lifecycle of an expired bond: create, fund, sync, sweep, and clear metadata."""
+    from tests.e2e.rpc_utils import mine_blocks, rpc_call
 
-    ws = await _make_wallet(bitcoin_rpc_config, tmp_path)
+    ws, mnemonic = await _make_wallet(bitcoin_rpc_config, tmp_path)
+    wallet_closed = False
     try:
         # 1) Create: derive + register a bond with an already-expired locktime
         #    (JAM allows creating these; the reported bug used one).
@@ -191,23 +195,67 @@ async def test_expired_bond_lifecycle_create_sync_spend(
         assert result.send_amount == bond_value - result.fee
         logger.info(f"Swept expired bond in {result.txid} (fee={result.fee})")
 
-        # 6) Confirm and verify the coins actually moved.
+        # 6) Confirm the sweep, but do not run another wallet sync yet. The
+        # registry therefore still carries the funded UTXO metadata that
+        # sync-bonds loaded before its internal bond-aware sync in the reported
+        # stale-overwrite regression.
         await mine_blocks(1, DUMMY_MINER_ADDR)
-        await ws.sync_with_registered_bonds()
-        assert not _bond_utxos(ws, bond_address), "Bond UTXO still unspent after sweep"
-        registry = load_registry(
+        destination_scan = await rpc_call(
+            "scantxoutset", ["start", [f"addr({destination})"]]
+        )
+        destination_values = [
+            int(utxo["amount"] * 100_000_000)
+            for utxo in destination_scan.get("unspents", [])
+        ]
+        assert destination_values == [result.send_amount], (
+            f"Swept funds not found at destination: {destination_values}"
+        )
+        stale_registry = load_registry(
             ws.data_dir, ws.wallet_fingerprint, allow_legacy_fallback=False
         )
-        spent_bond = registry.get_bond_by_address(bond_address)
-        assert spent_bond is not None and not spent_bond.is_funded
-        md1_values = [
-            u.value for u in ws.utxo_cache.get(1, []) if u.address == destination
-        ]
-        assert md1_values == [result.send_amount], (
-            f"Swept funds not found at destination: {md1_values}"
-        )
-    finally:
+        stale_bond = stale_registry.get_bond_by_address(bond_address)
+        assert stale_bond is not None and stale_bond.is_funded
+
         await ws.close()
+        wallet_closed = True
+
+        # 7) The actual sync-bonds command must reconcile its pre-sync registry
+        # object with the now-empty UTXO set before saving it back to disk.
+        backend_settings = ResolvedBackendSettings(
+            network=NETWORK,
+            bitcoin_network=NETWORK,
+            backend_type="descriptor_wallet",
+            rpc_url=bitcoin_rpc_config["rpc_url"],
+            rpc_user=bitcoin_rpc_config["rpc_user"],
+            rpc_password=bitcoin_rpc_config["rpc_password"],
+            neutrino_url="",
+            neutrino_add_peers=[],
+            data_dir=tmp_path,
+        )
+        await _sync_bonds_async(mnemonic, backend_settings, "")
+
+        refreshed_registry = load_registry(
+            tmp_path, ws.wallet_fingerprint, allow_legacy_fallback=False
+        )
+        spent_bond = refreshed_registry.get_bond_by_address(bond_address)
+        assert spent_bond is not None and not spent_bond.is_funded
+        assert spent_bond.txid is None
+        assert spent_bond.vout is None
+        assert spent_bond.value is None
+        assert spent_bond.confirmations is None
+        assert spent_bond.extra_utxos == []
+
+        capsys.readouterr()
+        _list_bonds_offline(data_dir=tmp_path, fingerprint=ws.wallet_fingerprint)
+        out = capsys.readouterr().out
+        row = next(line for line in out.splitlines() if bond_address in line)
+        assert "EXPIRED" in row
+        assert "(funded)" not in row
+        assert f"{bond_value:,} sats" not in out
+        assert row.split()[-2] == "-"
+    finally:
+        if not wallet_closed:
+            await ws.close()
 
 
 @pytest.mark.asyncio
@@ -217,7 +265,7 @@ async def test_locked_bond_is_visible_but_not_spendable(
     tmp_path: Path,
 ) -> None:
     """A funded, still-locked bond must sync with its locktime and never sweep."""
-    ws = await _make_wallet(bitcoin_rpc_config, tmp_path)
+    ws, _ = await _make_wallet(bitcoin_rpc_config, tmp_path)
     try:
         timenumber, locktime = _locked_locktime()
         bond_address = _register_bond(ws, timenumber, locktime)
