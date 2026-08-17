@@ -202,6 +202,7 @@ async def do_coinjoin(
                     destination=body.destination,
                     mixdepth=body.mixdepth,
                     counterparty_count=body.counterparties,
+                    input_utxos=body.input_utxos,
                 )
             except Exception:
                 logger.exception("Coinjoin failed")

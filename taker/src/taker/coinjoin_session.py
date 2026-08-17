@@ -117,6 +117,9 @@ class CoinJoinSession:
         # express the build-time vs sign-time distinction explicitly).
         self.preselected_utxos: list[UTXOInfo] = []
         self.selected_utxos: list[UTXOInfo] = []
+        # Explicit coin control is strict: maker-fee changes and PoDLE retries
+        # may not pull additional inputs from the wallet.
+        self.strict_input_selection: bool = False
 
         # ``(txid, vout)`` inputs we hold a persisted CoinJoin lock on for this
         # round, so a concurrent round (this or another process) won't reuse
@@ -181,6 +184,7 @@ class CoinJoinSession:
         self.txid = ""
         self.preselected_utxos = []
         self.selected_utxos = []
+        self.strict_input_selection = False
         self.reserved_inputs = set()
         self.input_lock_owner = secrets.token_hex(32)
         self.signing_boundary_crossed = False
@@ -243,6 +247,10 @@ class CoinJoinSession:
 
         Returns the number of UTXOs actually added (0 if none available).
         """
+        if self.strict_input_selection:
+            logger.info("Strict input selection prevents adding another PoDLE UTXO")
+            return 0
+
         try:
             all_utxos = self.wallet.get_all_utxos(mixdepth, self.config.taker_utxo_age)
         except Exception as exc:  # pragma: no cover - defensive
@@ -1141,6 +1149,14 @@ class CoinJoinSession:
                 else:
                     # Need additional UTXOs beyond pre-selection
                     # This can happen if actual fees were higher than estimated
+                    if self.strict_input_selection:
+                        self.last_failure_reason = (
+                            "Explicit input UTXOs are insufficient after negotiated fees: "
+                            f"have {preselected_total:,} sats, need {required:,} sats. "
+                            "Add another --input-utxo or reduce the CoinJoin amount."
+                        )
+                        logger.error(self.last_failure_reason)
+                        return False
                     logger.warning(
                         f"Pre-selected UTXOs insufficient: have {preselected_total:,}, "
                         f"need {required:,}. Selecting additional UTXOs..."

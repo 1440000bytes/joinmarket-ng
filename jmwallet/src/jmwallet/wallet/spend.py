@@ -249,14 +249,16 @@ async def resolve_input_utxos(
     backend: BlockchainBackend,
     mixdepth: int,
     input_utxos: list[str],
+    allow_fidelity_bonds: bool = True,
 ) -> tuple[list[UTXOInfo], int | None]:
     """Resolve explicit ``txid:vout`` strings into spendable :class:`UTXOInfo`.
 
     Every listed outpoint must exist in *mixdepth*, be unfrozen, and be
-    signable by this wallet. Fidelity bonds are admitted only when their
-    timelock has already expired against chain median-time-past, since the
-    caller selected them deliberately. There is no fallback to automatic
-    selection: anything unusable raises :class:`ValueError` naming the reason.
+    signable by this wallet. When ``allow_fidelity_bonds`` is true, fidelity
+    bonds are admitted only when their timelock has already expired against
+    chain median-time-past, since the caller selected them deliberately. There
+    is no fallback to automatic selection: anything unusable raises
+    :class:`ValueError` naming the reason.
 
     Returns ``(utxos, locktime_cutoff)`` with the UTXOs in the order given.
     ``locktime_cutoff`` is the median-time-past that was fetched to validate
@@ -293,6 +295,9 @@ async def resolve_input_utxos(
             raise ValueError(msg)
         if utxo.frozen:
             msg = f"Input UTXO {txid}:{vout} is frozen; unfreeze it before spending"
+            raise ValueError(msg)
+        if utxo.is_fidelity_bond and not allow_fidelity_bonds:
+            msg = f"Input UTXO {txid}:{vout} is a fidelity bond; CoinJoin inputs cannot be bonds"
             raise ValueError(msg)
         utxos.append(utxo)
 

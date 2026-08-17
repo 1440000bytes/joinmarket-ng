@@ -271,6 +271,26 @@ class TestDoCoinjoinRequest:
         )
         assert req.counterparties == 5
 
+    def test_input_utxos_defaults_to_none(self) -> None:
+        req = DoCoinjoinRequest(
+            mixdepth=0,
+            amount_sats=100_000,
+            counterparties=5,
+            destination="bcrt1qtest",
+        )
+        assert req.input_utxos is None
+
+    def test_input_utxos_is_preserved(self) -> None:
+        input_utxos = [f"{'aa' * 32}:0"]
+        req = DoCoinjoinRequest(
+            mixdepth=0,
+            amount_sats=100_000,
+            counterparties=5,
+            destination="bcrt1qtest",
+            input_utxos=input_utxos,
+        )
+        assert req.input_utxos == input_utxos
+
     def test_counterparties_below_minimum_rejected(self) -> None:
         # A coinjoin with only 1 counterparty defeats the purpose; the
         # protocol's effective minimum is 2.

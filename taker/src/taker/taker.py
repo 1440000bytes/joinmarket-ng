@@ -37,6 +37,7 @@ from jmwallet.wallet.service import WalletService
 from jmwallet.wallet.signing import (
     deserialize_transaction,
 )
+from jmwallet.wallet.spend import resolve_input_utxos
 from loguru import logger
 
 from taker.coinjoin_session import CoinJoinSession
@@ -313,7 +314,65 @@ class Taker(TakerMonitoringMixin):
         """Maker nicks used by the most recent ``do_coinjoin`` call."""
         return self._session.last_used_nicks
 
-    async def check_utxo_eligibility(self, amount: int, mixdepth: int | None) -> str | None:
+    async def _resolve_explicit_input_utxos(
+        self,
+        input_utxos: list[str],
+        mixdepth: int,
+        amount: int,
+    ) -> list[UTXOInfo]:
+        """Resolve and validate a strict set of taker CoinJoin inputs."""
+        selected, _locktime_cutoff = await resolve_input_utxos(
+            wallet=self.wallet,
+            backend=self.backend,
+            mixdepth=mixdepth,
+            input_utxos=input_utxos,
+            allow_fidelity_bonds=False,
+        )
+
+        reserved = self.wallet.get_locked_input_outpoints()
+        for utxo in selected:
+            outpoint = (utxo.txid, utxo.vout)
+            if outpoint in reserved:
+                msg = f"Input UTXO {utxo.txid}:{utxo.vout} is locked by another in-flight CoinJoin"
+                raise ValueError(msg)
+            if utxo.confirmations < self.config.taker_utxo_age:
+                msg = (
+                    f"Input UTXO {utxo.txid}:{utxo.vout} has {utxo.confirmations} "
+                    f"confirmation(s); CoinJoin requires at least "
+                    f"{self.config.taker_utxo_age} (taker_utxo_age)"
+                )
+                raise ValueError(msg)
+
+        if amount > 0:
+            total = sum(utxo.value for utxo in selected)
+            if total < amount:
+                msg = (
+                    f"Insufficient funds in explicit input UTXOs: have {total:,} sats, "
+                    f"need at least {amount:,} sats before fees"
+                )
+                raise ValueError(msg)
+            if not podle_threshold_met(
+                selected,
+                amount,
+                self.config.taker_utxo_age,
+                self.config.taker_utxo_amtpercent,
+            ):
+                min_value = int(amount * self.config.taker_utxo_amtpercent / 100)
+                msg = (
+                    "No explicit input UTXO is large enough for the PoDLE commitment: "
+                    f"need at least {min_value:,} sats "
+                    f"({self.config.taker_utxo_amtpercent}% of {amount:,} sats)"
+                )
+                raise ValueError(msg)
+
+        return selected
+
+    async def check_utxo_eligibility(
+        self,
+        amount: int,
+        mixdepth: int | None,
+        input_utxos: list[str] | None = None,
+    ) -> str | None:
         """Validate that ``mixdepth`` can fund a CoinJoin of ``amount``.
 
         Runs the same eligibility filters used later in :meth:`do_coinjoin`
@@ -328,12 +387,28 @@ class Taker(TakerMonitoringMixin):
                 interactive selection (``select_utxos``), where it means "any
                 mixdepth" (the source is derived from the selection later);
                 otherwise it falls back to mixdepth 0.
+            input_utxos: Optional exact ``txid:vout`` set to validate instead
+                of automatic or interactive selection.
 
         Returns:
             ``None`` when a CoinJoin can proceed, otherwise a human-readable
             reason describing why it cannot.
         """
         min_conf = self.config.taker_utxo_age
+
+        if input_utxos is not None:
+            if self.config.select_utxos:
+                return "Cannot specify both --select-utxos and --input-utxo"
+            resolved_mixdepth = mixdepth if mixdepth is not None else 0
+            try:
+                await self._resolve_explicit_input_utxos(
+                    input_utxos,
+                    resolved_mixdepth,
+                    amount,
+                )
+            except ValueError as exc:
+                return str(exc)
+            return None
 
         # Interactive selection follows different rules (the user may pick
         # unlocked fidelity bonds and is not bound to auto-selection), so only
@@ -399,6 +474,65 @@ class Taker(TakerMonitoringMixin):
             return _append_confirmation_hint(str(exc), min_conf)
 
         return None
+
+    async def _prepare_requested_input_selection(
+        self,
+        amount: int,
+        mixdepth: int | None,
+        input_utxos: list[str] | None,
+    ) -> tuple[list[UTXOInfo] | None, list[UTXOInfo] | None, int] | None:
+        """Resolve explicit or interactive input requests and run preflight."""
+        explicitly_selected: list[UTXOInfo] | None = None
+        manually_selected: list[UTXOInfo] | None = None
+
+        if input_utxos is not None:
+            if self.config.select_utxos:
+                reason = "Cannot specify both --select-utxos and --input-utxo"
+                logger.error(reason)
+                self._session.last_failure_reason = reason
+                self.state = TakerState.FAILED
+                return None
+            resolved_mixdepth = mixdepth if mixdepth is not None else 0
+            try:
+                explicitly_selected = await self._resolve_explicit_input_utxos(
+                    input_utxos,
+                    resolved_mixdepth,
+                    amount,
+                )
+            except ValueError as exc:
+                reason = str(exc)
+                logger.error(reason)
+                self._session.last_failure_reason = reason
+                self.state = TakerState.FAILED
+                return None
+            self._session.strict_input_selection = True
+            logger.info(
+                f"Using {len(explicitly_selected)} explicit input UTXO(s) "
+                f"from mixdepth {resolved_mixdepth}"
+            )
+        elif self.config.select_utxos:
+            logger.info("Launching interactive UTXO selection...")
+            manually_selected = await self._maybe_select_utxos_interactively(
+                amount=amount,
+                mixdepth=mixdepth,
+            )
+            if not manually_selected:
+                return None
+            resolved_mixdepth = manually_selected[0].mixdepth
+            logger.info(f"Source mixdepth: {resolved_mixdepth} (from selection)")
+        else:
+            resolved_mixdepth = mixdepth if mixdepth is not None else 0
+
+        if explicitly_selected is None:
+            eligibility_reason = await self.check_utxo_eligibility(amount, resolved_mixdepth)
+            if eligibility_reason is not None:
+                logger.error(eligibility_reason)
+                self._session.last_failure_reason = eligibility_reason
+                self.state = TakerState.FAILED
+                return None
+
+        self.last_source_mixdepth = resolved_mixdepth
+        return explicitly_selected, manually_selected, resolved_mixdepth
 
     async def stop(self, *, close_wallet: bool = True) -> None:
         """Stop the taker and close connections.
@@ -569,6 +703,7 @@ class Taker(TakerMonitoringMixin):
         mixdepth: int | None = None,
         counterparty_count: int | None = None,
         exclude_nicks: set[str] | None = None,
+        input_utxos: list[str] | None = None,
     ) -> str | None:
         """Run one CoinJoin with fresh, non-reusable per-round state."""
         if self._round_lock.locked():
@@ -586,6 +721,7 @@ class Taker(TakerMonitoringMixin):
                 mixdepth=mixdepth,
                 counterparty_count=counterparty_count,
                 exclude_nicks=exclude_nicks,
+                input_utxos=input_utxos,
             )
 
     async def _do_coinjoin(
@@ -595,6 +731,7 @@ class Taker(TakerMonitoringMixin):
         mixdepth: int | None = None,
         counterparty_count: int | None = None,
         exclude_nicks: set[str] | None = None,
+        input_utxos: list[str] | None = None,
     ) -> str | None:
         """
         Execute a single CoinJoin transaction.
@@ -611,6 +748,8 @@ class Taker(TakerMonitoringMixin):
                 (on top of ``orderbook_manager.ignored_makers`` and
                 ``own_wallet_nicks``). Tumbler uses this to prevent the
                 same maker from re-appearing across consecutive plan phases.
+            input_utxos: Optional exact ``txid:vout`` input set. Explicit
+                inputs are never expanded with other wallet UTXOs.
 
         Returns:
             Transaction ID if successful, None otherwise
@@ -645,36 +784,17 @@ class Taker(TakerMonitoringMixin):
             )
             n_makers = resolve_counterparty_count(requested)
 
-            # Interactive UTXO selection happens first (before any network
-            # work): the selector shows the whole wallet and, unless the
-            # caller pinned a mixdepth, the source mixdepth is derived from
-            # the user's selection.
-            manually_selected_utxos: list[UTXOInfo] | None = None
-            if self.config.select_utxos:
-                logger.info("Launching interactive UTXO selection...")
-                manually_selected_utxos = await self._maybe_select_utxos_interactively(
-                    amount=amount,
-                    mixdepth=mixdepth,
-                )
-                if not manually_selected_utxos:
-                    return None
-                mixdepth = manually_selected_utxos[0].mixdepth
-                logger.info(f"Source mixdepth: {mixdepth} (from selection)")
-            elif mixdepth is None:
-                mixdepth = 0
-            self.last_source_mixdepth = mixdepth
-
-            # Pre-flight: reject ineligible UTXOs before any orderbook/bond work
-            # so the user is not kept waiting on a doomed round (issue #528).
-            # Callers that already validate (the CLI) will simply re-confirm a
-            # passing verdict; jmwalletd, run_schedule and the tumbler rely on
-            # this check since they go straight to do_coinjoin.
-            eligibility_reason = await self.check_utxo_eligibility(amount, mixdepth)
-            if eligibility_reason is not None:
-                logger.error(eligibility_reason)
-                self._session.last_failure_reason = eligibility_reason
-                self.state = TakerState.FAILED
+            # Resolve explicit or interactive input requests before orderbook
+            # and bond work, then fail fast if the requested source cannot fund
+            # a CoinJoin.
+            requested_inputs = await self._prepare_requested_input_selection(
+                amount,
+                mixdepth,
+                input_utxos,
+            )
+            if requested_inputs is None:
                 return None
+            explicitly_selected_utxos, manually_selected_utxos, mixdepth = requested_inputs
 
             # Determine destination address
             if destination == "INTERNAL":
@@ -798,8 +918,15 @@ class Taker(TakerMonitoringMixin):
                 # SWEEP MODE: Select ALL UTXOs and calculate exact cj_amount for zero change
                 logger.info("Sweep mode: selecting UTXOs from mixdepth")
 
-                # Use manually selected UTXOs if available, otherwise get all UTXOs
-                if manually_selected_utxos:
+                # Use explicitly or manually selected UTXOs when available;
+                # otherwise get all eligible UTXOs from the mixdepth.
+                if explicitly_selected_utxos is not None:
+                    self._session.preselected_utxos = explicitly_selected_utxos
+                    logger.info(
+                        f"Sweep using exactly {len(explicitly_selected_utxos)} explicit "
+                        "input UTXO(s)"
+                    )
+                elif manually_selected_utxos:
                     self._session.preselected_utxos = manually_selected_utxos
                     logger.info(
                         f"Sweep using {len(manually_selected_utxos)} manually selected UTXOs "
@@ -912,8 +1039,14 @@ class Taker(TakerMonitoringMixin):
                 # This ensures the PoDLE UTXO is one we'll actually use in the transaction
                 logger.info("Selecting UTXOs and generating PoDLE commitment...")
 
-                # Use manually selected UTXOs if available
-                if manually_selected_utxos:
+                # Use explicitly or manually selected UTXOs if available.
+                if explicitly_selected_utxos is not None:
+                    self._session.preselected_utxos = explicitly_selected_utxos
+                    logger.info(
+                        f"Using exactly {len(explicitly_selected_utxos)} explicit input UTXO(s) "
+                        f"(total: {sum(u.value for u in explicitly_selected_utxos):,} sats)"
+                    )
+                elif manually_selected_utxos:
                     self._session.preselected_utxos = manually_selected_utxos
                     logger.info(
                         f"Using {len(manually_selected_utxos)} manually selected UTXOs "
@@ -1484,10 +1617,18 @@ class Taker(TakerMonitoringMixin):
                                 max_retries=self.config.taker_utxo_retries,
                             )
                     if new_commitment is None:
-                        logger.error(
-                            "No more PoDLE commitments available: all indices exhausted "
-                            f"across all eligible UTXOs in mixdepth {mixdepth}"
-                        )
+                        if self._session.strict_input_selection:
+                            reason = (
+                                "No more PoDLE commitments available from the explicit "
+                                "input UTXOs; automatic input expansion is disabled"
+                            )
+                        else:
+                            reason = (
+                                "No more PoDLE commitments available: all indices exhausted "
+                                f"across all eligible UTXOs in mixdepth {mixdepth}"
+                            )
+                        logger.error(reason)
+                        self._session.last_failure_reason = reason
                         self.state = TakerState.FAILED
                         return False
 

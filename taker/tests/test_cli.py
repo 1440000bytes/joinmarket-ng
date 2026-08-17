@@ -4,7 +4,7 @@ Tests for taker CLI module.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import click
 import pytest
@@ -32,6 +32,69 @@ def test_help_output_is_alphabetically_sorted() -> None:
     from jmcore.cli_help import find_unsorted_help
 
     assert find_unsorted_help(app) == []
+
+
+def test_coinjoin_help_includes_explicit_input_option() -> None:
+    result = runner.invoke(app, ["coinjoin", "--help"], prog_name="jm-taker")
+    output = click.unstyle(result.stdout)
+
+    assert result.exit_code == 0
+    assert "--input-utxo" in output
+
+
+def test_coinjoin_rejects_interactive_and_explicit_selection_together() -> None:
+    with patch("taker.cli.setup_cli") as mock_setup:
+        result = runner.invoke(
+            app,
+            [
+                "coinjoin",
+                "--amount",
+                "100000",
+                "--select-utxos",
+                "--input-utxo",
+                f"{'aa' * 32}:0",
+            ],
+        )
+
+    assert result.exit_code == 1
+    mock_setup.assert_not_called()
+
+
+def test_coinjoin_forwards_repeated_explicit_inputs() -> None:
+    first = f"{'aa' * 32}:0"
+    second = f"{'bb' * 32}:1"
+    settings = MagicMock()
+    config = MagicMock()
+    config.network.value = "regtest"
+    config.backend_type = "descriptor_wallet"
+    config.socks_host = "127.0.0.1"
+    config.socks_port = 9050
+    config.counterparty_count = 3
+    resolved = MagicMock(mnemonic="test mnemonic", bip39_passphrase="", creation_height=None)
+
+    with (
+        patch("taker.cli.setup_cli", return_value=settings),
+        patch("taker.cli.ensure_config_file"),
+        patch("taker.cli.resolve_mnemonic", return_value=resolved),
+        patch("taker.cli.build_taker_config", return_value=config),
+        patch("taker.cli._run_coinjoin", new_callable=AsyncMock) as mock_run,
+    ):
+        result = runner.invoke(
+            app,
+            [
+                "coinjoin",
+                "--amount",
+                "100000",
+                "--input-utxo",
+                first,
+                "--input-utxo",
+                second,
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert mock_run.await_args is not None
+    assert mock_run.await_args.kwargs["input_utxos"] == [first, second]
 
 
 class TestBuildTakerConfig:

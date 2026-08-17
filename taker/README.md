@@ -146,6 +146,24 @@ For full documentation, see [taker Documentation](https://joinmarket-ng.github.i
 │    --help                                                   Show this        │
 │                                                             message and      │
 │                                                             exit.            │
+│    --input-utxo                            TEXT             Explicit input   │
+│                                                             UTXO as          │
+│                                                             txid:vout        │
+│                                                             (repeatable).    │
+│                                                             CoinJoin spends  │
+│                                                             exactly the      │
+│                                                             given UTXOs,     │
+│                                                             including for    │
+│                                                             sweeps, and      │
+│                                                             never adds other │
+│                                                             inputs. Every    │
+│                                                             UTXO must be     │
+│                                                             eligible and     │
+│                                                             belong to        │
+│                                                             --mixdepth.      │
+│                                                             Mutually         │
+│                                                             exclusive with   │
+│                                                             --select-utxos.  │
 │    --log-level      -l                     TEXT             Log level        │
 │    --max-abs-fee                           INTEGER          Max absolute fee │
 │                                                             in sats          │
@@ -156,7 +174,11 @@ For full documentation, see [taker Documentation](https://joinmarket-ng.github.i
 │                                                             --select-utxos,  │
 │                                                             derived from the │
 │                                                             selection unless │
-│                                                             set explicitly)  │
+│                                                             set explicitly;  │
+│                                                             --input-utxo     │
+│                                                             entries must     │
+│                                                             belong to this   │
+│                                                             mixdepth)        │
 │    --mnemonic-file  -f                     PATH             Path to mnemonic │
 │                                                             file             │
 │    --network                               [mainnet|testne  Protocol network │

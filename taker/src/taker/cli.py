@@ -97,7 +97,8 @@ def coinjoin(
             "--mixdepth",
             "-m",
             help="Source mixdepth (default 0; with --select-utxos, derived from "
-            "the selection unless set explicitly)",
+            "the selection unless set explicitly; --input-utxo entries must belong "
+            "to this mixdepth)",
         ),
     ] = None,
     counterparties: Annotated[
@@ -212,6 +213,16 @@ def coinjoin(
             help="Interactively select UTXOs (fzf-like TUI)",
         ),
     ] = False,
+    input_utxo: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--input-utxo",
+            help="Explicit input UTXO as txid:vout (repeatable). CoinJoin spends exactly "
+            "the given UTXOs, including for sweeps, and never adds other inputs. Every "
+            "UTXO must be eligible and belong to --mixdepth. Mutually exclusive with "
+            "--select-utxos.",
+        ),
+    ] = None,
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation prompt")] = False,
     data_dir: Annotated[
         Path | None,
@@ -240,6 +251,10 @@ def coinjoin(
     Configuration is loaded from ~/.joinmarket-ng/config.toml (or $JOINMARKET_DATA_DIR/config.toml),
     environment variables, and CLI arguments. CLI arguments have the highest priority.
     """
+    if select_utxos and input_utxo:
+        logger.error("Cannot specify both --select-utxos and --input-utxo")
+        raise typer.Exit(1)
+
     # Load settings (log_level=None means use settings.logging.level)
     settings = setup_cli(log_level, data_dir=data_dir, config_file=config_file)
 
@@ -302,7 +317,14 @@ def coinjoin(
     try:
         asyncio.run(
             _run_coinjoin(
-                settings, config, amount, destination, mixdepth, config.counterparty_count, yes
+                settings=settings,
+                config=config,
+                amount=amount,
+                destination=destination,
+                mixdepth=mixdepth,
+                counterparties=config.counterparty_count,
+                skip_confirmation=yes,
+                input_utxos=input_utxo,
             )
         )
     except RuntimeError as e:
@@ -326,6 +348,7 @@ async def _run_coinjoin(
     mixdepth: int | None,
     counterparties: int | None,
     skip_confirmation: bool,
+    input_utxos: list[str] | None = None,
 ) -> None:
     """Run CoinJoin transaction."""
     from taker.taker import Taker
@@ -429,7 +452,11 @@ async def _run_coinjoin(
         # CoinJoin BEFORE connecting to directory servers and fetching the
         # orderbook. This avoids minutes of network work on a doomed round
         # (issue #528).
-        eligibility_reason = await taker.check_utxo_eligibility(amount, mixdepth)
+        eligibility_reason = await taker.check_utxo_eligibility(
+            amount,
+            mixdepth,
+            input_utxos=input_utxos,
+        )
         if eligibility_reason is not None:
             logger.error(eligibility_reason)
             raise typer.Exit(1)
@@ -444,6 +471,7 @@ async def _run_coinjoin(
             destination=destination,
             mixdepth=mixdepth,
             counterparty_count=counterparties,
+            input_utxos=input_utxos,
         )
 
         if txid:

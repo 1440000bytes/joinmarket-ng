@@ -390,6 +390,10 @@ class DoCoinjoinRequest(BaseModel):
     the lower bound of 2 matches the minimum the taker protocol can run with,
     and the upper bound prevents a malformed request from triggering large
     allocations / long-running RPC under the auth boundary.
+
+    ``input_utxos`` is an optional explicit list of ``"txid:vout"`` strings.
+    When given, the CoinJoin spends exactly those UTXOs. Omit the field to
+    preserve automatic coin selection.
     """
 
     mixdepth: int = Field(..., ge=0)
@@ -397,6 +401,7 @@ class DoCoinjoinRequest(BaseModel):
     counterparties: int = Field(..., ge=2, le=20)
     destination: str
     txfee: int | None = Field(default=None, ge=0)
+    input_utxos: list[str] | None = None
 
 
 class TumblerPlanRequest(BaseModel):

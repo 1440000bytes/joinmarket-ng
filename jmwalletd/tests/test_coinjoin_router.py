@@ -253,6 +253,11 @@ class TestDoCoinjoin:
     @patch("taker.taker.Taker")
     @patch("taker.config.TakerConfig")
     @patch("jmwalletd.routers.coinjoin.get_settings")
+    @pytest.mark.parametrize(
+        "input_utxos",
+        [None, [f"{'aa' * 32}:0"]],
+        ids=["omitted", "supplied"],
+    )
     def test_start_coinjoin(
         self,
         mock_get_settings: Mock,
@@ -260,6 +265,7 @@ class TestDoCoinjoin:
         mock_taker_cls: Mock,
         mock_backend: AsyncMock,
         authed_client: tuple[TestClient, str],
+        input_utxos: list[str] | None,
     ) -> None:
         client, token = authed_client
         state = get_daemon_state()
@@ -286,15 +292,19 @@ class TestDoCoinjoin:
         mock_settings.taker.minimum_makers = 4
         mock_get_settings.return_value = mock_settings
 
+        request_body: dict[str, Any] = {
+            "mixdepth": 0,
+            "amount_sats": 100000,
+            "destination": "bcrt1qdest",
+            "counterparties": 3,
+            "txfee": 500,
+        }
+        if input_utxos is not None:
+            request_body["input_utxos"] = input_utxos
+
         resp = client.post(
             "/api/v1/wallet/test_wallet.jmdat/taker/coinjoin",
-            json={
-                "mixdepth": 0,
-                "amount_sats": 100000,
-                "destination": "bcrt1qdest",
-                "counterparties": 3,
-                "txfee": 500,
-            },
+            json=request_body,
             headers=_auth_headers(token),
         )
         assert resp.status_code == 202
@@ -314,6 +324,7 @@ class TestDoCoinjoin:
         assert kwargs["bondless_makers_allowance_require_zero_fee"] is True
         assert mock_backend.await_args is not None
         assert mock_backend.await_args.kwargs["network"] == "regtest"
+        assert mock_taker.do_coinjoin.await_args.kwargs["input_utxos"] == input_utxos
 
 
 class TestBuildCoinjoinTakerConfig:

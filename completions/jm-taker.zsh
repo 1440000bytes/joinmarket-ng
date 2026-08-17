@@ -32,7 +32,7 @@ _jm_taker() {
           _arguments \
             '--amount=[Amount in sats (0 for sweep)]: :' \
             '--destination=[Destination address (or '\''INTERNAL'\'' for next mixdepth)]: :' \
-            '--mixdepth=[Source mixdepth (default 0; with --select-utxos, derived from the selection unless set explicitly)]: :' \
+            '--mixdepth=[Source mixdepth (default 0; with --select-utxos, derived from the selection unless set explicitly; --input-utxo entries must belong to this mixdepth)]: :' \
             '--counterparties=[Number of makers]: :' \
             '--mnemonic-file=[Path to mnemonic file]:file:_files' \
             '--prompt-bip39-passphrase[Prompt for BIP39 passphrase interactively]' \
@@ -52,6 +52,7 @@ _jm_taker() {
             '--bond-exponent=[Exponent for fidelity bond value calculation]: :' \
             '--bondless-zero-fee[For bondless spots, require zero absolute fee]' \
             '--select-utxos[Interactively select UTXOs (fzf-like TUI)]' \
+            '--input-utxo=[Explicit input UTXO as txid\:vout (repeatable). CoinJoin spends exactly the given UTXOs, including for sweeps, and never adds other inputs. Every UTXO must be eligible and belong to --mixdepth. Mutually exclusive with --select-utxos.]: :' \
             '--yes[Skip confirmation prompt]' \
             '--data-dir=[Data directory (default\: ~/.joinmarket-ng or $JOINMARKET_DATA_DIR)]:file:_files' \
             '--config-file=[Config file path (decoupled from data dir). Defaults to <data-dir>/config.toml]:file:_files' \

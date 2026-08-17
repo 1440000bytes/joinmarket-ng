@@ -55,6 +55,11 @@ jm-taker coinjoin --mnemonic-file ~/.joinmarket-ng/wallets/default.mnemonic \
 # Pick the inputs by hand (interactive TUI)
 jm-taker coinjoin --mnemonic-file ~/.joinmarket-ng/wallets/default.mnemonic \
   --amount 500000 --select-utxos
+
+# Spend an exact input set (repeat --input-utxo as needed)
+jm-taker coinjoin --mnemonic-file ~/.joinmarket-ng/wallets/default.mnemonic \
+  --amount 500000 --mixdepth 2 \
+  --input-utxo TXID:0 --input-utxo OTHER_TXID:1
 ```
 
 Increase counterparties (for larger anonymity sets) with `--counterparties`.
@@ -64,6 +69,11 @@ mixdepth. A CoinJoin spends from a single mixdepth, so the first UTXO you
 toggle pins the source mixdepth (deselect everything to unpin); pass
 `--mixdepth` to pin it up front. The `INTERNAL` destination then targets the
 mixdepth after the derived one.
+
+With `--input-utxo`, every listed outpoint must be an eligible input in the
+requested mixdepth (mixdepth 0 by default). Fixed-amount CoinJoins and sweeps
+spend exactly the listed inputs. If maker or mining fees make that set
+insufficient, the round fails instead of adding another wallet UTXO.
 
 ## Tumbler
 
@@ -246,6 +256,24 @@ Takers only require Tor SOCKS; no Tor control port is needed.
 │    --help                                                   Show this        │
 │                                                             message and      │
 │                                                             exit.            │
+│    --input-utxo                            TEXT             Explicit input   │
+│                                                             UTXO as          │
+│                                                             txid:vout        │
+│                                                             (repeatable).    │
+│                                                             CoinJoin spends  │
+│                                                             exactly the      │
+│                                                             given UTXOs,     │
+│                                                             including for    │
+│                                                             sweeps, and      │
+│                                                             never adds other │
+│                                                             inputs. Every    │
+│                                                             UTXO must be     │
+│                                                             eligible and     │
+│                                                             belong to        │
+│                                                             --mixdepth.      │
+│                                                             Mutually         │
+│                                                             exclusive with   │
+│                                                             --select-utxos.  │
 │    --log-level      -l                     TEXT             Log level        │
 │    --max-abs-fee                           INTEGER          Max absolute fee │
 │                                                             in sats          │
@@ -256,7 +284,11 @@ Takers only require Tor SOCKS; no Tor control port is needed.
 │                                                             --select-utxos,  │
 │                                                             derived from the │
 │                                                             selection unless │
-│                                                             set explicitly)  │
+│                                                             set explicitly;  │
+│                                                             --input-utxo     │
+│                                                             entries must     │
+│                                                             belong to this   │
+│                                                             mixdepth)        │
 │    --mnemonic-file  -f                     PATH             Path to mnemonic │
 │                                                             file             │
 │    --network                               [mainnet|testne  Protocol network │
