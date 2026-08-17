@@ -186,7 +186,7 @@ _jm_wallet() {
             '--backend=[Backend\: descriptor_wallet | neutrino]: :' \
             '--rpc-url=[]: :' \
             '--neutrino-url=[]: :' \
-            '--extended[Show detailed address view with derivations]' \
+            '--extended[Show detailed addresses, derivations, and UTXO outpoints]' \
             '--gap=[Max address gap to show in extended view]: :' \
             '--show-empty[In --extended view, show addresses with zero balance. When disabled (default), empty addresses are hidden except for the first unused one per branch so you still have a fresh receive address.]' \
             '--scan-status[Print Bitcoin Core'\''s wallet scan/coverage diagnostics and exit (descriptor wallet only). Use it when the wallet proposes already-used addresses; if coverage is incomplete, repair it with `jm-wallet rescan`. See the wallet scanning docs.]' \

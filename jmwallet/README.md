@@ -693,8 +693,10 @@ For full documentation, see [jmwallet Documentation](https://joinmarket-ng.githu
 │                                                        $JOINMARKET_DATA_DIR) │
 │                                                        [env var:             │
 │                                                        JOINMARKET_DATA_DIR]  │
-│ --extended             -e                              Show detailed address │
-│                                                        view with derivations │
+│ --extended             -e                              Show detailed         │
+│                                                        addresses,            │
+│                                                        derivations, and UTXO │
+│                                                        outpoints             │
 │ --gap                  -g                     INTEGER  Max address gap to    │
 │                                                        show in extended view │
 │                                                        [default: 6]          │

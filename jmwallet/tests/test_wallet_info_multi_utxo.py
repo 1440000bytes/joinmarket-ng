@@ -102,7 +102,7 @@ def wallet_with_multi_utxo():
 
 def test_extended_info_shows_individual_utxos(wallet_with_multi_utxo):
     """Test that multiple UTXOs on same address are displayed individually."""
-    mock_wallet, _ = wallet_with_multi_utxo
+    mock_wallet, (utxo1, utxo2) = wallet_with_multi_utxo
 
     with tempfile.TemporaryDirectory() as tmpdir:
         mnemonic_file = Path(tmpdir) / "test.mnemonic"
@@ -131,6 +131,40 @@ def test_extended_info_shows_individual_utxos(wallet_with_multi_utxo):
 
             # Check confirmation counts
             assert "(3 conf)" in result.stdout or "(5+ conf)" in result.stdout
+
+            # Coin-control identifiers are shown in the exact CLI input format.
+            assert f"    - {utxo1.outpoint}" in result.stdout
+            assert f"    - {utxo2.outpoint}" in result.stdout
+
+            address_line = next(
+                line for line in result.stdout.splitlines() if utxo1.address in line
+            )
+            assert utxo1.outpoint not in address_line
+            assert utxo2.outpoint not in address_line
+
+
+def test_extended_info_shows_single_utxo_outpoint(wallet_with_multi_utxo, capsys):
+    """The common single-UTXO address row also exposes its coin-control ID."""
+    from jmwallet.cli.wallet import _print_branch_addresses
+    from jmwallet.wallet.models import AddressInfo
+
+    _, (utxo, _) = wallet_with_multi_utxo
+    address = AddressInfo(
+        address=utxo.address,
+        index=0,
+        balance=utxo.value,
+        status="deposit",
+        path=utxo.path,
+        is_external=True,
+        has_unconfirmed=False,
+        utxos=[utxo],
+    )
+
+    _print_branch_addresses([address], pending_addresses=set())
+
+    lines = capsys.readouterr().out.splitlines()
+    assert utxo.address in lines[0]
+    assert lines[1].startswith(f"    - {utxo.outpoint}")
 
 
 def test_extended_info_indents_subsequent_utxos(wallet_with_multi_utxo):
@@ -199,8 +233,7 @@ def test_extended_info_shows_frozen_per_utxo(wallet_with_multi_utxo):
 
             lines = result.stdout.split("\n")
 
-            # Find UTXO lines (contain address and confirmation count)
-            # The UTXO line has format: path + address + value + status with conf
+            # Find indented UTXO child rows by value and confirmation count.
             lines_100k_utxo = [
                 line for line in lines if "100,000 sats" in line and "(3 conf)" in line
             ]

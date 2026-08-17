@@ -102,6 +102,11 @@ The concise `jm-wallet info` keeps showing a fresh, never-handed-out deposit
 address per mixdepth, so you will not accidentally reuse any of the reserved
 ones.
 
+The extended view prints each funded address once, followed by an indented
+`- TXID:VOUT` row for every UTXO at that address. Use the `TXID:VOUT` value
+with repeatable `--input-utxo` options for explicit coin control with
+`jm-wallet send` or `jm-taker coinjoin`.
+
 ## Backends
 
 Configure backend in `~/.joinmarket-ng/config.toml` (details in [Installation](install.md#configure-backend)).
@@ -748,8 +753,10 @@ The full CLI reference below is auto-generated from command `--help` output.
 │                                                        $JOINMARKET_DATA_DIR) │
 │                                                        [env var:             │
 │                                                        JOINMARKET_DATA_DIR]  │
-│ --extended             -e                              Show detailed address │
-│                                                        view with derivations │
+│ --extended             -e                              Show detailed         │
+│                                                        addresses,            │
+│                                                        derivations, and UTXO │
+│                                                        outpoints             │
 │ --gap                  -g                     INTEGER  Max address gap to    │
 │                                                        show in extended view │
 │                                                        [default: 6]          │

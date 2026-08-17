@@ -239,7 +239,7 @@ class TestPrintBranchAddressesConfirmations:
 class TestPrintBranchAddressesReused:
     """Reused addresses keep the underlying UTXO label visible (issue #564)."""
 
-    def test_reused_shows_base_status_on_every_utxo_line(self) -> None:
+    def test_reused_shows_base_status_on_parent_address(self) -> None:
         addr = "bc1qtest0004"
         utxos = [_mk_utxo(addr, confirmations=6), _mk_utxo(addr, confirmations=6)]
         ai = AddressInfo(
@@ -255,9 +255,9 @@ class TestPrintBranchAddressesReused:
         buf = io.StringIO()
         with redirect_stdout(buf):
             _print_branch_addresses([ai], pending_addresses=set())
-        output = buf.getvalue()
-        # Both UTXO lines carry the combined label, not a bare "reused".
-        assert output.count("non-cj-change (reused)") == 2
+        lines = buf.getvalue().splitlines()
+        assert "non-cj-change (reused)" in lines[0]
+        assert all("non-cj-change" not in line for line in lines[1:])
 
     def test_reused_single_utxo_shows_base_status(self) -> None:
         """Single auto-frozen UTXO on a reused deposit address."""

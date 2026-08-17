@@ -420,7 +420,12 @@ def info(
         str | None, typer.Option("--neutrino-url", envvar="NEUTRINO_URL")
     ] = None,
     extended: Annotated[
-        bool, typer.Option("--extended", "-e", help="Show detailed address view with derivations")
+        bool,
+        typer.Option(
+            "--extended",
+            "-e",
+            help="Show detailed addresses, derivations, and UTXO outpoints",
+        ),
     ] = False,
     gap: Annotated[
         int, typer.Option("--gap", "-g", help="Max address gap to show in extended view")
@@ -930,6 +935,14 @@ def _print_scan_status(status: dict) -> None:
         )
 
 
+def _print_utxo_rows(utxos: list[Any]) -> None:
+    """Print compact child rows with copy-ready outpoints and per-UTXO state."""
+    for utxo in utxos:
+        confs_display = "5+ conf" if utxo.confirmations >= 5 else f"{utxo.confirmations} conf"
+        frozen_display = " [FROZEN]" if utxo.frozen else ""
+        print(f"    - {utxo.outpoint}  {utxo.value:,} sats  ({confs_display}){frozen_display}")
+
+
 def _print_branch_addresses(
     addresses: list,  # list[AddressInfo] - avoid import cycle at module top
     pending_addresses: set[str],
@@ -955,8 +968,8 @@ def _print_branch_addresses(
     balance display remains accurate. ``hidden_count`` counts addresses
     that were omitted from the output because they were empty.
 
-    When an address has multiple UTXOs, each UTXO is listed separately
-    (matching the behavior of freeze.py).
+    Funded addresses are followed by one compact child row per UTXO. This keeps
+    the address row readable while exposing copy-ready ``TXID:VOUT`` values.
     """
 
     total_balance = 0
@@ -999,56 +1012,12 @@ def _print_branch_addresses(
         unit_suffix = " sats"
         unit_suffix_width = len(unit_suffix)
 
-        # Show individual UTXOs when multiple exist on same address
-        if len(addr_info.utxos) > 1:
-            # Show each UTXO with address only on first
-            for i, utxo in enumerate(addr_info.utxos):
-                # Append confirmation count for each UTXO
-                if utxo.confirmations >= 5:
-                    confs_display = "5+ conf"
-                else:
-                    confs_display = f"{utxo.confirmations} conf"
-                utxo_status = f"{status_display} ({confs_display})"
-                if utxo.frozen:
-                    utxo_status += " [FROZEN]"
-
-                balance_unit = f"{utxo.value:,}{unit_suffix}"
-
-                if i == 0:
-                    # First UTXO: show path and address
-                    print(
-                        f"{addr_info.path:<24}{addr_info.address:<44}"
-                        f"{balance_unit:>{balance_width + unit_suffix_width}}  {utxo_status}"
-                    )
-                else:
-                    # Subsequent UTXOs: indent only
-                    print(
-                        f"{'':<24}{'':<44}"
-                        f"{balance_unit:>{balance_width + unit_suffix_width}}  {utxo_status}"
-                    )
-        elif len(addr_info.utxos) == 1:
-            # Single UTXO - show as before with confirmations
-            utxo = addr_info.utxos[0]
-            if utxo.confirmations >= 5:
-                confs_display = "5+ conf"
-            else:
-                confs_display = f"{utxo.confirmations} conf"
-            status_display += f" ({confs_display})"
-            if utxo.frozen:
-                status_display += " [FROZEN]"
-
-            balance_unit = f"{addr_info.balance:,}{unit_suffix}"
-            print(
-                f"{addr_info.path:<24}{addr_info.address:<44}"
-                f"{balance_unit:>{balance_width + unit_suffix_width}}  {status_display}"
-            )
-        else:
-            # No UTXOs (new/empty address) - show as before
-            balance_unit = f"{addr_info.balance:,}{unit_suffix}"
-            print(
-                f"{addr_info.path:<24}{addr_info.address:<44}"
-                f"{balance_unit:>{balance_width + unit_suffix_width}}  {status_display}"
-            )
+        balance_unit = f"{addr_info.balance:,}{unit_suffix}"
+        print(
+            f"{addr_info.path:<24}{addr_info.address:<44}"
+            f"{balance_unit:>{balance_width + unit_suffix_width}}  {status_display}"
+        )
+        _print_utxo_rows(addr_info.utxos)
 
     return total_balance, hidden
 
@@ -1207,49 +1176,11 @@ def _show_extended_wallet_info(
                         else:
                             locktime_str += " [FB EXPIRED]"
 
-                    # Show individual UTXOs when multiple exist on same FB address
-                    if len(addr_info.utxos) > 1:
-                        addr_len = len(addr_info.address)
-                        for i, utxo in enumerate(addr_info.utxos):
-                            utxo_status = locktime_str
-                            # Confirmation count per UTXO
-                            if utxo.confirmations == 0:
-                                utxo_status += " (unconfirmed)"
-                            elif utxo.confirmations >= 5:
-                                utxo_status += " (5+ conf)"
-                            else:
-                                utxo_status += f" ({utxo.confirmations} conf)"
-
-                            if i == 0:
-                                print(
-                                    f"{addr_info.path:<24}\t{addr_info.address}\t"
-                                    f"{utxo.value:,} sats\t{utxo_status}"
-                                )
-                            else:
-                                print(
-                                    f"{'':<24}\t{'':<{addr_len}}\t"
-                                    f"{utxo.value:,} sats\t{utxo_status}"
-                                )
-                    elif len(addr_info.utxos) == 1:
-                        utxo = addr_info.utxos[0]
-                        # Confirmation count for single UTXO
-                        # Note: For single UTXO we modify locktime_str directly
-                        # since no copy is needed (not reused for other UTXOs)
-                        if utxo.confirmations == 0:
-                            locktime_str += " (unconfirmed)"
-                        elif utxo.confirmations >= 5:
-                            locktime_str += " (5+ conf)"
-                        else:
-                            locktime_str += f" ({utxo.confirmations} conf)"
-                        print(
-                            f"{addr_info.path:<24}\t{addr_info.address}\t"
-                            f"{addr_info.balance:,} sats\t{locktime_str}"
-                        )
-                    else:
-                        print(
-                            f"{addr_info.path:<24}\t{addr_info.address}\t"
-                            f"{addr_info.balance:,} sats\t{locktime_str}"
-                        )
+                    print(
+                        f"{addr_info.path:<24}\t{addr_info.address}\t"
+                        f"{addr_info.balance:,} sats\t{locktime_str}"
+                    )
+                    _print_utxo_rows(addr_info.utxos)
 
                 # Show bond balance with detailed breakdown
                 expired_balance = bond_balance - bond_locked
