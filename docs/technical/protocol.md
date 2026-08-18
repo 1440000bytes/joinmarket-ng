@@ -226,7 +226,7 @@ After collecting offers, the taker selects makers through three phases:
 
 The default algorithm uses a per-slot Bernoulli trial (matching the reference JoinMarket implementation):
 
-1. **Pre-filter**: When `bondless_require_zero_fee` is enabled (default), bondless offers (no fidelity bond) that charge a non-zero absolute fee are removed. This prevents attackers from flooding the orderbook with fee-charging bondless offers.
+1. **Pre-filter**: When `bondless_require_zero_fee` is enabled (default), bondless offers (no fidelity bond) that advertise a non-zero CoinJoin fee, absolute or relative, are removed. This prevents attackers from flooding the orderbook with fee-charging bondless offers.
 2. **Per-slot selection**: For each of the `n` slots independently:
    - With probability `bondless_makers_allowance` (default 0.2): pick uniformly at random from **all** remaining offers (bonded and bondless compete equally).
    - Otherwise: pick from the bonded pool weighted by `fidelity_bond_value`.

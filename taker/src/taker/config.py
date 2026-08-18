@@ -155,7 +155,7 @@ class TakerConfig(WalletConfig):
     )
     bondless_makers_allowance_require_zero_fee: bool = Field(
         default=True,
-        description="For bondless maker spots, require zero absolute fee (percentage fee OK)",
+        description="For bondless maker spots, require a zero advertised CoinJoin fee",
     )
     max_maker_utxos: int = Field(
         default=15,

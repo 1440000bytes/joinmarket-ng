@@ -80,6 +80,79 @@ def max_cj_fee() -> MaxCjFee:
     return MaxCjFee(abs_fee=50_000, rel_fee="0.1")
 
 
+@pytest.fixture
+def bondless_fee_policy_offers() -> list[Offer]:
+    """Offers covering the zero-fee policy for absolute and relative fees."""
+    return [
+        Offer(
+            counterparty="bondless-zero-absolute",
+            oid=0,
+            ordertype=OfferType.SW0_ABSOLUTE,
+            minsize=1_000,
+            maxsize=100_000_000,
+            txfee=0,
+            cjfee=0,
+        ),
+        Offer(
+            counterparty="bondless-zero-relative",
+            oid=0,
+            ordertype=OfferType.SW0_RELATIVE,
+            minsize=1_000,
+            maxsize=100_000_000,
+            txfee=0,
+            cjfee="0.0",
+        ),
+        Offer(
+            counterparty="bondless-nonzero-absolute",
+            oid=0,
+            ordertype=OfferType.SW0_ABSOLUTE,
+            minsize=1_000,
+            maxsize=100_000_000,
+            txfee=0,
+            cjfee=232,
+        ),
+        Offer(
+            counterparty="bondless-nonzero-relative",
+            oid=0,
+            ordertype=OfferType.SW0_RELATIVE,
+            minsize=1_000,
+            maxsize=100_000_000,
+            txfee=0,
+            cjfee="0.001",
+        ),
+        Offer(
+            counterparty="bonded-nonzero-absolute",
+            oid=0,
+            ordertype=OfferType.SW0_ABSOLUTE,
+            minsize=1_000,
+            maxsize=100_000_000,
+            txfee=0,
+            cjfee=232,
+            fidelity_bond_value=1,
+        ),
+        Offer(
+            counterparty="bonded-nonzero-relative",
+            oid=0,
+            ordertype=OfferType.SW0_RELATIVE,
+            minsize=1_000,
+            maxsize=100_000_000,
+            txfee=0,
+            cjfee="0.001",
+            fidelity_bond_value=1,
+        ),
+    ]
+
+
+def expected_zero_fee_policy_nicks() -> set[str]:
+    """Return the makers that remain eligible under the bondless fee policy."""
+    return {
+        "bondless-zero-absolute",
+        "bondless-zero-relative",
+        "bonded-nonzero-absolute",
+        "bonded-nonzero-relative",
+    }
+
+
 class TestCalculateCjFee:
     """Tests for calculate_cj_fee."""
 
@@ -551,6 +624,19 @@ class TestChooseOrders:
         )
         assert len(orders) == 1
 
+    def test_choose_orders_excludes_nonzero_fee_bondless_offers(
+        self, bondless_fee_policy_offers: list[Offer], max_cj_fee: MaxCjFee
+    ) -> None:
+        """Normal selection applies the bondless zero-fee policy."""
+        orders, _ = choose_orders(
+            offers=bondless_fee_policy_offers,
+            cj_amount=100_000,
+            n=len(bondless_fee_policy_offers),
+            max_cj_fee=max_cj_fee,
+        )
+
+        assert set(orders) == expected_zero_fee_policy_nicks()
+
 
 class TestChooseSweepOrders:
     """Tests for choose_sweep_orders."""
@@ -636,6 +722,20 @@ class TestChooseSweepOrders:
         )
 
         assert (orders, cj_amount, total_fee) == ({}, 0, 0)
+
+    def test_choose_sweep_orders_excludes_nonzero_fee_bondless_offers(
+        self, bondless_fee_policy_offers: list[Offer], max_cj_fee: MaxCjFee
+    ) -> None:
+        """Sweep selection applies the bondless zero-fee policy."""
+        orders, _cj_amount, _total_fee = choose_sweep_orders(
+            offers=bondless_fee_policy_offers,
+            total_input_value=1_000_000,
+            my_txfee=1_000,
+            n=len(bondless_fee_policy_offers),
+            max_cj_fee=max_cj_fee,
+        )
+
+        assert set(orders) == expected_zero_fee_policy_nicks()
 
 
 class TestOrderbookManager:
@@ -727,7 +827,7 @@ class TestOrderbookManager:
         This tests the exclude_nicks parameter used during maker replacement
         to avoid re-selecting makers that are already in the current session.
         """
-        manager = OrderbookManager(max_cj_fee, data_dir=tmp_path)
+        manager = OrderbookManager(max_cj_fee, bondless_require_zero_fee=False, data_dir=tmp_path)
         manager.update_offers(sample_offers)
 
         # First, select some makers without exclusion
@@ -752,7 +852,7 @@ class TestOrderbookManager:
         self, sample_offers: list[Offer], max_cj_fee: MaxCjFee, tmp_path: Path
     ) -> None:
         """Test that exclude_nicks works together with ignored_makers."""
-        manager = OrderbookManager(max_cj_fee, data_dir=tmp_path)
+        manager = OrderbookManager(max_cj_fee, bondless_require_zero_fee=False, data_dir=tmp_path)
         manager.update_offers(sample_offers)
 
         # Ignore maker1
@@ -801,7 +901,12 @@ class TestOrderbookManager:
         """
         # Initialize with own wallet nick
         own_wallet_nicks = {"maker1"}
-        manager = OrderbookManager(max_cj_fee, data_dir=tmp_path, own_wallet_nicks=own_wallet_nicks)
+        manager = OrderbookManager(
+            max_cj_fee,
+            bondless_require_zero_fee=False,
+            data_dir=tmp_path,
+            own_wallet_nicks=own_wallet_nicks,
+        )
         manager.update_offers(sample_offers)
 
         # Ignore maker2
@@ -1094,6 +1199,18 @@ class TestMixedBondedBondlessSelection:
             nonzero_nicks = {o.counterparty for o in nonzero_fee}
             assert len(selected_nicks & nonzero_nicks) == 0
 
+    def test_bondless_zero_fee_filter_excludes_relative_fees(
+        self, bondless_fee_policy_offers: list[Offer]
+    ) -> None:
+        """Bondless relative fees are excluded, while bonded fees remain eligible."""
+        selected = fidelity_bond_weighted_choose(
+            offers=bondless_fee_policy_offers,
+            n=len(bondless_fee_policy_offers),
+            bondless_require_zero_fee=True,
+        )
+
+        assert {offer.counterparty for offer in selected} == expected_zero_fee_policy_nicks()
+
     def test_insufficient_bonded_fills_from_all(self) -> None:
         """If not enough bonded offers, fill remainder from all remaining."""
         # Only 1 bonded maker
@@ -1358,6 +1475,7 @@ class TestFilterOffersByNickVersion:
             n=2,
             max_cj_fee=max_cj_fee,
             min_nick_version=5,  # Our makers are J5
+            bondless_require_zero_fee=False,
         )
         assert len(orders) == 2
         for nick in orders.keys():
@@ -1367,7 +1485,7 @@ class TestFilterOffersByNickVersion:
         self, mixed_version_offers: list[Offer], max_cj_fee: MaxCjFee, tmp_path: Path
     ) -> None:
         """OrderbookManager.select_makers respects min_nick_version."""
-        manager = OrderbookManager(max_cj_fee, data_dir=tmp_path)
+        manager = OrderbookManager(max_cj_fee, bondless_require_zero_fee=False, data_dir=tmp_path)
         manager.update_offers(mixed_version_offers)
 
         orders, fee = manager.select_makers(cj_amount=100_000, n=2, min_nick_version=5)
@@ -1385,6 +1503,7 @@ class TestFilterOffersByNickVersion:
             n=5,  # Request more than total available
             max_cj_fee=max_cj_fee,
             min_nick_version=5,
+            bondless_require_zero_fee=False,
         )
         # Only 3 J5 makers available
         assert len(orders) == 3
@@ -1535,6 +1654,7 @@ class TestRequiredFeaturesFiltering:
             n=2,
             max_cj_fee=max_cj_fee,
             required_features={"neutrino_compat"},
+            bondless_require_zero_fee=False,
         )
         assert len(orders) == 2
         # None of the selected should be the known-incompatible maker
@@ -1544,7 +1664,7 @@ class TestRequiredFeaturesFiltering:
         self, offers_with_features: list[Offer], max_cj_fee: MaxCjFee, tmp_path: Path
     ) -> None:
         """OrderbookManager.select_makers respects required_features."""
-        manager = OrderbookManager(max_cj_fee, data_dir=tmp_path)
+        manager = OrderbookManager(max_cj_fee, bondless_require_zero_fee=False, data_dir=tmp_path)
         manager.update_offers(offers_with_features)
 
         orders, fee = manager.select_makers(
@@ -1609,6 +1729,7 @@ class TestRequiredFeaturesFiltering:
             n=2,
             max_cj_fee=max_cj_fee,
             required_features={"neutrino_compat"},
+            bondless_require_zero_fee=False,
         )
         assert len(orders) == 2
         # Known-incompatible maker should not be selected
@@ -1618,7 +1739,7 @@ class TestRequiredFeaturesFiltering:
         self, offers_with_features: list[Offer], max_cj_fee: MaxCjFee, tmp_path: Path
     ) -> None:
         """OrderbookManager.select_makers_for_sweep respects required_features."""
-        manager = OrderbookManager(max_cj_fee, data_dir=tmp_path)
+        manager = OrderbookManager(max_cj_fee, bondless_require_zero_fee=False, data_dir=tmp_path)
         manager.update_offers(offers_with_features)
 
         orders, cj_amount, fee = manager.select_makers_for_sweep(
@@ -1728,6 +1849,7 @@ class TestPreferOffersWithConfirmedFeatures:
             n=2,
             max_cj_fee=max_cj_fee,
             required_features={"neutrino_compat"},
+            bondless_require_zero_fee=False,
         )
         assert set(result) == {"J5confirmed1OOOO", "J5unknown1OOOOOO"}
 

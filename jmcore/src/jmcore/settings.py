@@ -1019,7 +1019,7 @@ class TakerSettings(BaseModel):
     )
     bondless_require_zero_fee: bool = Field(
         default=True,
-        description="Require zero absolute fee for bondless maker spots",
+        description="Require a zero advertised CoinJoin fee for bondless maker spots",
     )
     maker_timeout_sec: int = Field(
         default=60,

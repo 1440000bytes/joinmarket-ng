@@ -505,7 +505,7 @@
 # Fidelity bond settings
 # bondless_makers_allowance = 0.2  # 0.0-1.0: per-slot probability of picking a bondless maker
 # bond_value_exponent = 1.3
-# bondless_require_zero_fee = true
+# bondless_require_zero_fee = true  # Bondless makers must advertise a zero CoinJoin fee
 
 # Timeouts and intervals
 # maker_timeout_sec = 60         # Range: 10-3600 seconds

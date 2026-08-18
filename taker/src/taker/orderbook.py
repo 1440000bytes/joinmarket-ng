@@ -11,6 +11,7 @@ Implements:
 from __future__ import annotations
 
 from collections.abc import Callable
+from decimal import Decimal
 from typing import Any
 
 from jmcore.bitcoin import (
@@ -422,11 +423,10 @@ def fidelity_bond_weighted_choose(
 
     **Pre-filtering** (when ``bondless_require_zero_fee`` is True):
     Bondless offers (``fidelity_bond_value == 0``) that charge a non-zero
-    absolute fee are removed before selection.  This prevents an attacker
-    from flooding the orderbook with fee-charging bondless offers to steal
-    fees while still allowing genuine zero-fee bondless makers to participate.
-    Relative-fee offers are kept because their effective fee depends on the
-    CoinJoin amount and is evaluated elsewhere.
+    advertised CoinJoin fee are removed before selection. This prevents an
+    attacker from flooding the orderbook with fee-charging bondless offers to
+    steal fees while still allowing genuine zero-fee bondless makers to
+    participate.
 
     **Per-slot selection** (for each of the *n* slots independently):
 
@@ -459,21 +459,18 @@ def fidelity_bond_weighted_choose(
         bondless_makers_allowance: Per-slot probability of uniform-random
             selection (0.0-1.0).
         bondless_require_zero_fee: If True, pre-filter removes bondless
-            offers with non-zero absolute fee.
+            offers with a non-zero advertised CoinJoin fee.
         cj_amount: CoinJoin amount (reserved for future fee filtering).
 
     Returns:
         Selected offers.
     """
-    if len(offers) <= n:
-        return offers[:]
-
     # --- Pre-filter: remove bondless offers charging a fee ---
     if bondless_require_zero_fee:
         filtered: list[Offer] = []
         removed = 0
         for o in offers:
-            if o.fidelity_bond_value == 0 and _is_nonzero_absolute_fee(o):
+            if o.fidelity_bond_value == 0 and _is_nonzero_cj_fee(o):
                 removed += 1
             else:
                 filtered.append(o)
@@ -484,6 +481,9 @@ def fidelity_bond_weighted_choose(
         remaining = filtered
     else:
         remaining = offers[:]
+
+    if len(remaining) <= n:
+        return remaining
 
     selected: list[Offer] = []
 
@@ -525,12 +525,9 @@ def fidelity_bond_weighted_choose(
     return selected
 
 
-def _is_nonzero_absolute_fee(offer: Offer) -> bool:
-    """Check if an offer charges a non-zero absolute fee."""
-    return (
-        offer.ordertype in (OfferType.SW0_ABSOLUTE, OfferType.SWA_ABSOLUTE)
-        and int(offer.cjfee) != 0
-    )
+def _is_nonzero_cj_fee(offer: Offer) -> bool:
+    """Check whether an offer advertises a non-zero CoinJoin fee."""
+    return Decimal(str(offer.cjfee)) != 0
 
 
 def _pick_weighted_bonded(pool: list[Offer]) -> Offer | None:
@@ -572,7 +569,7 @@ def choose_orders(
         ignored_makers: Makers to exclude
         min_nick_version: Minimum required nick version (e.g., 6 for neutrino takers)
         bondless_makers_allowance: Probability of random selection vs fidelity bond weighting
-        bondless_require_zero_fee: If True, bondless spots only select zero absolute fee offers
+        bondless_require_zero_fee: If True, bondless spots only select zero-fee offers
         required_features: Feature names that makers must support (passed to filter_offers)
 
     Returns:
@@ -661,7 +658,7 @@ def choose_sweep_orders(
         ignored_makers: Makers to exclude
         min_nick_version: Minimum required nick version (e.g., 6 for neutrino takers)
         bondless_makers_allowance: Probability of random selection vs fidelity bond weighting
-        bondless_require_zero_fee: If True, bondless spots only select zero absolute fee offers
+        bondless_require_zero_fee: If True, bondless spots only select zero-fee offers
         required_features: Feature names that makers must support (passed to filter_offers)
 
     Returns:
