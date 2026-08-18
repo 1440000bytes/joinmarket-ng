@@ -146,18 +146,37 @@ same fee models, same fidelity bonds. The main differences:
 Typical migration flow:
 
 ```bash
-# 1. Import your existing mnemonic into the default wallet location
+# 1. Import only the existing BIP39 mnemonic into the default wallet location
 jm-wallet import
 
-# 2. Recover existing fidelity bonds (scans a wider locktime window)
-jm-wallet recover-bonds
-
-# 3. Verify balances and addresses match what you expect
+# 2. Run the first regular-wallet sync, then compare every mixdepth balance
+# and next deposit address with the records from the reference wallet
 jm-wallet info
 
-# 4. Start the maker
+# 3. Check the descriptor range. If a used legacy address index is outside
+# the imported range, choose N above the highest used index and widen it once
+jm-wallet info --scan-status
+jm-wallet rescan --scan-depth N
+
+# 4. Recover existing fidelity bonds from the mnemonic in one full scan
+jm-wallet recover-bonds
+jm-wallet list-bonds
+
+# 5. Verify balances, addresses, and bonds before starting a maker
+jm-wallet info
+
+# 6. Start the maker only after the recovered state matches your records
 jm-maker start
 ```
+
+Before retiring the reference wallet, record its balance in every mixdepth,
+the highest used external and internal address index in each mixdepth, and each
+fidelity bond's address, value, and locktime. Keep an offline backup of the
+reference wallet until the NG maker has completed a CoinJoin. A successful
+mnemonic import only creates the NG wallet file; it does not prove that the
+node's descriptor range covers every address used by a long-running legacy
+wallet. See [Wallet Scanning](technical/wallet-scanning.md) for choosing
+`--scan-depth` and limiting a rescan to a known start height.
 
 See [Wallet guide](README-jmwallet.md) for import options and BIP39
 passphrase handling, and [Fidelity Bonds](technical/privacy.md#fidelity-bonds)
