@@ -1028,7 +1028,8 @@ class CoinJoinSession:
                 # selection time. The equation that determined cj_amount was:
                 #   total_input = cj_amount + maker_fees + tx_fee_budget
                 #
-                # Using any other value for tx_fee would create a residual:
+                # Using any other value for tx_fee would create a residual even
+                # when the maker set and its fees are unchanged:
                 #   residual = total_input - cj_amount - maker_fees - tx_fee
                 #            = tx_fee_budget - tx_fee
                 #
@@ -1038,7 +1039,12 @@ class CoinJoinSession:
                 # By using the budget as tx_fee, we ensure:
                 #   - The taker pays exactly what was stated at the start
                 #   - The fee rate may differ based on actual tx size
-                #   - No funds are lost to unexpected miner fees
+                #   - The taker's total outflow remains the amount approved
+                #
+                # If the maker set changes after !fill, an unclaimed maker fee
+                # also becomes residual. That value goes to miners because a
+                # sweep has no taker change output, without increasing the
+                # taker's approved total outflow.
                 #
                 # Calculate actual vsize for fee rate logging
                 actual_tx_vsize = num_inputs * 68 + num_outputs * 31 + 11
@@ -1077,14 +1083,14 @@ class CoinJoinSession:
                     f"effective_rate={actual_fee_rate:.2f} sat/vB"
                 )
 
-                # Small positive residual (typically < 100 sats) is expected from integer
-                # division in calculate_sweep_amount. This goes to miners.
+                # Small positive residual is expected from integer division in
+                # calculate_sweep_amount. A larger residual can occur when maker
+                # fees decrease after the sweep amount is fixed. Both go to miners.
                 if residual > 100:
-                    # Larger residual indicates a calculation issue
                     logger.warning(
-                        f"Sweep: unexpected residual of {residual} sats. "
-                        f"Expected < 100 sats from integer rounding. "
-                        "This may indicate a fee calculation mismatch."
+                        f"Sweep: redirecting {residual} sats of residual value to miners. "
+                        "This usually means maker fees decreased after the sweep amount "
+                        "was fixed."
                     )
 
                 # The residual becomes additional miner fee (no taker change in sweep).
@@ -1099,11 +1105,11 @@ class CoinJoinSession:
                         logger.error(f"Sweep failed: {self.last_failure_reason}")
                         return False
 
+                    tolerance = self.config.max_sweep_fee_change
                     actual_base_fee = self._estimate_tx_fee(
                         num_inputs, num_outputs, use_base_rate=True
                     )
                     fee_ratio = actual_base_fee / tx_fee
-                    tolerance = self.config.max_sweep_fee_change
                     if fee_ratio < 1 - tolerance or fee_ratio > 1 + tolerance:
                         self.last_failure_reason = (
                             "Sweep transaction fee estimate differs from the selected fee budget: "

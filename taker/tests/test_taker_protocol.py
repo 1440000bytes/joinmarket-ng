@@ -30,7 +30,14 @@ from jmwallet.wallet.models import UTXOInfo
 
 from taker.multi_directory import ChannelBinding
 from taker.podle_manager import PoDLEManager
-from taker.taker import MakerSession, PhaseResult, Taker, TakerState
+from taker.taker import (
+    MakerSession,
+    PhaseResult,
+    Taker,
+    TakerState,
+    _estimate_initial_tx_shape,
+    _initial_fee_confirmation_values,
+)
 
 
 @pytest.fixture
@@ -116,6 +123,32 @@ def sample_offer2():
         cjfee="0.0003",  # 0.03% relative
         counterparty="J5TestMaker2",
     )
+
+
+def test_initial_tx_shape_matches_fee_budget_assumptions() -> None:
+    """Initial confirmations use the same shapes as fee budgeting."""
+    assert _estimate_initial_tx_shape(3, 9, is_sweep=True) == (26, 19)
+    assert _estimate_initial_tx_shape(3, 9, is_sweep=False) == (14, 20)
+
+
+def test_initial_fee_confirmation_uses_committed_sweep_budget(
+    mock_wallet, mock_backend, mock_config
+) -> None:
+    """Sweep confirmation discloses its budget; normal mode uses randomization."""
+    session = Taker(mock_wallet, mock_backend, mock_config)._session
+    session.is_sweep = True
+    session._sweep_tx_fee_budget = 1_421
+    session._fee_rate = 0.6
+
+    assert _initial_fee_confirmation_values(session, 3, 9) == (26, 19, 1_421, 0.6)
+
+    session.is_sweep = False
+    session._randomized_fee_rate = 0.63
+    with patch.object(session, "_estimate_tx_fee", return_value=1_004) as estimate:
+        values = _initial_fee_confirmation_values(session, 3, 9)
+
+    assert values == (14, 20, 1_004, 0.63)
+    estimate.assert_called_once_with(14, 20)
 
 
 @pytest.mark.asyncio
@@ -1067,6 +1100,33 @@ class TestSweepCjAmountPreservation:
         else:
             assert session.last_failure_reason is not None
             assert "fee estimate differs" in session.last_failure_reason
+
+    @pytest.mark.asyncio
+    async def test_sweep_accepts_dropped_maker_fee_as_residual(
+        self, mock_wallet_for_sweep, mock_backend_for_sweep, taker_config_for_sweep
+    ) -> None:
+        """An approved maker fee may become miner fee without increasing outflow."""
+        taker = Taker(mock_wallet_for_sweep, mock_backend_for_sweep, taker_config_for_sweep)
+        session = taker._session
+        session.is_sweep = True
+        session.preselected_utxos = mock_wallet_for_sweep.get_all_utxos()
+        session._fee_rate = 1.0
+        session._sweep_tx_fee_budget = 700
+
+        total_input = sum(utxo.value for utxo in session.preselected_utxos)
+        dropped_maker_fee = 2_000
+        session.cj_amount = total_input - session._sweep_tx_fee_budget - dropped_maker_fee
+        nick, maker_session = self._make_single_utxo_maker_session()
+        session.maker_sessions = {nick: maker_session}
+
+        result = await session._phase_build_tx(
+            destination="bcrt1qqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcruj60yu",
+            mixdepth=3,
+        )
+
+        assert result is True
+        assert session.unsigned_tx != b""
+        assert session.last_failure_reason is None
 
     @pytest.mark.asyncio
     async def test_sweep_aborts_when_effective_fee_rate_below_relay_floor(

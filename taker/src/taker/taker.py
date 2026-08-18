@@ -15,6 +15,7 @@ Reference: Original joinmarket-clientserver/src/jmclient/taker.py
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from typing import Any
 
@@ -80,6 +81,42 @@ def _append_confirmation_hint(message: str, taker_utxo_age: int) -> str:
         f"{message}. CoinJoin requires UTXOs with at least "
         f"{taker_utxo_age} confirmation(s) (taker_utxo_age setting). "
         f"Wait for more confirmations or lower taker_utxo_age in your config."
+    )
+
+
+def _estimate_initial_tx_shape(
+    num_taker_inputs: int, num_makers: int, *, is_sweep: bool
+) -> tuple[int, int]:
+    """Estimate the pre-negotiation transaction shape shown to the user."""
+    if is_sweep:
+        maker_inputs = num_makers * 2 + 5
+        num_outputs = 1 + num_makers * 2
+    else:
+        maker_inputs = math.ceil(num_makers * 1.2)
+        num_outputs = 2 + num_makers * 2
+    return num_taker_inputs + maker_inputs, num_outputs
+
+
+def _initial_fee_confirmation_values(
+    session: CoinJoinSession, num_taker_inputs: int, num_makers: int
+) -> tuple[int, int, int, float]:
+    """Return the transaction shape, fee, and rate used in initial confirmation."""
+    estimated_inputs, estimated_outputs = _estimate_initial_tx_shape(
+        num_taker_inputs,
+        num_makers,
+        is_sweep=session.is_sweep,
+    )
+    if session.is_sweep:
+        estimated_tx_fee = session._sweep_tx_fee_budget
+        estimated_fee_rate = session._fee_rate
+    else:
+        estimated_tx_fee = session._estimate_tx_fee(estimated_inputs, estimated_outputs)
+        estimated_fee_rate = session._randomized_fee_rate
+    return (
+        estimated_inputs,
+        estimated_outputs,
+        estimated_tx_fee,
+        estimated_fee_rate if estimated_fee_rate is not None else 1.0,
     )
 
 
@@ -958,21 +995,12 @@ class Taker(TakerMonitoringMixin):
                     f"total value: {total_input_value:,} sats"
                 )
 
-                # Estimate tx fee for sweep order calculation
-                # Conservative estimate: 2 inputs per maker + buffer for edge cases
-                # Most makers have 1-2 inputs, but occasionally one might have 6+.
-                # The buffer (5 inputs) covers the edge case without being excessive.
-                # If actual < estimated: extra goes to miner (acceptable)
-                # If actual > estimated: CoinJoin fails with negative residual error
-                maker_inputs_per_maker = 2
-                maker_inputs_buffer = 5  # Extra inputs to handle edge cases
-                estimated_inputs = (
-                    len(self._session.preselected_utxos)
-                    + n_makers * maker_inputs_per_maker
-                    + maker_inputs_buffer
+                # Estimate the deterministic sweep budget before maker input
+                # counts are known. The same shape and budget are disclosed in
+                # the initial confirmation below.
+                estimated_inputs, estimated_outputs = _estimate_initial_tx_shape(
+                    len(self._session.preselected_utxos), n_makers, is_sweep=True
                 )
-                # CJ outputs + maker changes (no taker change in sweep!)
-                estimated_outputs = 1 + n_makers + n_makers
                 # For sweeps, use base rate for deterministic budget calculation.
                 # The cj_amount is calculated based on this budget, so it must match
                 # exactly at build time. Using randomized rate would cause residual fees.
@@ -1118,18 +1146,22 @@ class Taker(TakerMonitoringMixin):
                 f"total fee: {total_fee:,} sats"
             )
 
-            # Log estimated transaction fee before prompting for confirmation
-            # Conservative estimate: assume 1 input per maker + 20% buffer, rounded up
-            import math
-
-            estimated_maker_inputs = math.ceil(n_makers * 1.2)
-            estimated_inputs = len(self._session.preselected_utxos) + estimated_maker_inputs
-            # Outputs: 1 CJ output per participant + change outputs (assume all have change)
-            estimated_outputs = (1 + n_makers) + (1 + n_makers)
-            estimated_tx_fee = self._session._estimate_tx_fee(estimated_inputs, estimated_outputs)
+            # Log the same estimate used by the transaction calculations. Sweep
+            # amounts commit to the deterministic budget before !fill, while
+            # normal CoinJoins use the session's randomized fee rate.
+            (
+                estimated_inputs,
+                estimated_outputs,
+                estimated_tx_fee,
+                estimated_fee_rate,
+            ) = _initial_fee_confirmation_values(
+                self._session,
+                len(self._session.preselected_utxos),
+                n_makers,
+            )
             logger.info(
                 f"Estimated transaction (mining) fee: {estimated_tx_fee:,} sats "
-                f"(~{self._session._fee_rate:.2f} sat/vB for ~{estimated_inputs} inputs, "
+                f"(~{estimated_fee_rate:.2f} sat/vB for ~{estimated_inputs} inputs, "
                 f"{estimated_outputs} outputs)"
             )
 
@@ -1162,7 +1194,7 @@ class Taker(TakerMonitoringMixin):
                         total_fee=total_fee + estimated_tx_fee,
                         destination=destination,
                         mining_fee=estimated_tx_fee,
-                        fee_rate=self._session._fee_rate,
+                        fee_rate=estimated_fee_rate,
                         stage="initial",
                     )
                     if not confirmed:
