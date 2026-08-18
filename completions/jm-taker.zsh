@@ -50,7 +50,7 @@ _jm_taker() {
             '--block-target=[Target blocks for fee estimation (1-1008). Cannot be used with neutrino.]: :' \
             '--bondless-allowance=[Fraction of time to choose makers randomly (0.0-1.0)]: :' \
             '--bond-exponent=[Exponent for fidelity bond value calculation]: :' \
-            '--bondless-zero-fee[For bondless spots, require zero absolute fee]' \
+            '--bondless-zero-fee[For bondless spots, require a zero advertised CoinJoin fee]' \
             '--select-utxos[Interactively select UTXOs (fzf-like TUI)]' \
             '--input-utxo=[Explicit input UTXO as txid\:vout (repeatable). CoinJoin spends exactly the given UTXOs, including for sweeps, and never adds other inputs. Every UTXO must be eligible and belong to --mixdepth. Mutually exclusive with --select-utxos.]: :' \
             '--yes[Skip confirmation prompt]' \

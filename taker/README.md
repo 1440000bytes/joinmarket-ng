@@ -107,9 +107,9 @@ For full documentation, see [taker Documentation](https://joinmarket-ng.github.i
 │                                                             [env var:        │
 │                                                             BONDLESS_MAKERS… │
 │    --bondless-zer…      --no-bondless-…                     For bondless     │
-│                                                             spots, require   │
-│                                                             zero absolute    │
-│                                                             fee              │
+│                                                             spots, require a │
+│                                                             zero advertised  │
+│                                                             CoinJoin fee     │
 │                                                             [env var:        │
 │                                                             BONDLESS_REQUIR… │
 │    --config-file                           PATH             Config file path │
