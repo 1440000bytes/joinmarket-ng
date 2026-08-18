@@ -270,6 +270,8 @@ services:
       # Regtest has no defaults so we must supply the local compose directories.
       - NETWORK_CONFIG__DIRECTORY_SERVERS=jm-directory:5222,jm-directory2:5223
       - 'NETWORK_CONFIG__NICK_AUTH_DIRECTORY_IDS={"jm-directory:5222":"test:jm-directory-5222","jm-directory2:5223":"test:jm-directory2-5223"}'
+      # E2E makers intentionally charge fees without setting up fidelity bonds.
+      - TAKER__BONDLESS_REQUIRE_ZERO_FEE=false
       - JMWALLETD_HOST=0.0.0.0
       - LOGGING__LEVEL=DEBUG
       - OBWATCH_URL=http://jm-orderbook-watcher:8000

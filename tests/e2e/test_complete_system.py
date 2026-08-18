@@ -294,6 +294,9 @@ def taker_config():
         minimum_makers=2,
         maker_timeout_sec=60,
         order_wait_time=60.0,
+        # These compatibility tests intentionally exercise fee-charging makers
+        # without setting up fidelity bonds.
+        bondless_makers_allowance_require_zero_fee=False,
         data_dir=_suite_data_dir(),
     )
 
@@ -1202,7 +1205,10 @@ async def test_taker_maker_selection(
     from jmcore.models import Offer, OfferType
     from taker.orderbook import OrderbookManager
 
-    manager = OrderbookManager(taker_config.max_cj_fee)
+    manager = OrderbookManager(
+        taker_config.max_cj_fee,
+        bondless_require_zero_fee=False,
+    )
 
     # Simulate offers from our test makers
     test_offers = [

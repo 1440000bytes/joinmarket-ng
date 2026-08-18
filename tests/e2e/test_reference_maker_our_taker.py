@@ -717,6 +717,8 @@ def _build_taker_docker_cmd(
         "100000",
         "--max-rel-fee",
         "0.01",
+        # Reference yield generators charge fees and do not create bonds in this fixture.
+        "--no-bondless-zero-fee",
         "--log-level",
         "DEBUG",
         "--yes",

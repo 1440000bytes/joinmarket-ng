@@ -170,6 +170,8 @@ async def test_coinjoin_creates_history_entry(
             directory_servers=[_DIRECTORY_SERVER],
             counterparty_count=2,
             minimum_makers=2,
+            # The shared Docker makers charge fees and do not create bonds.
+            bondless_makers_allowance_require_zero_fee=False,
             data_dir=str(data_dir),
         )
 

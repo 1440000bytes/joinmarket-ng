@@ -37,6 +37,13 @@ def test_jmwalletd_dockerfile_only_builds_the_standalone_daemon() -> None:
     assert "AS jam-ng" not in content
 
 
+def test_e2e_jmwalletd_accepts_fee_charging_bondless_makers() -> None:
+    compose = yaml.safe_load(COMPOSE_FILE.read_text())
+    environment = compose["services"]["jmwalletd"]["environment"]
+
+    assert "TAKER__BONDLESS_REQUIRE_ZERO_FEE=false" in environment
+
+
 def test_playwright_uses_jam_docker_standalone_ng() -> None:
     compose = yaml.safe_load(COMPOSE_FILE.read_text())
     service = compose["services"]["jam-playwright"]

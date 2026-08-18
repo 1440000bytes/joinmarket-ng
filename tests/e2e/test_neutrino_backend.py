@@ -436,6 +436,8 @@ class TestNeutrinoCoinJoin:
             counterparty_count=1,  # Only need 1 maker for this test
             minimum_makers=1,  # Allow single maker CoinJoin
             taker_utxo_age=COINBASE_MATURITY_CONFIRMATIONS,
+            # Docker makers advertise nonzero fees without fidelity bonds.
+            bondless_makers_allowance_require_zero_fee=False,
             data_dir=tmp_path,
         )
         assert taker_config.data_dir == taker_wallet.data_dir
@@ -797,6 +799,8 @@ class TestNeutrinoCoinJoin:
             counterparty_count=1,  # Only need 1 maker for this test
             minimum_makers=1,  # Allow single maker CoinJoin
             taker_utxo_age=required_utxo_confirmations,
+            # Docker makers advertise nonzero fees without fidelity bonds.
+            bondless_makers_allowance_require_zero_fee=False,
             # NOT_SELF is the policy this test actually asserts: a neutrino taker
             # must never reveal itself by broadcasting locally. RANDOM_PEER is
             # documented to fall back to self, so it contradicts the assertion
