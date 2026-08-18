@@ -1294,6 +1294,49 @@ class TestWalletRescanAndOfferUpdate:
         maker_bot.offer_manager.create_offers.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_start_filters_registry_bonds_by_wallet_network(
+        self,
+        maker_bot,
+        mock_wallet,
+        tmp_path,
+    ):
+        from jmwallet.wallet.bond_registry import (
+            BondRegistry,
+        )
+        from jmwallet.wallet.bond_registry import (
+            FidelityBondInfo as RegistryBondInfo,
+        )
+
+        maker_bot.config.data_dir = tmp_path
+        maker_bot.config.network = NetworkType.TESTNET
+        mock_wallet.data_dir = tmp_path
+        mock_wallet.wallet_fingerprint = "deadbeef"
+        mock_wallet.network = "regtest"
+        mock_wallet.reconstruct_imported_state_safe.side_effect = RuntimeError("stop after sync")
+        registry_bond = RegistryBondInfo(
+            address="bcrt1qexample",
+            locktime=2_000_000_000,
+            locktime_human="2033-05-18T03:33:20Z",
+            index=7,
+            path="m/84'/1'/0'/2/7:7",
+            pubkey="02" + "11" * 32,
+            witness_script_hex="00",
+            network="regtest",
+            created_at="2026-08-18T00:00:00Z",
+        )
+
+        with patch(
+            "jmwallet.wallet.bond_registry.load_registry",
+            return_value=BondRegistry(bonds=[registry_bond]),
+        ):
+            with pytest.raises(RuntimeError, match="stop after sync"):
+                await maker_bot.start()
+
+        mock_wallet.sync_all.assert_awaited_once_with(
+            [(registry_bond.address, registry_bond.locktime, registry_bond.index)]
+        )
+
+    @pytest.mark.asyncio
     async def test_periodic_rescan_aborts_on_expired_certificate(self, maker_bot):
         error = ExpiredFidelityBondCertificateError("renew the certificate")
         maker_bot._resync_wallet_and_update_offers = AsyncMock(side_effect=error)

@@ -439,8 +439,11 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
                     self.wallet.wallet_fingerprint,
                     allow_legacy_fallback=False,
                 )
+                # Registry entries describe the Bitcoin address network. The
+                # protocol network can intentionally differ (reference clients
+                # use "testnet" messaging while tests settle on regtest).
                 network_bonds = [
-                    bond for bond in bond_registry.bonds if bond.network == self.config.network
+                    bond for bond in bond_registry.bonds if bond.network == self.wallet.network
                 ]
                 if network_bonds:
                     # Extract (address, locktime, index) tuples from registry
