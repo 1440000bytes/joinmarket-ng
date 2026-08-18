@@ -146,6 +146,7 @@ declare -A SUITE_SLOT=(
     [neutrino-reference]=7
     [reference-maker]=8
     [tumbler]=9
+    [reference-migration]=10
 )
 
 # Service slot index within a suite's port window.
@@ -416,6 +417,16 @@ services:
       jm-network:
         aliases:
           - jm-maker
+
+  migration-maker:
+    container_name: ${prefix}-migration-maker
+    networks:
+      jm-network:
+        aliases:
+          - jm-migration-maker
+    volumes: !override
+      - migration-maker-data:/home/jm/.joinmarket-ng
+      - tor-data:/var/lib/tor:ro
 
   taker:
     container_name: ${prefix}-taker
@@ -751,7 +762,7 @@ restart_makers() {
 cleanup_suite() {
     local suite=$1
     log_info "Cleaning up suite: $suite"
-    compose_cmd "$suite" --profile e2e --profile reference --profile neutrino --profile reference-maker down -v 2>/dev/null || true
+    compose_cmd "$suite" --profile e2e --profile reference --profile neutrino --profile reference-maker --profile reference-migration down -v 2>/dev/null || true
     compose_cmd "$suite" down --remove-orphans -v 2>/dev/null || true
     rm -rf "${PARALLEL_DIR}/shared/${suite}" 2>/dev/null || true
 }
@@ -854,7 +865,7 @@ build_images() {
     # services keep stale images from previous runs.
     COMPOSE_PROJECT_NAME="$SHARED_IMAGE_PROJECT" docker compose \
         --profile all --profile e2e --profile maker \
-        --profile neutrino --profile reference --profile reference-maker \
+        --profile neutrino --profile reference --profile reference-maker --profile reference-migration \
         --profile taker \
         build --parallel 2>&1 | tee "${PARALLEL_DIR}/build.log"
     configure_shared_images
@@ -1237,6 +1248,77 @@ run_suite_reference_legacy() {
     return $rc
 }
 
+run_suite_reference_migration() {
+    local suite="reference-migration"
+    local log="${PARALLEL_DIR}/${suite}.log"
+    local btc_rpc=$(host_port "$suite" btc_rpc)
+    local dir_port=$(host_port "$suite" dir)
+    local prefix="${CONTAINER_PREFIX}-${suite}"
+
+    log_suite "Starting: Reference Wallet Migration Tests ($suite)"
+    local rc=0
+    set +e
+    (
+        set -e
+        generate_override "$suite"
+        cleanup_suite "$suite"
+
+        # Keep migration-maker stopped until the test has imported the legacy
+        # mnemonic and recovered its bond registry into the persistent volume.
+        compose_cmd "$suite" --profile reference-migration up -d \
+            bitcoin miner directory bitcoin-jam miner-jam tor-init tor \
+            jam-config-init jam wallet-funder
+
+        if ! wait_for_bitcoin_rpc "$suite" "$btc_rpc"; then
+            log_error "Bitcoin RPC not ready on host port $btc_rpc for suite $suite"
+            return 1
+        fi
+
+        local bitcoin_jam_ready=0
+        for _ in $(seq 1 60); do
+            if compose_cmd "$suite" exec -T bitcoin-jam \
+                bitcoin-cli -chain=regtest -rpcport=18445 \
+                -rpcuser=test -rpcpassword=test getblockchaininfo >/dev/null 2>&1; then
+                bitcoin_jam_ready=1
+                break
+            fi
+            sleep 2
+        done
+        if [ "$bitcoin_jam_ready" -ne 1 ]; then
+            log_error "Bitcoin JAM RPC did not become ready for suite ${suite}"
+            return 1
+        fi
+
+        wait_for_port "$dir_port" "Directory ($suite)"
+        wait_for_wallet_funder "$suite"
+        wait_for_tor "$suite"
+        wait_for_jam "$suite"
+        if ! wait_for_directory_onion "$suite"; then
+            return 1
+        fi
+
+        BITCOIN_RPC_URL="http://127.0.0.1:${btc_rpc}" \
+        BITCOIN_RPC_USER=test \
+        BITCOIN_RPC_PASSWORD=test \
+        DIRECTORY_PORT="${dir_port}" \
+        JM_CONTAINER_PREFIX="${prefix}" \
+        COMPOSE_PROJECT_NAME="${PROJECT_PREFIX}-${suite}" \
+        COVERAGE_FILE=".coverage.${suite}" \
+        pytest -c pytest.ini -m reference_migration --fail-on-skip \
+            -lv --timeout=1200 \
+            --cov --cov-report=term-missing \
+            tests/e2e/test_reference_migration.py
+    ) > "$log" 2>&1
+    rc=$?
+    set -e
+    if [ "$rc" -ne 0 ]; then
+        dump_suite_logs "$suite" "$rc" "$log" \
+            bitcoin bitcoin-jam directory tor jam wallet-funder migration-maker
+    fi
+    cleanup_suite "$suite"
+    return $rc
+}
+
 run_suite_neutrino_functional() {
     local suite="neutrino-functional"
     local log="${PARALLEL_DIR}/${suite}.log"
@@ -1607,6 +1689,7 @@ main() {
     launch_suite "jmwallet" run_suite_jmwallet
     launch_suite "reference-interop" run_suite_reference_interop
     launch_suite "reference-legacy" run_suite_reference_legacy
+    launch_suite "reference-migration" run_suite_reference_migration
     launch_suite "neutrino-functional" run_suite_neutrino_functional
     launch_suite "neutrino-coinjoin" run_suite_neutrino_coinjoin
     launch_suite "neutrino-reference" run_suite_neutrino_reference
@@ -1726,6 +1809,7 @@ case "${1:-}" in
             jmwallet)              run_suite_jmwallet ;;
             reference-interop)     run_suite_reference_interop ;;
             reference-legacy)      run_suite_reference_legacy ;;
+            reference-migration)   run_suite_reference_migration ;;
             neutrino-functional)   run_suite_neutrino_functional ;;
             neutrino-coinjoin)     run_suite_neutrino_coinjoin ;;
             neutrino-reference)    run_suite_neutrino_reference ;;
@@ -1778,6 +1862,7 @@ Available suites:
   jmwallet              jmwallet Docker tests
   reference-interop     Reference interop tests (our maker + JAM taker)
   reference-legacy      Reference legacy tests (JAM coinjoin + bond import)
+  reference-migration   Mnemonic-only JAM wallet migration into an NG maker
   neutrino-functional   Neutrino functional tests
   neutrino-coinjoin     Neutrino CoinJoin tests
   neutrino-reference    Neutrino + reference combined tests

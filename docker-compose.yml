@@ -411,6 +411,63 @@ services:
     profiles:
       - maker
 
+  # Maker used only by the reference-wallet migration regression suite. The
+  # test imports a JAM mnemonic into this service's data volume before startup,
+  # exercising the same persisted CLI wallet and registry an operator uses.
+  migration-maker:
+    image: ${MAKER_IMAGE:-}
+    build:
+      context: .
+      dockerfile: maker/Dockerfile
+    container_name: jm-migration-maker
+    command:
+      - "jm-maker"
+      - "start"
+      - "--mnemonic-file"
+      - "/home/jm/.joinmarket-ng/wallets/default.mnemonic"
+      - "--data-dir"
+      - "/home/jm/.joinmarket-ng"
+    restart: "no"
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    environment:
+      - NETWORK_CONFIG__NETWORK=testnet
+      - NETWORK_CONFIG__BITCOIN_NETWORK=regtest
+      - BITCOIN__BACKEND_TYPE=descriptor_wallet
+      - BITCOIN__RPC_URL=http://jm-bitcoin:18443
+      - BITCOIN__RPC_USER=test
+      - BITCOIN__RPC_PASSWORD=test
+      - DIRECTORY_SERVERS=jm-directory:5222
+      - 'NETWORK_CONFIG__NICK_AUTH_DIRECTORY_IDS={"jm-directory:5222":"test:jm-directory-5222"}'
+      - LOGGING__LEVEL=DEBUG
+      - MAKER__MIN_SIZE=100000
+      - MAKER__TX_FEE_CONTRIBUTION=0
+      - MAKER__CJ_FEE_RELATIVE=0.00002
+      - TOR__SOCKS_HOST=jm-tor
+      - TOR__SOCKS_PORT=9050
+      - TOR__CONTROL_HOST=jm-tor
+      - TOR__CONTROL_PORT=9051
+      - TOR__COOKIE_PATH=/var/lib/tor/control_auth_cookie
+      - MAKER__ONION_SERVING_HOST=0.0.0.0
+      - MAKER__ONION_SERVING_PORT=5000
+    volumes:
+      - migration-maker-data:/home/jm/.joinmarket-ng
+      - tor-data:/var/lib/tor:ro
+    networks:
+      - jm-network
+    depends_on:
+      bitcoin:
+        condition: service_healthy
+      directory:
+        condition: service_healthy
+      tor:
+        condition: service_healthy
+    profiles:
+      - reference-migration
+
   # ============================================================================
   # Taker Client (profile: taker)
   # ============================================================================
@@ -547,6 +604,7 @@ services:
       - e2e
       - reference
       - neutrino
+      - reference-migration
       - all
 
   # Maker 1 for e2e tests
@@ -991,6 +1049,7 @@ services:
       - reference
       - reference-maker
       - neutrino
+      - reference-migration
       - all
 
   tor:
@@ -1028,6 +1087,7 @@ services:
       - reference
       - reference-maker
       - neutrino
+      - reference-migration
       - all
 
   # Init container for JAM config files
@@ -1108,6 +1168,7 @@ services:
       - jam-data:/root/.joinmarket-ng
       # Mount wallet creation automation script
       - ./tests/e2e/reference/create_wallet.exp:/scripts/create_wallet.exp:ro
+      - ./tests/e2e/reference/recover_wallet_with_passphrase.exp:/scripts/recover_wallet_with_passphrase.exp:ro
     networks:
       - jm-network
     deploy:
@@ -1402,6 +1463,7 @@ volumes:
   taker-data:
   taker-reference-data:
   maker-data:
+  migration-maker-data:
   taker-neutrino-data:
   jmwalletd-data:
   jam-playwright-data:

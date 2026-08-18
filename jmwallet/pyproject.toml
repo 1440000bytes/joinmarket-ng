@@ -53,6 +53,7 @@ markers = [
     "docker: marks tests requiring any Docker services",
     "e2e: marks tests requiring Docker e2e profile",
     "reference: marks tests requiring Docker reference profile",
+    "reference_migration: marks the mnemonic-only JAM maker migration suite",
     "neutrino: marks tests requiring Docker neutrino profile",
     "reference_maker: marks tests requiring Docker reference-maker profile",
     "flaky: marks tests that may fail due to external dependencies",

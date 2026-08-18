@@ -1338,6 +1338,60 @@ jobs:
             coverage.xml
         if: always()
 
+  test-reference-migration:
+    needs: build-images
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: read
+    env:
+      DIRECTORY_SERVER_IMAGE: ghcr.io/${{ github.repository }}/directory-server:ci-unsafe-do-not-run-${{ github.event.pull_request.head.sha || github.sha }}
+      MAKER_IMAGE: ghcr.io/${{ github.repository }}/maker:ci-unsafe-do-not-run-${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          # Intentional fork checkout; see the pull_request_target note at the top.
+          allow-unsafe-pr-checkout: true
+      - uses: ./.github/actions/setup-python-deps
+        with:
+          components: jmcore,jmwallet,directory_server,maker
+          install-dev: 'true'
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull pre-built images
+        run: |
+          docker pull $DIRECTORY_SERVER_IMAGE
+          docker pull $MAKER_IMAGE
+
+      - name: Prepare reference implementation
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsecp256k1-dev
+          docker compose build jam
+
+      - name: Run reference wallet migration suite
+        run: ./scripts/run_parallel_tests.sh --no-build --suite reference-migration
+
+      - name: Upload migration test log
+        uses: actions/upload-artifact@v7
+        with:
+          name: reference-migration-results
+          path: tmp/parallel-tests/i0/reference-migration.log
+        if: always()
+
   test-neutrino-functional:
     needs: build-images
     runs-on: ubuntu-latest
@@ -2140,6 +2194,7 @@ jobs:
       - test-playwright
       - test-reference-interop
       - test-reference-legacy
+      - test-reference-migration
       - test-neutrino-functional
       - test-neutrino-coinjoin
       - test-neutrino-reference
