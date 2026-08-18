@@ -92,6 +92,11 @@ Backend setup and defaults: [Installation](install.md#configure-backend).
 of `0.2` picks a session fee rate between the base rate and `base_rate * 1.2`; `0` disables
 randomization.
 
+`taker.counterparty_count` is the per-round target. During fill and authentication, the taker
+uses up to `taker.max_maker_replacement_attempts` (default `3`) to restore that target after a
+maker fails. `taker.minimum_makers` is only the final floor after those attempts are exhausted
+or no candidates remain; a round below that floor fails.
+
 For all option details, use auto-generated command help below (`jm-taker coinjoin --help`, `jm-taker tumble --help`).
 
 ## Ignored makers

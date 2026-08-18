@@ -99,6 +99,9 @@ class CoinJoinSession:
 
         # Maker-session bookkeeping. ``maker_sessions`` is keyed by nick.
         self.maker_sessions: dict[str, MakerSession] = {}
+        # Requested maker count for this round. Replacement runners use this
+        # target before falling back to the configured minimum floor.
+        self.maker_target_count: int = 0
 
         # PoDLE commitment used for this CoinJoin. Rotated on majority-blacklist.
         self.podle_commitment: ExtendedPoDLECommitment | None = None
@@ -177,6 +180,7 @@ class CoinJoinSession:
         self.cj_amount = 0
         self.is_sweep = False
         self.maker_sessions = {}
+        self.maker_target_count = 0
         self.podle_commitment = None
         self.unsigned_tx = b""
         self.tx_metadata = {}

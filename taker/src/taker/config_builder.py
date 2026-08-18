@@ -269,6 +269,7 @@ def build_taker_config_kwargs(
         "tx_broadcast": broadcast_policy,
         "broadcast_peer_count": settings.taker.broadcast_peer_count,
         "minimum_makers": effective_minimum_makers,
+        "max_maker_replacement_attempts": settings.taker.max_maker_replacement_attempts,
         "rescan_interval_sec": settings.taker.rescan_interval_sec,
         "pending_tx_abandon_hours": settings.taker.pending_tx_abandon_hours,
         "select_utxos": select_utxos,

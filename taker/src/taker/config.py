@@ -246,7 +246,11 @@ class TakerConfig(WalletConfig):
         default=3,
         ge=0,
         le=10,
-        description="Max attempts to replace non-responsive makers (0 = disabled)",
+        description=(
+            "Maximum attempts to restore the requested maker count after fill or auth "
+            "failures (0 = disabled). The CoinJoin may proceed at minimum_makers only "
+            "after replacement attempts are exhausted or no candidates remain."
+        ),
     )
     select_utxos: bool = Field(
         default=False,

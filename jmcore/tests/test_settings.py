@@ -772,6 +772,16 @@ class TestTakerSettingsPodleFields:
             TakerSettings(taker_utxo_retries=11)
 
 
+def test_taker_replacement_attempt_settings_bounds() -> None:
+    settings = TakerSettings(max_maker_replacement_attempts=7)
+    assert settings.max_maker_replacement_attempts == 7
+
+    with pytest.raises(ValueError):
+        TakerSettings(max_maker_replacement_attempts=-1)
+    with pytest.raises(ValueError):
+        TakerSettings(max_maker_replacement_attempts=11)
+
+
 class TestParseDirectoryServers:
     """Tests for NetworkSettings.parse_directory_servers validator."""
 

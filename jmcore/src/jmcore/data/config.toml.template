@@ -520,10 +520,14 @@
 # tx_broadcast = "random-peer"
 # broadcast_peer_count = 3
 
-# Minimum number of makers required for a CoinJoin to proceed.
-# Default: 4 (matches the upstream JoinMarket reference POLICY default; using
-# minimum_makers=1 is fingerprintable and degrades the privacy of the join).
+# The taker first tries to keep counterparty_count makers through fill and auth.
+# minimum_makers is only the final floor when replacements are exhausted or no
+# candidates remain. Default: 4 (matches the upstream JoinMarket reference
+# POLICY default; using minimum_makers=1 is fingerprintable and degrades privacy).
 # minimum_makers = 4
+# Maximum attempts to replace failed makers and restore counterparty_count.
+# Set to 0 to disable replacement. Default: 3 (range: 0-10).
+# max_maker_replacement_attempts = 3
 
 # ============================================================================
 # Tumbler Settings

@@ -1067,8 +1067,17 @@ class TakerSettings(BaseModel):
         default=4,
         ge=1,
         description=(
-            "Minimum number of makers required for a CoinJoin. Default 4 "
-            "matches the upstream JoinMarket reference (POLICY.n)."
+            "Final floor for makers after attempts to restore counterparty_count. "
+            "Default 4 matches the upstream JoinMarket reference (POLICY.n)."
+        ),
+    )
+    max_maker_replacement_attempts: int = Field(
+        default=3,
+        ge=0,
+        le=10,
+        description=(
+            "Maximum fill/auth replacement attempts to restore counterparty_count "
+            "before proceeding at minimum_makers (0 = disabled)."
         ),
     )
     rescan_interval_sec: int = Field(

@@ -820,6 +820,7 @@ class Taker(TakerMonitoringMixin):
                 else self.config.counterparty_count
             )
             n_makers = resolve_counterparty_count(requested)
+            self._session.maker_target_count = n_makers
 
             # Resolve explicit or interactive input requests before orderbook
             # and bond work, then fail fast if the requested source cannot fund
@@ -1396,10 +1397,12 @@ class Taker(TakerMonitoringMixin):
         # no/invalid !ioauth, failed replacement mini-fill). Hard-excluded from
         # re-selection so the same maker is never retried within this round.
         failed_nicks: set[str] = set()
+        target_makers = max(self._session.maker_target_count, self.config.minimum_makers)
         while True:
             auth_result = await self._session._phase_auth()
 
-            if auth_result.success:
+            current_makers = len(self._session.maker_sessions)
+            if auth_result.success and current_makers >= target_makers:
                 return True
 
             for failed_nick in auth_result.failed_makers:
@@ -1407,18 +1410,22 @@ class Taker(TakerMonitoringMixin):
                 failed_nicks.add(failed_nick)
                 logger.debug(f"Added {failed_nick} to ignored makers (failed auth)")
 
-            if not auth_result.needs_replacement:
-                logger.error("Auth phase failed")
+            # A successful floor-level auth still needs target restoration. A
+            # failed auth can only be recovered when it identified makers to replace.
+            if not auth_result.success and not auth_result.needs_replacement:
+                reason = "Auth phase failed without replaceable makers"
+                logger.error(reason)
+                self._session.last_failure_reason = reason
                 self.state = TakerState.FAILED
                 return False
 
-            # Top up the session back to minimum_makers. Replacement candidates
-            # can themselves fail the mini-fill (offline maker, timeout), so
-            # keep selecting substitutes until the session is whole again or
-            # the replacement budget runs out.
-            while auth_replacement_attempt < max_replacement_attempts:
+            added_replacements = False
+            while (
+                current_makers < target_makers
+                and auth_replacement_attempt < max_replacement_attempts
+            ):
                 auth_replacement_attempt += 1
-                needed = self.config.minimum_makers - len(self._session.maker_sessions)
+                needed = target_makers - current_makers
                 logger.info(
                     f"Attempting maker replacement in auth phase "
                     f"(attempt {auth_replacement_attempt}/{max_replacement_attempts}): "
@@ -1433,31 +1440,46 @@ class Taker(TakerMonitoringMixin):
                     required_features=required_features,
                 )
 
-                if len(replacement_offers) < needed:
-                    logger.error(
-                        f"Not enough replacement makers for auth phase: "
-                        f"found {len(replacement_offers)}, need {needed}"
-                    )
-                    self.state = TakerState.FAILED
-                    return False
-
-                if not await self._fill_replacement_makers(replacement_offers, failed_nicks):
-                    self.state = TakerState.FAILED
-                    return False
-
-                if len(self._session.maker_sessions) >= self.config.minimum_makers:
+                if not replacement_offers:
                     break
+
+                if len(replacement_offers) < needed:
+                    logger.info(
+                        f"Auth replacement selection is partial: found {len(replacement_offers)}, "
+                        f"need {needed}; retrying the remaining deficit after mini-fill"
+                    )
+
+                before_mini_fill = current_makers
+                if not await self._fill_replacement_makers(replacement_offers, failed_nicks):
+                    reason = "Auth replacement mini-fill could not initialize"
+                    logger.error(reason)
+                    self._session.last_failure_reason = reason
+                    self.state = TakerState.FAILED
+                    return False
+                current_makers = len(self._session.maker_sessions)
+                added_replacements = added_replacements or current_makers > before_mini_fill
+
+            # Replacement makers cannot be final survivors until this next auth
+            # pass has verified their !ioauth responses.
+            if added_replacements:
+                continue
+
+            if auth_result.success and current_makers >= self.config.minimum_makers:
                 logger.warning(
-                    f"Still short of makers after replacement fill: "
-                    f"{len(self._session.maker_sessions)} < {self.config.minimum_makers}"
+                    f"Auth replacement attempts exhausted or no candidates remain; proceeding "
+                    f"with {current_makers}/{target_makers} makers "
+                    f"(minimum {self.config.minimum_makers})"
                 )
-            else:
-                logger.error(
-                    f"Auth phase failed: could not assemble {self.config.minimum_makers} "
-                    f"makers within {max_replacement_attempts} replacement attempts"
-                )
-                self.state = TakerState.FAILED
-                return False
+                return True
+
+            reason = (
+                f"Auth phase failed: only {current_makers} authenticated makers remain, "
+                f"below minimum {self.config.minimum_makers}"
+            )
+            logger.error(reason)
+            self._session.last_failure_reason = reason
+            self.state = TakerState.FAILED
+            return False
 
     async def _fill_replacement_makers(
         self, replacement_offers: dict[str, Any], failed_nicks: set[str]
@@ -1575,11 +1597,12 @@ class Taker(TakerMonitoringMixin):
 
         max_podle_retries = self.config.taker_utxo_retries
         replacement_attempt = 0
-        for podle_retry in range(max_podle_retries):
+        podle_retry = 0
+        failed_nicks: set[str] = set()
+        target_makers = max(self._session.maker_target_count, self.config.minimum_makers)
+        while True:
             session_size_before_fill = len(self._session.maker_sessions)
             fill_result = await self._session._phase_fill()
-            if fill_result.success:
-                return True
 
             if fill_result.blacklist_makers and self._session.podle_commitment is not None:
                 commitment_hex = self._session.podle_commitment.commitment.commitment.hex()
@@ -1607,15 +1630,22 @@ class Taker(TakerMonitoringMixin):
                 )
                 for failed_nick in fill_result.failed_makers:
                     self.orderbook_manager.add_ignored_maker(failed_nick)
+                    failed_nicks.add(failed_nick)
                     logger.debug(f"Added {failed_nick} to ignored makers (minority blacklist)")
             elif fill_result.blacklist_error:
                 logger.warning(
                     f"Majority blacklist rejection ({n_blacklisted}/{session_size_before_fill}) "
                     f"from {fill_result.blacklist_makers}. Rotating commitment and retrying."
                 )
+                blacklist_nicks = set(fill_result.blacklist_makers)
+                for failed_nick in set(fill_result.failed_makers) - blacklist_nicks:
+                    self.orderbook_manager.add_ignored_maker(failed_nick)
+                    failed_nicks.add(failed_nick)
+                    logger.debug(f"Added {failed_nick} to ignored makers (failed fill)")
             elif fill_result.failed_makers:
                 for failed_nick in fill_result.failed_makers:
                     self.orderbook_manager.add_ignored_maker(failed_nick)
+                    failed_nicks.add(failed_nick)
                     logger.debug(f"Added {failed_nick} to ignored makers (failed fill)")
 
             if majority_blacklist:
@@ -1624,6 +1654,7 @@ class Taker(TakerMonitoringMixin):
                         f"Commitment blacklisted, retrying with new NUMS index "
                         f"(attempt {podle_retry + 2}/{max_podle_retries})..."
                     )
+                    podle_retry += 1
                     new_commitment = self.podle_manager.generate_fresh_commitment(
                         wallet_utxos=self._session.preselected_utxos,
                         cj_amount=self._session.cj_amount,
@@ -1669,6 +1700,7 @@ class Taker(TakerMonitoringMixin):
                         nick: MakerSession(nick=nick, offer=offer, supports_neutrino_compat=False)
                         for nick, offer in selected_offers.items()
                         if nick not in self.orderbook_manager.ignored_makers
+                        and nick not in failed_nicks
                     }
                     continue
 
@@ -1678,47 +1710,77 @@ class Taker(TakerMonitoringMixin):
                 self.state = TakerState.FAILED
                 return False
 
-            if fill_result.needs_replacement and replacement_attempt < max_replacement_attempts:
-                replacement_attempt += 1
-                needed = self.config.minimum_makers - len(self._session.maker_sessions)
+            current_makers = len(self._session.maker_sessions)
+            if fill_result.success and current_makers >= target_makers:
+                return True
+
+            if not fill_result.success and not fill_result.needs_replacement:
+                reason = "Fill phase failed without replaceable makers"
+                logger.error(reason)
+                self._session.last_failure_reason = reason
+                self.state = TakerState.FAILED
+                return False
+
+            needed = target_makers - current_makers
+            if replacement_attempt >= max_replacement_attempts:
+                if fill_result.success and current_makers >= self.config.minimum_makers:
+                    logger.warning(
+                        f"Fill replacement attempts exhausted; proceeding with {current_makers}/"
+                        f"{target_makers} makers (minimum {self.config.minimum_makers})"
+                    )
+                    return True
+                reason = (
+                    f"Fill phase failed: only {current_makers} responding makers remain, "
+                    f"below minimum {self.config.minimum_makers}"
+                )
+                logger.error(reason)
+                self._session.last_failure_reason = reason
+                self.state = TakerState.FAILED
+                return False
+
+            replacement_attempt += 1
+            logger.info(
+                f"Attempting maker replacement (attempt {replacement_attempt}/"
+                f"{max_replacement_attempts}): need {needed} more makers"
+            )
+
+            current_session_nicks = set(self._session.maker_sessions.keys())
+            replacement_offers, _ = self.orderbook_manager.select_makers(
+                cj_amount=self._session.cj_amount,
+                n=needed,
+                hard_exclude_nicks=current_session_nicks | failed_nicks,
+                required_features=required_features,
+            )
+
+            if not replacement_offers:
+                if fill_result.success and current_makers >= self.config.minimum_makers:
+                    logger.warning(
+                        f"No fill replacements available; proceeding with {current_makers}/"
+                        f"{target_makers} makers (minimum {self.config.minimum_makers})"
+                    )
+                    return True
+                reason = (
+                    f"Fill phase failed: no replacements available and only {current_makers} "
+                    f"makers remain (minimum {self.config.minimum_makers})"
+                )
+                logger.error(reason)
+                self._session.last_failure_reason = reason
+                self.state = TakerState.FAILED
+                return False
+
+            if len(replacement_offers) < needed:
                 logger.info(
-                    f"Attempting maker replacement (attempt {replacement_attempt}/"
-                    f"{max_replacement_attempts}): need {needed} more makers"
+                    f"Fill replacement selection is partial: found {len(replacement_offers)}, "
+                    f"need {needed}; retrying the remaining deficit"
                 )
 
-                current_session_nicks = set(self._session.maker_sessions.keys())
-                hard_excludes = current_session_nicks | set(fill_result.failed_makers)
-                replacement_offers, _ = self.orderbook_manager.select_makers(
-                    cj_amount=self._session.cj_amount,
-                    n=needed,
-                    hard_exclude_nicks=hard_excludes,
-                    required_features=required_features,
+            for nick, offer in replacement_offers.items():
+                self._session.maker_sessions[nick] = MakerSession(
+                    nick=nick, offer=offer, supports_neutrino_compat=False
                 )
-
-                if len(replacement_offers) < needed:
-                    logger.error(
-                        "Not enough replacement makers available: "
-                        f"found {len(replacement_offers)}, need {needed}"
-                    )
-                    self.state = TakerState.FAILED
-                    return False
-
-                for nick, offer in replacement_offers.items():
-                    self._session.maker_sessions[nick] = MakerSession(
-                        nick=nick, offer=offer, supports_neutrino_compat=False
-                    )
-                    logger.info(f"Added replacement maker: {nick}")
-                selected_offers.update(replacement_offers)
-                self._session.last_used_nicks.update(replacement_offers.keys())
-                continue
-
-            logger.error("Fill phase failed")
-            self.state = TakerState.FAILED
-            return False
-
-        logger.error("Fill phase failed")
-        self.state = TakerState.FAILED
-        return False
+                logger.info(f"Added replacement maker: {nick}")
+            selected_offers.update(replacement_offers)
+            self._session.last_used_nicks.update(replacement_offers.keys())
 
     async def _finalize_and_broadcast(self, destination: str) -> str | None:
         # Final confirmation before broadcast

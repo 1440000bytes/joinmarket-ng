@@ -2905,3 +2905,283 @@ class TestNeutrinoIncompatibleMakerReplacement:
         assert result.failed_makers == ["J5err"]
         assert result.needs_replacement is True
         assert "J5err" not in taker._session.maker_sessions
+
+
+class TestReplacementTargetRestoration:
+    """Replacement runners restore the requested target before using the floor."""
+
+    def test_session_target_resets(self):
+        from taker.coinjoin_session import CoinJoinSession
+
+        session = CoinJoinSession()
+        assert session.maker_target_count == 0
+
+        session.maker_target_count = 9
+        session.reset()
+
+        assert session.maker_target_count == 0
+
+    @staticmethod
+    def _make_taker(minimum_makers: int, target_makers: int, current_makers: int) -> Taker:
+        from taker.coinjoin_session import CoinJoinSession
+
+        with patch.object(Taker, "__init__", lambda self, *args, **kwargs: None):
+            taker = Taker.__new__(Taker)
+        taker._session = CoinJoinSession()
+        taker._session.attach(taker)
+        taker._session.cj_amount = 1_000_000
+        taker._session.maker_target_count = target_makers
+        taker._session.maker_sessions = {
+            f"J5maker{index}": MakerSession(
+                nick=f"J5maker{index}", offer=_simple_offer(f"J5maker{index}")
+            )
+            for index in range(current_makers)
+        }
+        taker.config = MagicMock()
+        taker.config.minimum_makers = minimum_makers
+        taker.config.taker_utxo_retries = 3
+        taker.config.taker_utxo_age = 1
+        taker.config.taker_utxo_amtpercent = 20
+        taker.directory_client = MagicMock()
+        taker.directory_client.clients = {}
+        taker.directory_client.prefer_direct_connections = False
+        taker.orderbook_manager = MagicMock()
+        taker.orderbook_manager.ignored_makers = set()
+        return taker
+
+    @staticmethod
+    def _replacement_offers(*nicks: str) -> dict[str, Offer]:
+        return {nick: _simple_offer(nick) for nick in nicks}
+
+    @pytest.mark.asyncio
+    async def test_fill_replaces_to_requested_target_after_floor_success(self):
+        taker = self._make_taker(minimum_makers=8, target_makers=9, current_makers=8)
+        selected_offers = {
+            nick: session.offer for nick, session in taker._session.maker_sessions.items()
+        }
+        taker._session._phase_fill = AsyncMock(
+            side_effect=[
+                PhaseResult(success=True, failed_makers=["J5failed"]),
+                PhaseResult(success=True),
+            ]
+        )
+        taker.orderbook_manager.select_makers.return_value = (
+            self._replacement_offers("J5replacement"),
+            0,
+        )
+
+        notifier = MagicMock()
+        notifier.notify_coinjoin_start = AsyncMock()
+        with patch("taker.taker.get_notifier", return_value=notifier):
+            ok = await taker._run_fill_with_replacements(
+                destination="bcrt1qdest",
+                selected_offers=selected_offers,
+                required_features=None,
+                mixdepth=0,
+                get_private_key=MagicMock(),
+                max_replacement_attempts=2,
+            )
+
+        assert ok is True
+        assert len(taker._session.maker_sessions) == 9
+        assert taker.orderbook_manager.select_makers.call_args.kwargs["n"] == 1
+
+    @pytest.mark.asyncio
+    async def test_fill_uses_partial_batches_for_remaining_target_deficit(self):
+        taker = self._make_taker(minimum_makers=8, target_makers=10, current_makers=8)
+        selected_offers = {
+            nick: session.offer for nick, session in taker._session.maker_sessions.items()
+        }
+        taker._session._phase_fill = AsyncMock(
+            side_effect=[
+                PhaseResult(success=True),
+                PhaseResult(success=True),
+                PhaseResult(success=True),
+            ]
+        )
+        taker.orderbook_manager.select_makers.side_effect = [
+            (self._replacement_offers("J5replacement1"), 0),
+            (self._replacement_offers("J5replacement2"), 0),
+        ]
+
+        notifier = MagicMock()
+        notifier.notify_coinjoin_start = AsyncMock()
+        with patch("taker.taker.get_notifier", return_value=notifier):
+            ok = await taker._run_fill_with_replacements(
+                destination="bcrt1qdest",
+                selected_offers=selected_offers,
+                required_features=None,
+                mixdepth=0,
+                get_private_key=MagicMock(),
+                max_replacement_attempts=2,
+            )
+
+        assert ok is True
+        selected_counts = [
+            call.kwargs["n"] for call in taker.orderbook_manager.select_makers.call_args_list
+        ]
+        assert selected_counts == [2, 1]
+
+    @pytest.mark.asyncio
+    async def test_fill_falls_back_at_floor_and_fails_below_floor(self):
+        floor_taker = self._make_taker(minimum_makers=8, target_makers=9, current_makers=8)
+        floor_taker._session._phase_fill = AsyncMock(return_value=PhaseResult(success=True))
+        floor_taker.orderbook_manager.select_makers.return_value = ({}, 0)
+
+        notifier = MagicMock()
+        notifier.notify_coinjoin_start = AsyncMock()
+        with patch("taker.taker.get_notifier", return_value=notifier):
+            floor_ok = await floor_taker._run_fill_with_replacements(
+                destination="bcrt1qdest",
+                selected_offers={},
+                required_features=None,
+                mixdepth=0,
+                get_private_key=MagicMock(),
+                max_replacement_attempts=0,
+            )
+
+        below_floor_taker = self._make_taker(minimum_makers=8, target_makers=9, current_makers=7)
+        below_floor_taker._session._phase_fill = AsyncMock(
+            return_value=PhaseResult(success=False, failed_makers=["J5failed"])
+        )
+        below_floor_taker.orderbook_manager.select_makers.return_value = ({}, 0)
+        with patch("taker.taker.get_notifier", return_value=notifier):
+            below_floor_ok = await below_floor_taker._run_fill_with_replacements(
+                destination="bcrt1qdest",
+                selected_offers={},
+                required_features=None,
+                mixdepth=0,
+                get_private_key=MagicMock(),
+                max_replacement_attempts=2,
+            )
+
+        assert floor_ok is True
+        floor_taker.orderbook_manager.select_makers.assert_not_called()
+        assert below_floor_ok is False
+        assert below_floor_taker.state is TakerState.FAILED
+        assert below_floor_taker._session.last_failure_reason is not None
+
+    @pytest.mark.asyncio
+    async def test_auth_replaces_to_requested_target_before_success(self):
+        taker = self._make_taker(minimum_makers=8, target_makers=9, current_makers=8)
+        taker._session._phase_auth = AsyncMock(
+            side_effect=[PhaseResult(success=True), PhaseResult(success=True)]
+        )
+        taker.orderbook_manager.select_makers.return_value = (
+            self._replacement_offers("J5replacement"),
+            0,
+        )
+
+        async def mini_fill(replacement_offers, failed_nicks):
+            for nick, offer in replacement_offers.items():
+                taker._session.maker_sessions[nick] = MakerSession(nick=nick, offer=offer)
+            return True
+
+        taker._fill_replacement_makers = AsyncMock(side_effect=mini_fill)
+
+        ok = await taker._run_auth_with_replacements(
+            required_features=None, max_replacement_attempts=2
+        )
+
+        assert ok is True
+        assert taker._session._phase_auth.await_count == 2
+        assert taker._fill_replacement_makers.await_count == 1
+        assert taker.orderbook_manager.select_makers.call_args.kwargs["n"] == 1
+
+    @pytest.mark.asyncio
+    async def test_auth_uses_partial_batches_for_remaining_target_deficit(self):
+        taker = self._make_taker(minimum_makers=8, target_makers=10, current_makers=8)
+        taker._session._phase_auth = AsyncMock(
+            side_effect=[PhaseResult(success=True), PhaseResult(success=True)]
+        )
+        taker.orderbook_manager.select_makers.side_effect = [
+            (self._replacement_offers("J5replacement1"), 0),
+            (self._replacement_offers("J5replacement2"), 0),
+        ]
+
+        async def mini_fill(replacement_offers, failed_nicks):
+            for nick, offer in replacement_offers.items():
+                taker._session.maker_sessions[nick] = MakerSession(nick=nick, offer=offer)
+            return True
+
+        taker._fill_replacement_makers = AsyncMock(side_effect=mini_fill)
+
+        ok = await taker._run_auth_with_replacements(
+            required_features=None, max_replacement_attempts=2
+        )
+
+        assert ok is True
+        selected_counts = [
+            call.kwargs["n"] for call in taker.orderbook_manager.select_makers.call_args_list
+        ]
+        assert selected_counts == [2, 1]
+        assert taker._fill_replacement_makers.await_count == 2
+        assert taker._session._phase_auth.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_auth_falls_back_at_floor_and_fails_below_floor(self):
+        floor_taker = self._make_taker(minimum_makers=8, target_makers=9, current_makers=8)
+        floor_taker._session._phase_auth = AsyncMock(return_value=PhaseResult(success=True))
+        floor_taker.orderbook_manager.select_makers.return_value = ({}, 0)
+
+        floor_ok = await floor_taker._run_auth_with_replacements(
+            required_features=None, max_replacement_attempts=0
+        )
+
+        below_floor_taker = self._make_taker(minimum_makers=8, target_makers=9, current_makers=7)
+        below_floor_taker._session._phase_auth = AsyncMock(
+            return_value=PhaseResult(success=False, failed_makers=["J5failed"])
+        )
+        below_floor_taker.orderbook_manager.select_makers.return_value = ({}, 0)
+
+        below_floor_ok = await below_floor_taker._run_auth_with_replacements(
+            required_features=None, max_replacement_attempts=2
+        )
+
+        assert floor_ok is True
+        floor_taker.orderbook_manager.select_makers.assert_not_called()
+        assert below_floor_ok is False
+        assert below_floor_taker.state is TakerState.FAILED
+        assert below_floor_taker._session.last_failure_reason is not None
+
+    @pytest.mark.asyncio
+    async def test_majority_blacklist_rotates_before_floor_fallback(self):
+        taker = self._make_taker(minimum_makers=8, target_makers=8, current_makers=8)
+        selected_offers = {
+            nick: session.offer for nick, session in taker._session.maker_sessions.items()
+        }
+        taker._session.podle_commitment = MagicMock()
+        taker._session.podle_commitment.commitment.commitment.hex.return_value = "ab" * 32
+        taker.podle_manager = MagicMock()
+        taker.podle_manager.generate_fresh_commitment.return_value = MagicMock()
+        blacklisted = list(taker._session.maker_sessions)[:4]
+        taker._session._phase_fill = AsyncMock(
+            side_effect=[
+                PhaseResult(
+                    success=True,
+                    failed_makers=blacklisted,
+                    blacklist_error=True,
+                    blacklist_makers=blacklisted,
+                ),
+                PhaseResult(success=True),
+            ]
+        )
+
+        notifier = MagicMock()
+        notifier.notify_coinjoin_start = AsyncMock()
+        with (
+            patch("taker.taker.get_notifier", return_value=notifier),
+            patch("jmcore.commitment_blacklist.add_commitment"),
+        ):
+            ok = await taker._run_fill_with_replacements(
+                destination="bcrt1qdest",
+                selected_offers=selected_offers,
+                required_features=None,
+                mixdepth=0,
+                get_private_key=MagicMock(),
+                max_replacement_attempts=0,
+            )
+
+        assert ok is True
+        assert taker._session._phase_fill.await_count == 2
+        taker.podle_manager.generate_fresh_commitment.assert_called_once()

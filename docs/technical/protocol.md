@@ -243,9 +243,15 @@ When makers fail to respond, the taker can automatically select replacements ins
 - Configuration: `max_maker_replacement_attempts` (default: 3, range: 0-10)
 - Failed makers added to ignored list for the session
 - New makers go through the full fill/auth flow
-- If not enough replacements available, CoinJoin aborts
+- The requested counterparty count remains the replacement target through fill
+  and auth. Partial replacement selections are used and the remaining deficit
+  is retried while attempts remain.
+- If attempts are exhausted or no candidates remain, the CoinJoin proceeds only
+  when the latest phase has at least `minimum_makers` completed makers;
+  otherwise it aborts. A majority commitment blacklist rotates the PoDLE before
+  this floor fallback is considered.
 
-Implementation: `taker/src/taker/orderbook.py`
+Implementation: `taker/src/taker/taker.py` and `taker/src/taker/orderbook.py`
 
 ### Multi-Channel Message Deduplication
 

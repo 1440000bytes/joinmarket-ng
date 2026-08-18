@@ -141,6 +141,7 @@ class TestBuildTakerConfig:
         settings.taker.tx_broadcast = "MULTIPLE_PEERS"
         settings.taker.broadcast_peer_count = 4
         settings.taker.minimum_makers = 4
+        settings.taker.max_maker_replacement_attempts = 3
         settings.taker.tx_fee_factor = 0.2
         settings.taker.maker_timeout_sec = 60
         settings.taker.order_wait_time = 10.0
@@ -763,3 +764,20 @@ class TestBuildTakerConfig:
             max_sweep_fee_change=0.5,
         )
         assert config_override.max_sweep_fee_change == 0.5
+
+    def test_max_maker_replacement_attempts_flows_into_config(
+        self, sample_mnemonic: str, mock_settings: MagicMock
+    ) -> None:
+        """Replacement attempt settings reach the runtime taker config."""
+        mock_settings.taker.max_maker_replacement_attempts = 7
+
+        config = build_taker_config(
+            settings=mock_settings,
+            mnemonic=sample_mnemonic,
+            passphrase="",
+            destination="bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
+            amount=100000,
+            mixdepth=0,
+        )
+
+        assert config.max_maker_replacement_attempts == 7
