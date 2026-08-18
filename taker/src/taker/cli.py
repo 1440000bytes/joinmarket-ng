@@ -202,7 +202,7 @@ def coinjoin(
         typer.Option(
             "--bondless-zero-fee/--no-bondless-zero-fee",
             envvar="BONDLESS_REQUIRE_ZERO_FEE",
-            help="For bondless spots, require zero absolute fee",
+            help="For bondless spots, require a zero advertised CoinJoin fee",
         ),
     ] = None,
     select_utxos: Annotated[
@@ -406,7 +406,11 @@ async def _run_coinjoin(
         """Callback for user confirmation after maker selection."""
         from jmcore.confirmation import confirm_transaction, format_maker_summary
 
-        additional_info = format_maker_summary(maker_details, fee_rate=fee_rate)
+        additional_info = format_maker_summary(
+            maker_details,
+            fee_rate=fee_rate,
+            amount=cj_amount,
+        )
         # ``taker`` is assigned below in this scope, before the callback can
         # fire. With --select-utxos the source mixdepth is derived from the
         # user's selection, so read it back from the taker.

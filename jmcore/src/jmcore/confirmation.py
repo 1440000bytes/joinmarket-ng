@@ -26,6 +26,13 @@ _LABEL_WIDTH = 16  # Width for labels like "CoinJoin Amount:"
 _SEND_WIDTH = 80  # Display width for standard send confirmation
 
 
+def _format_fee_percentage(fee: int, amount: int) -> str:
+    """Format a fee percentage when a positive CoinJoin amount is available."""
+    if amount <= 0:
+        return ""
+    return f" ({fee / amount * 100:.4f}%)"
+
+
 def _display_coinjoin_send_confirmation(
     amount: int,
     destination: str | None,
@@ -79,8 +86,11 @@ def _display_coinjoin_send_confirmation(
                 print(f"{'':<{_LABEL_WIDTH}}  {i + 1}. {maker_str}")
 
     # Total Maker Fee
-    if total_maker_fee:
-        print(f"{'Total Maker Fee:':<{_LABEL_WIDTH}}  {total_maker_fee:,} sats")
+    if makers:
+        print(
+            f"{'Total Maker Fee:':<{_LABEL_WIDTH}}  {total_maker_fee:,} sats"
+            f"{_format_fee_percentage(total_maker_fee, amount)}"
+        )
 
     # Miner Fee Rate
     if fee_rate is not None:
@@ -88,12 +98,18 @@ def _display_coinjoin_send_confirmation(
 
     # Mining fee
     if mining_fee is not None:
-        print(f"{'Miner Fee:':<{_LABEL_WIDTH}}  {format_amount(mining_fee)}")
+        print(
+            f"{'Miner Fee:':<{_LABEL_WIDTH}}  {format_amount(mining_fee)}"
+            f"{_format_fee_percentage(mining_fee, amount)}"
+        )
 
     # Total Fee (maker fee + miner fee)
-    if mining_fee is not None and total_maker_fee:
+    if mining_fee is not None and makers:
         total_fee = mining_fee + total_maker_fee
-        print(f"{'Total Fee:':<{_LABEL_WIDTH}}  {format_amount(total_fee)}")
+        print(
+            f"{'Total Fee:':<{_LABEL_WIDTH}}  {format_amount(total_fee)}"
+            f"{_format_fee_percentage(total_fee, amount)}"
+        )
 
     print("=" * _COINJOIN_WIDTH)
 
@@ -263,7 +279,7 @@ def confirm_transaction(
 
 
 def format_maker_summary(
-    makers: list[dict[str, Any]], fee_rate: float | None = None
+    makers: list[dict[str, Any]], fee_rate: float | None = None, amount: int | None = None
 ) -> dict[str, Any]:
     """
     Format maker information for confirmation display.
@@ -271,6 +287,7 @@ def format_maker_summary(
     Args:
         makers: List of selected maker dicts with 'nick', 'fee', 'bond_value', 'location', etc.
         fee_rate: Fee rate in sat/vB (optional)
+        amount: CoinJoin amount in satoshis, used to display fee percentages (optional)
 
     Returns:
         Dict with formatted maker info for confirmation display
@@ -290,6 +307,7 @@ def format_maker_summary(
 
         # Right-align fee and bond values
         fee_str = f"{fee:>{max_fee_width},}"
+        fee_percentage = _format_fee_percentage(fee, amount) if amount is not None else ""
         bond_str = f" [bond: {bond_value:>{max_bond_width},}]" if bond_value > 0 else " [no bond]"
 
         # Add location info if available
@@ -303,9 +321,9 @@ def format_maker_summary(
                     location_str = f" @ {location}"
             else:
                 location_str = f" @ {location[:20]}..."
-            maker_details.append(f"{nick}: {fee_str} sats{bond_str}{location_str}")
+            maker_details.append(f"{nick}: {fee_str} sats{fee_percentage}{bond_str}{location_str}")
         else:
-            maker_details.append(f"{nick}: {fee_str} sats{bond_str}")
+            maker_details.append(f"{nick}: {fee_str} sats{fee_percentage}{bond_str}")
 
     result: dict[str, Any] = {
         "Total Maker Fee": total_maker_fee,

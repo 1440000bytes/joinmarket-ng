@@ -9,7 +9,11 @@ from __future__ import annotations
 
 import pytest
 
-from jmcore.confirmation import _display_standard_send_confirmation
+from jmcore.confirmation import (
+    _display_coinjoin_send_confirmation,
+    _display_standard_send_confirmation,
+    format_maker_summary,
+)
 
 
 @pytest.fixture
@@ -106,3 +110,72 @@ def test_unknown_additional_info_keys_still_render(
     out = capsys.readouterr().out
     assert "Custom Note:" in out
     assert "hello world" in out
+
+
+def test_coinjoin_fee_amounts_include_percentages(capsys: pytest.CaptureFixture[str]) -> None:
+    """CoinJoin fees are shown relative to the CoinJoin amount."""
+    makers = format_maker_summary(
+        [
+            {"nick": "maker-one", "fee": 100, "bond_value": 0},
+            {"nick": "maker-two", "fee": 232, "bond_value": 0},
+        ],
+        amount=100_000,
+    )
+    _display_coinjoin_send_confirmation(
+        amount=100_000,
+        destination="bc1qexampledestination",
+        mining_fee=50,
+        additional_info=makers,
+    )
+
+    out = capsys.readouterr().out
+
+    assert "maker-one: 100 sats (0.1000%)" in out
+    assert "maker-two: 232 sats (0.2320%)" in out
+    assert "Total Maker Fee:  332 sats (0.3320%)" in out
+    assert "Miner Fee:        50 sats (0.00000050 BTC) (0.0500%)" in out
+    assert "Total Fee:        382 sats (0.00000382 BTC) (0.3820%)" in out
+
+
+def test_coinjoin_zero_fee_percentage_and_sweep_amount(capsys: pytest.CaptureFixture[str]) -> None:
+    """Zero fees include a percentage, but sweeps do not divide by zero."""
+    makers = format_maker_summary(
+        [{"nick": "maker-zero", "fee": 0, "bond_value": 0}],
+        amount=100_000,
+    )
+    _display_coinjoin_send_confirmation(
+        amount=100_000,
+        destination="bc1qexampledestination",
+        mining_fee=0,
+        additional_info=makers,
+    )
+    out = capsys.readouterr().out
+    assert "maker-zero: 0 sats (0.0000%)" in out
+    assert "Total Maker Fee:  0 sats (0.0000%)" in out
+    assert "Miner Fee:        0 sats (0.00000000 BTC) (0.0000%)" in out
+    assert "Total Fee:        0 sats (0.00000000 BTC) (0.0000%)" in out
+
+    sweep_makers = format_maker_summary(
+        [{"nick": "maker-sweep", "fee": 100, "bond_value": 0}],
+        amount=0,
+    )
+    _display_coinjoin_send_confirmation(
+        amount=0,
+        destination="bc1qexampledestination",
+        mining_fee=50,
+        additional_info=sweep_makers,
+    )
+    sweep_out = capsys.readouterr().out
+    assert "maker-sweep: 100 sats [no bond]" in sweep_out
+    assert "%" not in sweep_out
+
+
+def test_format_maker_summary_without_amount_remains_compatible() -> None:
+    """Existing callers can omit the CoinJoin amount."""
+    summary = format_maker_summary(
+        [{"nick": "maker", "fee": 232, "bond_value": 0}],
+        fee_rate=1.5,
+    )
+
+    assert summary["Makers"] == ["maker: 232 sats [no bond]"]
+    assert summary["Fee Rate"] == 1.5
