@@ -143,7 +143,12 @@ def ensure_expect_installed() -> bool:
 
 
 def copy_expect_script_to_jam() -> bool:
-    """Copy the expect script to the jam container."""
+    """Ensure the expect script is readable in the jam container."""
+    container_path = "/scripts/recover_wallet_with_passphrase.exp"
+    mounted = run_jam_cmd(["test", "-r", container_path], timeout=10)
+    if mounted.returncode == 0:
+        return True
+
     script_path = (
         Path(__file__).parent / "reference" / "recover_wallet_with_passphrase.exp"
     )
@@ -155,7 +160,7 @@ def copy_expect_script_to_jam() -> bool:
     cmd = get_compose_cmd_prefix() + [
         "cp",
         str(script_path),
-        "jam:/scripts/recover_wallet_with_passphrase.exp",
+        f"jam:{container_path}",
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if result.returncode != 0:
@@ -163,7 +168,7 @@ def copy_expect_script_to_jam() -> bool:
         return False
 
     # Make executable
-    run_jam_cmd(["chmod", "+x", "/scripts/recover_wallet_with_passphrase.exp"])
+    run_jam_cmd(["chmod", "+x", container_path])
     return True
 
 
