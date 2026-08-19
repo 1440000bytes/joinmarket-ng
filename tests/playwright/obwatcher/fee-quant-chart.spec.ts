@@ -366,6 +366,161 @@ test.describe("feature display names", () => {
   });
 });
 
+test.describe("offer selection probability", () => {
+  test("shows reciprocal round-level chances for bonded and zero-fee bondless offers", async ({ page }) => {
+    const bondedOffers: FixtureOffer[] = Array.from({ length: 20 }, (_, i) => ({
+      counterparty: `bonded${i}`,
+      oid: 0,
+      ordertype: "sw0absoffer",
+      cjfee: 100,
+      minsize: 100_000,
+      maxsize: 10_000_000,
+      fidelity_bond_value: i === 0 ? 1_000_000 : 10_000,
+      directory_nodes: [],
+      features: {},
+    }));
+    const bondlessOffers: FixtureOffer[] = Array.from({ length: 20 }, (_, i) => ({
+      counterparty: `bondless${i}`,
+      oid: 0,
+      ordertype: "sw0absoffer",
+      cjfee: 0,
+      minsize: 100_000,
+      maxsize: 10_000_000,
+      fidelity_bond_value: 0,
+      directory_nodes: [],
+      features: {},
+    }));
+    const excludedOffers: FixtureOffer[] = [
+      {
+        counterparty: "fee-charging-bondless",
+        oid: 0,
+        ordertype: "sw0absoffer",
+        cjfee: 1,
+        minsize: 100_000,
+        maxsize: 10_000_000,
+        fidelity_bond_value: 0,
+        directory_nodes: [],
+        features: {},
+      },
+      {
+        counterparty: "legacy-bonded",
+        oid: 0,
+        ordertype: "swabsoffer",
+        cjfee: 0,
+        minsize: 100_000,
+        maxsize: 10_000_000,
+        fidelity_bond_value: 100_000,
+        directory_nodes: [],
+        features: {},
+      },
+    ];
+    const server = await openChart(
+      page,
+      payload([...bondedOffers, ...bondlessOffers, ...excludedOffers]),
+    );
+
+    try {
+      const bondedChance = page.locator("#orderbook-tbody tr", { hasText: "bonded0" })
+        .locator(".selection-probability");
+      const lowBondChance = page.locator("#orderbook-tbody tr")
+        .filter({ has: page.locator('.counterparty .cell-value:text-is("bonded1")') })
+        .locator(".selection-probability");
+      const bondlessChance = page.locator("#orderbook-tbody tr", { hasText: "bondless0" })
+        .locator(".selection-probability");
+      const feeChargingChance = page.locator(
+        "#orderbook-tbody tr",
+        { hasText: "fee-charging-bondless" },
+      ).locator(".selection-probability");
+      const legacyChance = page.locator("#orderbook-tbody tr", { hasText: "legacy-bonded" })
+        .locator(".selection-probability");
+
+      await expect(bondedChance).toHaveText(/^1\/1(?:\.\d)?$/);
+      expect(await lowBondChance.textContent()).not.toBe(await bondedChance.textContent());
+      await expect(bondlessChance).toHaveText("1/20");
+      await expect(bondedChance).toHaveAttribute("title", /20% bondless allowance/);
+      await expect(feeChargingChance).toHaveText("0");
+      await expect(legacyChance).toHaveText("0");
+
+      await page.locator('th[data-sort="selection_probability"]').click();
+      await expect(page.locator("#orderbook-tbody tr").first()).toContainText("bonded");
+    } finally {
+      server.close();
+    }
+  });
+});
+
+test.describe("mobile layout", () => {
+  test("contains long onion URLs and presents offers as labeled rows", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const onion = `${"directory".padEnd(56, "x")}.onion:5222`;
+    const offers: FixtureOffer[] = [
+      {
+        counterparty: "J5MobileLayoutMakerWithALongCounterpartyName",
+        oid: 0,
+        ordertype: "sw0reloffer",
+        cjfee: "0.0001",
+        minsize: 100_000,
+        maxsize: 10_000_000,
+        fidelity_bond_value: 10_000,
+        directory_nodes: [onion],
+        features: { nick_auth: true },
+      },
+      {
+        counterparty: "fee-charging-bondless",
+        oid: 0,
+        ordertype: "sw0reloffer",
+        cjfee: "0.001",
+        minsize: 100_000,
+        maxsize: 10_000_000,
+        fidelity_bond_value: 0,
+        directory_nodes: [onion],
+        features: {},
+      },
+    ];
+    const body = payload(offers, {
+      directory_nodes: [onion],
+      directory_stats: {
+        [onion]: {
+          offer_count: 1,
+          bond_offer_count: 1,
+          connected: true,
+          connection_attempts: 1,
+          successful_connections: 1,
+          uptime_percentage: 100,
+        },
+      },
+    });
+    const server = await openChart(page, body);
+
+    try {
+      await expect(page.locator("#orderbook-table thead")).toBeHidden();
+      await expect(page.locator('#orderbook-tbody td[data-label="Pick Chance"]').first())
+        .toHaveText("N/A");
+      await expect(page.locator(".directory-name")).toHaveCSS("overflow-wrap", "anywhere");
+      await page.locator("#mobile-sort-column").selectOption("selection_probability");
+      await expect(page.locator("#orderbook-tbody tr").first())
+        .toContainText("fee-charging-bondless");
+      await page.locator("#mobile-sort-direction").click();
+      await expect(page.locator("#orderbook-tbody tr").first())
+        .toContainText("J5MobileLayoutMakerWithALongCounterpartyName");
+      const dimensions = await page.evaluate(() => ({
+        clientWidth: document.documentElement.clientWidth,
+        scrollWidth: document.documentElement.scrollWidth,
+      }));
+      expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth);
+      const directoryNameBox = await page.locator(".directory-name-container").boundingBox();
+      const directoryInfoBox = await page.locator(".directory-info").boundingBox();
+      expect(directoryNameBox).not.toBeNull();
+      expect(directoryInfoBox).not.toBeNull();
+      expect(directoryNameBox!.y + directoryNameBox!.height).toBeLessThanOrEqual(
+        directoryInfoBox!.y,
+      );
+    } finally {
+      server.close();
+    }
+  });
+});
+
 test.describe("fidelity bond certificate expiry", () => {
   for (const testCase of [
     { name: "before boundary", height: BOND_EXPIRY - 1, expired: false },

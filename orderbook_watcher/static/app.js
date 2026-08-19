@@ -1,6 +1,12 @@
 let orderbookData = null;
 let sortColumn = 'fidelity_bond_value';
 let sortDirection = 'desc';
+let offerSelectionProbabilities = new Map();
+
+const DEFAULT_MAKER_COUNT = 9;
+const BONDLESS_ALLOWANCE = 0.2;
+const SELECTION_SIMULATION_ROUNDS = 200000;
+const SELECTABLE_OFFER_TYPES = new Set(['sw0absoffer', 'sw0reloffer']);
 
 const OFFER_TYPE_NAMES = {
     'sw0absoffer': 'SW0 Absolute',
@@ -45,6 +51,14 @@ function getDirectoryAbbreviation(node) {
     return node.substring(0, 3).toUpperCase();
 }
 
+function getCompactDirectoryName(node) {
+    const separator = node.lastIndexOf(':');
+    const host = separator === -1 ? node : node.slice(0, separator);
+    const port = separator === -1 ? '' : node.slice(separator);
+    if (host.length <= 24) return node;
+    return `${host.slice(0, 10)}...${host.slice(-8)}${port}`;
+}
+
 function getDirectoryColor(node) {
     let hash = 0;
     for (let i = 0; i < node.length; i++) {
@@ -58,6 +72,7 @@ async function fetchOrderbook() {
     try {
         const response = await fetch('/orderbook.json');
         orderbookData = await response.json();
+        offerSelectionProbabilities = calculateOfferSelectionProbabilities(orderbookData.offers);
         updateStats();
         updateDirectoryBreakdown();
         updateFeatureBreakdown();
@@ -150,6 +165,8 @@ function updateDirectoryBreakdown() {
         const name = document.createElement('span');
         name.className = 'directory-name';
         name.textContent = node;
+        name.dataset.compactName = getCompactDirectoryName(node);
+        name.title = node;
 
         nameContainer.appendChild(statusIcon);
         nameContainer.appendChild(badge);
@@ -327,6 +344,257 @@ function hasAdvertisedBond(offer) {
     return offer.fidelity_bond_verified !== false &&
         offer.fidelity_bond_verification_stale !== true &&
         hasActiveCertificate(bondData);
+}
+
+function offerSelectionCategory(offer) {
+    if (!SELECTABLE_OFFER_TYPES.has(offer.ordertype)) return null;
+    if (hasAdvertisedBond(offer) && (offer.fidelity_bond_value || 0) > 0) return 'bonded';
+
+    const fee = Number(offer.cjfee);
+    return Number.isFinite(fee) && fee === 0 ? 'bondless' : null;
+}
+
+function addFenwickValue(tree, index, delta) {
+    for (let position = index + 1; position < tree.length; position += position & -position) {
+        tree[position] += delta;
+    }
+}
+
+function findFenwickIndex(tree, target) {
+    const itemCount = tree.length - 1;
+    let position = 0;
+    let step = 1;
+    while (step * 2 <= itemCount) step *= 2;
+    for (; step > 0; step = Math.floor(step / 2)) {
+        const next = position + step;
+        if (next <= itemCount && tree[next] <= target) {
+            position = next;
+            target -= tree[next];
+        }
+    }
+    return Math.min(position, itemCount - 1);
+}
+
+function createSelectionRandom(offers) {
+    let state = 2166136261;
+    for (const offer of offers) {
+        const identity = `${offer.counterparty}:${offer.oid}:${offer.fidelity_bond_value || 0}`;
+        for (let i = 0; i < identity.length; i++) {
+            state ^= identity.charCodeAt(i);
+            state = Math.imul(state, 16777619);
+        }
+    }
+    return () => {
+        state += 0x6D2B79F5;
+        let value = state;
+        value = Math.imul(value ^ value >>> 15, value | 1);
+        value ^= value + Math.imul(value ^ value >>> 7, value | 61);
+        return ((value ^ value >>> 14) >>> 0) / 4294967296;
+    };
+}
+
+// Simulate the actual mixed chooser efficiently. Uniform picks use a swap-remove
+// array and weighted picks use a Fenwick tree, so each nine-offer round can be
+// reset by undoing only the nine removals instead of rebuilding the full pool.
+function simulateBondedSelectionProbabilities(candidates) {
+    const itemCount = candidates.length;
+    const counts = new Uint32Array(itemCount);
+    const active = Int32Array.from({ length: itemCount }, (_, index) => index);
+    const positions = Int32Array.from({ length: itemCount }, (_, index) => index);
+    const weights = Float64Array.from(
+        candidates,
+        candidate => candidate.category === 'bonded'
+            ? candidate.offer.fidelity_bond_value || 0
+            : 0,
+    );
+    const tree = new Float64Array(itemCount + 1);
+    let initialBondTotal = 0;
+    weights.forEach((weight, index) => {
+        if (weight > 0) {
+            addFenwickValue(tree, index, weight);
+            initialBondTotal += weight;
+        }
+    });
+    const random = createSelectionRandom(candidates.map(candidate => candidate.offer));
+
+    for (let round = 0; round < SELECTION_SIMULATION_ROUNDS; round++) {
+        let activeCount = itemCount;
+        let bondTotal = initialBondTotal;
+        const removals = [];
+
+        for (let draw = 0; draw < DEFAULT_MAKER_COUNT; draw++) {
+            let index;
+            if (random() < BONDLESS_ALLOWANCE || bondTotal <= 0) {
+                index = active[Math.floor(random() * activeCount)];
+            } else {
+                index = findFenwickIndex(tree, random() * bondTotal);
+            }
+            counts[index] += 1;
+
+            const position = positions[index];
+            const lastPosition = activeCount - 1;
+            const swappedIndex = active[lastPosition];
+            removals.push({ index, position, lastPosition, swappedIndex });
+            active[position] = swappedIndex;
+            positions[swappedIndex] = position;
+            active[lastPosition] = index;
+            positions[index] = lastPosition;
+            activeCount -= 1;
+
+            const weight = weights[index];
+            if (weight > 0) {
+                addFenwickValue(tree, index, -weight);
+                bondTotal -= weight;
+            }
+        }
+
+        for (let i = removals.length - 1; i >= 0; i--) {
+            const { index, position, lastPosition, swappedIndex } = removals[i];
+            active[position] = index;
+            positions[index] = position;
+            active[lastPosition] = swappedIndex;
+            positions[swappedIndex] = lastPosition;
+            const weight = weights[index];
+            if (weight > 0) addFenwickValue(tree, index, weight);
+        }
+    }
+
+    return counts;
+}
+
+// Calculate round-level inclusion probabilities. The bondless category is exact
+// because all such offers are symmetric; unequal bonded weights are simulated.
+function calculateOfferSelectionProbabilities(offers) {
+    const categories = new Map();
+    const candidates = [];
+    let bondedCount = 0;
+    let bondlessCount = 0;
+
+    for (const offer of offers) {
+        const category = offerSelectionCategory(offer);
+        categories.set(offer, category);
+        if (category === 'bonded') bondedCount += 1;
+        if (category === 'bondless') bondlessCount += 1;
+        if (category !== null) candidates.push({ offer, category });
+    }
+
+    const poolSize = bondedCount + bondlessCount;
+    let bondedProbability = null;
+    let bondlessProbability = null;
+
+    if (poolSize >= DEFAULT_MAKER_COUNT) {
+        const rounds = DEFAULT_MAKER_COUNT;
+        let states = new Map([[`${bondedCount},${bondlessCount}`, 1]]);
+
+        for (let draw = 0; draw < rounds; draw++) {
+            const nextStates = new Map();
+            for (const [key, stateProbability] of states) {
+                const [bondedRemaining, bondlessRemaining] = key.split(',').map(Number);
+                const remaining = bondedRemaining + bondlessRemaining;
+                const uniformBondedChance = bondedRemaining / remaining;
+                const bondedPickChance = bondedRemaining > 0
+                    ? (1 - BONDLESS_ALLOWANCE) + BONDLESS_ALLOWANCE * uniformBondedChance
+                    : 0;
+                const bondlessPickChance = 1 - bondedPickChance;
+
+                if (bondedPickChance > 0) {
+                    const nextKey = `${bondedRemaining - 1},${bondlessRemaining}`;
+                    nextStates.set(
+                        nextKey,
+                        (nextStates.get(nextKey) || 0) + stateProbability * bondedPickChance,
+                    );
+                }
+                if (bondlessPickChance > 0) {
+                    const nextKey = `${bondedRemaining},${bondlessRemaining - 1}`;
+                    nextStates.set(
+                        nextKey,
+                        (nextStates.get(nextKey) || 0) + stateProbability * bondlessPickChance,
+                    );
+                }
+            }
+            states = nextStates;
+        }
+
+        let expectedBondedRemaining = 0;
+        let expectedBondlessRemaining = 0;
+        for (const [key, stateProbability] of states) {
+            const [bondedRemaining, bondlessRemaining] = key.split(',').map(Number);
+            expectedBondedRemaining += bondedRemaining * stateProbability;
+            expectedBondlessRemaining += bondlessRemaining * stateProbability;
+        }
+        if (bondedCount > 0) {
+            bondedProbability = (bondedCount - expectedBondedRemaining) / bondedCount;
+        }
+        if (bondlessCount > 0) {
+            bondlessProbability = (bondlessCount - expectedBondlessRemaining) / bondlessCount;
+        }
+    }
+
+    let simulatedCounts = null;
+    const bondWeights = new Set(
+        candidates
+            .filter(candidate => candidate.category === 'bonded')
+            .map(candidate => candidate.offer.fidelity_bond_value || 0),
+    );
+    if (poolSize > DEFAULT_MAKER_COUNT && bondWeights.size > 1) {
+        simulatedCounts = simulateBondedSelectionProbabilities(candidates);
+    }
+
+    const probabilities = new Map();
+    let candidateIndex = 0;
+    for (const offer of offers) {
+        const category = categories.get(offer);
+        let probability = 0;
+        if (category === 'bonded') {
+            probability = simulatedCounts === null
+                ? bondedProbability
+                : simulatedCounts[candidateIndex] / SELECTION_SIMULATION_ROUNDS;
+        } else if (category === 'bondless') {
+            probability = bondlessProbability;
+        }
+        probabilities.set(
+            offer,
+            probability,
+        );
+        if (category !== null) candidateIndex += 1;
+    }
+    return probabilities;
+}
+
+function getOfferSelectionProbability(offer) {
+    return offerSelectionProbabilities.has(offer)
+        ? offerSelectionProbabilities.get(offer)
+        : 0;
+}
+
+function formatSelectionProbability(offer) {
+    const probability = getOfferSelectionProbability(offer);
+    if (probability === null) {
+        return {
+            text: 'N/A',
+            title: 'Fewer than 9 qualifying offers are available, so a 9-maker estimate cannot be calculated.',
+        };
+    }
+    if (probability <= 0) {
+        return {
+            text: '0',
+            title: 'Not in the estimate: only active bonded SW0 offers and zero-fee bondless SW0 offers qualify.',
+        };
+    }
+
+    const interval = 1 / probability;
+    const denominator = interval < 10
+        ? interval.toFixed(1).replace(/\.0$/, '')
+        : Math.round(interval).toLocaleString();
+    const percentage = probability < 0.001
+        ? (probability * 100).toPrecision(2)
+        : (probability * 100).toFixed(1).replace(/\.0$/, '');
+    return {
+        text: `1/${denominator}`,
+        title: `${percentage}% chance per 9-maker CoinJoin, assuming every counted offer ` +
+            'passes the taker\'s fee and amount limits. Uses the 20% bondless allowance, ' +
+            'zero-fee bondless offers, and bond-value-weighted selection for bonded slots.',
+    };
 }
 
 function renderFeeQuantizationChart() {
@@ -714,6 +982,9 @@ function sortOffers(offers) {
 
             aVal = parseFloat(aVal);
             bVal = parseFloat(bVal);
+        } else if (sortColumn === 'selection_probability') {
+            aVal = getOfferSelectionProbability(a) ?? -1;
+            bVal = getOfferSelectionProbability(b) ?? -1;
         } else if (typeof aVal === 'string') {
             aVal = aVal.toLowerCase();
             bVal = bVal.toLowerCase();
@@ -931,6 +1202,7 @@ function renderTable() {
 
         const typeClass = offer.ordertype.startsWith('sw0') ? 'type-sw0' : 'type-swa';
         const feeClass = offer.ordertype.includes('absoffer') ? 'fee-absolute' : 'fee-relative';
+        const selectionProbability = formatSelectionProbability(offer);
 
         let hasBond = '';
         let bondValue;
@@ -991,15 +1263,16 @@ function renderTable() {
         }
 
         row.innerHTML = `
-            <td class="${typeClass}">${OFFER_TYPE_NAMES[offer.ordertype]}</td>
-            <td class="counterparty">${offer.counterparty}${directBadge}</td>
-            <td>${offer.oid}</td>
-            <td class="${feeClass}">${formatFee(offer)}</td>
-            <td>${formatNumber(offer.minsize)}</td>
-            <td>${formatNumber(offer.maxsize)}</td>
-            <td class="${hasBond}">${bondValue}</td>
-            <td class="feature-badges">${featureBadges}</td>
-            <td class="directory-badges">${directoryBadges}</td>
+            <td data-label="Type" class="${typeClass}"><span class="cell-value">${OFFER_TYPE_NAMES[offer.ordertype]}</span></td>
+            <td data-label="Counterparty" class="counterparty"><span class="cell-value">${offer.counterparty}${directBadge}</span></td>
+            <td data-label="Order ID"><span class="cell-value">${offer.oid}</span></td>
+            <td data-label="Fee" class="${feeClass}"><span class="cell-value">${formatFee(offer)}</span></td>
+            <td data-label="Min Size"><span class="cell-value">${formatNumber(offer.minsize)}</span></td>
+            <td data-label="Max Size"><span class="cell-value">${formatNumber(offer.maxsize)}</span></td>
+            <td data-label="Pick Chance" class="selection-probability" title="${selectionProbability.title}"><span class="cell-value">${selectionProbability.text}</span></td>
+            <td data-label="Bond Value" class="${hasBond}"><span class="cell-value">${bondValue}</span></td>
+            <td data-label="Features" class="feature-badges"><span class="cell-value">${featureBadges}</span></td>
+            <td data-label="Directories" class="directory-badges"><span class="cell-value">${directoryBadges}</span></td>
         `;
 
         if (offer.fidelity_bond_data) {
@@ -1039,6 +1312,19 @@ function updateSortIndicators() {
             th.classList.add(sortDirection);
         }
     });
+
+    const mobileSortColumn = document.getElementById('mobile-sort-column');
+    const mobileSortDirection = document.getElementById('mobile-sort-direction');
+    if (mobileSortColumn) mobileSortColumn.value = sortColumn;
+    if (mobileSortDirection) {
+        const descending = sortDirection === 'desc';
+        mobileSortDirection.textContent = descending ? '↓' : '↑';
+        mobileSortDirection.title = descending ? 'Descending' : 'Ascending';
+        mobileSortDirection.setAttribute(
+            'aria-label',
+            descending ? 'Sort descending' : 'Sort ascending',
+        );
+    }
 }
 
 function setupEventListeners() {
@@ -1059,6 +1345,18 @@ function setupEventListeners() {
 
     document.getElementById('filter-directory').addEventListener('change', renderTable);
     document.getElementById('search-counterparty').addEventListener('input', renderTable);
+
+    const mobileSortColumn = document.getElementById('mobile-sort-column');
+    const mobileSortDirection = document.getElementById('mobile-sort-direction');
+    mobileSortColumn.addEventListener('change', () => {
+        sortColumn = mobileSortColumn.value;
+        sortDirection = 'desc';
+        renderTable();
+    });
+    mobileSortDirection.addEventListener('click', () => {
+        sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
+        renderTable();
+    });
 
     setupFeeQuantToggle();
 

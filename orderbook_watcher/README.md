@@ -8,6 +8,7 @@ A clean, performant, and secure orderbook watcher for JoinMarket that aggregates
 - **Multi-Directory Aggregation**: Fetches and combines orderbooks from multiple directory nodes
 - **Web Interface**: Clean, modern UI with real-time updates
 - **Advanced Filtering**: Filter by offer type, directory node, and counterparty
+- **Selection Estimate**: Compare round-level offer pick chances under simplified taker defaults
 - **Directory Statistics**: See offer counts per directory node
 - **Direct Peer Indicator**: Highlights makers reachable via direct onion connection (beyond what directories advertise)
 - **Mempool.space Integration**: Validates fidelity bonds using mempool.space API

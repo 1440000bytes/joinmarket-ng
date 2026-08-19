@@ -80,6 +80,22 @@ UI is exposed on `http://localhost:8000` by default.
 Set `orderbook_watcher.http_host = "0.0.0.0"` only when remote access is intentional and
 protected by an appropriate firewall or reverse proxy.
 
+## Web UI
+
+The orderbook table's **Pick Chance** column estimates how often each offer is
+included in a CoinJoin and displays the result as `1/N`. For example, `1/100`
+means an offer is expected to be selected in one of every 100 rounds.
+
+The estimate uses nine makers (the average of the default randomized range of
+8 to 10), the default 20% bondless allowance, active bonded SW0 offers, and
+zero-fee bondless SW0 offers. It calculates selection without replacement and
+uses bond-value weighting for the default bonded slots; allowance slots select
+uniformly from all remaining offers. Fee and amount filtering are intentionally
+omitted, so the estimate assumes every counted offer passes the taker's limits.
+Bonded inclusion chances come from a deterministic simulation of this
+without-replacement chooser, while the symmetric bondless chance is calculated
+exactly. The UI shows `N/A` when fewer than nine qualifying offers are available.
+
 ## API Endpoints
 
 - `GET /` UI

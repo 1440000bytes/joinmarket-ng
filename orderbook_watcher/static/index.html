@@ -88,6 +88,22 @@
                     <input type="text" id="search-counterparty" placeholder="Search counterparty...">
                 </label>
             </div>
+            <div class="filter-group mobile-sort-controls">
+                <label for="mobile-sort-column">Sort by</label>
+                <div class="mobile-sort-inputs">
+                    <select id="mobile-sort-column">
+                        <option value="fidelity_bond_value">Bond Value</option>
+                        <option value="selection_probability">Pick Chance</option>
+                        <option value="cjfee">Fee</option>
+                        <option value="minsize">Min Size</option>
+                        <option value="maxsize">Max Size</option>
+                        <option value="counterparty">Counterparty</option>
+                        <option value="ordertype">Type</option>
+                        <option value="oid">Order ID</option>
+                    </select>
+                    <button id="mobile-sort-direction" type="button" title="Descending" aria-label="Sort descending">↓</button>
+                </div>
+            </div>
         </div>
 
         <div class="table-container">
@@ -100,6 +116,7 @@
                         <th class="sortable" data-sort="cjfee">Fee</th>
                         <th class="sortable" data-sort="minsize">Min Size (sats)</th>
                         <th class="sortable" data-sort="maxsize">Max Size (sats)</th>
+                        <th class="sortable" data-sort="selection_probability" title="Estimated chance this offer is selected in a 9-maker CoinJoin: 20% uniform selection and 80% bond-value-weighted selection, ignoring fee and amount limits">Pick Chance</th>
                         <th class="sortable" data-sort="fidelity_bond_value">Bond Value</th>
                         <th>Features</th>
                         <th>Directories</th>
