@@ -576,6 +576,46 @@ function getOfferSelectionProbability(offer) {
     return estimate === undefined ? 0 : estimate.probability;
 }
 
+function getSelectionExclusionReason(offer) {
+    if (!SELECTABLE_OFFER_TYPES.has(offer.ordertype)) {
+        const offerType = OFFER_TYPE_NAMES[offer.ordertype] || offer.ordertype;
+        return `${offerType} offers are excluded; the estimate includes only SW0 offers.`;
+    }
+
+    const bondData = offer.fidelity_bond_data;
+    if (bondData) {
+        const currentBlockHeight = orderbookData.current_block_height;
+        if (!Number.isSafeInteger(currentBlockHeight) ||
+            !Number.isSafeInteger(bondData.cert_expiry)) {
+            return 'The fidelity bond certificate expiry cannot be verified because block ' +
+                'height or certificate data is unavailable.';
+        }
+        if (currentBlockHeight > bondData.cert_expiry) {
+            return `The fidelity bond certificate expired at block ${bondData.cert_expiry}; ` +
+                `the current height is ${currentBlockHeight}.`;
+        }
+        if (offer.fidelity_bond_verified === false) {
+            return 'The fidelity bond failed verification.';
+        }
+        if (offer.fidelity_bond_verification_stale === true) {
+            return 'The fidelity bond verification is stale and must be refreshed.';
+        }
+        if ((offer.fidelity_bond_value || 0) <= 0) {
+            if (offer.fidelity_bond_verified !== true) {
+                return 'The fidelity bond is still pending verification.';
+            }
+            return 'The certificate is active, but the watcher has not established a positive ' +
+                'fidelity bond value yet.';
+        }
+    }
+
+    if (offerSelectionCategory(offer) === null) {
+        return 'This is a nonzero-fee bondless offer; only zero-fee bondless offers are ' +
+            'included in the estimate.';
+    }
+    return 'This eligible offer was not selected by the deterministic estimate.';
+}
+
 function formatSelectionProbability(offer) {
     const estimate = offerSelectionProbabilities.get(offer) ||
         { probability: 0, sharedBond: false };
@@ -595,7 +635,7 @@ function formatSelectionProbability(offer) {
     if (probability <= 0) {
         return {
             text: `0${suffix}`,
-            title: 'Not in the estimate: only active bonded SW0 offers and zero-fee bondless SW0 offers qualify.',
+            title: getSelectionExclusionReason(offer),
         };
     }
 

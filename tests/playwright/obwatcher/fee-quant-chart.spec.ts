@@ -43,6 +43,8 @@ interface FixtureOffer {
   txfee?: number;
   fidelity_bond_value?: number;
   fidelity_bond_data?: Record<string, unknown>;
+  fidelity_bond_verified?: boolean | null;
+  fidelity_bond_verification_stale?: boolean;
   directory_nodes?: string[];
   features?: Record<string, boolean>;
 }
@@ -454,6 +456,42 @@ test.describe("offer selection probability", () => {
         directory_nodes: [],
         features: {},
       },
+      {
+        counterparty: "expired-certificate",
+        oid: 0,
+        ordertype: "sw0absoffer",
+        cjfee: 100,
+        minsize: 100_000,
+        maxsize: 10_000_000,
+        fidelity_bond_value: 100_000,
+        fidelity_bond_data: {
+          utxo_txid: "e".repeat(64),
+          utxo_vout: 0,
+          cert_expiry: 899_999,
+        },
+        fidelity_bond_verified: true,
+        fidelity_bond_verification_stale: false,
+        directory_nodes: [],
+        features: {},
+      },
+      {
+        counterparty: "bond-value-pending",
+        oid: 0,
+        ordertype: "sw0absoffer",
+        cjfee: 100,
+        minsize: 100_000,
+        maxsize: 10_000_000,
+        fidelity_bond_value: 0,
+        fidelity_bond_data: {
+          utxo_txid: "d".repeat(64),
+          utxo_vout: 0,
+          cert_expiry: BOND_EXPIRY,
+        },
+        fidelity_bond_verified: true,
+        fidelity_bond_verification_stale: false,
+        directory_nodes: [],
+        features: {},
+      },
     ];
     const server = await openChart(
       page,
@@ -474,13 +512,29 @@ test.describe("offer selection probability", () => {
       ).locator(".selection-probability");
       const legacyChance = page.locator("#orderbook-tbody tr", { hasText: "legacy-bonded" })
         .locator(".selection-probability");
+      const expiredChance = page.locator("#orderbook-tbody tr", {
+        hasText: "expired-certificate",
+      }).locator(".selection-probability");
+      const pendingValueChance = page.locator("#orderbook-tbody tr", {
+        hasText: "bond-value-pending",
+      }).locator(".selection-probability");
 
       await expect(bondedChance).toHaveText(/^1\/1(?:\.\d)?$/);
       expect(await lowBondChance.textContent()).not.toBe(await bondedChance.textContent());
       await expect(bondlessChance).toHaveText("1/20");
       await expect(bondedChance).toHaveAttribute("title", /20% bondless allowance/);
       await expect(feeChargingChance).toHaveText("0");
+      await expect(feeChargingChance).toHaveAttribute("title", /nonzero-fee bondless offer/);
       await expect(legacyChance).toHaveText("0");
+      await expect(legacyChance).toHaveAttribute("title", /SWA Absolute offers are excluded/);
+      await expect(expiredChance).toHaveAttribute(
+        "title",
+        "The fidelity bond certificate expired at block 899999; the current height is 900000.",
+      );
+      await expect(pendingValueChance).toHaveAttribute(
+        "title",
+        /has not established a positive fidelity bond value yet/,
+      );
 
       await page.locator('th[data-sort="selection_probability"]').click();
       await expect(page.locator("#orderbook-tbody tr").first()).toContainText("bonded");
