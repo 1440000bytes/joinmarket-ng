@@ -15,10 +15,13 @@ from jmcore.crypto import NickIdentity, verify_signed_privmsg
 from jmcore.directory_client import DirectoryClient
 from jmcore.models import Offer
 from jmcore.network import ONION_HOSTID, TCPConnection
+from jmcore.nick_auth import NickAuthMode
 from jmcore.protocol import (
     COMMAND_PREFIX,
     FEATURE_NEUTRINO_COMPAT,
+    FEATURE_NICK_AUTH,
     FEATURE_PEERLIST_FEATURES,
+    FEATURE_PING,
     FeatureSet,
     MessageType,
     create_handshake_request,
@@ -233,10 +236,11 @@ class DirectConnectionMixin:
         state.nick = peer_nick
 
         # Build our feature set for the handshake
-        features = FeatureSet()
+        features = FeatureSet(features={FEATURE_PEERLIST_FEATURES, FEATURE_PING})
         if self.backend.can_provide_neutrino_metadata():
             features.features.add(FEATURE_NEUTRINO_COMPAT)
-        features.features.add(FEATURE_PEERLIST_FEATURES)
+        if self.config.nick_auth_mode is not NickAuthMode.DISABLED:
+            features.features.add(FEATURE_NICK_AUTH)
 
         # Determine our location string (onion address or NOT-SERVING-ONION)
         onion_host = self.config.onion_host

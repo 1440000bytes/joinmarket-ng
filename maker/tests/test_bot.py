@@ -16,6 +16,7 @@ import pytest
 from jmcore.crypto import NickIdentity
 from jmcore.models import NetworkType, Offer, OfferType
 from jmcore.network import ONION_HOSTID, TCPConnection
+from jmcore.nick_auth import NickAuthMode
 from jmcore.protocol import JM_VERSION, MessageType, create_handshake_request
 from jmwallet.wallet.models import UTXOInfo
 
@@ -2444,6 +2445,42 @@ class TestDirectConnectionHandshake:
         assert features["neutrino_compat"] is True
         assert "peerlist_features" in features
         assert features["peerlist_features"] is True
+        assert features["ping"] is True
+        assert features["nick_auth"] is True
+
+    @pytest.mark.asyncio
+    async def test_try_handle_handshake_omits_disabled_nick_auth(self, mock_wallet, mock_backend):
+        config = MakerConfig(
+            mnemonic="test " * 12,
+            directory_servers=["localhost:5222"],
+            network=NetworkType.REGTEST,
+            nick_auth_mode=NickAuthMode.DISABLED,
+        )
+        maker_bot = MakerBot(wallet=mock_wallet, backend=mock_backend, config=config)
+        mock_conn = MagicMock(spec=TCPConnection)
+        handshake_request = {
+            "type": MessageType.HANDSHAKE.value,
+            "line": json.dumps(
+                {
+                    "app-name": "joinmarket",
+                    "directory": False,
+                    "location-string": "NOT-SERVING-ONION",
+                    "proto-ver": JM_VERSION,
+                    "features": {},
+                    "nick": "J5TestNick",
+                    "network": "regtest",
+                }
+            ),
+        }
+
+        await maker_bot._try_handle_handshake(
+            mock_conn, json.dumps(handshake_request).encode(), "test:1234"
+        )
+
+        response = json.loads(mock_conn.send.call_args.args[0])
+        features = json.loads(response["line"])["features"]
+        assert features["ping"] is True
+        assert "nick_auth" not in features
 
     @pytest.mark.asyncio
     async def test_try_handle_handshake_ignores_wrong_network(self, maker_bot):
