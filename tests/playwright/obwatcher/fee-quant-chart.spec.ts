@@ -367,6 +367,47 @@ test.describe("feature display names", () => {
 });
 
 test.describe("offer selection probability", () => {
+  test("counts offers sharing a fidelity bond as one candidate", async ({ page }) => {
+    const sharedTxid = "f".repeat(64);
+    const offers: FixtureOffer[] = Array.from({ length: 10 }, (_, i) => ({
+      counterparty: `shared-bond-maker-${i}`,
+      oid: 0,
+      ordertype: "sw0absoffer",
+      cjfee: 100,
+      minsize: 100_000,
+      maxsize: 10_000_000,
+      fidelity_bond_value: 10_000,
+      fidelity_bond_data: {
+        utxo_txid: i < 2 ? sharedTxid : i.toString(16).padStart(64, "0"),
+        utxo_vout: 0,
+        cert_expiry: BOND_EXPIRY,
+      },
+      directory_nodes: [],
+      features: {},
+    }));
+    const server = await openChart(page, payload(offers));
+
+    try {
+      const firstSharedChance = page.locator("#orderbook-tbody tr", {
+        hasText: "shared-bond-maker-0",
+      }).locator(".selection-probability");
+      const secondSharedChance = page.locator("#orderbook-tbody tr", {
+        hasText: "shared-bond-maker-1",
+      }).locator(".selection-probability");
+      const uniqueChance = page.locator("#orderbook-tbody tr", {
+        hasText: "shared-bond-maker-2",
+      }).locator(".selection-probability");
+
+      await expect(firstSharedChance).toHaveText("1/1*");
+      await expect(secondSharedChance).toHaveText("1/1*");
+      await expect(firstSharedChance).toHaveAttribute("title", /bond-level chance/);
+      await expect(firstSharedChance).toHaveAttribute("title", /keep at most one offer/);
+      await expect(uniqueChance).toHaveText("1/1");
+    } finally {
+      server.close();
+    }
+  });
+
   test("shows reciprocal round-level chances for bonded and zero-fee bondless offers", async ({ page }) => {
     const bondedOffers: FixtureOffer[] = Array.from({ length: 20 }, (_, i) => ({
       counterparty: `bonded${i}`,

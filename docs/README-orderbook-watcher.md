@@ -92,6 +92,10 @@ zero-fee bondless SW0 offers. It calculates selection without replacement and
 uses bond-value weighting for the default bonded slots; allowance slots select
 uniformly from all remaining offers. Fee and amount filtering are intentionally
 omitted, so the estimate assumes every counted offer passes the taker's limits.
+Offers sharing one active fidelity bond UTXO count as one candidate, matching
+the taker's bond deduplication. Each sibling row shows the bond-level chance
+with an asterisk because the omitted fee and amount filters determine which
+offer the taker keeps.
 Bonded inclusion chances come from a deterministic simulation of this
 without-replacement chooser, while the symmetric bondless chance is calculated
 exactly. The UI shows `N/A` when fewer than nine qualifying offers are available.

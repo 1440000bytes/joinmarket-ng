@@ -354,6 +354,13 @@ function offerSelectionCategory(offer) {
     return Number.isFinite(fee) && fee === 0 ? 'bondless' : null;
 }
 
+function getSelectionBondKey(offer) {
+    const bondData = offer.fidelity_bond_data;
+    if (!bondData || typeof bondData.utxo_txid !== 'string' ||
+        !Number.isInteger(bondData.utxo_vout)) return null;
+    return `${bondData.utxo_txid}:${bondData.utxo_vout}`;
+}
+
 function addFenwickValue(tree, index, delta) {
     for (let position = index + 1; position < tree.length; position += position & -position) {
         tree[position] += delta;
@@ -465,19 +472,25 @@ function simulateBondedSelectionProbabilities(candidates) {
 // Calculate round-level inclusion probabilities. The bondless category is exact
 // because all such offers are symmetric; unequal bonded weights are simulated.
 function calculateOfferSelectionProbabilities(offers) {
-    const categories = new Map();
     const candidates = [];
-    let bondedCount = 0;
-    let bondlessCount = 0;
+    const candidatesByBond = new Map();
 
     for (const offer of offers) {
         const category = offerSelectionCategory(offer);
-        categories.set(offer, category);
-        if (category === 'bonded') bondedCount += 1;
-        if (category === 'bondless') bondlessCount += 1;
-        if (category !== null) candidates.push({ offer, category });
+        if (category === null) continue;
+
+        const bondKey = category === 'bonded' ? getSelectionBondKey(offer) : null;
+        let candidate = bondKey === null ? null : candidatesByBond.get(bondKey);
+        if (candidate === undefined || candidate === null) {
+            candidate = { offer, offers: [], category, bondKey };
+            candidates.push(candidate);
+            if (bondKey !== null) candidatesByBond.set(bondKey, candidate);
+        }
+        candidate.offers.push(offer);
     }
 
+    const bondedCount = candidates.filter(candidate => candidate.category === 'bonded').length;
+    const bondlessCount = candidates.length - bondedCount;
     const poolSize = bondedCount + bondlessCount;
     let bondedProbability = null;
     let bondlessProbability = null;
@@ -540,44 +553,48 @@ function calculateOfferSelectionProbabilities(offers) {
         simulatedCounts = simulateBondedSelectionProbabilities(candidates);
     }
 
-    const probabilities = new Map();
-    let candidateIndex = 0;
-    for (const offer of offers) {
-        const category = categories.get(offer);
-        let probability = 0;
-        if (category === 'bonded') {
+    const probabilities = new Map(
+        offers.map(offer => [offer, { probability: 0, sharedBond: false }]),
+    );
+    candidates.forEach((candidate, candidateIndex) => {
+        let probability;
+        if (candidate.category === 'bonded') {
             probability = simulatedCounts === null
                 ? bondedProbability
                 : simulatedCounts[candidateIndex] / SELECTION_SIMULATION_ROUNDS;
-        } else if (category === 'bondless') {
+        } else {
             probability = bondlessProbability;
         }
-        probabilities.set(
-            offer,
-            probability,
-        );
-        if (category !== null) candidateIndex += 1;
-    }
+        const sharedBond = candidate.bondKey !== null && candidate.offers.length > 1;
+        candidate.offers.forEach(offer => probabilities.set(offer, { probability, sharedBond }));
+    });
     return probabilities;
 }
 
 function getOfferSelectionProbability(offer) {
-    return offerSelectionProbabilities.has(offer)
-        ? offerSelectionProbabilities.get(offer)
-        : 0;
+    const estimate = offerSelectionProbabilities.get(offer);
+    return estimate === undefined ? 0 : estimate.probability;
 }
 
 function formatSelectionProbability(offer) {
-    const probability = getOfferSelectionProbability(offer);
+    const estimate = offerSelectionProbabilities.get(offer) ||
+        { probability: 0, sharedBond: false };
+    const { probability, sharedBond } = estimate;
+    const suffix = sharedBond ? '*' : '';
+    const sharedBondNote = sharedBond
+        ? ' The asterisk marks a bond-level chance: this offer shares its fidelity bond ' +
+            'UTXO with other offers, and takers keep at most one offer for that bond.'
+        : '';
     if (probability === null) {
         return {
-            text: 'N/A',
-            title: 'Fewer than 9 qualifying offers are available, so a 9-maker estimate cannot be calculated.',
+            text: `N/A${suffix}`,
+            title: 'Fewer than 9 qualifying candidates are available, so a 9-maker estimate ' +
+                `cannot be calculated.${sharedBondNote}`,
         };
     }
     if (probability <= 0) {
         return {
-            text: '0',
+            text: `0${suffix}`,
             title: 'Not in the estimate: only active bonded SW0 offers and zero-fee bondless SW0 offers qualify.',
         };
     }
@@ -590,10 +607,11 @@ function formatSelectionProbability(offer) {
         ? (probability * 100).toPrecision(2)
         : (probability * 100).toFixed(1).replace(/\.0$/, '');
     return {
-        text: `1/${denominator}`,
+        text: `1/${denominator}${suffix}`,
         title: `${percentage}% chance per 9-maker CoinJoin, assuming every counted offer ` +
             'passes the taker\'s fee and amount limits. Uses the 20% bondless allowance, ' +
-            'zero-fee bondless offers, and bond-value-weighted selection for bonded slots.',
+            'zero-fee bondless offers, and bond-value-weighted selection for bonded slots.' +
+            sharedBondNote,
     };
 }
 
