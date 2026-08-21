@@ -1346,8 +1346,8 @@ class TestNotificationLogging:
         assert "Notifications disabled" in log_output
 
     @pytest.mark.asyncio
-    async def test_send_logs_success_at_debug(self) -> None:
-        """Test that successful notification sends log at DEBUG level."""
+    async def test_send_logs_success_at_info(self) -> None:
+        """Test that successful notification sends log at INFO level."""
         from io import StringIO
 
         from loguru import logger
@@ -1369,7 +1369,7 @@ class TestNotificationLogging:
         mock_apprise_module.NotifyType.INFO = "info"
 
         output = StringIO()
-        handler_id = logger.add(output, format="{message}", level="DEBUG")
+        handler_id = logger.add(output, format="{message}", level="INFO")
 
         try:
             with patch.dict("sys.modules", {"apprise": mock_apprise_module}):

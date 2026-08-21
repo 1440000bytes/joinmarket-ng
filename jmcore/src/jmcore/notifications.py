@@ -896,7 +896,9 @@ class Notifier:
                     "Run with DEBUG logging to see the underlying error from Apprise."
                 )
             else:
-                logger.debug(f"Notification sent: {title}")
+                # Keep the event visible at the default INFO level without
+                # logging the privacy-sensitive notification body.
+                logger.info(f"Notification sent: {title}")
             return result
 
         except Exception as e:

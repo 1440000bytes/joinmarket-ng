@@ -222,6 +222,17 @@ class TestBotInitialization:
 
         assert bot.fidelity_bond is None
 
+    @pytest.mark.asyncio
+    async def test_start_seeds_mempool_notification_state(self, mock_wallet, mock_backend, config):
+        bot = MakerBot(wallet=mock_wallet, backend=mock_backend, config=config)
+        sentinel = RuntimeError("stop after seeding")
+        bot._seed_mempool_notification_state = MagicMock(side_effect=sentinel)
+
+        with pytest.raises(RuntimeError, match="stop after seeding"):
+            await bot.start()
+
+        bot._seed_mempool_notification_state.assert_called_once_with()
+
     def test_bot_respects_no_fidelity_bond_config(self, mock_wallet, mock_backend):
         """Test that no_fidelity_bond=True is stored on the config.
 
@@ -1910,6 +1921,38 @@ class TestPendingConfirmationNotifications:
         assert kwargs["txid"] == "test_txid_123"
         assert kwargs["cj_amount"] == 91554
         notifier.notify_confirmed.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_restart_does_not_repeat_mempool_notification(
+        self, mock_wallet, config, tmp_path
+    ):
+        from unittest.mock import AsyncMock, patch
+
+        self._append_pending(tmp_path)
+        backend = self._make_backend(confirmations=0)
+        bot = MakerBot(wallet=mock_wallet, backend=backend, config=config)
+        bot._seed_mempool_notification_state()
+
+        notifier = MagicMock()
+        notifier.notify_mempool = AsyncMock()
+        notifier.notify_confirmed = AsyncMock()
+
+        with (
+            patch("maker.background_tasks.get_notifier", return_value=notifier),
+            patch(
+                "jmwallet.history.detect_coinjoin_peer_count",
+                new=AsyncMock(return_value=3),
+            ),
+        ):
+            await bot._update_pending_history()
+            notifier.notify_mempool.assert_not_awaited()
+            notifier.notify_confirmed.assert_not_awaited()
+
+            backend.get_transaction.return_value.confirmations = 1
+            await bot._update_pending_history()
+
+        notifier.notify_mempool.assert_not_awaited()
+        notifier.notify_confirmed.assert_awaited_once()
 
     def _make_neutrino_backend(self, *, confirmations, height):
         """Neutrino-style backend: cannot confirm by txid, only via get_utxos."""

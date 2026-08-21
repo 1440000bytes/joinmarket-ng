@@ -34,7 +34,7 @@ from jmcore.tor_control import (
     TorControlError,
 )
 from jmwallet.backends.base import BlockchainBackend
-from jmwallet.history import get_coinjoin_lineage_outpoints
+from jmwallet.history import get_coinjoin_lineage_outpoints, get_pending_transactions
 from jmwallet.wallet.models import UTXOInfo
 from jmwallet.wallet.service import WalletService
 from loguru import logger
@@ -201,6 +201,23 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
         if taker_nick:
             self._own_wallet_nicks.add(taker_nick)
             logger.info(f"Self-CoinJoin protection: excluding taker nick {taker_nick}")
+
+    def _seed_mempool_notification_state(self) -> None:
+        """Remember pending transactions inherited from a prior maker process."""
+        pending_txids = {
+            entry.txid
+            for entry in get_pending_transactions(
+                data_dir=self.config.data_dir,
+                wallet_fingerprint=self.wallet.wallet_fingerprint,
+            )
+            if entry.txid
+        }
+        self._mempool_notified_txids.update(pending_txids)
+        if pending_txids:
+            logger.debug(
+                f"Monitoring {len(pending_txids)} pre-existing pending transaction(s) "
+                "without replaying mempool notifications"
+            )
 
     async def _setup_tor_hidden_service(self) -> str | None:
         """
@@ -388,6 +405,11 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
         """
         try:
             logger.info(f"Starting maker bot (nick: {self.nick})")
+
+            # Pending history survives restarts. Treat transactions inherited
+            # from a prior process as already notified so startup monitoring
+            # does not replay their mempool notifications.
+            self._seed_mempool_notification_state()
 
             # Log wallet name if using descriptor wallet backend
             from jmwallet.backends.descriptor_wallet import DescriptorWalletBackend
