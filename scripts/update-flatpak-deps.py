@@ -49,6 +49,9 @@ JAM_DOCKER_CONTEXT_RE = re.compile(
     r"(\$\{JAM_DOCKER_CONTEXT:-https://github\.com/joinmarket-webui/"
     r"jam-docker\.git#)([a-f0-9]{40})(:standalone-ng\})"
 )
+JAM_DOCKER_TEST_COMMIT_RE = re.compile(
+    r'(?m)^(JAM_DOCKER_COMMIT = ")([a-f0-9]{40})(")$'
+)
 JAM_REPO_REF_RE = re.compile(
     r"(?m)(^\s*JAM_REPO_REF:\s*\$\{JAM_REPO_REF:-)([^}\s]+)(\}[ \t]*$)"
 )
@@ -330,6 +333,27 @@ def replace_jam_compose_pins(text: str, jam_ref: str, jam_docker_commit: str) ->
     return f"{text[: service_match.start()]}{updated}{text[service_match.end() :]}"
 
 
+def extract_jam_test_commit(text: str) -> str:
+    matches = list(JAM_DOCKER_TEST_COMMIT_RE.finditer(text))
+    if len(matches) != 1:
+        raise UpdateError(
+            "Expected one JAM_DOCKER_COMMIT in JAM Dockerfile tests, "
+            f"found {len(matches)}"
+        )
+    return matches[0].group(2)
+
+
+def replace_jam_test_commit(text: str, commit: str) -> str:
+    extract_jam_test_commit(text)
+    updated, count = JAM_DOCKER_TEST_COMMIT_RE.subn(
+        lambda match: f"{match.group(1)}{commit}{match.group(3)}",
+        text,
+    )
+    if count != 1:
+        raise UpdateError("Failed to update JAM_DOCKER_COMMIT in JAM Dockerfile tests")
+    return updated
+
+
 def report_url_sha(
     name: str, current_url: str, current_sha: str, latest_url: str, latest_sha: str
 ) -> bool:
@@ -358,6 +382,21 @@ def report_commit(name: str, current: str, latest: str) -> bool:
     return changed
 
 
+def report_jam_docker_pins(compose_commit: str, test_commit: str, latest: str) -> bool:
+    changed = compose_commit != latest or test_commit != latest
+    if changed:
+        print("[UPDATE] jam-docker")
+        if compose_commit != latest:
+            print(f"  Compose commit: {compose_commit}")
+            print(f"  New:            {latest}")
+        if test_commit != latest:
+            print(f"  Test commit:    {test_commit}")
+            print(f"  New:            {latest}")
+    else:
+        print("[OK] jam-docker is up to date")
+    return changed
+
+
 def report_version(name: str, current: str, latest: str) -> bool:
     changed = current != latest
     if changed:
@@ -373,6 +412,7 @@ def main() -> int:
     project_root = Path(__file__).resolve().parent.parent
     default_manifest_path = project_root / "flatpak" / "org.joinmarketng.JamNG.yml"
     default_compose_path = project_root / "docker-compose.yml"
+    default_jam_pin_test_path = project_root / "tests" / "test_jmwalletd_dockerfile.py"
 
     parser = argparse.ArgumentParser(
         description="Update Flatpak sources and pinned JAM Docker dependencies"
@@ -394,6 +434,15 @@ def main() -> int:
         default=default_compose_path,
         help="Path to Compose file containing JAM pins (default: docker-compose.yml)",
     )
+    parser.add_argument(
+        "--jam-pin-test",
+        type=Path,
+        default=default_jam_pin_test_path,
+        help=(
+            "Path to the test containing JAM_DOCKER_COMMIT "
+            "(default: tests/test_jmwalletd_dockerfile.py)"
+        ),
+    )
     args = parser.parse_args()
 
     manifest_path = args.manifest
@@ -402,9 +451,13 @@ def main() -> int:
     compose_path = args.compose
     if not compose_path.is_file():
         raise UpdateError(f"Compose file not found: {compose_path}")
+    jam_pin_test_path = args.jam_pin_test
+    if not jam_pin_test_path.is_file():
+        raise UpdateError(f"JAM Docker pin test not found: {jam_pin_test_path}")
 
     manifest_text = manifest_path.read_text(encoding="utf-8")
     compose_text = compose_path.read_text(encoding="utf-8")
+    jam_pin_test_text = jam_pin_test_path.read_text(encoding="utf-8")
 
     current_libevent_url, current_libevent_sha = extract_url_sha(
         LIBEVENT_RE, manifest_text, "libevent"
@@ -425,6 +478,7 @@ def main() -> int:
     )
     current_jam_commit = extract_jam_commit(manifest_text)
     current_jam_ref, current_jam_docker_commit = extract_jam_compose_pins(compose_text)
+    current_jam_test_commit = extract_jam_test_commit(jam_pin_test_text)
 
     libevent_release = latest_release("libevent/libevent")
     latest_libevent_url = pick_asset_url(
@@ -493,7 +547,11 @@ def main() -> int:
         ),
         report_version("JAM release", current_jam_ref, latest_jam_ref),
         report_commit("JAM Flatpak source", current_jam_commit, latest_jam_commit),
-        report_commit("jam-docker", current_jam_docker_commit, latest_jam_docker),
+        report_jam_docker_pins(
+            current_jam_docker_commit,
+            current_jam_test_commit,
+            latest_jam_docker,
+        ),
     ]
     updates_needed = sum(1 for item in changed if item)
 
@@ -546,9 +604,14 @@ def main() -> int:
         latest_jam_ref,
         latest_jam_docker,
     )
+    updated_jam_pin_test = replace_jam_test_commit(
+        jam_pin_test_text,
+        latest_jam_docker,
+    )
 
     manifest_path.write_text(updated_manifest, encoding="utf-8")
     compose_path.write_text(updated_compose, encoding="utf-8")
+    jam_pin_test_path.write_text(updated_jam_pin_test, encoding="utf-8")
     print(f"[INFO] Applied {updates_needed} external dependency update(s)")
     return 0
 

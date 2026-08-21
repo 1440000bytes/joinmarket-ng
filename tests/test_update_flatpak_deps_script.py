@@ -80,6 +80,46 @@ def test_replace_jam_compose_pins_updates_both_dependencies() -> None:
     assert current_docker_commit not in updated_text
 
 
+def test_replace_jam_test_commit_updates_expectation() -> None:
+    module = _load_update_flatpak_deps_module()
+    test_path = (
+        Path(__file__).resolve().parents[1] / "tests" / "test_jmwalletd_dockerfile.py"
+    )
+    test_text = test_path.read_text(encoding="utf-8")
+
+    current_commit = module.extract_jam_test_commit(test_text)
+    new_commit = "d" * 40
+    updated_text = module.replace_jam_test_commit(test_text, new_commit)
+
+    assert module.extract_jam_test_commit(updated_text) == new_commit
+    assert current_commit not in updated_text
+
+
+def test_extract_jam_test_commit_rejects_duplicate_pin() -> None:
+    module = _load_update_flatpak_deps_module()
+    test_text = f'''JAM_DOCKER_COMMIT = "{"a" * 40}"
+JAM_DOCKER_COMMIT = "{"b" * 40}"
+'''
+
+    try:
+        module.extract_jam_test_commit(test_text)
+    except module.UpdateError as error:
+        assert "found 2" in str(error)
+    else:
+        raise AssertionError("Expected duplicate JAM test pins to be rejected")
+
+
+def test_report_jam_docker_pins_detects_stale_test_expectation() -> None:
+    module = _load_update_flatpak_deps_module()
+    latest_commit = "a" * 40
+
+    assert module.report_jam_docker_pins(
+        latest_commit,
+        "b" * 40,
+        latest_commit,
+    )
+
+
 def test_replace_jam_compose_pins_only_updates_playwright_service() -> None:
     module = _load_update_flatpak_deps_module()
     old_commit = "a" * 40
