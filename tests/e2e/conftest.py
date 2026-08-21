@@ -367,11 +367,21 @@ def wait_for_neutrino_ready_if_present(timeout: float = 180.0) -> bool:
     When TLS is enabled, reads the auth token from the Docker volume and
     uses an unverified SSL context (health check only).
 
+    Container identity is checked before the host port so an unrelated
+    Neutrino instance on the default port cannot delay another test suite.
+
     Returns:
         True if neutrino is not running locally or became ready.
         False if neutrino is running but never became ready.
     """
-    from tests.e2e.docker_utils import get_neutrino_port
+    from tests.e2e.docker_utils import (
+        docker_inspect_running,
+        get_container_name,
+        get_neutrino_port,
+    )
+
+    if not docker_inspect_running(get_container_name("neutrino")):
+        return True
 
     neutrino_port = get_neutrino_port()
 
