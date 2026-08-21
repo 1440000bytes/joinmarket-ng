@@ -295,7 +295,7 @@ class CoinJoinSession:
             return 1
         return 0
 
-    def _drop_neutrino_incompatible_sessions(self) -> list[str]:
+    def _drop_neutrino_incompatible_sessions(self, nicks: list[str] | None = None) -> list[str]:
         """Drop sessions for makers whose handshake explicitly lacks neutrino_compat.
 
         Called just after opportunistic direct-peer handshakes complete, to
@@ -307,7 +307,8 @@ class CoinJoinSession:
         Returns the list of dropped nicks (empty if none).
         """
         dropped: list[str] = []
-        for nick in list(self.maker_sessions.keys()):
+        candidates = list(self.maker_sessions.keys()) if nicks is None else list(nicks)
+        for nick in candidates:
             peer = self.directory_client.get_connected_peer(nick)
             if peer is None:
                 continue
@@ -383,8 +384,17 @@ class CoinJoinSession:
         if not self.podle_commitment:
             return PhaseResult(success=False)
 
-        # Create a new crypto session for this CoinJoin
-        self.crypto_session = CryptoSession()
+        # A repeat !fill reuses the commitment, which the maker refuses as already
+        # reserved without replying, so only fill makers that have not responded.
+        pending_nicks = [
+            nick for nick, session in self.maker_sessions.items() if not session.responded_fill
+        ]
+        if not pending_nicks:
+            return PhaseResult(success=len(self.maker_sessions) >= self.config.minimum_makers)
+
+        # Established makers hold the pubkey from their !fill; only a fresh round rotates it.
+        if len(pending_nicks) == len(self.maker_sessions) or self.crypto_session is None:
+            self.crypto_session = CryptoSession()
         taker_pubkey = self.crypto_session.get_pubkey_hex()
         commitment_hex = self.podle_commitment.to_commitment_str()
 
@@ -398,9 +408,9 @@ class CoinJoinSession:
         # 3. Record the channel in maker_session.comm_channel
         # 4. Use only that channel for all subsequent messages
 
-        # Start direct connection attempts for all makers
+        # Start direct connection attempts for the makers being filled
         if self.directory_client.prefer_direct_connections:
-            for nick in self.maker_sessions.keys():
+            for nick in pending_nicks:
                 maker_location = self.directory_client.get_peer_location(nick)
                 if maker_location:
                     self.directory_client.try_direct_connect(nick)
@@ -409,7 +419,7 @@ class CoinJoinSession:
         # This timeout balances privacy (prefer direct) vs latency (don't wait too long)
         if self.directory_client.prefer_direct_connections:
             pending_tasks = []
-            for nick in self.maker_sessions.keys():
+            for nick in pending_nicks:
                 task = self.directory_client.get_pending_connect_task(nick)
                 if task is not None and not task.done():
                     pending_tasks.append(task)
@@ -437,7 +447,7 @@ class CoinJoinSession:
         # or legacy peer with no features field) are kept; the existing check
         # in _phase_auth will catch them later.
         if self.backend.requires_neutrino_metadata():
-            incompatible = self._drop_neutrino_incompatible_sessions()
+            incompatible = self._drop_neutrino_incompatible_sessions(pending_nicks)
             if incompatible and len(self.maker_sessions) < self.config.minimum_makers:
                 logger.error(
                     f"After filtering {len(incompatible)} neutrino-incompatible maker(s), "
@@ -448,12 +458,14 @@ class CoinJoinSession:
                     success=False,
                     failed_makers=incompatible,
                 )
+            pending_nicks = [nick for nick in pending_nicks if nick in self.maker_sessions]
 
         # Determine and record communication channel for each maker by
         # delegating to the directory layer. The DTO encapsulates the
         # "prefer direct, otherwise pick the most relevant directory"
         # algorithm that used to be open-coded here and in two other sites.
-        for nick, session in self.maker_sessions.items():
+        for nick in pending_nicks:
+            session = self.maker_sessions[nick]
             binding = self.directory_client.bind_session(nick)
             if binding is None:
                 # No directories connected -- shouldn't happen at this stage.
@@ -467,9 +479,9 @@ class CoinJoinSession:
                     f"(onion: {binding.peer_location or 'unknown'})"
                 )
 
-        # Send !fill to all makers using their designated channels
         # Format: fill <oid> <amount> <taker_pubkey> <commitment>
-        for nick, session in self.maker_sessions.items():
+        for nick in pending_nicks:
+            session = self.maker_sessions[nick]
             fill_data = f"{session.offer.oid} {self.cj_amount} {taker_pubkey} {commitment_hex}"
             channel = await self.directory_client.send_privmsg(
                 nick, "fill", fill_data, log_routing=True, force_channel=session.comm_channel
@@ -477,9 +489,8 @@ class CoinJoinSession:
             # Verify the channel used matches what we recorded
             assert channel == session.comm_channel, f"Channel mismatch for {nick}"
 
-        # Wait for all !pubkey responses at once
         timeout = self.config.maker_timeout_sec
-        expected_nicks = list(self.maker_sessions.keys())
+        expected_nicks = list(pending_nicks)
 
         responses = await self.directory_client.wait_for_responses(
             expected_nicks=expected_nicks,
@@ -503,7 +514,7 @@ class CoinJoinSession:
         # Maker sends: "<nacl_pubkey> [features=...] <signing_pubkey> <signature>"
         # Directory client strips command, we get the data part
         # Note: responses may include error responses with {"error": True, "data": "reason"}
-        for nick in list(self.maker_sessions.keys()):
+        for nick in pending_nicks:
             if nick in responses:
                 # Check if this is an error response
                 if responses[nick].get("error"):
@@ -560,7 +571,9 @@ class CoinJoinSession:
         # replacement machinery find a substitute. The auth-phase check stays
         # as a safety net for replacement paths.
         if self.backend.requires_neutrino_metadata():
-            for nick in list(self.maker_sessions.keys()):
+            for nick in pending_nicks:
+                if nick not in self.maker_sessions:
+                    continue
                 session = self.maker_sessions[nick]
                 if session.responded_fill and not session.supports_neutrino_compat:
                     logger.warning(
@@ -595,6 +608,14 @@ class CoinJoinSession:
         if not self.podle_commitment:
             return PhaseResult(success=False)
 
+        # A repeat !auth reaches a maker session that has left PUBKEY_SENT and is
+        # rejected, so only authenticate makers that have not responded.
+        pending_nicks = [
+            nick for nick, session in self.maker_sessions.items() if not session.responded_auth
+        ]
+        if not pending_nicks:
+            return PhaseResult(success=len(self.maker_sessions) >= self.config.minimum_makers)
+
         # Send !auth to each maker with format based on their feature support.
         # - Makers with neutrino_compat: MUST receive extended format
         #   (txid:vout:scriptpubkey:blockheight)
@@ -618,7 +639,8 @@ class CoinJoinSession:
         # the caller can add them to the ignored list and select replacements.
         incompatible_makers: list[str] = []
 
-        for nick, session in list(self.maker_sessions.items()):
+        for nick in list(pending_nicks):
+            session = self.maker_sessions[nick]
             if session.crypto is None:
                 logger.error(f"No encryption session for {nick}")
                 continue
@@ -690,9 +712,8 @@ class CoinJoinSession:
             )
             return PhaseResult(success=False, failed_makers=incompatible_makers)
 
-        # Wait for all !ioauth responses at once
         timeout = self.config.maker_timeout_sec
-        expected_nicks = list(self.maker_sessions.keys())
+        expected_nicks = [nick for nick in pending_nicks if nick in self.maker_sessions]
 
         responses = await self.directory_client.wait_for_responses(
             expected_nicks=expected_nicks,
@@ -711,7 +732,7 @@ class CoinJoinSession:
         # - Legacy format: txid:vout,txid:vout,...
         # - Extended format (neutrino_compat): txid:vout:scriptpubkey:blockheight,...
         # Response format from directory: "<encrypted_data> <signing_pubkey> <signature>"
-        for nick in list(self.maker_sessions.keys()):
+        for nick in expected_nicks:
             if nick in responses:
                 # Explicit protocol error from the maker (e.g. "Failed to
                 # select UTXOs"). Error payloads are plaintext, so handle them
