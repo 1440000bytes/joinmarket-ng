@@ -7,6 +7,128 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.37.0] - 2026-08-21
+
+Big performance improvements for wallet commands, direct-send and taker CJ coin control, PSBT signing, fidelity bond status tracking, better md0 protections to not harm makers' liquidity, plus a few bug fixes.
+
+### Added
+
+- Allow direct-send to spend an explicit list of input UTXOs instead of auto-selecting ([f3e1b65a](../../commit/f3e1b65ae6e280968c4f918ebf0401e4a20ad273))
+- Add a repeatable --input-utxo flag to jm-wallet send for explicit coin control ([924c4332](../../commit/924c43322aa004a41fbbc0f495b2f55d106bcc8c))
+- Allow makers to merge proven CoinJoin-only rotation funds in mixdepth zero ([bb6321a2](../../commit/bb6321a28fc339ff798bf0af422a7c04ae9b4c4d))
+- Add secure offline PSBT signing for regular and fidelity bond UTXOs ([f1d85b52](../../commit/f1d85b525f10ad24a327b0bda2fab4ee4d3c1501))
+- Speed up repeated wallet syncs while preserving complete Core and Neutrino history discovery ([eadc135e](../../commit/eadc135e8c48a9ab21d6ecef1f6841a12eed6767))
+- Reduce first-run and repeated Neutrino wallet sync times ([06573fef](../../commit/06573fefb767a1a36fd363222e7fd3fc6ab666a0))
+- Add exact UTXO coin control to jm-taker CoinJoins and jmwalletd ([09333af5](../../commit/09333af57714db189cad3a3eea697fdb756e795c))
+- Add bond-weighted offer pick estimates and a responsive orderbook watcher UI ([86401aee](../../commit/86401aeed88f4ea1ea5c5fd8b23cc2c22d33c49c))
+
+### Fixed
+
+- Map max_sweep_fee_change policy setting and enforce relative sweep fee tolerance ([d5b7aab7](../../commit/d5b7aab7dc7672dcc14727321185dc2dfba4f78d))
+- Enforce max_sweep_fee_change against actual sweep transaction size ([45e98903](../../commit/45e98903d29b34537b21658adddd62e074dedac5))
+- Abort release installs when commit resolution prevents signature verification ([0ed769bc](../../commit/0ed769bcf1ca532c18e0a3a0e6106c6bfe3c6e63))
+- UTXO-Selector now correctly displays cj-out, cj-change, ([3bd2b7ac](../../commit/3bd2b7ac80f327dd49f4ecefd173c3d91a8b68c7))
+- Cancelling a send transaction now returns exit code 1 ([0dfec038](../../commit/0dfec038f87196c020d2e021b0d39889dbbae496))
+- Preserve user labels and local CoinJoin classifications in interactive UTXO selection ([6625cafd](../../commit/6625cafd804970cd40c7924b17bc5cee17572000))
+- Return a clean non-zero status when an interactive send is cancelled ([5a11a204](../../commit/5a11a204fc0dbaf05fb3b1e48f3dd69153e8a30d))
+- Preserve existing Tor settings during installation and prevent duplicate listeners ([10558415](../../commit/1055841574fd11e4c7d25adb0f948595b610eb76))
+- Show redeemed fidelity bonds as unfunded after sync-bonds refreshes the registry ([eabc3ba4](../../commit/eabc3ba4adee437764919ea81daff91ffa1b344a))
+- Require public directory Compose deployments to configure their nick authentication identity ([dc65019c](../../commit/dc65019c36e1978993e22bd81fd7c221e2b7292e))
+- Show copy-ready UTXO outpoints in jm-wallet info --extended ([b18d6411](../../commit/b18d641186167f92552ee8951a4eb711e5ce922a))
+- Reject nonzero-fee relative offers of bondless makers when the zero-fee policy is enabled. ([ddffc72c](../../commit/ddffc72cfd7ca991a9e8d6dd23ecc19ba8ee8dde))
+- Show the committed sweep mining fee budget during initial confirmation. ([68f38992](../../commit/68f389929c9b69b0ecd51bcc93b9bacff1dc44e2))
+- Allow unclaimed sweep maker fees to increase the miner fee without aborting. ([68f38992](../../commit/68f389929c9b69b0ecd51bcc93b9bacff1dc44e2))
+- Show CoinJoin maker and miner fees as percentages during confirmation. ([589a5c2d](../../commit/589a5c2d7180a4f85e6fdf74fb64c6037b2414a9))
+- Try to restore the requested maker count before accepting a reduced CoinJoin. ([8af8b748](../../commit/8af8b74867ea56e7657c737638709f2f56231cc6))
+- Recover registered fidelity bonds when protocol and Bitcoin networks differ. ([400ab222](../../commit/400ab2228d0b4110f3ee4019712d3d917a29718e))
+- Restore ping and nick authentication badges during direct maker feature discovery ([40c6293c](../../commit/40c6293cb9e84e23e1d55e213aebfb3db1b6b2a8))
+- Deduplicate shared fidelity bonds in watcher pick estimates ([ed0b4a73](../../commit/ed0b4a731de06dad3e0de9a19c02cad51e8e1908))
+- Explain why watcher offers have zero estimated pick chance ([c1d1a828](../../commit/c1d1a82881e530d2385d823f599e2ca01c217ac3))
+
+### Configuration Changes
+
+Existing `config.toml` files are not updated automatically. Review the bundled template changes below and apply the relevant options manually.
+
+````diff
+--- config.toml.template (0.36.0)
++++ config.toml.template (0.37.0)
+@@ -412,11 +412,12 @@
+ # merge_algorithm = "default"
+
+ # Mixdepth 0 privacy restriction.
+-# By default, UTXOs in mixdepth 0 are restricted to a single UTXO per CoinJoin
+-# to prevent linking deposits and fidelity bonds. Outputs with exact protocol
+-# CoinJoin provenance are always exempt because they already have CoinJoin
+-# privacy. Set to true to disable the restriction entirely and allow merging
+-# all md0 UTXOs (experienced makers only, reduces privacy).
++# By default, deposits and other unproven md0 UTXOs are restricted to one input
++# per CoinJoin. Exact protocol CoinJoin outputs and CoinJoin change recursively
++# proven to descend only from maker-rotation funds may be merged. Plain-send
++# change, deposit ancestry, reconstructed history, and incomplete history remain
++# restricted. Set to true to allow all md0 merges (usually unnecessary and
++# reduces privacy).
+ # allow_mixdepth_zero_merge = false
+
+ # Timeouts and intervals
+@@ -477,6 +478,7 @@
+ # Maximum acceptable coinjoin fees (paid to makers, not network/miner fees)
+ # max_cj_fee_abs = 500        # Absolute fee in satoshis per maker
+ # max_cj_fee_rel = "0.001"    # Relative fee (0.001 = 0.1%)
++# max_sweep_fee_change = 0.8  # Relative fee tolerance for sweep transactions
+
+ # Maximum inputs a single maker may contribute to the CoinJoin.
+ # The taker pays the mining fee for EVERY input, so a maker with many inputs
+@@ -503,7 +505,7 @@
+ # Fidelity bond settings
+ # bondless_makers_allowance = 0.2  # 0.0-1.0: per-slot probability of picking a bondless maker
+ # bond_value_exponent = 1.3
+-# bondless_require_zero_fee = true
++# bondless_require_zero_fee = true  # Bondless makers must advertise a zero CoinJoin fee
+
+ # Timeouts and intervals
+ # maker_timeout_sec = 60         # Range: 10-3600 seconds
+@@ -518,10 +520,14 @@
+ # tx_broadcast = "random-peer"
+ # broadcast_peer_count = 3
+
+-# Minimum number of makers required for a CoinJoin to proceed.
+-# Default: 4 (matches the upstream JoinMarket reference POLICY default; using
+-# minimum_makers=1 is fingerprintable and degrades the privacy of the join).
++# The taker first tries to keep counterparty_count makers through fill and auth.
++# minimum_makers is only the final floor when replacements are exhausted or no
++# candidates remain. Default: 4 (matches the upstream JoinMarket reference
++# POLICY default; using minimum_makers=1 is fingerprintable and degrades privacy).
+ # minimum_makers = 4
++# Maximum attempts to replace failed makers and restore counterparty_count.
++# Set to 0 to disable replacement. Default: 3 (range: 0-10).
++# max_maker_replacement_attempts = 3
+
+ # ============================================================================
+ # Tumbler Settings
+@@ -554,13 +560,15 @@
+ # host = "127.0.0.1"
+ # port = 5222
+
+-# Directory nick authentication (JMP-0005). "prefer_verified" negotiates the
+-# extension while accepting legacy clients, "require_verified" rejects clients
+-# without it, and "disabled" keeps the legacy handshake only.
++# Directory nick authentication (JMP-0005). Public directory nodes must set
++# nick_auth_directory_id to their canonical lowercase Tor v3 endpoint, including
++# the port. Without it, nick ownership authentication is not advertised or
++# performed. Never use a test ID for a public directory.
++# nick_auth_directory_id = "your56characterhostname.onion:5222"
++# "prefer_verified" authenticates capable clients while accepting legacy
++# clients, "require_verified" rejects clients without support, and "disabled"
++# intentionally turns off nick ownership authentication.
+ # nick_auth_mode = "prefer_verified"
+-# Stable identifier for this directory endpoint. Production onion directories
+-# use their canonical "host.onion:port" endpoint; local tests may use a test ID.
+-# nick_auth_directory_id = "test:jm-directory-5222"  # Local/test example only
+ # nick_auth_timeout = 30.0
+
+ # Limits
+````
+
 ## [0.36.0] - 2026-08-11
 
 Security hardening and way more!
@@ -3589,7 +3711,8 @@ This release did not change the bundled `config.toml.template`.
 - Pre-built image support for directory server compose.
 - Tor configuration instructions.
 
-[Unreleased]: ../../compare/0.36.0...HEAD
+[Unreleased]: ../../compare/0.37.0...HEAD
+[0.37.0]: ../../compare/0.36.0...0.37.0
 [0.36.0]: ../../compare/0.35.0...0.36.0
 [0.35.0]: ../../compare/0.34.2...0.35.0
 [0.34.2]: ../../compare/0.34.1...0.34.2
