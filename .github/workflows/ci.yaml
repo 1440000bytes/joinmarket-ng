@@ -1847,7 +1847,7 @@ jobs:
   test-reference-maker:
     needs: build-images
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     permissions:
       contents: read
       packages: read
@@ -1961,6 +1961,7 @@ jobs:
           BITCOIN_RPC_URL: http://127.0.0.1:18445
           BITCOIN_RPC_USER: test
           BITCOIN_RPC_PASSWORD: test
+          OBWATCH_URL: http://127.0.0.1:8080
         run: |
           pytest -c pytest.ini -m reference_maker --junitxml=junit/test-results.xml \
             --cov --cov-report=term-missing --cov-report=xml \
@@ -1986,6 +1987,9 @@ jobs:
           echo ""
           echo "=== JAM Maker2 logs ==="
           docker compose logs jam-maker2 --tail=100
+          echo ""
+          echo "=== NG replacement maker logs ==="
+          docker compose logs maker3 --tail=100 || true
 
       - name: Cleanup
         if: always()

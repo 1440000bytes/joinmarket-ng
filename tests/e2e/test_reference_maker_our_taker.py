@@ -19,15 +19,33 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import json
+import os
+import re
 import subprocess
 import tempfile
 import threading
 import time
+import urllib.error
+import urllib.request
+from collections import Counter
+from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 import pytest
+from jmcore.models import NetworkType
+from jmwallet.backends.descriptor_wallet import DescriptorWalletBackend
+from jmwallet.wallet.service import WalletService
 from loguru import logger
+from pydantic import SecretStr
+from taker.coinjoin_session import CoinJoinSession
+from taker.config import MaxCjFee, TakerConfig
+from taker.models import PhaseResult
+from taker.orderbook import calculate_cj_fee
+from taker.taker import Taker
 
+from tests.e2e.docker_utils import get_orderbook_watcher_url
 from tests.e2e.test_reference_coinjoin import (
     _wait_for_node_sync,
     get_compose_file,
@@ -42,6 +60,10 @@ COINJOIN_TIMEOUT = 300  # Time for CoinJoin to complete
 
 # Directory for yieldgenerator log files
 YIELDGEN_LOG_DIR = Path(tempfile.gettempdir()) / "jm-yieldgen-logs"
+REFERENCE_TAKER_MNEMONIC = (
+    "abandon abandon abandon abandon abandon abandon "
+    "abandon abandon abandon abandon abandon about"
+)
 
 
 def is_jam_maker_running(maker_id: int = 1) -> bool:
@@ -632,14 +654,9 @@ pytestmark = [
 
 # Default taker funding address derived from default mnemonic: m/84'/1'/0'/0/0
 _TAKER_FUNDING_ADDRESS = "bcrt1q6rz28mcfaxtmd6v789l9rrlrusdprr9pz3cppk"
+_NG_REPLACEMENT_FUNDING_ADDRESS = "bcrt1qe4hmtjq53u7l5vr9uw6sjr9c75ulmklg8jgsj0"
 
-# Indicators used to analyze taker output
-_SUCCESS_INDICATORS = [
-    "coinjoin completed",
-    "transaction broadcast",
-    "txid:",
-    "successfully",
-]
+_TXID_PATTERN = re.compile(r"\btxid\s*[:=]\s*([0-9a-f]{64})\b", re.IGNORECASE)
 
 
 async def _prepare_taker_environment(
@@ -743,7 +760,7 @@ def _analyze_taker_output(
     """Return ``(combined_output, lower_output, has_success)`` for a taker run."""
     combined = result.stdout + result.stderr
     lower = combined.lower()
-    has_success = any(ind in lower for ind in _SUCCESS_INDICATORS)
+    has_success = _TXID_PATTERN.search(combined) is not None
     return combined, lower, has_success
 
 
@@ -853,6 +870,7 @@ def running_yieldgenerators(funded_jam_makers):
         if process:
             processes.append(process)
             started_makers.append(maker)
+            maker["process"] = process
         else:
             # Cleanup any started processes
             for p, m in zip(processes, started_makers, strict=False):
@@ -867,6 +885,92 @@ def running_yieldgenerators(funded_jam_makers):
     logger.info("Stopping yieldgenerators...")
     for process, maker in zip(processes, started_makers, strict=False):
         stop_yieldgenerator(process, maker["maker_id"], maker["wallet_name"])
+
+
+def _wait_for_mixed_maker_offers(
+    timeout: float = 180.0,
+) -> tuple[set[str], str] | None:
+    """Wait until only the expected JAM and NG fee profiles are present."""
+    url = f"{get_orderbook_watcher_url()}/orderbook.json"
+    deadline = time.time() + timeout
+
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=3) as response:
+                offers = json.loads(response.read().decode("utf-8")).get("offers", [])
+        except (
+            urllib.error.URLError,
+            OSError,
+            json.JSONDecodeError,
+            TimeoutError,
+        ):
+            time.sleep(2)
+            continue
+
+        jam_nicks = {
+            str(offer["counterparty"])
+            for offer in offers
+            if Decimal(str(offer["cjfee"])) < Decimal("0.0001")
+        }
+        replacement_nicks = {
+            str(offer["counterparty"])
+            for offer in offers
+            if Decimal(str(offer["cjfee"])) == Decimal("0.0002")
+        }
+        if len(jam_nicks) == 2 and len(replacement_nicks) == 1:
+            return jam_nicks, replacement_nicks.pop()
+        time.sleep(2)
+
+    return None
+
+
+@pytest.fixture(scope="function")
+def mixed_replacement_makers(running_yieldgenerators):
+    """Run two JAM makers and one NG maker, with guaranteed NG cleanup."""
+    run_compose_cmd(["stop", "maker3"], check=False)
+    clear_ng_state = run_compose_cmd(
+        [
+            "run",
+            "--rm",
+            "--no-deps",
+            "--entrypoint",
+            "sh",
+            "maker3",
+            "-c",
+            (
+                "rm -rf /home/jm/.joinmarket-ng/cmtdata/commitmentlist "
+                "/home/jm/.joinmarket-ng/wallet_metadata.jsonl "
+                "/home/jm/.joinmarket-ng/wallet_metadata_*.jsonl"
+            ),
+        ],
+        check=False,
+    )
+    assert clear_ng_state.returncode == 0, clear_ng_state.stderr
+    assert fund_jam_maker_wallet(_NG_REPLACEMENT_FUNDING_ADDRESS, 2.0), (
+        "Failed to fund the NG replacement maker"
+    )
+    assert _wait_for_node_sync(max_attempts=60), (
+        "NG and JAM Bitcoin nodes must be synchronized before starting maker3"
+    )
+
+    # The reference-maker profile already started maker3's runtime dependencies.
+    # Avoid re-running wallet-funder, which funds every NG test wallet rather than
+    # the single replacement wallet needed by this scenario.
+    start_ng = run_compose_cmd(["up", "-d", "--no-deps", "maker3"], check=False)
+    assert start_ng.returncode == 0, start_ng.stderr
+    try:
+        expected_nicks = _wait_for_mixed_maker_offers()
+        assert expected_nicks is not None, (
+            "Expected fresh offers from two JAM makers and maker3"
+        )
+        jam_nicks, replacement_nick = expected_nicks
+        yield {
+            "makers": running_yieldgenerators,
+            "jam_nicks": jam_nicks,
+            "replacement_nick": replacement_nick,
+        }
+    finally:
+        run_compose_cmd(["stop", "maker3"], check=False)
 
 
 @pytest.mark.asyncio
@@ -927,25 +1031,170 @@ async def test_our_taker_with_reference_makers(
             f"Yieldgenerator logs:\n{maker_output[-3000:]}"
         )
 
-    # For now, we accept if the taker at least tried to connect
-    # Full CoinJoin may fail due to various reasons in test environment
-    connected_to_directory = "connected" in output_lower or "directory" in output_lower
-
-    assert has_success or connected_to_directory, (
-        f"Taker did not successfully run.\n"
+    assert has_success, (
+        f"Taker did not broadcast a CoinJoin transaction.\n"
         f"Exit code: {result.returncode}\n"
         f"Output: {output_combined[-3000:]}\n"
         f"Yieldgenerator logs:\n"
         + "\n".join(get_yieldgenerator_logs(m, tail_lines=50) for m in [1, 2])
     )
+    logger.info("CoinJoin completed successfully with reference makers!")
 
-    if has_success:
-        logger.info("CoinJoin completed successfully with reference makers!")
-    else:
-        logger.warning(
-            "Taker connected but CoinJoin may not have completed. "
-            "Check logs for details."
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(600)
+async def test_our_taker_replaces_failed_reference_maker_without_duplicate_auth(
+    reference_maker_services, mixed_replacement_makers, monkeypatch
+):
+    """Replace a failed JAM maker without re-authenticating the JAM survivor."""
+    compose_file = reference_maker_services["compose_file"]
+    destination = await _prepare_taker_environment(compose_file)
+
+    data_dir = Path(os.environ["JOINMARKET_DATA_DIR"])
+    rpc_url = os.environ.get("BITCOIN_RPC_URL", "http://127.0.0.1:18445")
+    rpc_user = os.environ.get("BITCOIN_RPC_USER", "test")
+    rpc_password = os.environ.get("BITCOIN_RPC_PASSWORD", "test")
+    backend = DescriptorWalletBackend(
+        rpc_url=rpc_url,
+        rpc_user=rpc_user,
+        rpc_password=rpc_password,
+    )
+    wallet = WalletService(
+        mnemonic=REFERENCE_TAKER_MNEMONIC,
+        backend=backend,
+        network="regtest",
+        mixdepth_count=5,
+        data_dir=data_dir,
+    )
+    await wallet.sync_all()
+    config = TakerConfig(
+        mnemonic=SecretStr(REFERENCE_TAKER_MNEMONIC),
+        network=NetworkType.TESTNET,
+        bitcoin_network=NetworkType.REGTEST,
+        backend_type="descriptor_wallet",
+        backend_config={
+            "rpc_url": rpc_url,
+            "rpc_user": rpc_user,
+            "rpc_password": rpc_password,
+        },
+        directory_servers=[f"127.0.0.1:{os.environ.get('DIRECTORY_PORT', '5222')}"],
+        counterparty_count=2,
+        minimum_makers=2,
+        maker_timeout_sec=15,
+        order_wait_time=90.0,
+        max_maker_replacement_attempts=2,
+        max_cj_fee=MaxCjFee(abs_fee=100_000, rel_fee="0.01"),
+        bondless_makers_allowance_require_zero_fee=False,
+        data_dir=data_dir,
+    )
+    taker = Taker(wallet, backend, config)
+    sent_messages: list[tuple[str, str]] = []
+    initial_nicks: set[str] = set()
+    expected_jam_nicks = mixed_replacement_makers["jam_nicks"]
+    expected_replacement_nick = mixed_replacement_makers["replacement_nick"]
+    replacement_nick: str | None = None
+    stopped_legacy = False
+
+    try:
+        await taker.start()
+        taker.orderbook_manager.clear_ignored_makers()
+
+        def select_interop_makers(
+            cj_amount: int,
+            n: int,
+            **kwargs: Any,
+        ) -> tuple[dict[str, Any], int]:
+            nonlocal replacement_nick
+            hard_excludes = kwargs.get("hard_exclude_nicks") or set()
+            candidates = [
+                offer
+                for offer in taker.orderbook_manager.offers
+                if offer.counterparty not in hard_excludes
+            ]
+            if not hard_excludes:
+                selected_offers = [
+                    offer
+                    for offer in candidates
+                    if offer.counterparty in expected_jam_nicks
+                ]
+                assert len(selected_offers) == 2, (
+                    "Expected offers from both live JAM makers"
+                )
+                initial_nicks.update(offer.counterparty for offer in selected_offers)
+            else:
+                selected_offers = [
+                    offer
+                    for offer in candidates
+                    if offer.counterparty == expected_replacement_nick
+                ]
+                assert len(selected_offers) == 1, (
+                    "Expected the live NG maker3 replacement offer"
+                )
+                replacement_nick = selected_offers[0].counterparty
+            assert len(selected_offers) == n
+            selected = {offer.counterparty: offer for offer in selected_offers}
+            total_fee = sum(
+                calculate_cj_fee(offer, cj_amount) for offer in selected.values()
+            )
+            return selected, total_fee
+
+        monkeypatch.setattr(
+            taker.orderbook_manager, "select_makers", select_interop_makers
         )
+
+        original_send = taker.directory_client.send_privmsg
+
+        async def count_send(
+            recipient: str, command: str, *args: Any, **kwargs: Any
+        ) -> str:
+            sent_messages.append((recipient, command))
+            return await original_send(recipient, command, *args, **kwargs)
+
+        monkeypatch.setattr(taker.directory_client, "send_privmsg", count_send)
+        original_auth = CoinJoinSession._phase_auth
+
+        async def stop_one_legacy_maker_then_auth(
+            session: CoinJoinSession,
+        ) -> PhaseResult:
+            nonlocal stopped_legacy
+            if not stopped_legacy:
+                failed = mixed_replacement_makers["makers"][1]
+                stop_yieldgenerator(
+                    failed["process"], failed["maker_id"], failed["wallet_name"]
+                )
+                stopped_legacy = True
+            return await original_auth(session)
+
+        monkeypatch.setattr(
+            CoinJoinSession, "_phase_auth", stop_one_legacy_maker_then_auth
+        )
+
+        txid = await taker.do_coinjoin(
+            amount=10_000_000,
+            destination=destination,
+            mixdepth=0,
+        )
+
+        assert txid is not None
+        assert replacement_nick is not None
+        failed_nicks = initial_nicks & taker.orderbook_manager.ignored_makers
+        assert len(failed_nicks) == 1
+        failed_nick = failed_nicks.pop()
+        survivor_nick = (initial_nicks - {failed_nick}).pop()
+        message_counts = Counter(sent_messages)
+
+        assert message_counts[(survivor_nick, "fill")] == 1
+        assert message_counts[(survivor_nick, "auth")] == 1
+        assert message_counts[(failed_nick, "fill")] == 1
+        assert message_counts[(failed_nick, "auth")] == 1
+        assert message_counts[(replacement_nick, "fill")] == 1
+        assert message_counts[(replacement_nick, "auth")] == 1
+        assert set(taker._session.maker_sessions) == {survivor_nick, replacement_nick}
+        assert survivor_nick not in taker.orderbook_manager.ignored_makers
+        assert replacement_nick not in taker.orderbook_manager.ignored_makers
+    finally:
+        await taker.stop()
+        await wallet.close()
 
 
 @pytest.mark.asyncio

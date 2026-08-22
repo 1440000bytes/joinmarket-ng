@@ -1469,6 +1469,7 @@ run_suite_reference_maker() {
     local log="${PARALLEL_DIR}/${suite}.log"
     local btc_jam_rpc=$(host_port "$suite" btc_jam_rpc)
     local dir_port=$(host_port "$suite" dir)
+    local obwatch_port=$(host_port "$suite" obwatch)
     local prefix="${CONTAINER_PREFIX}-${suite}"
 
     log_suite "Starting: Reference Maker Tests ($suite)"
@@ -1507,6 +1508,7 @@ run_suite_reference_maker() {
         BITCOIN_RPC_USER=test \
         BITCOIN_RPC_PASSWORD=test \
         DIRECTORY_PORT="${dir_port}" \
+        OBWATCH_URL="http://127.0.0.1:${obwatch_port}" \
         JM_CONTAINER_PREFIX="${prefix}" \
         COMPOSE_PROJECT_NAME="${PROJECT_PREFIX}-${suite}" \
         COVERAGE_FILE=".coverage.${suite}" \
@@ -1517,6 +1519,11 @@ run_suite_reference_maker() {
     ) > "$log" 2>&1
     rc=$?
     set -e
+    if [ "$rc" -ne 0 ]; then
+        dump_suite_logs "$suite" "$rc" "$log" \
+            tor directory directory2 bitcoin-jam jam jam-maker1 jam-maker2 \
+            orderbook-watcher maker3
+    fi
     cleanup_suite "$suite"
     return $rc
 }

@@ -16,7 +16,9 @@ Requires: docker compose --profile e2e up -d
 import asyncio
 import os
 import subprocess
+from collections import Counter
 from pathlib import Path
+from typing import Any
 
 import pytest
 import pytest_asyncio
@@ -25,8 +27,10 @@ from jmwallet.backends.descriptor_wallet import DescriptorWalletBackend
 from jmwallet.wallet.service import WalletService
 from maker.bot import MakerBot
 from maker.config import MakerConfig
-from taker.config import TakerConfig
 from taker.coinjoin_session import CoinJoinSession
+from taker.config import TakerConfig
+from taker.models import PhaseResult
+from taker.orderbook import calculate_cj_fee
 from taker.taker import Taker
 
 # Mark all tests in this module as requiring Docker e2e profile
@@ -76,6 +80,40 @@ GENERIC_TEST_MNEMONIC = (
 
 # Address used for mining blocks (valid P2WPKH on regtest)
 MINING_ADDRESS = "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080"
+
+
+def _wait_for_offer_fee_profiles(
+    expected_fees: set[str], timeout: float = 120.0
+) -> bool:
+    """Wait until the watcher contains every maker fee profile required by a test."""
+    import json
+    import time
+    import urllib.error
+    import urllib.request
+
+    from tests.e2e.docker_utils import get_orderbook_watcher_url
+
+    url = f"{get_orderbook_watcher_url()}/orderbook.json"
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=3) as response:
+                offers = json.loads(response.read().decode("utf-8")).get("offers", [])
+        except (
+            urllib.error.URLError,
+            OSError,
+            json.JSONDecodeError,
+            TimeoutError,
+        ):
+            time.sleep(2)
+            continue
+
+        observed_fees = {str(offer.get("cjfee")) for offer in offers}
+        if expected_fees <= observed_fees:
+            return True
+        time.sleep(2)
+
+    return False
 
 
 def _require_docker_container(service: str) -> None:
@@ -1005,6 +1043,160 @@ async def test_complete_coinjoin_two_makers(
         print("Stopping taker...")
         await taker.stop()
         await taker_wallet.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.slow
+@pytest.mark.parametrize("failure_phase", ["fill", "auth"])
+async def test_coinjoin_replaces_failed_maker_without_redriving_survivor(
+    failure_phase,
+    bitcoin_backend,
+    taker_config,
+    directory_server,
+    fresh_docker_makers,
+    monkeypatch,
+):
+    """A real maker replacement must leave the healthy maker's state untouched.
+
+    The selected maker fees identify maker1 and maker2 deterministically. One
+    container is stopped immediately before the chosen phase, and maker3 is the
+    only replacement candidate. Counting the taker's actual directory sends
+    catches duplicate phase messages even if the maker silently ignores them.
+    """
+    from tests.e2e.docker_utils import get_container_name
+    from tests.e2e.rpc_utils import mine_blocks
+
+    for service in ("maker1", "maker2", "maker3"):
+        _require_docker_container(service)
+    assert _wait_for_offer_fee_profiles({"0.0003", "0.00025", "0.0002"}), (
+        "Required maker1, maker2, and maker3 fee profiles did not become ready"
+    )
+
+    await mine_blocks(10, MINING_ADDRESS)
+    wallet = WalletService(
+        mnemonic=TAKER_MNEMONIC,
+        backend=bitcoin_backend,
+        network="regtest",
+        mixdepth_count=5,
+        data_dir=_suite_data_dir(),
+    )
+    await wallet.sync_all()
+
+    config = taker_config.model_copy(
+        update={"maker_timeout_sec": 10, "max_maker_replacement_attempts": 2}
+    )
+    taker = Taker(wallet, bitcoin_backend, config)
+    stopped_container = get_container_name("maker2")
+    stopped = False
+    sent_messages: list[tuple[str, str]] = []
+    selected_nicks: dict[str, str] = {}
+
+    try:
+        await taker.start()
+        taker.orderbook_manager.clear_ignored_makers()
+
+        def select_test_makers(
+            cj_amount: int,
+            n: int,
+            **kwargs: Any,
+        ) -> tuple[dict[str, Any], int]:
+            hard_excludes = kwargs.get("hard_exclude_nicks") or set()
+            fees = ["0.0003", "0.00025"] if not hard_excludes else ["0.0002"]
+            selected: dict[str, Any] = {}
+            for fee in fees:
+                matches = [
+                    offer
+                    for offer in taker.orderbook_manager.offers
+                    if str(offer.cjfee) == fee
+                    and offer.counterparty not in hard_excludes
+                ]
+                assert len(matches) == 1, f"Expected one eligible NG maker at fee {fee}"
+                offer = matches[0]
+                selected[offer.counterparty] = offer
+                selected_nicks[fee] = offer.counterparty
+            assert len(selected) == n
+            total_fee = sum(
+                calculate_cj_fee(offer, cj_amount) for offer in selected.values()
+            )
+            return selected, total_fee
+
+        monkeypatch.setattr(
+            taker.orderbook_manager, "select_makers", select_test_makers
+        )
+
+        original_send = taker.directory_client.send_privmsg
+
+        async def count_send(
+            recipient: str, command: str, *args: Any, **kwargs: Any
+        ) -> str:
+            sent_messages.append((recipient, command))
+            return await original_send(recipient, command, *args, **kwargs)
+
+        monkeypatch.setattr(taker.directory_client, "send_privmsg", count_send)
+
+        original_phase = getattr(CoinJoinSession, f"_phase_{failure_phase}")
+
+        async def stop_failed_maker_then_run_phase(
+            session: CoinJoinSession,
+        ) -> PhaseResult:
+            nonlocal stopped
+            if not stopped:
+                process = await asyncio.create_subprocess_exec(
+                    "docker",
+                    "stop",
+                    stopped_container,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                _, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
+                assert process.returncode == 0, stderr.decode()
+                stopped = True
+            return await original_phase(session)
+
+        monkeypatch.setattr(
+            CoinJoinSession,
+            f"_phase_{failure_phase}",
+            stop_failed_maker_then_run_phase,
+        )
+
+        destination = wallet.get_receive_address(1, 0)
+        txid = await taker.do_coinjoin(
+            amount=50_000_000,
+            destination=destination,
+            mixdepth=0,
+        )
+
+        assert txid is not None
+        await mine_blocks(1, MINING_ADDRESS)
+        failed_nick = selected_nicks["0.00025"]
+        survivor_nick = selected_nicks["0.0003"]
+        replacement_nick = selected_nicks["0.0002"]
+        message_counts = Counter(sent_messages)
+
+        assert message_counts[(survivor_nick, "fill")] == 1
+        assert message_counts[(survivor_nick, "auth")] == 1
+        assert message_counts[(replacement_nick, "fill")] == 1
+        assert message_counts[(replacement_nick, "auth")] == 1
+        assert message_counts[(failed_nick, "fill")] == 1
+        assert message_counts[(failed_nick, "auth")] == (
+            1 if failure_phase == "auth" else 0
+        )
+        assert set(taker._session.maker_sessions) == {survivor_nick, replacement_nick}
+        assert failed_nick in taker.orderbook_manager.ignored_makers
+        assert survivor_nick not in taker.orderbook_manager.ignored_makers
+        assert replacement_nick not in taker.orderbook_manager.ignored_makers
+    finally:
+        if stopped:
+            process = await asyncio.create_subprocess_exec(
+                "docker",
+                "start",
+                stopped_container,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await asyncio.wait_for(process.wait(), timeout=30)
+        await taker.stop()
+        await wallet.close()
 
 
 @pytest.mark.asyncio
