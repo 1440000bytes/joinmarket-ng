@@ -635,23 +635,16 @@ class CoinJoinSession:
         has_metadata = self.podle_commitment.has_neutrino_metadata()
         taker_requires_extended = self.backend.requires_neutrino_metadata()
 
-        # Makers dropped for lacking a required feature. Reported as failed so
-        # the caller can add them to the ignored list and select replacements.
+        # Remove incompatible makers before sending any !auth. Otherwise, if
+        # filtering drops the session below the maker floor, a replacement pass
+        # would resend !auth to compatible makers whose responses were not read.
         incompatible_makers: list[str] = []
+        if taker_requires_extended:
+            for nick in list(pending_nicks):
+                session = self.maker_sessions[nick]
+                if session.supports_neutrino_compat:
+                    continue
 
-        for nick in list(pending_nicks):
-            session = self.maker_sessions[nick]
-            if session.crypto is None:
-                logger.error(f"No encryption session for {nick}")
-                continue
-
-            maker_requires_extended = session.supports_neutrino_compat
-
-            # Fail early if taker needs extended format but maker doesn't support it.
-            # This happens when taker uses Neutrino backend but maker doesn't advertise
-            # neutrino_compat (e.g., reference implementation makers). Without extended
-            # metadata, the taker cannot verify the maker's UTXOs via block filters.
-            if taker_requires_extended and not maker_requires_extended:
                 logger.error(
                     f"Incompatible maker {nick}: taker uses Neutrino backend but maker "
                     f"doesn't support neutrino_compat. Taker cannot verify maker's UTXOs "
@@ -659,7 +652,26 @@ class CoinJoinSession:
                 )
                 incompatible_makers.append(nick)
                 del self.maker_sessions[nick]
+
+            pending_nicks = [nick for nick in pending_nicks if nick in self.maker_sessions]
+
+            # Report incompatible makers as failed so the replacement loop can
+            # ignore them and pick substitutes before any PoDLE proof is revealed.
+            if len(self.maker_sessions) < self.config.minimum_makers:
+                logger.error(
+                    f"Not enough compatible makers: {len(self.maker_sessions)} "
+                    f"< {self.config.minimum_makers}. Neutrino takers require makers that "
+                    f"provide extended UTXO metadata (neutrino_compat)."
+                )
+                return PhaseResult(success=False, failed_makers=incompatible_makers)
+
+        for nick in pending_nicks:
+            session = self.maker_sessions[nick]
+            if session.crypto is None:
+                logger.error(f"No encryption session for {nick}")
                 continue
+
+            maker_requires_extended = session.supports_neutrino_compat
 
             # Send extended format if:
             # 1. We have the metadata AND
@@ -701,19 +713,8 @@ class CoinJoinSession:
                 force_channel=session.comm_channel,
             )
 
-        # Check if we still have enough makers after filtering incompatible ones.
-        # The incompatible makers are reported as failed so the replacement loop
-        # in _run_auth_with_replacements can ignore them and pick substitutes.
-        if len(self.maker_sessions) < self.config.minimum_makers:
-            logger.error(
-                f"Not enough compatible makers: {len(self.maker_sessions)} "
-                f"< {self.config.minimum_makers}. Neutrino takers require makers that "
-                f"provide extended UTXO metadata (neutrino_compat)."
-            )
-            return PhaseResult(success=False, failed_makers=incompatible_makers)
-
         timeout = self.config.maker_timeout_sec
-        expected_nicks = [nick for nick in pending_nicks if nick in self.maker_sessions]
+        expected_nicks = list(pending_nicks)
 
         responses = await self.directory_client.wait_for_responses(
             expected_nicks=expected_nicks,

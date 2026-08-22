@@ -2594,7 +2594,9 @@ class TestNeutrinoIncompatibleMakerReplacement:
         assert result.needs_replacement is True
         # The compatible maker stays in the session for the replacement pass.
         assert set(taker._session.maker_sessions.keys()) == {"J5good"}
-        # The early return fires before waiting for !ioauth responses.
+        # The incompatibility preflight fires before revealing the PoDLE
+        # commitment or waiting for !ioauth responses.
+        taker.directory_client.send_privmsg.assert_not_awaited()
         taker.directory_client.wait_for_responses.assert_not_awaited()
 
     def test_process_pubkey_response_parses_features(self):
