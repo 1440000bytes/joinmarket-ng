@@ -95,6 +95,15 @@ Additional per-maker checks at this stage (all cause the offending maker to be d
 
 The `!hp2` broadcast is sent *after* `!ioauth`, not before. This is intentional: broadcasting early would risk other makers in the same transaction seeing the commitment and blacklisting it before they have processed the same taker's `!auth`, causing spurious rejections.
 
+If an auth pass has revealed a proof and replacements are selected, the taker
+uses one fresh PoDLE commitment for that replacement wave, including any
+partial mini-fill batches before the next auth pass. Already-authenticated
+makers retain their established sessions and are not sent the replacement
+proof. Later transaction and signature phases do not use the PoDLE commitment.
+This avoids presenting a commitment that may already have propagated through
+`!hp2`. A compatibility preflight that exits before sending a proof reuses the
+current commitment for its replacements.
+
 For source obfuscation, the maker does not broadcast `!hp2` on its own long-lived directory connection. Instead:
 
 1. Maker opens new connections to all directory servers using a **fresh random nick** and **unique Tor circuit** (via SOCKS5 stream isolation with a random credential)
@@ -243,6 +252,8 @@ When makers fail to respond, the taker can automatically select replacements ins
 - Configuration: `max_maker_replacement_attempts` (default: 3, range: 0-10)
 - Failed makers added to ignored list for the session
 - New makers go through the full fill/auth flow
+- Auth-stage replacements use one fresh PoDLE commitment after a revelation
+  was sent; existing authenticated makers are not re-driven
 - The requested counterparty count remains the replacement target through fill
   and auth. Partial replacement selections are used and the remaining deficit
   is retried while attempts remain.

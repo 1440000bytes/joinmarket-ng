@@ -1244,6 +1244,7 @@ class Taker(TakerMonitoringMixin):
 
             if not await self._run_auth_with_replacements(
                 required_features=required_features,
+                get_private_key=get_private_key,
                 max_replacement_attempts=max_replacement_attempts,
             ):
                 return None
@@ -1387,7 +1388,10 @@ class Taker(TakerMonitoringMixin):
         return manually_selected_utxos
 
     async def _run_auth_with_replacements(
-        self, required_features: set[str] | None, max_replacement_attempts: int
+        self,
+        required_features: set[str] | None,
+        get_private_key: Any,
+        max_replacement_attempts: int,
     ) -> bool:
         self.state = TakerState.AUTHENTICATING
         logger.info("Phase 2: Sending !auth and receiving !ioauth...")
@@ -1420,6 +1424,7 @@ class Taker(TakerMonitoringMixin):
                 return False
 
             added_replacements = False
+            replacement_commitment_ready = not auth_result.podle_revealed
             while (
                 current_makers < target_makers
                 and auth_replacement_attempt < max_replacement_attempts
@@ -1448,6 +1453,11 @@ class Taker(TakerMonitoringMixin):
                         f"Auth replacement selection is partial: found {len(replacement_offers)}, "
                         f"need {needed}; retrying the remaining deficit after mini-fill"
                     )
+
+                if not replacement_commitment_ready:
+                    if not self._rotate_commitment_for_auth_replacement(get_private_key):
+                        break
+                    replacement_commitment_ready = True
 
                 before_mini_fill = current_makers
                 if not await self._fill_replacement_makers(replacement_offers, failed_nicks):
@@ -1480,6 +1490,31 @@ class Taker(TakerMonitoringMixin):
             self._session.last_failure_reason = reason
             self.state = TakerState.FAILED
             return False
+
+    def _rotate_commitment_for_auth_replacement(self, get_private_key: Any) -> bool:
+        """Prepare a fresh PoDLE proof after an auth-stage commitment disclosure."""
+        if any(
+            not maker_session.responded_auth
+            for maker_session in self._session.maker_sessions.values()
+        ):
+            logger.error("Cannot rotate PoDLE while an unauthenticated maker session remains")
+            return False
+
+        new_commitment = self.podle_manager.generate_fresh_commitment(
+            wallet_utxos=self._session.preselected_utxos,
+            cj_amount=self._session.cj_amount,
+            private_key_getter=get_private_key,
+            min_confirmations=self.config.taker_utxo_age,
+            min_percent=self.config.taker_utxo_amtpercent,
+            max_retries=self.config.taker_utxo_retries,
+        )
+        if new_commitment is None:
+            logger.warning("No fresh PoDLE commitment remains for auth-stage maker replacement")
+            return False
+
+        self._session.podle_commitment = new_commitment
+        logger.info("Rotated PoDLE commitment for auth-stage maker replacement")
+        return True
 
     async def _fill_replacement_makers(
         self, replacement_offers: dict[str, Any], failed_nicks: set[str]

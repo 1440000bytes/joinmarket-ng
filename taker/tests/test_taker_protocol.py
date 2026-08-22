@@ -2592,6 +2592,7 @@ class TestNeutrinoIncompatibleMakerReplacement:
         assert result.success is False
         assert result.failed_makers == ["J5legacy"]
         assert result.needs_replacement is True
+        assert result.podle_revealed is False
         # The compatible maker stays in the session for the replacement pass.
         assert set(taker._session.maker_sessions.keys()) == {"J5good"}
         # The incompatibility preflight fires before revealing the PoDLE
@@ -2726,6 +2727,8 @@ class TestNeutrinoIncompatibleMakerReplacement:
         taker._session.cj_amount = 1_000_000
         taker._session.crypto_session = CryptoSession()
         taker._session.podle_commitment.to_commitment_str = MagicMock(return_value="ab" * 32)
+        original_commitment = taker._session.podle_commitment
+        taker.podle_manager = MagicMock()
 
         compatible = MakerSession(
             nick="J5good", offer=_simple_offer("J5good"), supports_neutrino_compat=True
@@ -2764,7 +2767,9 @@ class TestNeutrinoIncompatibleMakerReplacement:
         )
 
         ok = await taker._run_auth_with_replacements(
-            required_features={"neutrino_compat"}, max_replacement_attempts=3
+            required_features={"neutrino_compat"},
+            get_private_key=MagicMock(),
+            max_replacement_attempts=3,
         )
 
         assert ok is True
@@ -2778,6 +2783,10 @@ class TestNeutrinoIncompatibleMakerReplacement:
         assert new_session.supports_neutrino_compat is True
         assert new_session.responded_fill is True
         assert new_session.crypto is not None
+        assert taker._session.podle_commitment is original_commitment
+        taker.podle_manager.generate_fresh_commitment.assert_not_called()
+        fill_data = taker.directory_client.send_privmsg.await_args.args[2]
+        assert fill_data.endswith("ab" * 32)
 
     @pytest.mark.asyncio
     async def test_auth_replacement_retries_when_replacement_does_not_respond(self):
@@ -2831,7 +2840,9 @@ class TestNeutrinoIncompatibleMakerReplacement:
         )
 
         ok = await taker._run_auth_with_replacements(
-            required_features={"neutrino_compat"}, max_replacement_attempts=3
+            required_features={"neutrino_compat"},
+            get_private_key=MagicMock(),
+            max_replacement_attempts=3,
         )
 
         assert ok is True
@@ -2877,7 +2888,9 @@ class TestNeutrinoIncompatibleMakerReplacement:
         taker.directory_client.wait_for_responses = AsyncMock(return_value={})
 
         ok = await taker._run_auth_with_replacements(
-            required_features={"neutrino_compat"}, max_replacement_attempts=2
+            required_features={"neutrino_compat"},
+            get_private_key=MagicMock(),
+            max_replacement_attempts=2,
         )
 
         assert ok is False
@@ -2906,6 +2919,7 @@ class TestNeutrinoIncompatibleMakerReplacement:
         assert result.success is False
         assert result.failed_makers == ["J5err"]
         assert result.needs_replacement is True
+        assert result.podle_revealed is True
         assert "J5err" not in taker._session.maker_sessions
 
 
@@ -3082,7 +3096,9 @@ class TestReplacementTargetRestoration:
         taker._fill_replacement_makers = AsyncMock(side_effect=mini_fill)
 
         ok = await taker._run_auth_with_replacements(
-            required_features=None, max_replacement_attempts=2
+            required_features=None,
+            get_private_key=MagicMock(),
+            max_replacement_attempts=2,
         )
 
         assert ok is True
@@ -3093,15 +3109,27 @@ class TestReplacementTargetRestoration:
     @pytest.mark.asyncio
     async def test_auth_uses_partial_batches_for_remaining_target_deficit(self):
         taker = self._make_taker(minimum_makers=8, target_makers=10, current_makers=8)
+        for maker_session in taker._session.maker_sessions.values():
+            maker_session.responded_auth = True
+        fresh_commitment = MagicMock()
+        taker._session.preselected_utxos = [MagicMock()]
+        taker.podle_manager = MagicMock()
+        taker.podle_manager.generate_fresh_commitment.return_value = fresh_commitment
         taker._session._phase_auth = AsyncMock(
-            side_effect=[PhaseResult(success=True), PhaseResult(success=True)]
+            side_effect=[
+                PhaseResult(success=True, podle_revealed=True),
+                PhaseResult(success=True),
+            ]
         )
         taker.orderbook_manager.select_makers.side_effect = [
             (self._replacement_offers("J5replacement1"), 0),
             (self._replacement_offers("J5replacement2"), 0),
         ]
 
+        commitments_seen_by_fill = []
+
         async def mini_fill(replacement_offers, failed_nicks):
+            commitments_seen_by_fill.append(taker._session.podle_commitment)
             for nick, offer in replacement_offers.items():
                 taker._session.maker_sessions[nick] = MakerSession(nick=nick, offer=offer)
             return True
@@ -3109,7 +3137,9 @@ class TestReplacementTargetRestoration:
         taker._fill_replacement_makers = AsyncMock(side_effect=mini_fill)
 
         ok = await taker._run_auth_with_replacements(
-            required_features=None, max_replacement_attempts=2
+            required_features=None,
+            get_private_key=MagicMock(),
+            max_replacement_attempts=2,
         )
 
         assert ok is True
@@ -3119,6 +3149,8 @@ class TestReplacementTargetRestoration:
         assert selected_counts == [2, 1]
         assert taker._fill_replacement_makers.await_count == 2
         assert taker._session._phase_auth.await_count == 2
+        assert commitments_seen_by_fill == [fresh_commitment, fresh_commitment]
+        taker.podle_manager.generate_fresh_commitment.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_auth_falls_back_at_floor_and_fails_below_floor(self):
@@ -3127,7 +3159,9 @@ class TestReplacementTargetRestoration:
         floor_taker.orderbook_manager.select_makers.return_value = ({}, 0)
 
         floor_ok = await floor_taker._run_auth_with_replacements(
-            required_features=None, max_replacement_attempts=0
+            required_features=None,
+            get_private_key=MagicMock(),
+            max_replacement_attempts=0,
         )
 
         below_floor_taker = self._make_taker(minimum_makers=8, target_makers=9, current_makers=7)
@@ -3137,7 +3171,9 @@ class TestReplacementTargetRestoration:
         below_floor_taker.orderbook_manager.select_makers.return_value = ({}, 0)
 
         below_floor_ok = await below_floor_taker._run_auth_with_replacements(
-            required_features=None, max_replacement_attempts=2
+            required_features=None,
+            get_private_key=MagicMock(),
+            max_replacement_attempts=2,
         )
 
         assert floor_ok is True
@@ -3145,6 +3181,223 @@ class TestReplacementTargetRestoration:
         assert below_floor_ok is False
         assert below_floor_taker.state is TakerState.FAILED
         assert below_floor_taker._session.last_failure_reason is not None
+
+    @pytest.mark.asyncio
+    async def test_auth_replacement_rotates_revealed_commitment_before_mini_fill(self):
+        taker = self._make_taker(minimum_makers=1, target_makers=2, current_makers=1)
+        survivor = next(iter(taker._session.maker_sessions.values()))
+        survivor.responded_auth = True
+        old_commitment = MagicMock(name="old_commitment")
+        fresh_commitment = MagicMock(name="fresh_commitment")
+        taker._session.podle_commitment = old_commitment
+        taker._session.preselected_utxos = [MagicMock()]
+        taker.podle_manager = MagicMock()
+        taker.podle_manager.generate_fresh_commitment.return_value = fresh_commitment
+        taker._session._phase_auth = AsyncMock(
+            side_effect=[
+                PhaseResult(
+                    success=True,
+                    failed_makers=["J5failed"],
+                    podle_revealed=True,
+                ),
+                PhaseResult(success=True),
+            ]
+        )
+        taker.orderbook_manager.select_makers.return_value = (
+            self._replacement_offers("J5replacement"),
+            0,
+        )
+        commitments_seen_by_fill = []
+
+        async def mini_fill(replacement_offers, failed_nicks):
+            commitments_seen_by_fill.append(taker._session.podle_commitment)
+            for nick, offer in replacement_offers.items():
+                taker._session.maker_sessions[nick] = MakerSession(nick=nick, offer=offer)
+            return True
+
+        taker._fill_replacement_makers = AsyncMock(side_effect=mini_fill)
+        get_private_key = MagicMock()
+
+        ok = await taker._run_auth_with_replacements(
+            required_features=None,
+            get_private_key=get_private_key,
+            max_replacement_attempts=2,
+        )
+
+        assert ok is True
+        assert commitments_seen_by_fill == [fresh_commitment]
+        assert taker._session.podle_commitment is fresh_commitment
+        taker.podle_manager.generate_fresh_commitment.assert_called_once_with(
+            wallet_utxos=taker._session.preselected_utxos,
+            cj_amount=taker._session.cj_amount,
+            private_key_getter=get_private_key,
+            min_confirmations=taker.config.taker_utxo_age,
+            min_percent=taker.config.taker_utxo_amtpercent,
+            max_retries=taker.config.taker_utxo_retries,
+        )
+
+    @pytest.mark.asyncio
+    async def test_auth_replacement_rotates_again_for_later_disclosed_wave(self):
+        taker = self._make_taker(minimum_makers=1, target_makers=2, current_makers=1)
+        survivor = next(iter(taker._session.maker_sessions.values()))
+        survivor.responded_auth = True
+        old_commitment = MagicMock(name="old_commitment")
+        first_fresh_commitment = MagicMock(name="first_fresh_commitment")
+        second_fresh_commitment = MagicMock(name="second_fresh_commitment")
+        taker._session.podle_commitment = old_commitment
+        taker._session.preselected_utxos = [MagicMock()]
+        taker.podle_manager = MagicMock()
+        taker.podle_manager.generate_fresh_commitment.side_effect = [
+            first_fresh_commitment,
+            second_fresh_commitment,
+        ]
+
+        auth_call = 0
+
+        async def auth_with_two_failed_waves():
+            nonlocal auth_call
+            auth_call += 1
+            if auth_call == 1:
+                return PhaseResult(
+                    success=True,
+                    failed_makers=["J5initial-failure"],
+                    podle_revealed=True,
+                )
+            if auth_call == 2:
+                del taker._session.maker_sessions["J5replacement1"]
+                return PhaseResult(
+                    success=True,
+                    failed_makers=["J5replacement1"],
+                    podle_revealed=True,
+                )
+            taker._session.maker_sessions["J5replacement2"].responded_auth = True
+            return PhaseResult(success=True)
+
+        taker._session._phase_auth = AsyncMock(side_effect=auth_with_two_failed_waves)
+        taker.orderbook_manager.select_makers.side_effect = [
+            (self._replacement_offers("J5replacement1"), 0),
+            (self._replacement_offers("J5replacement2"), 0),
+        ]
+        commitments_seen_by_fill = []
+
+        async def mini_fill(replacement_offers, failed_nicks):
+            commitments_seen_by_fill.append(taker._session.podle_commitment)
+            for nick, offer in replacement_offers.items():
+                taker._session.maker_sessions[nick] = MakerSession(nick=nick, offer=offer)
+            return True
+
+        taker._fill_replacement_makers = AsyncMock(side_effect=mini_fill)
+
+        ok = await taker._run_auth_with_replacements(
+            required_features=None,
+            get_private_key=MagicMock(),
+            max_replacement_attempts=2,
+        )
+
+        assert ok is True
+        assert commitments_seen_by_fill == [
+            first_fresh_commitment,
+            second_fresh_commitment,
+        ]
+        assert taker._session.podle_commitment is second_fresh_commitment
+        assert taker.podle_manager.generate_fresh_commitment.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_auth_replacement_at_floor_when_fresh_commitments_exhausted(self):
+        taker = self._make_taker(minimum_makers=1, target_makers=2, current_makers=1)
+        survivor = next(iter(taker._session.maker_sessions.values()))
+        survivor.responded_auth = True
+        taker._session.podle_commitment = MagicMock()
+        taker.podle_manager = MagicMock()
+        taker.podle_manager.generate_fresh_commitment.return_value = None
+        taker._session._phase_auth = AsyncMock(
+            return_value=PhaseResult(
+                success=True,
+                failed_makers=["J5failed"],
+                podle_revealed=True,
+            )
+        )
+        taker.orderbook_manager.select_makers.return_value = (
+            self._replacement_offers("J5replacement"),
+            0,
+        )
+        taker._fill_replacement_makers = AsyncMock()
+
+        ok = await taker._run_auth_with_replacements(
+            required_features=None,
+            get_private_key=MagicMock(),
+            max_replacement_attempts=1,
+        )
+
+        assert ok is True
+        taker._fill_replacement_makers.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_auth_replacement_fails_below_floor_when_fresh_commitments_exhausted(self):
+        taker = self._make_taker(minimum_makers=2, target_makers=3, current_makers=1)
+        survivor = next(iter(taker._session.maker_sessions.values()))
+        survivor.responded_auth = True
+        taker._session.podle_commitment = MagicMock()
+        taker.podle_manager = MagicMock()
+        taker.podle_manager.generate_fresh_commitment.return_value = None
+        taker._session._phase_auth = AsyncMock(
+            return_value=PhaseResult(
+                success=False,
+                failed_makers=["J5failed"],
+                podle_revealed=True,
+            )
+        )
+        taker.orderbook_manager.select_makers.return_value = (
+            self._replacement_offers("J5replacement"),
+            0,
+        )
+        taker._fill_replacement_makers = AsyncMock()
+
+        ok = await taker._run_auth_with_replacements(
+            required_features=None,
+            get_private_key=MagicMock(),
+            max_replacement_attempts=1,
+        )
+
+        assert ok is False
+        assert taker.state is TakerState.FAILED
+        taker._fill_replacement_makers.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_auth_replacement_before_revelation_reuses_commitment(self):
+        taker = self._make_taker(minimum_makers=1, target_makers=2, current_makers=1)
+        original_commitment = MagicMock(name="original_commitment")
+        taker._session.podle_commitment = original_commitment
+        taker.podle_manager = MagicMock()
+        taker._session._phase_auth = AsyncMock(
+            side_effect=[
+                PhaseResult(success=False, failed_makers=["J5incompatible"]),
+                PhaseResult(success=True),
+            ]
+        )
+        taker.orderbook_manager.select_makers.return_value = (
+            self._replacement_offers("J5replacement"),
+            0,
+        )
+        commitments_seen_by_fill = []
+
+        async def mini_fill(replacement_offers, failed_nicks):
+            commitments_seen_by_fill.append(taker._session.podle_commitment)
+            for nick, offer in replacement_offers.items():
+                taker._session.maker_sessions[nick] = MakerSession(nick=nick, offer=offer)
+            return True
+
+        taker._fill_replacement_makers = AsyncMock(side_effect=mini_fill)
+
+        ok = await taker._run_auth_with_replacements(
+            required_features={"neutrino_compat"},
+            get_private_key=MagicMock(),
+            max_replacement_attempts=1,
+        )
+
+        assert ok is True
+        assert commitments_seen_by_fill == [original_commitment]
+        taker.podle_manager.generate_fresh_commitment.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_majority_blacklist_rotates_before_floor_fallback(self):
@@ -3349,3 +3602,23 @@ class TestIncrementalPhaseTopUp:
         expected = taker.directory_client.wait_for_responses.await_args.kwargs["expected_nicks"]
         assert expected == ["J5new"]
         assert result.failed_makers == ["J5new"]
+
+    @pytest.mark.asyncio
+    async def test_auth_replacement_fill_serializes_current_commitment(self):
+        taker = self._make_taker(minimum_makers=1)
+        taker._session.cj_amount = 1_000_000
+        taker._session.crypto_session = CryptoSession()
+        fresh_commitment = MagicMock()
+        fresh_commitment.to_commitment_str.return_value = "P" + "cd" * 32
+        taker._session.podle_commitment = fresh_commitment
+        replacement_crypto = CryptoSession()
+        taker.directory_client.wait_for_responses = AsyncMock(
+            return_value={"J5new": {"data": f"{replacement_crypto.get_pubkey_hex()} signpk sig"}}
+        )
+
+        ok = await taker._fill_replacement_makers({"J5new": _simple_offer("J5new")}, set())
+
+        assert ok is True
+        fill_call = taker.directory_client.send_privmsg.await_args
+        assert fill_call.args[0:2] == ("J5new", "fill")
+        assert fill_call.args[2].endswith("P" + "cd" * 32)

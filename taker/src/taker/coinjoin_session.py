@@ -665,6 +665,7 @@ class CoinJoinSession:
                 )
                 return PhaseResult(success=False, failed_makers=incompatible_makers)
 
+        podle_revealed = False
         for nick in pending_nicks:
             session = self.maker_sessions[nick]
             if session.crypto is None:
@@ -712,6 +713,7 @@ class CoinJoinSession:
                 log_routing=True,
                 force_channel=session.comm_channel,
             )
+            podle_revealed = True
 
         timeout = self.config.maker_timeout_sec
         expected_nicks = list(pending_nicks)
@@ -912,9 +914,17 @@ class CoinJoinSession:
 
         if len(self.maker_sessions) < self.config.minimum_makers:
             logger.error(f"Not enough makers sent UTXOs: {len(self.maker_sessions)}")
-            return PhaseResult(success=False, failed_makers=failed_makers)
+            return PhaseResult(
+                success=False,
+                failed_makers=failed_makers,
+                podle_revealed=podle_revealed,
+            )
 
-        return PhaseResult(success=True, failed_makers=failed_makers)
+        return PhaseResult(
+            success=True,
+            failed_makers=failed_makers,
+            podle_revealed=podle_revealed,
+        )
 
     async def _verify_maker_utxos(
         self,

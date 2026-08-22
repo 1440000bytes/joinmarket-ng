@@ -70,6 +70,9 @@ class PhaseResult:
     # or out-of-sync maker -> ignore + replace the maker) from "majority blacklist
     # rejection" (commitment really is known -> rotate commitment).
     blacklist_makers: list[str] = Field(default_factory=list)
+    # True once this auth pass has sent a PoDLE revelation to at least one maker.
+    # Auth-stage replacements must use a fresh commitment after that point.
+    podle_revealed: bool = False
 
     @property
     def needs_replacement(self) -> bool:
