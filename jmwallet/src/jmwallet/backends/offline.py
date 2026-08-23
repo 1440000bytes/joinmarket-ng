@@ -46,5 +46,8 @@ class OfflineBackend(BlockchainBackend):
     def can_estimate_fee(self) -> bool:
         return False
 
+    def can_lookup_arbitrary_utxos(self) -> bool:
+        return False
+
     def has_mempool_access(self) -> bool:
         return False

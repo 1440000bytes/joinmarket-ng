@@ -1193,13 +1193,13 @@ class TestSweepCjAmountPreservation:
     async def test_sweep_uses_maker_contribution_and_reported_relay_floor(
         self, mock_wallet_for_sweep, mock_backend_for_sweep, taker_config_for_sweep
     ):
-        """The sweep guard must use the complete fee and the backend's floor."""
+        """The sweep guard must use the complete fee and resolved policy floor."""
         taker = Taker(mock_wallet_for_sweep, mock_backend_for_sweep, taker_config_for_sweep)
 
         taker._session.is_sweep = True
         taker._session.preselected_utxos = mock_wallet_for_sweep.get_all_utxos()
         taker._session._fee_rate = 1.0
-        taker._session._mempool_min_fee = 0.9
+        taker._session._minimum_fee_rate_sat_vb = 0.9
 
         total_input = sum(u.value for u in taker._session.preselected_utxos)
         budget = 716
@@ -1219,7 +1219,7 @@ class TestSweepCjAmountPreservation:
         taker._session.maker_sessions = {nick: maker_session}
 
         # Complete fee is 716 taker + 500 maker = 1216 sats over ~1260 vB,
-        # or ~0.97 sat/vB. This clears the reported 0.9 sat/vB floor even
+        # or ~0.97 sat/vB. This clears the resolved 0.9 sat/vB floor even
         # though the taker's budget alone does not.
         result = await taker._session._phase_build_tx(
             destination="bcrt1qqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcruj60yu",

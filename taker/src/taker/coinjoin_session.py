@@ -26,6 +26,11 @@ from typing import TYPE_CHECKING, Any
 from jmcore.bitcoin import get_txid, pubkey_to_p2wpkh_script
 from jmcore.constants import BITCOIN_DUST_THRESHOLD, DUST_THRESHOLD
 from jmcore.encryption import CryptoSession
+from jmcore.fee_policy import (
+    estimate_p2wpkh_vsize,
+    fee_rate_meets_minimum,
+    resolve_min_fee_rate,
+)
 from jmcore.protocol import FEATURE_NEUTRINO_COMPAT, UTXOMetadata, parse_utxo_list
 from jmcore.randomness import secure_random
 from jmwallet.history import (
@@ -168,9 +173,7 @@ class CoinJoinSession:
         # jitter and is the value used for all subsequent fee calculations.
         self._fee_rate: float | None = None
         self._randomized_fee_rate: float | None = None
-        # Mempool minimum relay fee (sat/vB) seen at fee-resolution time, used
-        # as a floor for the effective fee rate of sweep transactions.
-        self._mempool_min_fee: float | None = None
+        self._minimum_fee_rate_sat_vb: float | None = None
 
     def attach(self, taker: Taker) -> None:
         """Wire the owning ``Taker`` so the session can read persistent deps.
@@ -209,7 +212,7 @@ class CoinJoinSession:
         self.crypto_session = None
         self._fee_rate = None
         self._randomized_fee_rate = None
-        self._mempool_min_fee = None
+        self._minimum_fee_rate_sat_vb = None
 
     def input_lock_ttl_sec(self) -> float:
         """Cover the remaining protocol plus the pending-broadcast window."""
@@ -1104,7 +1107,7 @@ class CoinJoinSession:
                 # taker's approved total outflow.
                 #
                 # Calculate actual vsize for fee rate logging
-                actual_tx_vsize = num_inputs * 68 + num_outputs * 31 + 11
+                actual_tx_vsize = estimate_p2wpkh_vsize(num_inputs, num_outputs)
 
                 # Use the budget as the tx_fee
                 tx_fee = self._sweep_tx_fee_budget
@@ -1183,11 +1186,11 @@ class CoinJoinSession:
                 # fixed budget spread over the larger transaction can fall below
                 # the relay minimum, making the sweep unbroadcastable. Fail here
                 # (before signing) instead of broadcasting a doomed transaction.
-                fee_rate_floor = self._mempool_min_fee if self._mempool_min_fee is not None else 1.0
-                if actual_fee_rate < fee_rate_floor:
+                fee_rate_floor = self._minimum_fee_rate_sat_vb or self.config.min_fee_rate_sat_vb
+                if not fee_rate_meets_minimum(actual_mining_fee, actual_tx_vsize, fee_rate_floor):
                     logger.error(
                         f"Sweep failed: effective fee rate {actual_fee_rate:.2f} sat/vB "
-                        f"is below the relay floor of {fee_rate_floor:.2f} sat/vB "
+                        f"is below the required minimum of {fee_rate_floor:.2f} sat/vB "
                         f"({actual_mining_fee:,} sats over ~{actual_tx_vsize} vB). Makers "
                         "contributed more inputs than the fee budget anticipated."
                     )
@@ -1336,6 +1339,13 @@ class CoinJoinSession:
             )
             logger.debug(f"Participating makers: {', '.join(self.maker_sessions.keys())}")
 
+            if self._minimum_fee_rate_sat_vb is not None:
+                fee_error = self._verify_unsigned_minimum_miner_fee()
+                if fee_error is not None:
+                    self.last_failure_reason = fee_error
+                    logger.error(fee_error)
+                    return False
+
             return True
 
         except Exception as e:
@@ -1365,7 +1375,7 @@ class CoinJoinSession:
         import math
 
         # P2WPKH: ~68 vbytes per input, 31 vbytes per output, ~11 overhead
-        vsize = num_inputs * 68 + num_outputs * 31 + 11
+        vsize = estimate_p2wpkh_vsize(num_inputs, num_outputs)
 
         # Use base rate for deterministic calculations (sweeps),
         # otherwise use the session's randomized rate for privacy
@@ -1399,27 +1409,24 @@ class CoinJoinSession:
         if self._fee_rate is not None:
             return self._fee_rate
 
-        # Get mempool minimum fee (if available) as a floor
-        mempool_min_fee: float | None = None
-        try:
-            mempool_min_fee = await self.backend.get_mempool_min_fee()
-            if mempool_min_fee is not None:
-                logger.debug(f"Mempool min fee: {mempool_min_fee:.2f} sat/vB")
-        except Exception:
-            # Backend may not support this method
-            pass
-        self._mempool_min_fee = mempool_min_fee
+        self._minimum_fee_rate_sat_vb = await resolve_min_fee_rate(
+            self.backend,
+            static_floor=self.config.min_fee_rate_sat_vb,
+            block_target=self.config.min_fee_block_target,
+            max_fee_rate=self.config.max_fee_rate_sat_vb,
+        )
+        logger.info(
+            f"Resolved minimum CoinJoin miner fee rate: {self._minimum_fee_rate_sat_vb:.2f} sat/vB"
+        )
 
         # 1. Manual fee rate takes priority
         if self.config.fee_rate is not None:
             self._fee_rate = self.config.fee_rate
-            # Check against mempool min fee
-            if mempool_min_fee is not None and self._fee_rate < mempool_min_fee:
-                logger.warning(
-                    f"Manual fee rate {self._fee_rate:.2f} sat/vB is below mempool min "
-                    f"{mempool_min_fee:.2f} sat/vB, using mempool min"
+            if self._fee_rate < self._minimum_fee_rate_sat_vb:
+                raise ValueError(
+                    f"Manual fee rate {self._fee_rate:.2f} sat/vB is below the required "
+                    f"minimum {self._minimum_fee_rate_sat_vb:.2f} sat/vB"
                 )
-                self._fee_rate = mempool_min_fee
             enforce_fee_rate_cap(self._fee_rate, self.config.max_fee_rate_sat_vb, source="manual")
             logger.info(f"Using manual fee rate: {self._fee_rate:.2f} sat/vB")
             self._apply_fee_randomization()
@@ -1435,13 +1442,12 @@ class CoinJoinSession:
                     "enabled by default when a Tor proxy is available)."
                 )
             self._fee_rate = await self.backend.estimate_fee(self.config.fee_block_target)
-            # Check against mempool min fee
-            if mempool_min_fee is not None and self._fee_rate < mempool_min_fee:
+            if self._fee_rate < self._minimum_fee_rate_sat_vb:
                 logger.info(
-                    f"Estimated fee {self._fee_rate:.2f} sat/vB is below mempool min "
-                    f"{mempool_min_fee:.2f} sat/vB, using mempool min"
+                    f"Estimated fee {self._fee_rate:.2f} sat/vB is below required minimum "
+                    f"{self._minimum_fee_rate_sat_vb:.2f} sat/vB, using required minimum"
                 )
-                self._fee_rate = mempool_min_fee
+                self._fee_rate = self._minimum_fee_rate_sat_vb
             enforce_fee_rate_cap(
                 self._fee_rate, self.config.max_fee_rate_sat_vb, source="backend estimate"
             )
@@ -1456,13 +1462,12 @@ class CoinJoinSession:
         if self.backend.can_estimate_fee():
             default_target = 3
             self._fee_rate = await self.backend.estimate_fee(default_target)
-            # Check against mempool min fee
-            if mempool_min_fee is not None and self._fee_rate < mempool_min_fee:
+            if self._fee_rate < self._minimum_fee_rate_sat_vb:
                 logger.info(
-                    f"Estimated fee {self._fee_rate:.2f} sat/vB is below mempool min "
-                    f"{mempool_min_fee:.2f} sat/vB, using mempool min"
+                    f"Estimated fee {self._fee_rate:.2f} sat/vB is below required minimum "
+                    f"{self._minimum_fee_rate_sat_vb:.2f} sat/vB, using required minimum"
                 )
-                self._fee_rate = mempool_min_fee
+                self._fee_rate = self._minimum_fee_rate_sat_vb
             enforce_fee_rate_cap(
                 self._fee_rate, self.config.max_fee_rate_sat_vb, source="backend estimate"
             )
@@ -1473,7 +1478,7 @@ class CoinJoinSession:
             return self._fee_rate
 
         # 4. Neutrino backend without manual fee - fall back to 1.0 sat/vB
-        fallback_rate = 1.0
+        fallback_rate = self._minimum_fee_rate_sat_vb
         logger.warning(
             f"Fee estimation is not available with the neutrino backend and no --fee-rate "
             f"was specified. Falling back to {fallback_rate} sat/vB."
@@ -1482,6 +1487,28 @@ class CoinJoinSession:
         enforce_fee_rate_cap(self._fee_rate, self.config.max_fee_rate_sat_vb, source="fallback")
         self._apply_fee_randomization()
         return self._fee_rate
+
+    def _verify_unsigned_minimum_miner_fee(self) -> str | None:
+        """Validate known prevout values before !tx exposes the signing request."""
+        if self._minimum_fee_rate_sat_vb is None:
+            return "Minimum CoinJoin miner fee rate was not resolved"
+        try:
+            tx = deserialize_transaction(self.unsigned_tx)
+        except TransactionSigningError as exc:
+            return f"Cannot verify unsigned CoinJoin miner fee: {exc}"
+        total_input = sum(utxo.value for utxo in self.selected_utxos) + sum(
+            utxo["value"] for session in self.maker_sessions.values() for utxo in session.utxos
+        )
+        fee = total_input - sum(output.value for output in tx.outputs)
+        vsize = estimate_p2wpkh_vsize(len(tx.inputs), len(tx.outputs))
+        if fee < 0:
+            return "CoinJoin has a negative miner fee"
+        if not fee_rate_meets_minimum(fee, vsize, self._minimum_fee_rate_sat_vb):
+            return (
+                f"CoinJoin miner fee rate {fee / vsize:.2f} sat/vB is below required "
+                f"{self._minimum_fee_rate_sat_vb:.2f} sat/vB before requesting signatures"
+            )
+        return None
 
     def _apply_fee_randomization(self) -> None:
         """Apply tx_fee_factor randomization to get the session's fee rate.
@@ -1560,6 +1587,13 @@ class CoinJoinSession:
         order UTXOs were originally provided. We must match signatures to transaction
         inputs by verifying which UTXO each signature is valid for, not by index.
         """
+        if self._minimum_fee_rate_sat_vb is not None:
+            fee_error = self._verify_unsigned_minimum_miner_fee()
+            if fee_error is not None:
+                self.last_failure_reason = fee_error
+                logger.error(fee_error)
+                return False
+
         # Encode transaction as base64 (expected by maker after decryption)
         import base64
 

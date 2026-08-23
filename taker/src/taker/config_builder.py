@@ -259,6 +259,8 @@ def build_taker_config_kwargs(
         "fee_rate": effective_fee_rate,
         "fee_block_target": effective_block_target,
         "max_fee_rate_sat_vb": settings.wallet.max_fee_rate_sat_vb,
+        "min_fee_rate_sat_vb": settings.taker.min_fee_rate_sat_vb,
+        "min_fee_block_target": settings.taker.min_fee_block_target,
         "bondless_makers_allowance": effective_bondless,
         "bond_value_exponent": effective_bond_exp,
         "bondless_makers_allowance_require_zero_fee": effective_bondless_zero_fee,

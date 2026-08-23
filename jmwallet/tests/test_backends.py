@@ -15,6 +15,7 @@ from jmwallet.backends.neutrino import (
     NeutrinoConfig,
     NeutrinoNetworkMismatchError,
 )
+from jmwallet.backends.offline import OfflineBackend
 
 
 class TestBackendCloseReuse:
@@ -90,6 +91,14 @@ class TestBlockchainBackend:
         )
 
         assert verified is expected
+
+    def test_arbitrary_utxo_lookup_capability_defaults_to_full_node(self) -> None:
+        assert BlockchainBackend.can_lookup_arbitrary_utxos(MagicMock()) is True
+
+    def test_light_and_offline_backends_cannot_lookup_arbitrary_utxos(self) -> None:
+        backend = NeutrinoBackend(neutrino_url="http://localhost:8334")
+        assert backend.can_lookup_arbitrary_utxos() is False
+        assert OfflineBackend().can_lookup_arbitrary_utxos() is False
 
 
 class TestNeutrinoBackend:

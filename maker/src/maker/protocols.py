@@ -77,11 +77,14 @@ class MakerBotProtocol(Protocol):
     _detached_handler_tasks: set[asyncio.Task[None]]
     _pending_signed_rounds: dict[tuple[str, str], PendingSignedRound]
     _pending_signed_rounds_lock: asyncio.Lock
+    minimum_fee_rate_sat_vb: float
 
     # -- Cross-mixin methods --
 
     # Defined in ProtocolHandlersMixin, called by BackgroundTasksMixin
     async def _handle_message(self, message: dict[str, Any], source: str = "unknown") -> None: ...
+
+    async def _initialize_minimum_fee_policy(self, *, announce: bool = True) -> None: ...
 
     # Defined in ProtocolHandlersMixin, called by DirectConnectionMixin
     async def _handle_fill(self, taker_nick: str, msg: str, source: str = "unknown") -> None: ...

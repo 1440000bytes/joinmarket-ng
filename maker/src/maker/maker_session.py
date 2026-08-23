@@ -60,6 +60,18 @@ class PendingSignedRound:
     lock_ttl_sec: float
 
 
+def _notification_coinjoin_id(commitment: object) -> str | None:
+    """Best-effort correlation for notifications that must not block cleanup."""
+    try:
+        if isinstance(commitment, bytes):
+            commitment = commitment.hex()
+        if not isinstance(commitment, str):
+            return None
+        return coinjoin_id_from_commitment(commitment)
+    except ValueError:
+        return None
+
+
 class MakerSession:
     """One CoinJoin session with a single taker.
 
@@ -430,7 +442,7 @@ class MakerSession:
                         taker_nick,
                         error_code or "PoDLE verification failed",
                         error_msg,
-                        coinjoin_id_from_commitment(commitment),
+                        _notification_coinjoin_id(commitment),
                     )
                 )
 
@@ -563,7 +575,7 @@ class MakerSession:
                         self.amount,
                         len(signatures),
                         fee_received,
-                        coinjoin_id_from_commitment(self.commitment.hex()),
+                        _notification_coinjoin_id(self.commitment),
                     )
                 )
 
@@ -575,14 +587,6 @@ class MakerSession:
                 spawn_task(bot._deferred_wallet_resync())
             else:
                 logger.error(f"TX verification failed: {response.get('error')}")
-                spawn_task(
-                    get_notifier().notify_rejection(
-                        taker_nick,
-                        "TX verification failed",
-                        response.get("error", ""),
-                        coinjoin_id_from_commitment(self.commitment.hex()),
-                    )
-                )
                 # Before signing starts, a failed transaction cannot conflict
                 # with a later use of these inputs. Once signing starts, retain
                 # the persisted locks through their TTL.
@@ -592,6 +596,14 @@ class MakerSession:
                         self.retain_input_locks()
                     else:
                         self.release_input_locks()
+                spawn_task(
+                    get_notifier().notify_rejection(
+                        taker_nick,
+                        "TX verification failed",
+                        response.get("error", ""),
+                        _notification_coinjoin_id(self.commitment),
+                    )
+                )
 
         except Exception as e:
             logger.error(f"Failed to handle !tx: {e}")

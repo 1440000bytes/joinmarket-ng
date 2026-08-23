@@ -88,6 +88,26 @@ class TestTakerConfig:
         assert config.counterparty_count is None
         # minimum_makers default 4 matches upstream POLICY default.
         assert config.minimum_makers == 4
+        assert config.min_fee_rate_sat_vb == 1.0
+        assert config.min_fee_block_target == 10
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [("min_fee_rate_sat_vb", 0.0), ("min_fee_block_target", 0), ("min_fee_block_target", 1009)],
+    )
+    def test_minimum_fee_policy_bounds(
+        self, sample_mnemonic: str, field: str, value: float
+    ) -> None:
+        with pytest.raises(ValidationError):
+            TakerConfig(mnemonic=sample_mnemonic, **{field: value})
+
+    def test_minimum_fee_floor_cannot_exceed_maximum_fee_rate(self, sample_mnemonic: str) -> None:
+        with pytest.raises(ValidationError, match="min_fee_rate_sat_vb"):
+            TakerConfig(
+                mnemonic=sample_mnemonic,
+                min_fee_rate_sat_vb=2.0,
+                max_fee_rate_sat_vb=1.0,
+            )
 
     @pytest.mark.parametrize(
         ("field", "value"),

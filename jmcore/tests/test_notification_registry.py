@@ -163,6 +163,7 @@ class TestShimsDelegateToEmit:
             taker_nick="alice",
             cj_amount=12345,
             offer_id=3,
+            cj_id=None,
         )
 
     @pytest.mark.asyncio

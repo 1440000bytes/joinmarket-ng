@@ -684,6 +684,18 @@ class MakerSettings(BaseModel):
             "makers via different defaults -- see issue #468)."
         ),
     )
+    min_fee_rate_sat_vb: float = Field(
+        default=1.0,
+        gt=0.0,
+        allow_inf_nan=False,
+        description="Minimum CoinJoin miner fee rate in sat/vB",
+    )
+    min_fee_block_target: int = Field(
+        default=10,
+        ge=1,
+        le=1008,
+        description="Block target for the conservative CoinJoin miner-fee floor",
+    )
     offer_type: str = Field(
         default="sw0reloffer",
         description="Offer type: sw0reloffer (relative) or sw0absoffer (absolute)",
@@ -920,6 +932,18 @@ class TakerSettings(BaseModel):
             "matches the upstream JoinMarket sendpayment behaviour and prevents "
             "fingerprinting jm-ng takers via a fixed maker count."
         ),
+    )
+    min_fee_rate_sat_vb: float = Field(
+        default=1.0,
+        gt=0.0,
+        allow_inf_nan=False,
+        description="Minimum CoinJoin miner fee rate in sat/vB",
+    )
+    min_fee_block_target: int = Field(
+        default=10,
+        ge=1,
+        le=1008,
+        description="Block target for the conservative CoinJoin miner-fee floor",
     )
     max_cj_fee_abs: int = Field(
         default=500,

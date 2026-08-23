@@ -356,6 +356,12 @@
 # value may make jm-ng makers fingerprintable).
 # min_size = 100000
 
+# Do not sign CoinJoins below this miner fee floor. Full-node makers combine
+# this with the local mempool minimum and a conservative estimate; Neutrino
+# makers cannot verify foreign prevout values and therefore cannot enforce it.
+# min_fee_rate_sat_vb = 1.0
+# min_fee_block_target = 10
+
 # IMPORTANT: offer_type determines which fee setting is used.
 # Simply changing cj_fee_absolute will NOT switch to absolute fees - you must set offer_type.
 #
@@ -501,6 +507,10 @@
 # fee_rate = 10.0             # Manual fee rate in sat/vB (omit to use estimation)
 # tx_fee_factor = 0.2         # Fee randomization factor (0 disables; 0.2 = up to +20%)
 # fee_block_target = 6        # Target blocks for fee estimation (1-1008, omit to use default)
+# Minimum accepted miner fee rate is the maximum of this static floor, the
+# local mempool minimum when available, and the estimate at this block target.
+# min_fee_rate_sat_vb = 1.0
+# min_fee_block_target = 10
 
 # Fidelity bond settings
 # bondless_makers_allowance = 0.2  # 0.0-1.0: per-slot probability of picking a bondless maker

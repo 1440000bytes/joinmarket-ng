@@ -264,6 +264,15 @@ class BlockchainBackend(ABC):
         """
         return True
 
+    def can_lookup_arbitrary_utxos(self) -> bool:
+        """Whether :meth:`get_utxo` can resolve any transaction outpoint.
+
+        Full-node backends can query the UTXO set directly. Light clients must
+        override this because their watched-address model cannot establish a
+        foreign input value from an outpoint alone.
+        """
+        return True
+
     def has_mempool_access(self) -> bool:
         """Check if this backend can access unconfirmed transactions in the mempool.
 

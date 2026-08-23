@@ -135,12 +135,25 @@ class TakerConfig(WalletConfig):
     max_fee_rate_sat_vb: float = Field(
         default=1_000.0,
         gt=0.0,
+        allow_inf_nan=False,
         description=(
             "Safety cap on the resolved fee rate (sat/vB) for the CoinJoin "
             "transaction. Manual rates and backend estimates above this cap "
             "are rejected, and randomization is limited to this cap, protecting against "
             "runaway-fee bugs and malicious fee oracles."
         ),
+    )
+    min_fee_rate_sat_vb: float = Field(
+        default=1.0,
+        gt=0.0,
+        allow_inf_nan=False,
+        description="Minimum CoinJoin miner fee rate in sat/vB",
+    )
+    min_fee_block_target: int = Field(
+        default=10,
+        ge=1,
+        le=1008,
+        description="Block target for the conservative CoinJoin miner-fee floor",
     )
     bondless_makers_allowance: float = Field(
         default=0.2,
@@ -293,6 +306,8 @@ class TakerConfig(WalletConfig):
                 "Cannot specify both fee_rate and fee_block_target. "
                 "Use fee_rate for manual rate, or fee_block_target for estimation."
             )
+        if self.min_fee_rate_sat_vb > self.max_fee_rate_sat_vb:
+            raise ValueError("min_fee_rate_sat_vb must not exceed max_fee_rate_sat_vb")
         return self
 
 

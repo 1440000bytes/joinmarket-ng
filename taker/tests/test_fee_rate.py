@@ -11,6 +11,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from jmcore.bitcoin import TxInput, TxOutput, serialize_transaction
 
 from taker.coinjoin_session import CoinJoinSession
 from taker.taker import Taker
@@ -43,6 +44,8 @@ def _make_taker(
     taker.config.fee_block_target = fee_block_target
     taker.config.tx_fee_factor = tx_fee_factor
     taker.config.max_fee_rate_sat_vb = max_fee_rate_sat_vb
+    taker.config.min_fee_rate_sat_vb = 1.0
+    taker.config.min_fee_block_target = 10
 
     taker.backend = MagicMock()
     taker.backend.can_estimate_fee = MagicMock(return_value=can_estimate_fee)
@@ -62,18 +65,18 @@ class TestResolveFeeRate:
     @pytest.mark.asyncio
     async def test_manual_fee_rate_takes_priority(self) -> None:
         """Path 1: Manual --fee-rate should be used directly."""
-        taker = _make_taker(fee_rate=3.0)
+        taker = _make_taker(fee_rate=6.0)
         rate = await taker._session._resolve_fee_rate()
-        assert rate == 3.0
-        # Backend estimation should NOT be called
-        taker.backend.estimate_fee.assert_not_awaited()
+        assert rate == 6.0
+        # The transaction rate is manual, but the safety floor still resolves at 10 blocks.
+        taker.backend.estimate_fee.assert_awaited_once_with(10)
 
     @pytest.mark.asyncio
-    async def test_manual_fee_rate_raised_to_mempool_min(self) -> None:
-        """Path 1: Manual fee rate below mempool min should be raised."""
+    async def test_manual_fee_rate_below_minimum_is_rejected(self) -> None:
+        """An explicit manual fee choice must not be silently raised."""
         taker = _make_taker(fee_rate=1.0, mempool_min_fee=2.5)
-        rate = await taker._session._resolve_fee_rate()
-        assert rate == 2.5
+        with pytest.raises(ValueError, match="below the required minimum"):
+            await taker._session._resolve_fee_rate()
 
     @pytest.mark.asyncio
     async def test_block_target_with_capable_backend(self) -> None:
@@ -85,7 +88,7 @@ class TestResolveFeeRate:
         )
         rate = await taker._session._resolve_fee_rate()
         assert rate == 4.2
-        taker.backend.estimate_fee.assert_awaited_once_with(6)
+        assert taker.backend.estimate_fee.await_args_list == [((10,), {}), ((6,), {})]
 
     @pytest.mark.asyncio
     async def test_block_target_with_neutrino_raises(self) -> None:
@@ -106,7 +109,7 @@ class TestResolveFeeRate:
         )
         rate = await taker._session._resolve_fee_rate()
         assert rate == 7.5
-        taker.backend.estimate_fee.assert_awaited_once_with(3)
+        assert taker.backend.estimate_fee.await_args_list == [((10,), {}), ((3,), {})]
 
     @pytest.mark.asyncio
     async def test_neutrino_without_fee_rate_falls_back(self) -> None:
@@ -122,10 +125,10 @@ class TestResolveFeeRate:
     @pytest.mark.asyncio
     async def test_cached_fee_rate_returned_on_second_call(self) -> None:
         """Resolved fee rate should be cached and returned on subsequent calls."""
-        taker = _make_taker(fee_rate=2.0)
+        taker = _make_taker(fee_rate=6.0)
         first = await taker._session._resolve_fee_rate()
         second = await taker._session._resolve_fee_rate()
-        assert first == second == 2.0
+        assert first == second == 6.0
         # get_mempool_min_fee should only be called once (first invocation)
         assert taker.backend.get_mempool_min_fee.await_count == 1
 
@@ -144,10 +147,48 @@ class TestResolveFeeRate:
     @pytest.mark.asyncio
     async def test_mempool_min_fee_failure_does_not_block(self) -> None:
         """If get_mempool_min_fee raises, fee resolution should continue."""
-        taker = _make_taker(fee_rate=3.0)
+        taker = _make_taker(fee_rate=6.0)
         taker.backend.get_mempool_min_fee = AsyncMock(side_effect=Exception("unavailable"))
         rate = await taker._session._resolve_fee_rate()
-        assert rate == 3.0
+        assert rate == 6.0
+
+
+def _unsigned_fee_policy_tx(output_value: int) -> bytes:
+    return serialize_transaction(
+        version=2,
+        inputs=[TxInput.from_hex("aa" * 32, 0)],
+        outputs=[TxOutput(value=output_value, script=bytes.fromhex("0014" + "11" * 20))],
+        locktime=0,
+    )
+
+
+class TestUnsignedMinimumFeePolicy:
+    """Taker validation before any !tx signing request is sent."""
+
+    def test_accepts_sufficient_unsigned_miner_fee(self) -> None:
+        taker = _make_taker(can_estimate_fee=False)
+        session = taker._session
+        session._minimum_fee_rate_sat_vb = 2.0
+        session.selected_utxos = [MagicMock(value=10_000)]
+        session.maker_sessions = {}
+        session.unsigned_tx = _unsigned_fee_policy_tx(9_700)
+
+        assert session._verify_unsigned_minimum_miner_fee() is None
+
+    @pytest.mark.asyncio
+    async def test_rejects_low_unsigned_miner_fee_before_sending_tx(self) -> None:
+        taker = _make_taker(can_estimate_fee=False)
+        session = taker._session
+        session._minimum_fee_rate_sat_vb = 2.0
+        session.selected_utxos = [MagicMock(value=10_000)]
+        session.maker_sessions = {}
+        session.unsigned_tx = _unsigned_fee_policy_tx(9_900)
+        taker.directory_client = MagicMock()
+        taker.directory_client.send_privmsg = AsyncMock()
+
+        assert await session._phase_collect_signatures() is False
+        assert "below required" in (session.last_failure_reason or "")
+        taker.directory_client.send_privmsg.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -198,13 +239,9 @@ class TestResolveFeeRateCap:
         assert taker._session._randomized_fee_rate is None
 
     @pytest.mark.asyncio
-    async def test_static_fallback_above_cap_rejected(self) -> None:
-        from jmwallet.wallet.spend import ExcessiveFeeRateError
-
+    async def test_static_fallback_is_capped(self) -> None:
         taker = _make_taker(can_estimate_fee=False, max_fee_rate_sat_vb=0.5)
-        with pytest.raises(ExcessiveFeeRateError, match="fallback"):
-            await taker._session._resolve_fee_rate()
-        assert taker._session._randomized_fee_rate is None
+        assert await taker._session._resolve_fee_rate() == 0.5
 
     @pytest.mark.asyncio
     async def test_manual_fee_rate_at_cap_passes(self) -> None:

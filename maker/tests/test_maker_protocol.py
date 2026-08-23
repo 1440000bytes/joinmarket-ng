@@ -1243,6 +1243,99 @@ async def test_signing_failure_crosses_lock_retention_boundary():
     assert session.state == CoinJoinState.SIG_SENT
 
 
+def _fee_policy_tx(output_value: int) -> str:
+    from jmcore.bitcoin import TxInput, TxOutput, serialize_transaction
+
+    return serialize_transaction(
+        version=2,
+        inputs=[TxInput.from_hex("aa" * 32, 0), TxInput.from_hex("bb" * 32, 1)],
+        outputs=[TxOutput(value=output_value, script=bytes.fromhex("0014" + "11" * 20))],
+        locktime=0,
+    ).hex()
+
+
+@pytest.mark.asyncio
+async def test_maker_minimum_fee_policy_rejects_low_fee_and_missing_prevout():
+    from unittest.mock import AsyncMock, MagicMock
+
+    from jmwallet.backends.base import UTXO
+
+    from maker.coinjoin import CoinJoinSession
+
+    backend = MagicMock()
+    backend.requires_neutrino_metadata.return_value = False
+    backend.get_utxo = AsyncMock(
+        return_value=UTXO("bb" * 32, 1, 10_000, "bcrt1qforeign", 1, "0014" + "22" * 20)
+    )
+    ours = MagicMock(value=10_000)
+    session = CoinJoinSession(
+        taker_nick="J5FeePolicy",
+        offer=MagicMock(),
+        wallet=MagicMock(),
+        backend=backend,
+        minimum_fee_rate_sat_vb=2.0,
+    )
+    session.our_utxos = {("aa" * 32, 0): ours}
+
+    error = await session._verify_minimum_miner_fee(_fee_policy_tx(19_800), None)
+    assert "below required" in (error or "")
+    assert await session._verify_minimum_miner_fee(_fee_policy_tx(19_000), None) is None
+
+    backend.get_utxo.return_value = None
+    assert "Could not look up all foreign prevouts" in (
+        await session._verify_minimum_miner_fee(_fee_policy_tx(19_000), None)
+    )
+
+
+@pytest.mark.asyncio
+async def test_neutrino_style_maker_warns_and_skips_minimum_fee_policy():
+    from unittest.mock import MagicMock, patch
+
+    from maker.bot import MakerBot
+
+    bot = MakerBot.__new__(MakerBot)
+    bot.backend = MagicMock()
+    bot.backend.can_lookup_arbitrary_utxos.return_value = False
+    bot.config = MagicMock()
+    bot._minimum_fee_policy_warning_emitted = False
+
+    with patch("maker.bot.logger.warning") as warning:
+        await bot._initialize_minimum_fee_policy()
+        await bot._initialize_minimum_fee_policy()
+
+    warning.assert_called_once()
+    assert "Low-fee CoinJoin signing protection is unavailable" in warning.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_full_node_maker_refreshes_minimum_fee_policy_before_new_sessions():
+    from unittest.mock import AsyncMock, MagicMock
+
+    from maker.bot import MakerBot
+
+    bot = MakerBot.__new__(MakerBot)
+    bot.minimum_fee_rate_sat_vb = 1.0
+    bot._minimum_fee_policy_warning_emitted = False
+    bot.config = MagicMock(
+        min_fee_rate_sat_vb=1.0,
+        min_fee_block_target=10,
+        max_fee_rate_sat_vb=1_000.0,
+    )
+    bot.backend = MagicMock()
+    bot.backend.can_lookup_arbitrary_utxos.return_value = True
+    bot.backend.can_estimate_fee.return_value = True
+    bot.backend.get_mempool_min_fee = AsyncMock(return_value=None)
+    bot.backend.estimate_fee = AsyncMock(side_effect=[2.0, 3.0])
+
+    await bot._initialize_minimum_fee_policy(announce=False)
+    first_threshold = bot.minimum_fee_rate_sat_vb
+    await bot._initialize_minimum_fee_policy(announce=False)
+
+    assert first_threshold == 2.0
+    assert bot.minimum_fee_rate_sat_vb == 3.0
+    assert bot.backend.estimate_fee.await_args_list == [((10,), {}), ((10,), {})]
+
+
 @pytest.mark.asyncio
 async def test_valid_input_owner_is_renewed_before_signing(tmp_path):
     from unittest.mock import AsyncMock, MagicMock, patch
@@ -1361,6 +1454,7 @@ async def test_on_tx_failure_after_signing_retains_input_locks():
 
     assert taker_nick not in bot.active_sessions
     inner.wallet.release_coinjoin_inputs.assert_not_called()
+    inner.wallet.renew_coinjoin_inputs.assert_called_once()
 
 
 if __name__ == "__main__":

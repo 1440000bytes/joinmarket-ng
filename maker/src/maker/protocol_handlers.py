@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import inspect
 import json
 import os
 import time
@@ -504,6 +505,11 @@ class ProtocolHandlersMixin:
                 logger.warning(f"Invalid fill request for offer {offer_id}: {error}")
                 return
 
+            refresh_fee_policy = getattr(self, "_initialize_minimum_fee_policy", None)
+            if inspect.iscoroutinefunction(refresh_fee_policy):
+                await refresh_fee_policy(announce=False)
+            minimum_fee_rate = getattr(self, "minimum_fee_rate_sat_vb", None)
+
             session_inner = CoinJoinSession(
                 taker_nick=taker_nick,
                 offer=offer,
@@ -514,6 +520,9 @@ class ProtocolHandlersMixin:
                 input_lock_ttl_sec=self.config.pending_tx_timeout_min * 60,
                 merge_algorithm=self.config.merge_algorithm.value,
                 restrict_md0=not self.config.allow_mixdepth_zero_merge,
+                minimum_fee_rate_sat_vb=(
+                    minimum_fee_rate if isinstance(minimum_fee_rate, (int, float)) else None
+                ),
             )
             session = MakerSession(inner=session_inner)
 

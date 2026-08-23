@@ -568,6 +568,25 @@ class TestBuildTakerConfig:
         assert config.backend_config.get("neutrino_url") == "https://127.0.0.1:8334"
         assert config.backend_config.get("tls_cert_path") == str(tmp_path / "neutrino" / "tls.cert")
 
+    def test_minimum_fee_policy_flows_from_settings(self, sample_mnemonic: str, tmp_path) -> None:
+        from jmcore.settings import JoinMarketSettings
+
+        settings = JoinMarketSettings()
+        settings.taker.min_fee_rate_sat_vb = 2.5
+        settings.taker.min_fee_block_target = 20
+        config = build_taker_config(
+            settings=settings,
+            mnemonic=sample_mnemonic,
+            passphrase="",
+            destination="bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
+            amount=100000,
+            mixdepth=0,
+            data_dir=tmp_path,
+        )
+
+        assert config.min_fee_rate_sat_vb == 2.5
+        assert config.min_fee_block_target == 20
+
     def test_create_backend_neutrino_passes_tls_and_auth(self, sample_mnemonic: str) -> None:
         """create_backend() passes TLS cert and auth token to NeutrinoBackend."""
         from unittest.mock import MagicMock, patch

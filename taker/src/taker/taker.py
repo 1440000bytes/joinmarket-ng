@@ -24,6 +24,7 @@ from jmcore.bond_calc import calculate_timelocked_fidelity_bond_value
 from jmcore.btc_script import derive_bond_address
 from jmcore.commitment_blacklist import set_blacklist_path
 from jmcore.crypto import NickIdentity
+from jmcore.fee_policy import fee_rate_meets_minimum
 from jmcore.logging_context import coinjoin_id_from_commitment, coinjoin_log_context
 from jmcore.models import Offer
 from jmcore.notifications import get_notifier
@@ -235,29 +236,44 @@ class Taker(TakerMonitoringMixin):
         self.running = False
         self._background_tasks: list[asyncio.Task[None]] = []
 
-    def _activate_coinjoin_log_context(self) -> str:
+    def _activate_coinjoin_log_context(self) -> str | None:
         """Replace this task's CoinJoin log context after a commitment rotation."""
-        if self._coinjoin_log_context is not None:
-            self._coinjoin_log_context.__exit__(None, None, None)
+        current_context = getattr(self, "_coinjoin_log_context", None)
+        if current_context is not None:
+            current_context.__exit__(None, None, None)
+        self._coinjoin_log_context = None
         commitment = self._session.podle_commitment
         if commitment is None:
             raise RuntimeError("Cannot activate CoinJoin logging without a PoDLE commitment")
         commitment_hex = commitment.commitment.commitment.hex()
+        if not isinstance(commitment_hex, str):
+            return None
+        try:
+            coinjoin_id = coinjoin_id_from_commitment(commitment_hex)
+        except ValueError:
+            return None
         self._coinjoin_log_context = coinjoin_log_context(commitment_hex)
         self._coinjoin_log_context.__enter__()
-        return coinjoin_id_from_commitment(commitment_hex)
+        return coinjoin_id
 
     def _clear_coinjoin_log_context(self) -> None:
         """Clear the task-local CoinJoin context at the end of a round."""
-        if self._coinjoin_log_context is not None:
-            self._coinjoin_log_context.__exit__(None, None, None)
-            self._coinjoin_log_context = None
+        current_context = getattr(self, "_coinjoin_log_context", None)
+        if current_context is not None:
+            current_context.__exit__(None, None, None)
+        self._coinjoin_log_context = None
 
     def _current_coinjoin_id(self) -> str | None:
         commitment = self._session.podle_commitment
         if commitment is None:
             return None
-        return coinjoin_id_from_commitment(commitment.commitment.commitment.hex())
+        commitment_hex = commitment.commitment.commitment.hex()
+        if not isinstance(commitment_hex, str):
+            return None
+        try:
+            return coinjoin_id_from_commitment(commitment_hex)
+        except ValueError:
+            return None
 
     async def sync_wallet(self) -> int:
         """
@@ -1885,6 +1901,21 @@ class Taker(TakerMonitoringMixin):
         total_cost = total_maker_fees + actual_mining_fee
         actual_vsize = calculate_tx_vsize(self._session.final_tx)
         actual_fee_rate = actual_mining_fee / actual_vsize if actual_vsize > 0 else 0.0
+
+        minimum_fee_rate = self._session._minimum_fee_rate_sat_vb
+        if minimum_fee_rate is None or not fee_rate_meets_minimum(
+            actual_mining_fee, actual_vsize, minimum_fee_rate
+        ):
+            reason = (
+                f"Final CoinJoin miner fee rate {actual_fee_rate:.2f} sat/vB is below required "
+                f"{minimum_fee_rate:.2f} sat/vB"
+                if minimum_fee_rate is not None
+                else "Final CoinJoin miner fee rate could not be verified"
+            )
+            logger.error(reason)
+            self._session.last_failure_reason = reason
+            self.state = TakerState.FAILED
+            return None
 
         logger.info("=" * 70)
         logger.info("FINAL TRANSACTION SUMMARY - Ready to broadcast")

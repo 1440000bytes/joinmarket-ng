@@ -26,6 +26,11 @@ def test_valid_config() -> None:
     assert config.cj_fee_relative == "0.001"
 
 
+def test_minimum_fee_floor_cannot_exceed_maximum_fee_rate() -> None:
+    with pytest.raises(ValidationError, match="min_fee_rate_sat_vb"):
+        MakerConfig(mnemonic=TEST_MNEMONIC, min_fee_rate_sat_vb=2.0, max_fee_rate_sat_vb=1.0)
+
+
 def test_maximum_maker_lock_window_fits_metadata_ttl_cap() -> None:
     from jmwallet.wallet.utxo_metadata import MAX_COINJOIN_LOCK_TTL
 
@@ -918,6 +923,19 @@ class TestNewSettingsWiring:
         settings.maker.min_confirmations = 2
         config = build_maker_config(settings=settings, mnemonic=TEST_MNEMONIC, passphrase="")
         assert config.min_confirmations == 2
+
+    def test_minimum_fee_policy_passed_from_settings(self) -> None:
+        from jmcore.settings import JoinMarketSettings
+
+        from maker.cli import build_maker_config
+
+        settings = JoinMarketSettings()
+        settings.maker.min_fee_rate_sat_vb = 2.5
+        settings.maker.min_fee_block_target = 20
+        config = build_maker_config(settings=settings, mnemonic=TEST_MNEMONIC, passphrase="")
+
+        assert config.min_fee_rate_sat_vb == 2.5
+        assert config.min_fee_block_target == 20
 
     def test_nick_auth_mode_passed_from_settings(self) -> None:
         from jmcore.nick_auth import NickAuthMode

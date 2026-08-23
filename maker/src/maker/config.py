@@ -202,6 +202,25 @@ class MakerConfig(WalletConfig):
     """
 
     # Hidden service configuration for direct peer connections
+    max_fee_rate_sat_vb: float = Field(
+        default=1_000.0,
+        gt=0.0,
+        allow_inf_nan=False,
+        description="Safety cap for the resolved CoinJoin miner fee floor in sat/vB",
+    )
+    min_fee_rate_sat_vb: float = Field(
+        default=1.0,
+        gt=0.0,
+        allow_inf_nan=False,
+        description="Minimum CoinJoin miner fee rate in sat/vB",
+    )
+    min_fee_block_target: int = Field(
+        default=10,
+        ge=1,
+        le=1008,
+        description="Block target for the conservative CoinJoin miner-fee floor",
+    )
+
     # If onion_host is set, maker will serve on a hidden service
     # If tor_control is enabled and onion_host is None, it will be auto-generated
     onion_host: str | None = Field(
@@ -467,6 +486,8 @@ class MakerConfig(WalletConfig):
         # Set bitcoin_network default (handled by parent WalletConfig)
         if self.bitcoin_network is None:
             object.__setattr__(self, "bitcoin_network", self.network)
+        if self.min_fee_rate_sat_vb > self.max_fee_rate_sat_vb:
+            raise ValueError("min_fee_rate_sat_vb must not exceed max_fee_rate_sat_vb")
 
         # Only validate single-offer fields if offer_configs is empty
         # (when offer_configs is set, those fields are ignored)

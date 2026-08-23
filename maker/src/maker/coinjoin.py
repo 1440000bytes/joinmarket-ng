@@ -12,13 +12,16 @@ Manages the maker side of the CoinJoin protocol:
 
 from __future__ import annotations
 
+import asyncio
 import secrets
 import time
 from collections.abc import Callable
 from enum import StrEnum
 from typing import Any
 
+from jmcore.bitcoin import parse_transaction
 from jmcore.encryption import CryptoSession
+from jmcore.fee_policy import estimate_p2wpkh_vsize, fee_rate_meets_minimum
 from jmcore.models import NetworkType, Offer
 from jmcore.podle import parse_podle_revelation, verify_podle, verify_podle_binding
 from jmcore.protocol import (
@@ -72,6 +75,7 @@ class CoinJoinSession:
         input_lock_ttl_sec: float = 3600,
         merge_algorithm: str = "default",
         restrict_md0: bool = True,
+        minimum_fee_rate_sat_vb: float | None = None,
     ):
         self.taker_nick = taker_nick
         self.offer = offer
@@ -83,6 +87,7 @@ class CoinJoinSession:
         self.taker_utxo_amtpercent = taker_utxo_amtpercent
         self.merge_algorithm = merge_algorithm  # UTXO selection strategy
         self.restrict_md0 = restrict_md0  # Mixdepth 0 UTXO merge restriction
+        self.minimum_fee_rate_sat_vb = minimum_fee_rate_sat_vb
 
         self.state = CoinJoinState.IDLE
         self.amount = 0
@@ -566,6 +571,18 @@ class CoinJoinSession:
                 self.state = CoinJoinState.FAILED
                 return False, {"error": f"Transaction verification failed: {error}"}
 
+            if (
+                self.backend.can_lookup_arbitrary_utxos()
+                and self.minimum_fee_rate_sat_vb is not None
+            ):
+                fee_policy_error = await self._verify_minimum_miner_fee(tx_hex, active_check)
+                if fee_policy_error is not None:
+                    logger.warning(
+                        f"Rejecting low-fee CoinJoin from {self.taker_nick}: {fee_policy_error}"
+                    )
+                    self.state = CoinJoinState.FAILED
+                    return False, {"error": fee_policy_error}
+
             logger.debug("Transaction verification PASSED ✓")
             self.state = CoinJoinState.TX_RECEIVED
 
@@ -622,6 +639,51 @@ class CoinJoinSession:
             if self.state != CoinJoinState.SIG_SENT:
                 self.state = CoinJoinState.FAILED
             return False, {"error": str(e)}
+
+    async def _verify_minimum_miner_fee(
+        self, tx_hex: str, active_check: Callable[[], bool] | None
+    ) -> str | None:
+        """Verify complete input values before the irreversible signing boundary."""
+        if self.is_timed_out() or (active_check is not None and not active_check()):
+            return "Session expired during miner-fee verification"
+
+        tx = parse_transaction(tx_hex)
+        foreign_inputs = [
+            (tx_input.txid, tx_input.vout)
+            for tx_input in tx.inputs
+            if (tx_input.txid, tx_input.vout) not in self.our_utxos
+        ]
+        # The wire transaction has no prevout values, so light clients cannot
+        # independently verify a taker-reported fee for foreign inputs.
+        try:
+            foreign_utxos = await asyncio.gather(
+                *(self.backend.get_utxo(txid, vout) for txid, vout in foreign_inputs)
+            )
+        except Exception as exc:
+            return f"Could not look up foreign prevouts for miner-fee verification: {exc}"
+        if self.is_timed_out() or (active_check is not None and not active_check()):
+            return "Session expired during miner-fee verification"
+        if any(utxo is None for utxo in foreign_utxos):
+            return "Could not look up all foreign prevouts for miner-fee verification"
+
+        total_input = sum(utxo.value for utxo in self.our_utxos.values()) + sum(
+            utxo.value for utxo in foreign_utxos if utxo is not None
+        )
+        total_output = sum(output.value for output in tx.outputs)
+        fee = total_input - total_output
+        vsize = estimate_p2wpkh_vsize(len(tx.inputs), len(tx.outputs))
+        if fee < 0:
+            return "CoinJoin has a negative miner fee"
+        minimum_fee_rate = self.minimum_fee_rate_sat_vb
+        if minimum_fee_rate is None:
+            return "Minimum CoinJoin miner fee rate was not resolved"
+        if not fee_rate_meets_minimum(fee, vsize, minimum_fee_rate):
+            actual_rate = fee / vsize
+            return (
+                f"CoinJoin miner fee rate {actual_rate:.2f} sat/vB is below required "
+                f"{minimum_fee_rate:.2f} sat/vB"
+            )
+        return None
 
     async def _select_our_utxos(
         self,

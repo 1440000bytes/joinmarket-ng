@@ -603,6 +603,22 @@ class TestTakerBroadcast:
         taker.wallet.renew_coinjoin_inputs.assert_called()
 
     @pytest.mark.asyncio
+    async def test_final_signed_vsize_fee_floor_rejects_before_confirmation_or_broadcast(
+        self, taker
+    ) -> None:
+        taker._session._minimum_fee_rate_sat_vb = 1.0
+        taker._session.selected_utxos = []
+        taker._session.maker_sessions = {}
+        taker.confirmation_callback = MagicMock(return_value=True)
+
+        result = await taker._finalize_and_broadcast("bcrt1qdestination")
+
+        assert result is None
+        assert taker.state.value == "failed"
+        taker.confirmation_callback.assert_not_called()
+        taker.backend.broadcast_transaction.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_phase_broadcast_sends_to_all_makers_without_mempool_access(self, taker) -> None:
         """Without mempool access all non-SELF policies broadcast to ALL makers.
 

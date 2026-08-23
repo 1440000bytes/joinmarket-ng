@@ -18,6 +18,7 @@ from jmcore.commitment_blacklist import set_blacklist_path
 from jmcore.crypto import NickIdentity
 from jmcore.deduplication import MessageDeduplicator
 from jmcore.directory_client import DirectoryClient
+from jmcore.fee_policy import resolve_min_fee_rate
 from jmcore.models import Offer
 from jmcore.network import HiddenServiceListener, TCPConnection
 from jmcore.notifications import get_notifier
@@ -93,6 +94,8 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
         self.wallet = wallet
         self.backend = backend
         self.config = config
+        self.minimum_fee_rate_sat_vb = config.min_fee_rate_sat_vb
+        self._minimum_fee_policy_warning_emitted = False
 
         # Create nick identity for signing messages
         self.nick_identity = NickIdentity(JM_VERSION)
@@ -391,6 +394,28 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
         """
         pass
 
+    async def _initialize_minimum_fee_policy(self, *, announce: bool = True) -> None:
+        """Resolve the fee floor once, or disclose that this backend cannot enforce it."""
+        if not self.backend.can_lookup_arbitrary_utxos():
+            if announce and not getattr(self, "_minimum_fee_policy_warning_emitted", False):
+                logger.warning(
+                    "Low-fee CoinJoin signing protection is unavailable because this backend "
+                    "cannot look up arbitrary prevouts"
+                )
+                self._minimum_fee_policy_warning_emitted = True
+            return
+        self.minimum_fee_rate_sat_vb = await resolve_min_fee_rate(
+            self.backend,
+            static_floor=self.config.min_fee_rate_sat_vb,
+            block_target=self.config.min_fee_block_target,
+            max_fee_rate=self.config.max_fee_rate_sat_vb,
+        )
+        if announce:
+            logger.info(
+                "Resolved minimum CoinJoin miner fee rate: "
+                f"{self.minimum_fee_rate_sat_vb:.2f} sat/vB"
+            )
+
     async def start(self) -> None:
         """
         Start the maker bot.
@@ -405,6 +430,8 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
         """
         try:
             logger.info(f"Starting maker bot (nick: {self.nick})")
+
+            await self._initialize_minimum_fee_policy()
 
             # Pending history survives restarts. Treat transactions inherited
             # from a prior process as already notified so startup monitoring

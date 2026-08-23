@@ -1469,6 +1469,10 @@ class NeutrinoBackend(BlockchainBackend):
         """
         return bool(self._fee_estimate_urls)
 
+    def can_lookup_arbitrary_utxos(self) -> bool:
+        """Neutrino cannot query a foreign prevout without its address."""
+        return False
+
     def has_mempool_access(self) -> bool:
         """Whether this backend can observe unconfirmed transactions.
 
