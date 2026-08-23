@@ -44,6 +44,24 @@ class Transaction:
 
 
 @dataclass
+class MempoolSpenderLookupResult:
+    """Bitcoin Core's current spender status for one outpoint."""
+
+    spending_txid: str | None = None
+    blockhash: str | None = None
+
+
+@dataclass
+class MempoolAcceptResult:
+    """Relevant policy result fields returned by ``testmempoolaccept``."""
+
+    allowed: bool | None = None
+    reject_reason: str | None = None
+    reject_details: str | None = None
+    package_error: str | None = None
+
+
+@dataclass
 class WalletTxEntry:
     """A wallet transaction observed by incremental enumeration.
 
@@ -232,6 +250,30 @@ class BlockchainBackend(ABC):
     @abstractmethod
     async def get_transaction(self, txid: str) -> Transaction | None:
         """Get transaction by txid"""
+
+    async def get_wallet_transaction(self, txid: str) -> Transaction | None:
+        """Get a transaction accessible through the backend's wallet.
+
+        The default deliberately does not fall back to arbitrary node lookups:
+        conflict-input reconstruction must establish wallet access to its parent.
+        """
+        raise NotImplementedError("Wallet transaction lookup is not supported by this backend")
+
+    async def get_mempool_spender(self, txid: str, vout: int) -> MempoolSpenderLookupResult:
+        """Return the current mempool spender for an outpoint.
+
+        Conflict spending must never infer a spender from an unavailable or
+        unsupported backend, so backends without an authoritative implementation
+        raise rather than returning an ambiguous empty result.
+        """
+        raise NotImplementedError("Mempool spender lookup is not supported by this backend")
+
+    async def test_mempool_accept(self, tx_hex: str) -> MempoolAcceptResult:
+        """Return local node policy diagnostics for a signed transaction.
+
+        Backends without Bitcoin Core's ``testmempoolaccept`` RPC fail closed.
+        """
+        raise NotImplementedError("testmempoolaccept is not supported by this backend")
 
     @abstractmethod
     async def estimate_fee(self, target_blocks: int) -> float:

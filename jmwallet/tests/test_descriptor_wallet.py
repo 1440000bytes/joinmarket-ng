@@ -24,7 +24,9 @@ from _jmwallet_test_helpers import (
     TEST_RPC_USER,
     make_mock_rpc,
 )
+from jmcore.bitcoin import get_txid
 
+from jmwallet.backends.base import MempoolAcceptResult, MempoolSpenderLookupResult
 from jmwallet.backends.descriptor_wallet import (
     DescriptorWalletBackend,
     generate_wallet_name,
@@ -73,6 +75,67 @@ class TestDescriptorWalletBackendUnit:
 
         with pytest.raises(ValueError, match="getblockchaininfo 'blocks'"):
             await backend.get_block_height()
+
+    @pytest.mark.asyncio
+    async def test_get_mempool_spender_uses_core_request_shape(self) -> None:
+        backend = DescriptorWalletBackend()
+        txid = "ab" * 32
+        backend._rpc_call = AsyncMock(
+            return_value=[{"txid": txid, "vout": 3, "spendingtxid": "cd" * 32}]
+        )
+
+        result = await backend.get_mempool_spender(txid, 3)
+
+        assert result == MempoolSpenderLookupResult(spending_txid="cd" * 32)
+        backend._rpc_call.assert_awaited_once_with(
+            "gettxspendingprevout", [[{"txid": txid, "vout": 3}]], use_wallet=False
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_mempool_spender_rejects_malformed_response(self) -> None:
+        backend = DescriptorWalletBackend()
+        backend._rpc_call = AsyncMock(return_value=[])
+
+        with pytest.raises(ValueError, match="Malformed gettxspendingprevout"):
+            await backend.get_mempool_spender("ab" * 32, 0)
+
+    @pytest.mark.asyncio
+    async def test_test_mempool_accept_parses_policy_diagnostics(self) -> None:
+        backend = DescriptorWalletBackend()
+        tx_hex = "02000000000000000000"
+        txid = get_txid(tx_hex)
+        backend._rpc_call = AsyncMock(
+            return_value=[
+                {
+                    "txid": txid,
+                    "allowed": False,
+                    "reject-reason": "txn-mempool-conflict",
+                    "reject-details": "replacement adds unconfirmed inputs",
+                    "package-error": "package policy failed",
+                }
+            ]
+        )
+
+        result = await backend.test_mempool_accept(tx_hex)
+
+        assert result == MempoolAcceptResult(
+            allowed=False,
+            reject_reason="txn-mempool-conflict",
+            reject_details="replacement adds unconfirmed inputs",
+            package_error="package policy failed",
+        )
+        backend._rpc_call.assert_awaited_once_with(
+            "testmempoolaccept", [[tx_hex], 0], use_wallet=False
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("response", [None, [], [{"allowed": "yes"}], [{"allowed": True}]])
+    async def test_test_mempool_accept_rejects_incomplete_response(self, response: object) -> None:
+        backend = DescriptorWalletBackend()
+        backend._rpc_call = AsyncMock(return_value=response)
+
+        with pytest.raises(ValueError, match="Malformed testmempoolaccept"):
+            await backend.test_mempool_accept("02000000000000000000")
 
     @pytest.mark.asyncio
     async def test_create_wallet_already_loaded(self):

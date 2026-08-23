@@ -743,6 +743,7 @@ def _mock_send_execution(tmp_path: Path) -> Iterator[tuple[ResolvedBackendSettin
     mocks.backend = MagicMock(spec=DescriptorWalletBackend)
     mocks.backend.get_mempool_min_fee = AsyncMock(return_value=None)
     mocks.backend.broadcast_transaction = AsyncMock(return_value="backend_txid")
+    mocks.backend.test_mempool_accept = AsyncMock()
     mocks.wallet = MagicMock()
     mocks.wallet.wallet_fingerprint = "wallet_fingerprint"
     mocks.wallet.sync_with_registered_bonds = AsyncMock(return_value={})
@@ -3058,6 +3059,162 @@ def test_send_rejects_select_utxos_and_input_utxo_together():
 
     assert result.exit_code == 1
     mock_resolve.assert_not_called()
+
+
+def test_send_rejects_allow_conflicts_without_named_inputs() -> None:
+    with patch("jmwallet.cli.send.resolve_mnemonic") as mock_resolve:
+        result = runner.invoke(
+            app,
+            [
+                "send",
+                "bcrt1qtestdestination000000000000000000000000000",
+                "--allow-conflicts",
+            ],
+        )
+
+    assert result.exit_code == 1
+    assert "requires at least one --input-utxo" in result.stderr
+    mock_resolve.assert_not_called()
+
+
+def test_send_rejects_allow_conflicts_with_neutrino() -> None:
+    settings = MagicMock()
+    settings.wallet.max_fee_rate_sat_vb = 1_000.0
+    resolved_mnemonic = MagicMock(
+        mnemonic="abandon " * 11 + "about",
+        bip39_passphrase="",
+        creation_height=None,
+    )
+    backend_settings = MagicMock(backend_type="neutrino")
+
+    with (
+        patch("jmwallet.cli.send.setup_cli", return_value=settings),
+        patch("jmwallet.cli.send.resolve_mnemonic", return_value=resolved_mnemonic),
+        patch("jmwallet.cli.send.resolve_backend_settings", return_value=backend_settings),
+        patch("jmwallet.cli.send._send_transaction") as send_transaction,
+    ):
+        result = runner.invoke(
+            app,
+            [
+                "send",
+                "bcrt1qtestdestination000000000000000000000000000",
+                "--allow-conflicts",
+                "--input-utxo",
+                f"{'aa' * 32}:0",
+            ],
+        )
+
+    assert result.exit_code == 1
+    send_transaction.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("policy_result", "expected_reason"),
+    [
+        (
+            MagicMock(
+                allowed=False,
+                reject_reason="txn-mempool-conflict",
+                reject_details="replacement adds unconfirmed inputs",
+                package_error=None,
+            ),
+            "replacement adds unconfirmed inputs",
+        ),
+        (
+            MagicMock(allowed=None, reject_reason=None, reject_details=None, package_error=None),
+            "Bitcoin Core testmempoolaccept did not explicitly allow the transaction",
+        ),
+        (
+            NotImplementedError("not supported"),
+            "Bitcoin Core testmempoolaccept unavailable or malformed: not supported",
+        ),
+        (
+            ValueError("Malformed testmempoolaccept response"),
+            "Bitcoin Core testmempoolaccept unavailable or malformed: "
+            "Malformed testmempoolaccept response",
+        ),
+    ],
+)
+async def test_send_conflict_preflight_rejection_finalizes_without_broadcast(
+    tmp_path: Path,
+    policy_result: object,
+    expected_reason: str,
+) -> None:
+    with _mock_send_execution(tmp_path) as (backend_settings, mocks):
+        utxo = mocks.wallet.get_utxos.return_value[0]
+        if isinstance(policy_result, Exception):
+            mocks.backend.test_mempool_accept.side_effect = policy_result
+        else:
+            mocks.backend.test_mempool_accept.return_value = policy_result
+        with patch(
+            "jmwallet.wallet.spend.resolve_input_utxos",
+            AsyncMock(return_value=([utxo], None)),
+        ) as resolver:
+            from jmwallet.cli.send import _send_transaction
+
+            with pytest.raises(typer.Exit):
+                await _send_transaction(
+                    mnemonic="abandon " * 11 + "about",
+                    destination="bcrt1qq6hag67dl53wl99vzg42z8eyzfz2xlkvwk6f7m",
+                    amount=0,
+                    mixdepth=0,
+                    fee_rate=1.0,
+                    block_target=None,
+                    backend_settings=backend_settings,
+                    broadcast=True,
+                    skip_confirmation=True,
+                    interactive_utxo_selection=False,
+                    input_utxos=[utxo.outpoint],
+                    allow_conflicts=True,
+                )
+
+    resolver.assert_awaited_once()
+    mocks.backend.test_mempool_accept.assert_awaited_once()
+    mocks.backend.broadcast_transaction.assert_not_awaited()
+    mocks.finalize_history.assert_called_once_with(
+        mocks.send_entry,
+        txid="",
+        success=False,
+        failure_reason=expected_reason,
+        data_dir=tmp_path,
+        history_persisted=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_conflict_preflight_allowed_continues_no_broadcast(tmp_path: Path) -> None:
+    with _mock_send_execution(tmp_path) as (backend_settings, mocks):
+        utxo = mocks.wallet.get_utxos.return_value[0]
+        mocks.backend.test_mempool_accept.return_value = MagicMock(
+            allowed=True,
+            reject_reason=None,
+            reject_details=None,
+            package_error=None,
+        )
+        with patch(
+            "jmwallet.wallet.spend.resolve_input_utxos",
+            AsyncMock(return_value=([utxo], None)),
+        ):
+            from jmwallet.cli.send import _send_transaction
+
+            await _send_transaction(
+                mnemonic="abandon " * 11 + "about",
+                destination="bcrt1qq6hag67dl53wl99vzg42z8eyzfz2xlkvwk6f7m",
+                amount=0,
+                mixdepth=0,
+                fee_rate=1.0,
+                block_target=None,
+                backend_settings=backend_settings,
+                broadcast=False,
+                skip_confirmation=True,
+                interactive_utxo_selection=False,
+                input_utxos=[utxo.outpoint],
+                allow_conflicts=True,
+            )
+
+    mocks.backend.test_mempool_accept.assert_awaited_once()
+    mocks.backend.broadcast_transaction.assert_not_awaited()
 
 
 @pytest.mark.asyncio

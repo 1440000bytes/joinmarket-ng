@@ -8,10 +8,11 @@ from hashlib import sha256
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from jmcore.bitcoin import get_txid
+from jmcore.bitcoin import TxOutput, get_txid, scriptpubkey_to_address, serialize_transaction
 from jmcore.btc_script import mk_freeze_script
 
-from jmwallet.backends.base import BlockchainBackend
+from jmwallet.backends.base import BlockchainBackend, MempoolSpenderLookupResult, Transaction
+from jmwallet.wallet.address import pubkey_to_p2wpkh_script
 from jmwallet.wallet.models import UTXOInfo
 from jmwallet.wallet.spend import (
     DUST_THRESHOLD,
@@ -25,6 +26,7 @@ from jmwallet.wallet.spend import (
     estimate_fee,
     parse_outpoint,
     prepare_direct_send,
+    resolve_input_utxos,
     select_spendable_utxos,
 )
 
@@ -1081,6 +1083,168 @@ class TestPrepareDirectSendExplicitInputs:
         assert result.selected_utxos == [("aa" * 32, 0)]
         assert result.change_amount == 0
         assert result.send_amount == 200_000 - result.fee
+
+
+class TestResolveConflictedInputs:
+    """Conflict reconstruction admits only a proven, signable wallet prevout."""
+
+    def _wallet_and_parent(self) -> tuple[MagicMock, MagicMock, str, str]:
+        key = _make_mock_key()
+        script = pubkey_to_p2wpkh_script(key.get_public_key_bytes(compressed=True).hex())
+        address = scriptpubkey_to_address(script, "regtest")
+        wallet = MagicMock()
+        wallet.network = "regtest"
+        wallet.root_path = "m/84'/1'"
+        wallet.address_cache = {address: (0, 0, 7)}
+        wallet.get_utxos = AsyncMock(return_value=[])
+        wallet.is_utxo_frozen.return_value = False
+        wallet.get_key_for_address.return_value = key
+        backend = MagicMock()
+        backend.get_mempool_spender = AsyncMock(
+            return_value=MempoolSpenderLookupResult(spending_txid="cc" * 32)
+        )
+        backend.get_wallet_transaction = AsyncMock(
+            return_value=Transaction(txid="aa" * 32, raw="00", confirmations=3)
+        )
+        return wallet, backend, script.hex(), address
+
+    @pytest.mark.anyio
+    async def test_reconstructs_confirmed_wallet_p2wpkh_with_live_spender(self) -> None:
+        wallet, backend, script, address = self._wallet_and_parent()
+        parsed = MagicMock(outputs=[MagicMock(value=123_456, script=bytes.fromhex(script))])
+
+        with (
+            patch("jmwallet.wallet.spend.get_txid", return_value="aa" * 32),
+            patch("jmwallet.wallet.spend.deserialize_transaction", return_value=parsed),
+        ):
+            utxos, _ = await resolve_input_utxos(
+                wallet=wallet,
+                backend=backend,
+                mixdepth=0,
+                input_utxos=[f"{'aa' * 32}:0"],
+                allow_conflicts=True,
+            )
+
+        assert len(utxos) == 1
+        assert utxos[0].value == 123_456
+        assert utxos[0].address == address
+        assert utxos[0].path == "m/84'/1'/0'/0/7"
+        assert utxos[0].scriptpubkey == script
+        backend.get_mempool_spender.assert_awaited_once_with("aa" * 32, 0)
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        "spender, message",
+        [
+            (MempoolSpenderLookupResult(), "has no current mempool spender"),
+            (
+                MempoolSpenderLookupResult(spending_txid="cc" * 32, blockhash="dd" * 32),
+                "was spent in confirmed block",
+            ),
+        ],
+    )
+    async def test_rejects_non_live_conflict(
+        self, spender: MempoolSpenderLookupResult, message: str
+    ) -> None:
+        wallet, backend, _script, _address = self._wallet_and_parent()
+        backend.get_mempool_spender.return_value = spender
+
+        with pytest.raises(ValueError, match=message):
+            await resolve_input_utxos(
+                wallet=wallet,
+                backend=backend,
+                mixdepth=0,
+                input_utxos=[f"{'aa' * 32}:0"],
+                allow_conflicts=True,
+            )
+        backend.get_wallet_transaction.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_rejects_unsupported_conflict_lookup(self) -> None:
+        wallet, backend, _script, _address = self._wallet_and_parent()
+        backend.get_mempool_spender.side_effect = NotImplementedError()
+
+        with pytest.raises(ValueError, match="does not support authoritative"):
+            await resolve_input_utxos(
+                wallet=wallet,
+                backend=backend,
+                mixdepth=0,
+                input_utxos=[f"{'aa' * 32}:0"],
+                allow_conflicts=True,
+            )
+
+    @pytest.mark.anyio
+    async def test_rejects_unconfirmed_parent_and_wrong_script_key(self) -> None:
+        wallet, backend, script, _address = self._wallet_and_parent()
+        backend.get_wallet_transaction.return_value = Transaction(
+            txid="aa" * 32, raw="00", confirmations=0
+        )
+
+        with pytest.raises(ValueError, match="parent transaction is not confirmed"):
+            await resolve_input_utxos(
+                wallet=wallet,
+                backend=backend,
+                mixdepth=0,
+                input_utxos=[f"{'aa' * 32}:0"],
+                allow_conflicts=True,
+            )
+
+        backend.get_wallet_transaction.return_value = Transaction(
+            txid="aa" * 32, raw="00", confirmations=1
+        )
+        parsed = MagicMock(outputs=[MagicMock(value=1, script=bytes.fromhex(script))])
+        wallet.get_key_for_address.return_value = _make_mock_key("02" + "cd" * 32)
+        with (
+            patch("jmwallet.wallet.spend.get_txid", return_value="aa" * 32),
+            patch("jmwallet.wallet.spend.deserialize_transaction", return_value=parsed),
+        ):
+            with pytest.raises(ValueError, match="does not match this wallet's signing key"):
+                await resolve_input_utxos(
+                    wallet=wallet,
+                    backend=backend,
+                    mixdepth=0,
+                    input_utxos=[f"{'aa' * 32}:0"],
+                    allow_conflicts=True,
+                )
+
+    @pytest.mark.anyio
+    async def test_rejects_parent_bytes_for_a_different_txid(self) -> None:
+        wallet, backend, script, _address = self._wallet_and_parent()
+        other_parent = serialize_transaction(
+            version=2,
+            inputs=[],
+            outputs=[TxOutput(value=123_456, script=bytes.fromhex(script))],
+            locktime=0,
+        ).hex()
+        backend.get_wallet_transaction.return_value = Transaction(
+            txid="aa" * 32,
+            raw=other_parent,
+            confirmations=1,
+        )
+
+        with pytest.raises(ValueError, match="parent transaction is invalid"):
+            await resolve_input_utxos(
+                wallet=wallet,
+                backend=backend,
+                mixdepth=0,
+                input_utxos=[f"{'aa' * 32}:0"],
+                allow_conflicts=True,
+            )
+
+    @pytest.mark.anyio
+    async def test_requires_at_least_one_reconstructed_conflict(self) -> None:
+        regular = _make_utxo(value=200_000)
+        wallet = _make_mock_wallet([regular])
+        backend = _make_mock_backend()
+
+        with pytest.raises(ValueError, match="requires at least one named input"):
+            await resolve_input_utxos(
+                wallet=wallet,
+                backend=backend,
+                mixdepth=0,
+                input_utxos=[regular.outpoint],
+                allow_conflicts=True,
+            )
 
     @pytest.mark.anyio
     async def test_empty_list_is_an_error(self) -> None:

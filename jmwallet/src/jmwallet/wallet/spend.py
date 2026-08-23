@@ -12,12 +12,14 @@ from dataclasses import dataclass, field
 from hashlib import sha256
 from typing import TYPE_CHECKING
 
-from jmcore.bitcoin import estimate_vsize, get_address_type, get_txid
+from jmcore.bitcoin import estimate_vsize, get_address_type, get_txid, scriptpubkey_to_address
 from jmcore.btc_script import mk_freeze_script
 from jmcore.randomness import secure_random
 from loguru import logger
 
 from jmwallet.wallet.address import pubkey_to_p2wpkh_script
+from jmwallet.wallet.constants import FIDELITY_BOND_BRANCH
+from jmwallet.wallet.models import UTXOInfo
 from jmwallet.wallet.signing import (
     deserialize_transaction,
     encode_varint,
@@ -25,7 +27,6 @@ from jmwallet.wallet.signing import (
 
 if TYPE_CHECKING:
     from jmwallet.backends.base import BlockchainBackend
-    from jmwallet.wallet.models import UTXOInfo
     from jmwallet.wallet.service import WalletService
 
 
@@ -250,15 +251,18 @@ async def resolve_input_utxos(
     mixdepth: int,
     input_utxos: list[str],
     allow_fidelity_bonds: bool = True,
+    allow_conflicts: bool = False,
 ) -> tuple[list[UTXOInfo], int | None]:
     """Resolve explicit ``txid:vout`` strings into spendable :class:`UTXOInfo`.
 
     Every listed outpoint must exist in *mixdepth*, be unfrozen, and be
-    signable by this wallet. When ``allow_fidelity_bonds`` is true, fidelity
-    bonds are admitted only when their timelock has already expired against
-    chain median-time-past, since the caller selected them deliberately. There
-    is no fallback to automatic selection: anything unusable raises
-    :class:`ValueError` naming the reason.
+    signable by this wallet. When ``allow_conflicts`` is true, an absent named
+    outpoint may instead be reconstructed only when the backend proves that a
+    current mempool transaction spends it. When ``allow_fidelity_bonds`` is
+    true, fidelity bonds are admitted only when their timelock has already
+    expired against chain median-time-past, since the caller selected them
+    deliberately. There is no fallback to automatic selection: anything
+    unusable raises :class:`ValueError` naming the reason.
 
     Returns ``(utxos, locktime_cutoff)`` with the UTXOs in the order given.
     ``locktime_cutoff`` is the median-time-past that was fetched to validate
@@ -281,18 +285,22 @@ async def resolve_input_utxos(
     available = {(u.txid, u.vout): u for u in await wallet.get_utxos(mixdepth)}
 
     utxos: list[UTXOInfo] = []
+    reconstructed_conflicts = 0
     for txid, vout in outpoints:
         utxo = available.get((txid, vout))
         if utxo is None:
-            owner = _find_owning_mixdepth(wallet, txid, vout)
-            if owner is not None:
-                msg = (
-                    f"Input UTXO {txid}:{vout} is in mixdepth {owner}, "
-                    f"not the requested mixdepth {mixdepth}"
-                )
-            else:
-                msg = f"Input UTXO {txid}:{vout} not found in mixdepth {mixdepth}"
-            raise ValueError(msg)
+            if not allow_conflicts:
+                owner = _find_owning_mixdepth(wallet, txid, vout)
+                if owner is not None:
+                    msg = (
+                        f"Input UTXO {txid}:{vout} is in mixdepth {owner}, "
+                        f"not the requested mixdepth {mixdepth}"
+                    )
+                else:
+                    msg = f"Input UTXO {txid}:{vout} not found in mixdepth {mixdepth}"
+                raise ValueError(msg)
+            utxo = await _reconstruct_conflicted_input(wallet, backend, mixdepth, txid, vout)
+            reconstructed_conflicts += 1
         if utxo.frozen:
             msg = f"Input UTXO {txid}:{vout} is frozen; unfreeze it before spending"
             raise ValueError(msg)
@@ -300,6 +308,13 @@ async def resolve_input_utxos(
             msg = f"Input UTXO {txid}:{vout} is a fidelity bond; CoinJoin inputs cannot be bonds"
             raise ValueError(msg)
         utxos.append(utxo)
+
+    if allow_conflicts and reconstructed_conflicts == 0:
+        msg = (
+            "--allow-conflicts requires at least one named input currently spent by a "
+            "mempool transaction"
+        )
+        raise ValueError(msg)
 
     # Fidelity bonds need chain time to check expiry, so only pay for the
     # median-time-past round trip when one was actually selected.
@@ -322,6 +337,124 @@ async def resolve_input_utxos(
                 raise ValueError(msg)
 
     return utxos, locktime_cutoff
+
+
+async def _reconstruct_conflicted_input(
+    wallet: WalletService,
+    backend: BlockchainBackend,
+    mixdepth: int,
+    txid: str,
+    vout: int,
+) -> UTXOInfo:
+    """Recreate a wallet input proven spent by a current mempool transaction."""
+    try:
+        spender = await backend.get_mempool_spender(txid, vout)
+    except NotImplementedError as exc:
+        raise ValueError("Backend does not support authoritative mempool conflict lookup") from exc
+    except Exception as exc:
+        raise ValueError(
+            f"Could not verify mempool conflict for input UTXO {txid}:{vout}: {exc}"
+        ) from exc
+    if spender.blockhash is not None:
+        msg = f"Input UTXO {txid}:{vout} was spent in confirmed block {spender.blockhash}"
+        raise ValueError(msg)
+    if not spender.spending_txid:
+        msg = f"Input UTXO {txid}:{vout} has no current mempool spender"
+        raise ValueError(msg)
+    logger.warning(
+        f"Input UTXO {txid}:{vout} is currently spent by mempool transaction "
+        f"{spender.spending_txid}; preparing an explicit conflict replacement"
+    )
+
+    try:
+        parent = await backend.get_wallet_transaction(txid)
+    except NotImplementedError as exc:
+        raise ValueError(
+            "Backend does not support wallet transaction lookup for conflict inputs"
+        ) from exc
+    if parent is None or parent.confirmations <= 0 or not parent.raw:
+        msg = f"Input UTXO {txid}:{vout} parent transaction is not confirmed and wallet-accessible"
+        raise ValueError(msg)
+    try:
+        parent_bytes = bytes.fromhex(parent.raw)
+        if get_txid(parent_bytes) != txid:
+            raise ValueError("parent txid mismatch")
+        parent_tx = deserialize_transaction(parent_bytes)
+    except Exception as exc:
+        raise ValueError(f"Input UTXO {txid}:{vout} parent transaction is invalid") from exc
+    if vout >= len(parent_tx.outputs):
+        msg = f"Input UTXO {txid}:{vout} parent output index is invalid"
+        raise ValueError(msg)
+
+    output = parent_tx.outputs[vout]
+    scriptpubkey = output.script.hex()
+    try:
+        address = scriptpubkey_to_address(output.script, wallet.network)
+    except ValueError as exc:
+        raise ValueError(f"Input UTXO {txid}:{vout} has an unknown wallet script") from exc
+
+    path_info = wallet.address_cache.get(address) or wallet.address_cache.get(address.lower())
+    if path_info is None:
+        path_info = wallet._find_address_path(address)
+    if path_info is None:
+        msg = f"Input UTXO {txid}:{vout} script is not owned by this wallet"
+        raise ValueError(msg)
+    owner_mixdepth, branch, index = path_info
+    if owner_mixdepth != mixdepth:
+        msg = (
+            f"Input UTXO {txid}:{vout} is in mixdepth {owner_mixdepth}, "
+            f"not the requested mixdepth {mixdepth}"
+        )
+        raise ValueError(msg)
+    outpoint = f"{txid}:{vout}"
+    if wallet.is_utxo_frozen(outpoint):
+        msg = f"Input UTXO {outpoint} is frozen; unfreeze it before spending"
+        raise ValueError(msg)
+
+    locktime: int | None = None
+    if branch == FIDELITY_BOND_BRANCH:
+        locktime = wallet.get_locktime_for_address(address)
+        if locktime is None:
+            msg = f"Input UTXO {outpoint} fidelity bond metadata is unavailable"
+            raise ValueError(msg)
+        path = f"{wallet.root_path}/0'/{FIDELITY_BOND_BRANCH}/{index}:{locktime}"
+    elif branch in (0, 1):
+        path = f"{wallet.root_path}/{owner_mixdepth}'/{branch}/{index}"
+    else:
+        msg = f"Input UTXO {outpoint} has an unsupported wallet derivation branch"
+        raise ValueError(msg)
+
+    reconstructed = UTXOInfo(
+        txid=txid,
+        vout=vout,
+        value=output.value,
+        address=address,
+        confirmations=parent.confirmations,
+        scriptpubkey=scriptpubkey,
+        path=path,
+        mixdepth=owner_mixdepth,
+        locktime=locktime,
+        frozen=False,
+    )
+    if reconstructed.is_fidelity_bond:
+        if not _is_signable_fidelity_bond(wallet, reconstructed):
+            msg = f"Input UTXO {outpoint} is a fidelity bond this wallet cannot sign"
+            raise ValueError(msg)
+    elif not reconstructed.is_p2wpkh:
+        msg = f"Input UTXO {outpoint} must be a wallet P2WPKH output"
+        raise ValueError(msg)
+    else:
+        key = wallet.get_key_for_address(address)
+        if key is None:
+            msg = f"Input UTXO {outpoint} has no signing key"
+            raise ValueError(msg)
+        expected_script = pubkey_to_p2wpkh_script(
+            key.get_public_key_bytes(compressed=True).hex()
+        ).hex()
+        if scriptpubkey.lower() != expected_script:
+            msg = f"Input UTXO {outpoint} script does not match this wallet's signing key"
+            raise ValueError(msg)
+    return reconstructed
 
 
 def _is_signable_fidelity_bond(wallet: WalletService, utxo: UTXOInfo) -> bool:

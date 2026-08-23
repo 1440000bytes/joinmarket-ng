@@ -27,10 +27,17 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 import httpx
-from jmcore.bitcoin import btc_to_sats
+from jmcore.bitcoin import btc_to_sats, get_txid
 from loguru import logger
 
-from jmwallet.backends.base import UTXO, BlockchainBackend, Transaction, WalletTxEntry
+from jmwallet.backends.base import (
+    UTXO,
+    BlockchainBackend,
+    MempoolAcceptResult,
+    MempoolSpenderLookupResult,
+    Transaction,
+    WalletTxEntry,
+)
 
 # Timeout policy for regular RPC calls.
 #
@@ -1935,6 +1942,84 @@ class DescriptorWalletBackend(BlockchainBackend):
         except Exception as e:
             logger.debug(f"Failed to get transaction {txid}: {e}")
             return None
+
+    async def get_wallet_transaction(self, txid: str) -> Transaction | None:
+        """Return a transaction only when Bitcoin Core's wallet can access it."""
+        try:
+            tx_data = await self._rpc_call("gettransaction", [txid, True])
+            return Transaction(
+                txid=txid,
+                raw=tx_data.get("hex", ""),
+                confirmations=tx_data.get("confirmations", 0),
+                block_height=tx_data.get("blockheight"),
+                block_time=tx_data.get("blocktime"),
+            )
+        except Exception as exc:
+            logger.debug(f"Failed to get wallet transaction {txid}: {exc}")
+            return None
+
+    async def get_mempool_spender(self, txid: str, vout: int) -> MempoolSpenderLookupResult:
+        """Look up an outpoint's current Core mempool spender.
+
+        ``gettxspendingprevout`` can also report an already-confirmed spender
+        on newer Core releases. A ``blockhash`` marks that response as confirmed
+        and callers must not treat it as a replaceable mempool conflict.
+        """
+        result = await self._rpc_call(
+            "gettxspendingprevout",
+            [[{"txid": txid, "vout": vout}]],
+            use_wallet=False,
+        )
+        if not isinstance(result, list) or len(result) != 1 or not isinstance(result[0], dict):
+            raise ValueError("Malformed gettxspendingprevout response")
+        item = result[0]
+        returned_txid = item.get("txid")
+        returned_vout = item.get("vout")
+        if returned_txid != txid or returned_vout != vout:
+            raise ValueError("gettxspendingprevout response did not match requested outpoint")
+        spending_txid = item.get("spendingtxid")
+        blockhash = item.get("blockhash")
+        if spending_txid is not None and (
+            not isinstance(spending_txid, str)
+            or len(spending_txid) != 64
+            or any(character not in "0123456789abcdefABCDEF" for character in spending_txid)
+        ):
+            raise ValueError("Malformed gettxspendingprevout spendingtxid")
+        if blockhash is not None and (
+            not isinstance(blockhash, str)
+            or len(blockhash) != 64
+            or any(character not in "0123456789abcdefABCDEF" for character in blockhash)
+        ):
+            raise ValueError("Malformed gettxspendingprevout blockhash")
+        return MempoolSpenderLookupResult(spending_txid=spending_txid, blockhash=blockhash)
+
+    async def test_mempool_accept(self, tx_hex: str) -> MempoolAcceptResult:
+        """Ask Bitcoin Core whether its current mempool policy accepts ``tx_hex``."""
+        result = await self._rpc_call("testmempoolaccept", [[tx_hex], 0], use_wallet=False)
+        if not isinstance(result, list) or len(result) != 1 or not isinstance(result[0], dict):
+            raise ValueError("Malformed testmempoolaccept response")
+        item = result[0]
+        returned_txid = item.get("txid")
+        if returned_txid != get_txid(tx_hex):
+            raise ValueError(
+                "Malformed testmempoolaccept response: txid did not match submitted transaction"
+            )
+
+        def optional_string(name: str) -> str | None:
+            value = item.get(name)
+            if value is not None and not isinstance(value, str):
+                raise ValueError(f"Malformed testmempoolaccept {name}")
+            return value
+
+        allowed = item.get("allowed")
+        if allowed is not None and type(allowed) is not bool:
+            raise ValueError("Malformed testmempoolaccept allowed")
+        return MempoolAcceptResult(
+            allowed=allowed,
+            reject_reason=optional_string("reject-reason"),
+            reject_details=optional_string("reject-details"),
+            package_error=optional_string("package-error"),
+        )
 
     async def estimate_fee(self, target_blocks: int) -> float:
         """Estimate fee in sat/vbyte for target confirmation blocks."""

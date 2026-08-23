@@ -31,6 +31,7 @@ from jmwallet.wallet.spend import (
 )
 
 if TYPE_CHECKING:
+    from jmwallet.backends.base import MempoolAcceptResult
     from jmwallet.history import TransactionHistoryEntry
     from jmwallet.wallet.models import UTXOInfo
     from jmwallet.wallet.service import WalletService
@@ -68,6 +69,20 @@ def _finalize_send_history_entry(
             logger.warning("Could not find pre-broadcast send history entry to finalize")
     except Exception as exc:
         logger.warning(f"Failed to finalize send history entry: {exc}")
+
+
+def _mempool_policy_failure_reason(result: MempoolAcceptResult) -> str:
+    """Return a user-visible, most-specific failed preflight explanation."""
+    reject_details = getattr(result, "reject_details", None)
+    if isinstance(reject_details, str) and reject_details:
+        return reject_details
+    reject_reason = getattr(result, "reject_reason", None)
+    if isinstance(reject_reason, str) and reject_reason:
+        return reject_reason
+    package_error = getattr(result, "package_error", None)
+    if isinstance(package_error, str) and package_error:
+        return package_error
+    return "Bitcoin Core testmempoolaccept did not explicitly allow the transaction"
 
 
 async def _select_input_utxos(
@@ -214,6 +229,13 @@ def send(
             "exclusive with --select-utxos.",
         ),
     ] = None,
+    allow_conflicts: Annotated[
+        bool,
+        typer.Option(
+            "--allow-conflicts",
+            help="Allow replacement of named wallet inputs spent by a mempool transaction",
+        ),
+    ] = False,
     data_dir: Annotated[
         Path | None,
         typer.Option(
@@ -246,6 +268,10 @@ def send(
 
     if select_utxos and input_utxo:
         logger.error("Cannot specify both --select-utxos and --input-utxo")
+        raise typer.Exit(1)
+
+    if allow_conflicts and not input_utxo:
+        logger.error("--allow-conflicts requires at least one --input-utxo")
         raise typer.Exit(1)
 
     # Effective cap comes from settings (with hard-coded fallback). The same
@@ -289,6 +315,9 @@ def send(
         neutrino_url=neutrino_url,
         data_dir=data_dir,
     )
+    if allow_conflicts and backend_settings.backend_type != "descriptor_wallet":
+        logger.error("--allow-conflicts is supported only with the descriptor_wallet backend")
+        raise typer.Exit(1)
 
     # Use configured default block target if not specified
     if block_target is None and fee_rate is None:
@@ -312,6 +341,7 @@ def send(
             max_sats_freeze_reuse=settings.wallet.max_sats_freeze_reuse,
             reconstruct_history=settings.wallet.reconstruct_history,
             input_utxos=input_utxo,
+            allow_conflicts=allow_conflicts,
         )
     )
 
@@ -334,8 +364,16 @@ async def _send_transaction(
     max_sats_freeze_reuse: int = -1,
     reconstruct_history: bool = True,
     input_utxos: list[str] | None = None,
+    allow_conflicts: bool = False,
 ) -> None:
     """Send transaction implementation."""
+    if allow_conflicts and not input_utxos:
+        logger.error("--allow-conflicts requires at least one --input-utxo")
+        raise typer.Exit(1)
+    if allow_conflicts and backend_settings.backend_type != "descriptor_wallet":
+        logger.error("--allow-conflicts is supported only with the descriptor_wallet backend")
+        raise typer.Exit(1)
+
     from jmwallet.backends.descriptor_wallet import (
         DescriptorWalletBackend,
         generate_wallet_name,
@@ -460,6 +498,7 @@ async def _send_transaction(
                     backend=backend,
                     mixdepth=resolved_mixdepth,
                     input_utxos=input_utxos,
+                    allow_conflicts=allow_conflicts,
                 )
             except ValueError as e:
                 logger.error(str(e))
@@ -522,6 +561,11 @@ async def _send_transaction(
         logger.info(f"Fee: {format_amount(estimated_fee)} ({resolved_fee_rate:.2f} sat/vB)")
         if change_amount > 0:
             logger.info(f"Change: {format_amount(change_amount)}")
+        if allow_conflicts:
+            logger.warning(
+                "Conflict replacement is enabled. Recipient payments from conflicting mempool "
+                "transactions may be invalidated."
+            )
 
         # Prompt for confirmation before building transaction
         from jmcore.confirmation import confirm_transaction
@@ -536,6 +580,16 @@ async def _send_transaction(
                     "Source Mixdepth": mixdepth,
                     "Change": format_amount(change_amount) if change_amount > 0 else "None",
                     "Miner Fee Rate": f"{resolved_fee_rate:.2f} sat/vB",
+                    **(
+                        {
+                            "Conflict Replacement": (
+                                "Enabled. Recipient payments from conflicting mempool transactions "
+                                "may be invalidated."
+                            )
+                        }
+                        if allow_conflicts
+                        else {}
+                    ),
                 },
                 skip_confirmation=skip_confirmation,
             )
@@ -716,6 +770,37 @@ async def _send_transaction(
             # Persistence failure should not block the user from broadcasting;
             # surface a warning and continue.
             logger.warning(f"Failed to persist send history entry: {e}")
+
+        if allow_conflicts:
+            try:
+                policy_result = await backend.test_mempool_accept(tx_hex)
+                if policy_result.allowed is not True:
+                    failure_reason = _mempool_policy_failure_reason(policy_result)
+                    _finalize_send_history_entry(
+                        send_entry,
+                        txid="",
+                        success=False,
+                        failure_reason=failure_reason,
+                        data_dir=backend_settings.data_dir,
+                        history_persisted=history_persisted,
+                    )
+                    logger.error("Bitcoin Core mempool policy rejected: {}", failure_reason)
+                    raise typer.Exit(1)
+                logger.info("Bitcoin Core mempool policy preflight accepted the replacement")
+            except typer.Exit:
+                raise
+            except Exception as exc:
+                failure_reason = f"Bitcoin Core testmempoolaccept unavailable or malformed: {exc}"
+                _finalize_send_history_entry(
+                    send_entry,
+                    txid="",
+                    success=False,
+                    failure_reason=failure_reason,
+                    data_dir=backend_settings.data_dir,
+                    history_persisted=history_persisted,
+                )
+                logger.error(failure_reason)
+                raise typer.Exit(1) from exc
 
         if broadcast:
             logger.info("Broadcasting transaction...")
