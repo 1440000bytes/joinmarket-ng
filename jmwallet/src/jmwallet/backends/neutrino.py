@@ -469,7 +469,7 @@ class NeutrinoBackend(BlockchainBackend):
             # neutrino-api 1.4.0+ persists confirmed tx history and serves
             # GET /v1/transactions.
             caps.has_tx_enumeration = bool(status.get("tx_history_enabled", False))
-            logger.info(
+            logger.debug(
                 "Neutrino server: block_height={}, filter_height={}, synced={}, "
                 "mempool_tracker={}, tx_history={}",
                 status.get("block_height", "?"),
@@ -491,14 +491,14 @@ class NeutrinoBackend(BlockchainBackend):
             # Check for persistent state fields (v0.9.0+)
             if "last_start_height" in rescan_status and "last_scanned_tip" in rescan_status:
                 caps.has_persistent_rescan_state = True
-                logger.info(
+                logger.debug(
                     "Neutrino rescan state: last_start={}, last_tip={}, in_progress={}",
                     rescan_status.get("last_start_height", 0),
                     rescan_status.get("last_scanned_tip", 0),
                     rescan_status.get("in_progress", False),
                 )
             else:
-                logger.info(
+                logger.debug(
                     "Neutrino rescan status available (no persistent state -- "
                     "server older than v0.9.0)"
                 )
@@ -958,7 +958,7 @@ class NeutrinoBackend(BlockchainBackend):
 
         if self._wallet_creation_height is not None:
             start = max(self._wallet_creation_height, self._min_valid_blockheight)
-            logger.info(
+            logger.debug(
                 f"Using wallet creation height as scan start: {start} "
                 f"(creation={self._wallet_creation_height}, "
                 f"min_valid={self._min_valid_blockheight})"
@@ -971,7 +971,7 @@ class NeutrinoBackend(BlockchainBackend):
         else:
             start = self._min_valid_blockheight
 
-        logger.info(
+        logger.debug(
             f"Computed scan start height: {start} "
             f"(tip={tip_height}, lookback={self._scan_lookback_blocks}, "
             f"min_valid={self._min_valid_blockheight})"
@@ -1040,7 +1040,7 @@ class NeutrinoBackend(BlockchainBackend):
             ):
                 # neutrino-api already scanned from our start height to the
                 # current tip.  No rescan needed -- just query UTXOs directly.
-                logger.info(
+                logger.debug(
                     f"Neutrino already scanned to tip {prior_tip} "
                     f"(from height {prior_start}); skipping initial rescan"
                 )
@@ -1126,7 +1126,7 @@ class NeutrinoBackend(BlockchainBackend):
             # current query, because wallet sync happens mixdepth by mixdepth
             # and we need to find outputs to any of our addresses.
             self._rescan_in_progress = True
-            logger.info(
+            logger.debug(
                 f"New blocks detected ({self._last_rescan_height} -> {current_height}), "
                 f"rescanning for {len(self._watched_addresses)} watched addresses..."
             )
@@ -1153,7 +1153,7 @@ class NeutrinoBackend(BlockchainBackend):
                     blocks_scanned = max(0, current_height - start_height)
                     if blocks_scanned > self._TRIVIAL_RESCAN_BLOCKS:
                         self._just_rescanned = True
-                    logger.info(
+                    logger.debug(
                         f"Incremental rescan completed from block "
                         f"{start_height} to {self._last_rescan_height}"
                     )
@@ -1943,7 +1943,7 @@ class NeutrinoBackend(BlockchainBackend):
                 )
             confirmations = tip_height - actual_blockheight + 1
 
-            logger.info(
+            logger.debug(
                 f"UTXO {txid}:{vout} verified: value={result.get('value', 0)}, "
                 f"confirmations={confirmations}"
             )

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import io
 import os
 import tempfile
 from collections.abc import Generator
@@ -20,10 +21,12 @@ from loguru import logger
 
 from jmcore.cli_common import (
     SortedHelpFormatter,
+    _format_log_record,
     load_mnemonic_from_file,
     setup_cli,
     setup_logging,
 )
+from jmcore.logging_context import coinjoin_log_context
 from jmcore.settings import reset_settings
 
 
@@ -60,6 +63,28 @@ class TestSetupLogging:
         setup_logging("trace")
         setup_logging("TRACE")
         setup_logging("Trace")
+
+    def test_setup_logging_renders_optional_coinjoin_context(self) -> None:
+        """Ordinary and exception records render without a missing context field."""
+        output = io.StringIO()
+        logger.remove()
+        logger.add(output, format=_format_log_record, colorize=False)
+
+        logger.info("ordinary")
+        with coinjoin_log_context("AB" * 32):
+            logger.info("correlated")
+            try:
+                raise RuntimeError("test exception")
+            except RuntimeError:
+                logger.exception("failed")
+        logger.info("after")
+
+        rendered = output.getvalue()
+        assert "ordinary" in rendered
+        assert "cj=cj-abababababab" in rendered
+        assert "test exception" in rendered
+        assert "after" in rendered
+        assert rendered.count("cj=cj-abababababab") == 2
 
 
 class TestSetupCli:

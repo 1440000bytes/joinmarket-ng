@@ -209,7 +209,7 @@ class DirectConnectionMixin:
             peer_features = FeatureSet.from_comma_string(peer_features_raw)
         peer_version = handshake_data.get("version", handshake_data.get("proto-ver", "unknown"))
 
-        logger.info(f"Received handshake from {peer_nick} at {peer_str}")
+        logger.debug(f"Received handshake from {peer_nick} at {peer_str}")
         logger.debug(
             f"Peer {peer_nick} handshake details: version={peer_version}, "
             f"network={peer_network or 'unspecified'}, "
@@ -263,7 +263,7 @@ class DirectConnectionMixin:
         }
         try:
             await connection.send(json.dumps(response_msg).encode("utf-8"))
-            logger.info(
+            logger.debug(
                 f"Sent handshake to {peer_nick} (features: {features.to_comma_string() or 'none'})"
             )
         except Exception as e:
@@ -298,7 +298,7 @@ class DirectConnectionMixin:
         - Attackers connecting directly to the onion bypass directory-level protections
         - Connection-based limiting is stricter: faster bans, longer intervals
         """
-        logger.info(f"Handling direct connection from {peer_str}")
+        logger.debug(f"Handling direct connection from {peer_str}")
 
         # Check if this connection is already banned
         if self._direct_connection_rate_limiter.is_banned(peer_str):
@@ -315,7 +315,7 @@ class DirectConnectionMixin:
                     # Receive message with timeout
                     data = await asyncio.wait_for(connection.receive(), timeout=60.0)
                     if not data:
-                        logger.info(f"Direct connection from {peer_str} closed")
+                        logger.debug(f"Direct connection from {peer_str} closed")
                         break
 
                     # Apply connection-based message rate limiting FIRST
@@ -396,7 +396,7 @@ class DirectConnectionMixin:
                                     )
                                 continue
 
-                            logger.info(
+                            logger.debug(
                                 f"Received !orderbook request from {sender_nick} via direct "
                                 f"connection, sending offers"
                             )
@@ -417,7 +417,7 @@ class DirectConnectionMixin:
                             continue
                     else:
                         if sender_nick != state.nick:
-                            logger.info(
+                            logger.debug(
                                 f"Verified sender {sender_nick} overrides provisional direct "
                                 f"handshake nick {state.nick} from {peer_str}"
                             )
@@ -452,7 +452,7 @@ class DirectConnectionMixin:
                     # discovery probes, which connect, read the handshake
                     # response, and disconnect. Log at INFO so real problems
                     # (parse errors, unexpected exceptions) still surface.
-                    logger.info(f"Direct connection from {peer_str} closed by peer: {e}")
+                    logger.debug(f"Direct connection from {peer_str} closed by peer: {e}")
                     break
                 except Exception as e:
                     logger.error(f"Error processing direct message from {peer_str}: {e}")
@@ -463,4 +463,4 @@ class DirectConnectionMixin:
         finally:
             await connection.close()
             self._remove_direct_connection(connection)
-            logger.info(f"Direct connection from {peer_str} closed")
+            logger.debug(f"Direct connection from {peer_str} closed")

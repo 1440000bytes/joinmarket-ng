@@ -163,7 +163,7 @@ class MultiDirectoryClient(DirectoryClientPool):
             # Nick just disappeared from this directory
             # Check if it's still present on any other directory
             if not any(status for status in self._active_nicks[nick].values()):
-                logger.info(
+                logger.debug(
                     f"Nick {nick} has left all directories "
                     f"(servers: {list(self._active_nicks[nick].keys())})"
                 )
@@ -421,7 +421,7 @@ class MultiDirectoryClient(DirectoryClientPool):
 
     async def _on_peer_handshake_complete(self, nick: str) -> None:
         """Handle successful peer handshake."""
-        logger.info(f"Direct connection established with {nick}")
+        logger.debug(f"Direct connection established with {nick}")
 
     def _try_direct_connect(self, nick: str) -> None:
         """

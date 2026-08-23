@@ -13,6 +13,7 @@ import json
 import os
 import time
 from collections.abc import Awaitable, Callable
+from contextlib import AbstractContextManager
 from typing import TYPE_CHECKING, Any
 
 from jmcore.bitcoin import get_txid
@@ -20,6 +21,7 @@ from jmcore.commitment_blacklist import add_commitment, check_commitment, valida
 from jmcore.crypto import NickIdentity, verify_signed_privmsg
 from jmcore.deduplication import MessageDeduplicator
 from jmcore.directory_client import DirectoryClient
+from jmcore.logging_context import coinjoin_id_from_commitment, coinjoin_log_context
 from jmcore.models import Offer
 from jmcore.network import ONION_HOSTID
 from jmcore.notifications import get_notifier
@@ -427,6 +429,7 @@ class ProtocolHandlersMixin:
         """
         reservation_owned = False
         session: MakerSession | None = None
+        log_context: AbstractContextManager[None] | None = None
         try:
             # Check for self-CoinJoin (same wallet running both maker and taker)
             if taker_nick in self._own_wallet_nicks:
@@ -459,6 +462,8 @@ class ProtocolHandlersMixin:
                 )
                 return
             commitment = commitment.lower()
+            log_context = coinjoin_log_context(commitment)
+            log_context.__enter__()
 
             # Check if commitment is already blacklisted
             if not check_commitment(commitment):
@@ -548,7 +553,11 @@ class ProtocolHandlersMixin:
                 )
 
                 # Fire-and-forget notification
-                spawn_task(get_notifier().notify_fill_request(taker_nick, amount, offer_id))
+                spawn_task(
+                    get_notifier().notify_fill_request(
+                        taker_nick, amount, offer_id, coinjoin_id_from_commitment(commitment)
+                    )
+                )
 
                 await self._send_response(taker_nick, "pubkey", response)
             else:
@@ -563,6 +572,9 @@ class ProtocolHandlersMixin:
                 if self.active_sessions.get(taker_nick) is session:
                     self.active_sessions.pop(taker_nick, None)
             logger.error(f"Failed to handle !fill: {e}")
+        finally:
+            if log_context is not None:
+                log_context.__exit__(None, None, None)
 
     async def _handle_auth(
         self: MakerBotProtocol, taker_nick: str, msg: str, source: str = "unknown"

@@ -807,7 +807,7 @@ class DirectoryClient:
         self._peerlist_timeout_count = 0
         self._peerlist_supported = True
 
-        logger.info(f"Received {len(all_peers)} active peers from {self.host}:{self.port}")
+        logger.debug(f"Received {len(all_peers)} active peers from {self.host}:{self.port}")
         return all_peers
 
     def _handle_peerlist_timeout(self) -> None:
@@ -825,7 +825,7 @@ class DirectoryClient:
             # Don't disable peerlist requests - directory supports it, just slow
         else:
             # Directory didn't announce peerlist_features - likely reference impl
-            logger.info(
+            logger.debug(
                 f"Timed out waiting for PEERLIST from {self.host}:{self.port} - "
                 "directory likely doesn't support GETPEERLIST (reference implementation)"
             )
@@ -1045,7 +1045,7 @@ class DirectoryClient:
 
         # Log peer count for visibility (but don't filter based on peerlist)
         if peers_with_features:
-            logger.info(f"Found {len(peers_with_features)} peers on {self.host}:{self.port}")
+            logger.debug(f"Found {len(peers_with_features)} peers on {self.host}:{self.port}")
 
         if not self.connection:
             raise DirectoryClientError("Not connected")
@@ -1076,7 +1076,7 @@ class DirectoryClient:
         min_wait = min(min_wait, max_wait)
         quiet_period = min(quiet_period, max_wait - min_wait) if max_wait > min_wait else 0.0
 
-        logger.info(
+        logger.debug(
             f"Listening for offers (max={max_wait}s, min={min_wait}s, quiet={quiet_period}s)..."
         )
 
@@ -1099,7 +1099,7 @@ class DirectoryClient:
             if elapsed >= min_wait and quiet_period > 0:
                 silence = asyncio.get_event_loop().time() - last_offer_time
                 if silence >= quiet_period:
-                    logger.info(
+                    logger.debug(
                         f"No new offers for {silence:.1f}s after {offer_count} offers, "
                         f"exiting early at {elapsed:.1f}s"
                     )
@@ -1125,7 +1125,7 @@ class DirectoryClient:
                 logger.debug(f"+{new_offers} offers (total: {offer_count}) at {elapsed:.1f}s")
 
         total_elapsed = asyncio.get_event_loop().time() - start_time
-        logger.info(
+        logger.debug(
             f"Collected {len(messages)} messages ({offer_count} offers) in {total_elapsed:.1f}s"
         )
 
@@ -1198,7 +1198,7 @@ class DirectoryClient:
         # This prevents incorrectly rejecting valid offers from active makers
         # whose peerlist entry hasn't been received yet.
 
-        logger.info(
+        logger.debug(
             f"Fetched {len(offers)} offers and {len(bonds)} fidelity bonds from "
             f"{self.host}:{self.port}"
         )
@@ -1323,7 +1323,7 @@ class DirectoryClient:
         if not self.connection:
             raise DirectoryClientError("Not connected")
 
-        logger.info(f"Starting continuous listening on {self.host}:{self.port}")
+        logger.debug(f"Starting continuous listening on {self.host}:{self.port}")
         self.running = True
 
         # Fetch peerlist with features to populate peer_features cache
@@ -1332,9 +1332,9 @@ class DirectoryClient:
         try:
             await self.get_peerlist_with_features()
             if self._peerlist_supported:
-                logger.info(f"Populated peer_features cache with {len(self.peer_features)} peers")
+                logger.debug(f"Populated peer_features cache with {len(self.peer_features)} peers")
             else:
-                logger.info(
+                logger.debug(
                     "Directory doesn't support GETPEERLIST - peer features will be "
                     "learned from offer messages"
                 )
@@ -1349,7 +1349,7 @@ class DirectoryClient:
                     "line": f"{self.nick}!PUBLIC!orderbook",
                 }
                 await self.connection.send(json.dumps(pubmsg).encode("utf-8"))
-                logger.info("Sent !orderbook request to get current offers")
+                logger.debug("Sent !orderbook request to get current offers")
             except Exception as e:
                 logger.warning(f"Failed to send !orderbook request: {e}")
 
@@ -1465,7 +1465,7 @@ class DirectoryClient:
                                                 json.dumps(pubmsg).encode("utf-8")
                                             )
                                             last_orderbook_request = current_time
-                                            logger.info(
+                                            logger.debug(
                                                 f"Sent !orderbook request for new peer {from_nick}"
                                             )
                                         except Exception as e:
@@ -1487,7 +1487,7 @@ class DirectoryClient:
             except TimeoutError:
                 continue
             except asyncio.CancelledError:
-                logger.info(f"Continuous listening on {self.host}:{self.port} cancelled")
+                logger.debug(f"Continuous listening on {self.host}:{self.port} cancelled")
                 break
             except Exception as e:
                 logger.error(f"Error in continuous listening: {e}")
@@ -1497,7 +1497,7 @@ class DirectoryClient:
         self._wake_peerlist_sink()
         self.running = False
         self._listen_loop_active = False
-        logger.info(f"Stopped continuous listening on {self.host}:{self.port}")
+        logger.debug(f"Stopped continuous listening on {self.host}:{self.port}")
 
     def _cache_offer_announcement(
         self,
@@ -1803,7 +1803,7 @@ class DirectoryClient:
                     self._bond_to_offers[offer_data.bond_utxo_key].discard(key)
 
         if removed > 0:
-            logger.info(f"Removed {removed} offers for nick {nick} (left/offline)")
+            logger.debug(f"Removed {removed} offers for nick {nick} (left/offline)")
 
         # Also remove from peer_features and active_peers
         self.peer_features.pop(nick, None)
@@ -1881,7 +1881,7 @@ class DirectoryClient:
                 )
 
         if removed > 0:
-            logger.info(f"Cleaned up {removed} stale offers (older than {max_age_seconds}s)")
+            logger.debug(f"Cleaned up {removed} stale offers (older than {max_age_seconds}s)")
 
         return removed
 

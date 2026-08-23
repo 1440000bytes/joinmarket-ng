@@ -56,7 +56,7 @@ class BackgroundTasksMixin:
 
     async def _periodic_session_cleanup(self: MakerBotProtocol) -> None:
         """Expire idle sessions independently of directory connectivity."""
-        logger.info("Starting periodic session cleanup task...")
+        logger.debug("Starting periodic session cleanup task...")
         while self.running:
             try:
                 await self._cleanup_timed_out_sessions()
@@ -66,11 +66,11 @@ class BackgroundTasksMixin:
                 delay = min(1.0, min(remaining, default=1.0))
                 await asyncio.sleep(max(0.01, delay))
             except asyncio.CancelledError:
-                logger.info("Periodic session cleanup task cancelled")
+                logger.debug("Periodic session cleanup task cancelled")
                 break
             except Exception as e:
                 logger.error(f"Error in periodic session cleanup: {e}")
-        logger.info("Periodic session cleanup task stopped")
+        logger.debug("Periodic session cleanup task stopped")
 
     async def _periodic_rescan(self: MakerBotProtocol) -> None:
         """Background task to periodically rescan wallet and update offers.
@@ -83,7 +83,7 @@ class BackgroundTasksMixin:
         This allows the maker to run in the background and adapt to balance
         changes without manual intervention.
         """
-        logger.info(
+        logger.debug(
             f"Starting periodic rescan task (interval: {self.config.rescan_interval_sec}s)..."
         )
 
@@ -98,7 +98,7 @@ class BackgroundTasksMixin:
                 await self._resync_wallet_and_update_offers()
 
             except asyncio.CancelledError:
-                logger.info("Periodic rescan task cancelled")
+                logger.debug("Periodic rescan task cancelled")
                 break
             except ExpiredFidelityBondCertificateError as e:
                 self._abort_for_fatal_error(e)
@@ -106,7 +106,7 @@ class BackgroundTasksMixin:
             except Exception as e:
                 logger.error(f"Error in periodic rescan: {e}")
 
-        logger.info("Periodic rescan task stopped")
+        logger.debug("Periodic rescan task stopped")
 
     async def _periodic_rate_limit_status(self) -> None:
         """Background task to periodically log rate limiting statistics.
@@ -173,13 +173,13 @@ class BackgroundTasksMixin:
                 await asyncio.sleep(3600)
 
             except asyncio.CancelledError:
-                logger.info("Rate limit status task cancelled")
+                logger.debug("Rate limit status task cancelled")
                 break
             except Exception as e:
                 logger.error(f"Error in rate limit status task: {e}")
                 await asyncio.sleep(3600)
 
-        logger.info("Rate limit status task stopped")
+        logger.debug("Rate limit status task stopped")
 
     async def _periodic_directory_connection_status(self: MakerBotProtocol) -> None:
         """Background task to periodically log directory connection status.
@@ -222,13 +222,13 @@ class BackgroundTasksMixin:
                 await asyncio.sleep(600)
 
             except asyncio.CancelledError:
-                logger.info("Directory connection status task cancelled")
+                logger.debug("Directory connection status task cancelled")
                 break
             except Exception as e:
                 logger.error(f"Error in directory connection status task: {e}")
                 await asyncio.sleep(600)
 
-        logger.info("Directory connection status task stopped")
+        logger.debug("Directory connection status task stopped")
 
     async def _connect_to_directory(
         self: MakerBotProtocol, dir_server: str
@@ -281,7 +281,7 @@ class BackgroundTasksMixin:
         # Wait for initial connections to settle
         await asyncio.sleep(60)
 
-        logger.info(
+        logger.debug(
             f"Directory reconnection task started "
             f"(interval: {self.config.directory_reconnect_interval}s)"
         )
@@ -296,7 +296,7 @@ class BackgroundTasksMixin:
                 if not disconnected_servers:
                     continue
 
-                logger.info(
+                logger.debug(
                     f"Attempting to reconnect to {len(disconnected_servers)} "
                     f"disconnected director{'y' if len(disconnected_servers) == 1 else 'ies'}..."
                 )
@@ -320,7 +320,7 @@ class BackgroundTasksMixin:
                         # Reset retry counter on success
                         self._directory_reconnect_attempts.pop(node_id, None)
 
-                        logger.info(f"Reconnected to directory: {dir_server}")
+                        logger.debug(f"Reconnected to directory: {dir_server}")
 
                         # Announce offers to newly connected directory.
                         # Public broadcasts MUST NOT include the fidelity bond
@@ -373,12 +373,12 @@ class BackgroundTasksMixin:
                         )
 
             except asyncio.CancelledError:
-                logger.info("Directory reconnection task cancelled")
+                logger.debug("Directory reconnection task cancelled")
                 break
             except Exception as e:
                 logger.error(f"Error in directory reconnection task: {e}")
 
-        logger.info("Directory reconnection task stopped")
+        logger.debug("Directory reconnection task stopped")
 
     async def _monitor_pending_transactions(self: MakerBotProtocol) -> None:
         """
@@ -388,7 +388,7 @@ class BackgroundTasksMixin:
         status in the history file. Transactions are marked as successful once they
         receive their first confirmation.
         """
-        logger.info("Starting pending transaction monitor...")
+        logger.debug("Starting pending transaction monitor...")
         check_interval = 60.0  # Check every 60 seconds
 
         while self.running:
@@ -397,12 +397,12 @@ class BackgroundTasksMixin:
                 await self._update_pending_history()
 
             except asyncio.CancelledError:
-                logger.info("Pending transaction monitor cancelled")
+                logger.debug("Pending transaction monitor cancelled")
                 break
             except Exception as e:
                 logger.error(f"Error in pending transaction monitor: {e}")
 
-        logger.info("Pending transaction monitor stopped")
+        logger.debug("Pending transaction monitor stopped")
 
     async def _update_pending_history(self: MakerBotProtocol) -> None:
         """Check and update pending transaction confirmations in history.
@@ -603,7 +603,7 @@ class BackgroundTasksMixin:
         try:
             # Small delay to allow transaction to propagate
             await asyncio.sleep(2)
-            logger.info("Performing deferred wallet resync after CoinJoin...")
+            logger.debug("Performing deferred wallet resync after CoinJoin...")
             await self._resync_wallet_and_update_offers()
         except ExpiredFidelityBondCertificateError as e:
             self._abort_for_fatal_error(e)
@@ -612,7 +612,7 @@ class BackgroundTasksMixin:
 
     async def _listen_client(self: MakerBotProtocol, node_id: str, client: DirectoryClient) -> None:
         """Listen for messages from a specific directory client"""
-        logger.info(f"Started listening on {node_id}")
+        logger.debug(f"Started listening on {node_id}")
 
         # Track consecutive errors for exponential backoff
         consecutive_errors = 0
@@ -633,7 +633,7 @@ class BackgroundTasksMixin:
                 consecutive_errors = 0
 
             except asyncio.CancelledError:
-                logger.info(f"Listener for {node_id} cancelled")
+                logger.debug(f"Listener for {node_id} cancelled")
                 break
             except DirectoryClientError as e:
                 # Connection lost - remove from directory_clients so reconnection task can handle it
@@ -678,7 +678,7 @@ class BackgroundTasksMixin:
                     break
                 await asyncio.sleep(backoff)
 
-        logger.info(f"Stopped listening on {node_id}")
+        logger.debug(f"Stopped listening on {node_id}")
 
     async def _periodic_summary(self: MakerBotProtocol) -> None:
         """Background task to periodically send summary notifications.
@@ -706,7 +706,7 @@ class BackgroundTasksMixin:
         else:
             period_label = f"{interval_hours}-Hour"
 
-        logger.info(f"Starting periodic summary task ({period_label}, every {interval_hours}h)...")
+        logger.debug(f"Starting periodic summary task ({period_label}, every {interval_hours}h)...")
 
         while self.running:
             try:
@@ -722,7 +722,7 @@ class BackgroundTasksMixin:
                     data_dir=self.config.data_dir,
                 )
 
-                logger.info(
+                logger.debug(
                     f"{period_label} summary: "
                     f"coinjoins={int(stats['total_coinjoins'])}, "
                     f"successful={int(stats['successful_coinjoins'])}, "
@@ -806,9 +806,7 @@ class BackgroundTasksMixin:
                     logger.warning(f"{period_label} summary notification failed to send")
 
             except asyncio.CancelledError:
-                logger.info("Periodic summary task cancelled")
+                logger.debug("Periodic summary task cancelled")
                 break
             except Exception as e:
                 logger.error(f"Error in periodic summary: {e}")
-
-        logger.info("Periodic summary task stopped")

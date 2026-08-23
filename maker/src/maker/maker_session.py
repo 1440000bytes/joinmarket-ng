@@ -26,6 +26,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from jmcore.logging_context import coinjoin_id_from_commitment, coinjoin_log_context
 from jmcore.notifications import get_notifier
 from jmcore.protocol import UTXOMetadata
 from jmcore.tasks import spawn_task
@@ -215,7 +216,8 @@ class MakerSession:
                 return
             self.handler_task = task
             try:
-                await handler()
+                with coinjoin_log_context(self.commitment.hex()):
+                    await handler()
             finally:
                 if self.handler_task is task:
                     self.handler_task = None
@@ -276,7 +278,7 @@ class MakerSession:
                 )
                 return
 
-            logger.info(f"Received !auth from {taker_nick}, decrypting and verifying PoDLE...")
+            logger.debug(f"Received !auth from {taker_nick}, decrypting and verifying PoDLE...")
 
             parts = msg.split()
             if len(parts) < 2:
@@ -428,6 +430,7 @@ class MakerSession:
                         taker_nick,
                         error_code or "PoDLE verification failed",
                         error_msg,
+                        coinjoin_id_from_commitment(commitment),
                     )
                 )
 
@@ -455,7 +458,7 @@ class MakerSession:
                 )
                 return
 
-            logger.info(f"Received !tx from {taker_nick}, decrypting and verifying transaction...")
+            logger.debug(f"Received !tx from {taker_nick}, decrypting and verifying transaction...")
 
             parts = msg.split()
             if len(parts) < 2:
@@ -560,6 +563,7 @@ class MakerSession:
                         self.amount,
                         len(signatures),
                         fee_received,
+                        coinjoin_id_from_commitment(self.commitment.hex()),
                     )
                 )
 
@@ -573,7 +577,10 @@ class MakerSession:
                 logger.error(f"TX verification failed: {response.get('error')}")
                 spawn_task(
                     get_notifier().notify_rejection(
-                        taker_nick, "TX verification failed", response.get("error", "")
+                        taker_nick,
+                        "TX verification failed",
+                        response.get("error", ""),
+                        coinjoin_id_from_commitment(self.commitment.hex()),
                     )
                 )
                 # Before signing starts, a failed transaction cannot conflict

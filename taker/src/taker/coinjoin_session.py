@@ -1319,22 +1319,22 @@ class CoinJoinSession:
                 network=network,
             )
 
-            logger.info(f"Built unsigned tx: {len(self.unsigned_tx)} bytes")
+            logger.debug(f"Built unsigned tx: {len(self.unsigned_tx)} bytes")
             logger.debug(f"Unsigned transaction hex: {self.unsigned_tx.hex()}")
 
             # Log final transaction details
-            logger.info(
+            logger.debug(
                 f"Final CoinJoin transaction details: "
                 f"{num_inputs} inputs ({num_taker_inputs} taker, {num_maker_inputs} maker), "
                 f"{num_outputs} outputs"
             )
-            logger.info(
+            logger.debug(
                 f"Transaction amounts: cj_amount={self.cj_amount:,} sats, "
                 f"total_maker_fees={total_maker_fee:,} sats, "
                 f"mining_fee={tx_fee:,} sats "
                 f"({self._fee_rate:.2f} sat/vB)"
             )
-            logger.info(f"Participating makers: {', '.join(self.maker_sessions.keys())}")
+            logger.debug(f"Participating makers: {', '.join(self.maker_sessions.keys())}")
 
             return True
 
@@ -2022,7 +2022,7 @@ class CoinJoinSession:
 
         policy = self.config.tx_broadcast
         has_mempool = self.backend.has_mempool_access()
-        logger.info(f"Broadcasting with policy: {policy.value}, mempool_access: {has_mempool}")
+        logger.debug(f"Broadcasting with policy: {policy.value}, mempool_access: {has_mempool}")
 
         # Encode transaction as base64 for !push message
         tx_b64 = base64.b64encode(self.final_tx).decode("ascii")

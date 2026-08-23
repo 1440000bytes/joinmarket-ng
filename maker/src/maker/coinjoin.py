@@ -218,7 +218,7 @@ class CoinJoinSession:
             self.taker_nacl_pk = taker_pk  # Store for btc_sig in handle_auth
             self.state = CoinJoinState.FILL_RECEIVED
 
-            logger.info(
+            logger.debug(
                 f"Received !fill from {self.taker_nick}: "
                 f"amount={amount}, commitment={commitment[:16]}..., taker_pk={taker_pk[:16]}..."
             )
@@ -321,7 +321,7 @@ class CoinJoinSession:
                 )
                 return False, {"error": f"PoDLE verification failed: {error}"}
 
-            logger.info("PoDLE proof verified ✓")
+            logger.debug("PoDLE proof verified ✓")
             logger.debug(
                 f"PoDLE details: taker={self.taker_nick}, "
                 f"utxo={parsed_rev['txid']}:{parsed_rev['vout']}, "
@@ -435,7 +435,7 @@ class CoinJoinSession:
                     "error": f"Taker's UTXO too small: {taker_utxo_value} < {required_amount}"
                 }
 
-            logger.info("Taker's UTXO validated ✓")
+            logger.debug("Taker's UTXO validated ✓")
             logger.debug(
                 f"Taker UTXO details: {utxo_txid}:{utxo_vout}, "
                 f"value={taker_utxo_value} sats, confirmations={taker_utxo_confirmations}"
@@ -510,7 +510,7 @@ class CoinJoinSession:
             # Authentication is complete and our inputs are reserved, but the
             # outer session has not attempted to reveal them via !ioauth yet.
             self.state = CoinJoinState.AUTH_RECEIVED
-            logger.info(f"Prepared !ioauth with {len(utxos_dict)} UTXOs")
+            logger.debug(f"Prepared !ioauth with {len(utxos_dict)} UTXOs")
 
             return True, response
 
@@ -543,7 +543,7 @@ class CoinJoinSession:
             if self.state != CoinJoinState.IOAUTH_SENT:
                 return False, {"error": "Session not in correct state for !tx"}
 
-            logger.info(f"Received !tx from {self.taker_nick}, verifying...")
+            logger.debug(f"Received !tx from {self.taker_nick}, verifying...")
             logger.debug(f"Transaction hex to verify and sign: {tx_hex}")
 
             # Convert network string to NetworkType enum
@@ -566,7 +566,7 @@ class CoinJoinSession:
                 self.state = CoinJoinState.FAILED
                 return False, {"error": f"Transaction verification failed: {error}"}
 
-            logger.info("Transaction verification PASSED ✓")
+            logger.debug("Transaction verification PASSED ✓")
             self.state = CoinJoinState.TX_RECEIVED
 
             if self.is_timed_out():

@@ -77,7 +77,7 @@ class TakerMonitoringMixin:
         - This uses compact block filters to check if the output exists in confirmed blocks
         - For Neutrino, we must wait for confirmation before we can verify the transaction
         """
-        logger.info("Starting pending transaction monitor...")
+        logger.debug("Starting pending transaction monitor...")
         check_interval = 60.0  # Check every 60 seconds
         # Confirmation tracking needs a backend that reports confirmation depth
         # by txid. Neutrino cannot (get_transaction is mempool-only, even with
@@ -88,7 +88,7 @@ class TakerMonitoringMixin:
         can_confirm_by_txid = self.backend.can_get_confirmations_by_txid()
 
         if not can_confirm_by_txid:
-            logger.info(
+            logger.debug(
                 "Backend cannot confirm transactions by txid (Neutrino). "
                 "Pending transactions will be verified via block confirmation only."
             )
@@ -125,12 +125,12 @@ class TakerMonitoringMixin:
                         logger.debug(f"Error checking transaction {entry.txid[:16]}...: {e}")
 
             except asyncio.CancelledError:
-                logger.info("Pending transaction monitor cancelled")
+                logger.debug("Pending transaction monitor cancelled")
                 break
             except Exception as e:
                 logger.error(f"Error in pending transaction monitor: {e}")
 
-        logger.info("Pending transaction monitor stopped")
+        logger.debug("Pending transaction monitor stopped")
 
     async def _check_pending_with_mempool(self, entry: TransactionHistoryEntry) -> None:
         """Check pending transaction status using get_transaction (requires mempool access)."""
@@ -351,7 +351,7 @@ class TakerMonitoringMixin:
         This is useful when running schedule/tumbler mode to ensure wallet
         state is fresh between CoinJoins.
         """
-        logger.info(
+        logger.debug(
             f"Starting periodic rescan task (interval: {self.config.rescan_interval_sec}s)..."
         )
 
@@ -362,7 +362,7 @@ class TakerMonitoringMixin:
                 if not self.running:
                     break
 
-                logger.info("Periodic wallet rescan starting...")
+                logger.debug("Periodic wallet rescan starting...")
 
                 # Use fast descriptor wallet sync if available
                 from jmwallet.backends.descriptor_wallet import DescriptorWalletBackend
@@ -374,15 +374,15 @@ class TakerMonitoringMixin:
                 await self.wallet.reconstruct_imported_state_safe()
 
                 total_balance = await self.wallet.get_total_balance()
-                logger.info(f"Wallet re-synced. Total balance: {total_balance:,} sats")
+                logger.debug(f"Wallet re-synced. Total balance: {total_balance:,} sats")
 
             except asyncio.CancelledError:
-                logger.info("Periodic rescan task cancelled")
+                logger.debug("Periodic rescan task cancelled")
                 break
             except Exception as e:
                 logger.error(f"Error in periodic rescan: {e}")
 
-        logger.info("Periodic rescan task stopped")
+        logger.debug("Periodic rescan task stopped")
 
     async def _periodic_directory_connection_status(self) -> None:
         """Background task to periodically log directory connection status.
@@ -416,7 +416,7 @@ class TakerMonitoringMixin:
                         f"connected. Disconnected: [{disconnected_str}]"
                     )
                 else:
-                    logger.info(
+                    logger.debug(
                         f"Directory connection status: {connected_count}/{total_servers} connected "
                         f"[{', '.join(connected_servers)}]"
                     )
@@ -425,10 +425,10 @@ class TakerMonitoringMixin:
                 await asyncio.sleep(600)
 
             except asyncio.CancelledError:
-                logger.info("Directory connection status task cancelled")
+                logger.debug("Directory connection status task cancelled")
                 break
             except Exception as e:
                 logger.error(f"Error in directory connection status task: {e}")
                 await asyncio.sleep(600)
 
-        logger.info("Directory connection status task stopped")
+        logger.debug("Directory connection status task stopped")

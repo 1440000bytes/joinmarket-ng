@@ -39,12 +39,12 @@ async def run_periodic_task(
             await asyncio.sleep(interval)
             await callback()
         except asyncio.CancelledError:
-            logger.info(f"{name} task cancelled")
+            logger.debug(f"{name} task cancelled")
             break
         except Exception as e:
             logger.error(f"Error in {name}: {e}")
 
-    logger.info(f"{name} task stopped")
+    logger.debug(f"{name} task stopped")
 
 
 def parse_directory_address(server: str, default_port: int = 5222) -> tuple[str, int]:

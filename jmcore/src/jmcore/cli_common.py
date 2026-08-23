@@ -172,6 +172,19 @@ class SortedHelpFormatter(argparse.HelpFormatter):
 # =============================================================================
 
 
+def _format_log_record(record: dict[str, Any]) -> str:
+    """Render the optional task-local CoinJoin correlation ID."""
+    cj_id = record["extra"].get("cj_id")
+    correlation = f" | <magenta>cj={cj_id}</magenta>" if cj_id else ""
+    return (
+        "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
+        "<level>{level: <8}</level>"
+        f"{correlation} | "
+        "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - "
+        "<level>{message}</level>\n{exception}"
+    )
+
+
 def setup_logging(level: str = "INFO") -> None:
     """
     Configure loguru logging with consistent format.
@@ -182,12 +195,7 @@ def setup_logging(level: str = "INFO") -> None:
     logger.remove()
     logger.add(
         sys.stderr,
-        format=(
-            "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
-            "<level>{level: <8}</level> | "
-            "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - "
-            "<level>{message}</level>"
-        ),
+        format=_format_log_record,
         level=level.upper(),
         colorize=True,
     )

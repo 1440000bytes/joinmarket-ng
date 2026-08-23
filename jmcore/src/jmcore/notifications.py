@@ -167,7 +167,12 @@ def _rejection_body(notifier: Notifier, f: dict[str, Any]) -> str:
     details = f.get("details", "")
     if details:
         body += f"\nDetails: {details}"
-    return body
+    return body + _coinjoin_id_line(f)
+
+
+def _coinjoin_id_line(f: dict[str, Any]) -> str:
+    cj_id = f.get("cj_id")
+    return f"\nCoinJoin ID: {cj_id}" if cj_id else ""
 
 
 def _coinjoin_failed_body(notifier: Notifier, f: dict[str, Any]) -> str:
@@ -178,7 +183,7 @@ def _coinjoin_failed_body(notifier: Notifier, f: dict[str, Any]) -> str:
     cj_amount = f.get("cj_amount", 0)
     if cj_amount > 0:
         body += f"\nAmount: {notifier._format_amount(cj_amount)}"
-    return body
+    return body + _coinjoin_id_line(f)
 
 
 def _directory_disconnect_priority(f: dict[str, Any]) -> NotificationPriority:
@@ -216,7 +221,7 @@ EVENT_TEMPLATES: dict[NotificationEvent, EventTemplate] = {
         body_builder=lambda n, f: (
             f"Taker: {n._format_nick(f['taker_nick'])}\n"
             f"Amount: {n._format_amount(f['cj_amount'])}\n"
-            f"Offer ID: {f['offer_id']}"
+            f"Offer ID: {f['offer_id']}" + _coinjoin_id_line(f)
         ),
         priority_builder=lambda _f: NotificationPriority.INFO,
     ),
@@ -233,7 +238,7 @@ EVENT_TEMPLATES: dict[NotificationEvent, EventTemplate] = {
             f"Taker: {n._format_nick(f['taker_nick'])}\n"
             f"CJ Amount: {n._format_amount(f['cj_amount'])}\n"
             f"Inputs signed: {f['num_inputs']}\n"
-            f"Fee earned: {n._format_amount(f['fee_earned'])}"
+            f"Fee earned: {n._format_amount(f['fee_earned'])}" + _coinjoin_id_line(f)
         ),
         priority_builder=lambda _f: NotificationPriority.SUCCESS,
     ),
@@ -312,6 +317,7 @@ EVENT_TEMPLATES: dict[NotificationEvent, EventTemplate] = {
             f"Makers: {f['num_makers']}\n"
             f"Destination: "
             f"{'internal' if f['destination'] == 'INTERNAL' else f['destination'][:12] + '...'}"
+            + _coinjoin_id_line(f)
         ),
         priority_builder=lambda _f: NotificationPriority.INFO,
     ),
@@ -322,7 +328,7 @@ EVENT_TEMPLATES: dict[NotificationEvent, EventTemplate] = {
             f"TxID: {n._format_txid(f['txid'])}\n"
             f"Amount: {n._format_amount(f['cj_amount'])}\n"
             f"Makers: {f['num_makers']}\n"
-            f"Total fees: {n._format_amount(f['total_fees'])}"
+            f"Total fees: {n._format_amount(f['total_fees'])}" + _coinjoin_id_line(f)
         ),
         priority_builder=lambda _f: NotificationPriority.SUCCESS,
     ),
@@ -1070,6 +1076,7 @@ class Notifier:
         taker_nick: str,
         cj_amount: int,
         offer_id: int,
+        cj_id: str | None = None,
     ) -> bool:
         """Notify when a !fill request is received (maker)."""
         return await self.emit(
@@ -1077,6 +1084,7 @@ class Notifier:
             taker_nick=taker_nick,
             cj_amount=cj_amount,
             offer_id=offer_id,
+            cj_id=cj_id,
         )
 
     async def notify_rejection(
@@ -1084,6 +1092,7 @@ class Notifier:
         taker_nick: str,
         reason: str,
         details: str = "",
+        cj_id: str | None = None,
     ) -> bool:
         """Notify when rejecting a taker request (maker)."""
         return await self.emit(
@@ -1091,6 +1100,7 @@ class Notifier:
             taker_nick=taker_nick,
             reason=reason,
             details=details,
+            cj_id=cj_id,
         )
 
     async def notify_tx_signed(
@@ -1099,6 +1109,7 @@ class Notifier:
         cj_amount: int,
         num_inputs: int,
         fee_earned: int,
+        cj_id: str | None = None,
     ) -> bool:
         """Notify when transaction is signed (maker)."""
         return await self.emit(
@@ -1107,6 +1118,7 @@ class Notifier:
             cj_amount=cj_amount,
             num_inputs=num_inputs,
             fee_earned=fee_earned,
+            cj_id=cj_id,
         )
 
     async def notify_mempool(
@@ -1206,6 +1218,7 @@ class Notifier:
         cj_amount: int,
         num_makers: int,
         destination: str,
+        cj_id: str | None = None,
     ) -> bool:
         """Notify when CoinJoin is initiated (taker)."""
         return await self.emit(
@@ -1213,6 +1226,7 @@ class Notifier:
             cj_amount=cj_amount,
             num_makers=num_makers,
             destination=destination,
+            cj_id=cj_id,
         )
 
     async def notify_coinjoin_complete(
@@ -1221,6 +1235,7 @@ class Notifier:
         cj_amount: int,
         num_makers: int,
         total_fees: int,
+        cj_id: str | None = None,
     ) -> bool:
         """Notify when CoinJoin completes successfully (taker)."""
         return await self.emit(
@@ -1229,6 +1244,7 @@ class Notifier:
             cj_amount=cj_amount,
             num_makers=num_makers,
             total_fees=total_fees,
+            cj_id=cj_id,
         )
 
     async def notify_coinjoin_failed(
@@ -1236,6 +1252,7 @@ class Notifier:
         reason: str,
         phase: str = "",
         cj_amount: int = 0,
+        cj_id: str | None = None,
     ) -> bool:
         """Notify when CoinJoin fails (taker)."""
         return await self.emit(
@@ -1243,6 +1260,7 @@ class Notifier:
             reason=reason,
             phase=phase,
             cj_amount=cj_amount,
+            cj_id=cj_id,
         )
 
     # =========================================================================

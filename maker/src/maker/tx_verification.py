@@ -103,9 +103,9 @@ def verify_unsigned_transaction(
                 f"(cjfee={real_cjfee}, txfee={txfee})",
             )
 
-        logger.info(f"Potentially earned: {potentially_earned} sats")
-        logger.info(f"Expected change value: {expected_change_value} sats")
-        logger.info(f"CJ address: {cj_address}, Change address: {change_address}")
+        logger.debug(f"Potentially earned: {potentially_earned} sats")
+        logger.debug(f"Expected change value: {expected_change_value} sats")
+        logger.debug(f"CJ address: {cj_address}, Change address: {change_address}")
 
         times_seen_cj_addr = 0
         times_seen_change_addr = 0
@@ -142,7 +142,7 @@ def verify_unsigned_transaction(
                 f"Change address appears {times_seen_change_addr} times (expected 1)",
             )
 
-        logger.info("Transaction verification PASSED ✓")
+        logger.debug("Transaction verification PASSED ✓")
         return True, ""
 
     except Exception as e:

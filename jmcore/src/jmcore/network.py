@@ -295,7 +295,7 @@ class HiddenServiceListener:
         """Handle incoming connection."""
         peer_addr = writer.get_extra_info("peername")
         peer_str = f"{peer_addr[0]}:{peer_addr[1]}" if peer_addr else "unknown"
-        logger.info(f"Accepted connection from {peer_str}")
+        logger.debug(f"Accepted connection from {peer_str}")
 
         connection = TCPConnection(reader, writer, self.max_message_size)
 
@@ -522,7 +522,7 @@ class OnionPeer:
             self._last_connect_attempt = asyncio.get_event_loop().time()
 
         try:
-            logger.info(f"Connecting to peer {self.nick} at {self.location}")
+            logger.debug(f"Connecting to peer {self.nick} at {self.location}")
 
             # Connect via Tor
             if self._hostname and self._hostname.endswith(".onion"):
@@ -555,7 +555,7 @@ class OnionPeer:
                 self._status = PeerStatus.HANDSHAKED
                 self._connect_attempts = 0  # Reset on success
 
-            logger.info(f"Connected and handshaked with peer {self.nick}")
+            logger.debug(f"Connected and handshaked with peer {self.nick}")
 
             # Start receive loop
             self._receive_task = asyncio.create_task(self._receive_loop())
@@ -692,7 +692,7 @@ class OnionPeer:
                 return
             self._status = PeerStatus.DISCONNECTED
 
-        logger.info(f"Peer {self.nick} disconnected")
+        logger.debug(f"Peer {self.nick} disconnected")
 
         if self._connection:
             await self._connection.close()

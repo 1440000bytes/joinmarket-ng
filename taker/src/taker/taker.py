@@ -24,6 +24,7 @@ from jmcore.bond_calc import calculate_timelocked_fidelity_bond_value
 from jmcore.btc_script import derive_bond_address
 from jmcore.commitment_blacklist import set_blacklist_path
 from jmcore.crypto import NickIdentity
+from jmcore.logging_context import coinjoin_id_from_commitment, coinjoin_log_context
 from jmcore.models import Offer
 from jmcore.notifications import get_notifier
 from jmcore.paths import read_nick_state
@@ -225,6 +226,7 @@ class Taker(TakerMonitoringMixin):
         self._session = CoinJoinSession()
         self._session.attach(self)
         self._round_lock = asyncio.Lock()
+        self._coinjoin_log_context: Any | None = None
 
         # Schedule for tumbler-style operations
         self.schedule: Schedule | None = None
@@ -232,6 +234,30 @@ class Taker(TakerMonitoringMixin):
         # Background task tracking
         self.running = False
         self._background_tasks: list[asyncio.Task[None]] = []
+
+    def _activate_coinjoin_log_context(self) -> str:
+        """Replace this task's CoinJoin log context after a commitment rotation."""
+        if self._coinjoin_log_context is not None:
+            self._coinjoin_log_context.__exit__(None, None, None)
+        commitment = self._session.podle_commitment
+        if commitment is None:
+            raise RuntimeError("Cannot activate CoinJoin logging without a PoDLE commitment")
+        commitment_hex = commitment.commitment.commitment.hex()
+        self._coinjoin_log_context = coinjoin_log_context(commitment_hex)
+        self._coinjoin_log_context.__enter__()
+        return coinjoin_id_from_commitment(commitment_hex)
+
+    def _clear_coinjoin_log_context(self) -> None:
+        """Clear the task-local CoinJoin context at the end of a round."""
+        if self._coinjoin_log_context is not None:
+            self._coinjoin_log_context.__exit__(None, None, None)
+            self._coinjoin_log_context = None
+
+    def _current_coinjoin_id(self) -> str | None:
+        commitment = self._session.podle_commitment
+        if commitment is None:
+            return None
+        return coinjoin_id_from_commitment(commitment.commitment.commitment.hex())
 
     async def sync_wallet(self) -> int:
         """
@@ -863,7 +889,7 @@ class Taker(TakerMonitoringMixin):
             # the orderbook to avoid wasting the user's time on a doomed round.
             # Now fetch orderbook after UTXO selection is done
             self.state = TakerState.FETCHING_ORDERBOOK
-            logger.info("Fetching orderbook...")
+            logger.debug("Fetching orderbook...")
             offers = await self.directory_client.fetch_orderbook(
                 max_wait=self.config.order_wait_time,
                 min_wait=self.config.orderbook_min_wait,
@@ -1230,6 +1256,7 @@ class Taker(TakerMonitoringMixin):
                 self._session.last_failure_reason = reason
                 self.state = TakerState.FAILED
                 return None
+            self._activate_coinjoin_log_context()
 
             max_replacement_attempts = self.config.max_maker_replacement_attempts
             if not await self._run_fill_with_replacements(
@@ -1251,7 +1278,7 @@ class Taker(TakerMonitoringMixin):
 
             # Phase 3: Build transaction
             self.state = TakerState.BUILDING_TX
-            logger.info("Phase 3: Building transaction...")
+            logger.debug("Phase 3: Building transaction...")
 
             tx_success = await self._session._phase_build_tx(
                 destination=destination,
@@ -1264,7 +1291,7 @@ class Taker(TakerMonitoringMixin):
 
             # Phase 4: Collect signatures
             self.state = TakerState.COLLECTING_SIGNATURES
-            logger.info("Phase 4: Collecting signatures...")
+            logger.debug("Phase 4: Collecting signatures...")
 
             sig_success = await self._session._phase_collect_signatures()
             if not sig_success:
@@ -1279,7 +1306,11 @@ class Taker(TakerMonitoringMixin):
             # Fire-and-forget notification for failed CoinJoin
             phase = self.state.value if hasattr(self, "state") else ""
             amount = self._session.cj_amount
-            spawn_task(get_notifier().notify_coinjoin_failed(str(e), phase, amount))
+            spawn_task(
+                get_notifier().notify_coinjoin_failed(
+                    str(e), phase, amount, self._current_coinjoin_id()
+                )
+            )
             self.state = TakerState.FAILED
             return None
         finally:
@@ -1289,6 +1320,7 @@ class Taker(TakerMonitoringMixin):
             # decline, or a failed broadcast can leave a usable transaction.
             if self.state != TakerState.COMPLETE:
                 self.release_input_locks()
+            self._clear_coinjoin_log_context()
 
     async def _maybe_select_utxos_interactively(
         self, amount: int, mixdepth: int | None
@@ -1394,7 +1426,7 @@ class Taker(TakerMonitoringMixin):
         max_replacement_attempts: int,
     ) -> bool:
         self.state = TakerState.AUTHENTICATING
-        logger.info("Phase 2: Sending !auth and receiving !ioauth...")
+        logger.debug("Phase 2: Sending !auth and receiving !ioauth...")
 
         auth_replacement_attempt = 0
         # Nicks that failed or could not be verified during this auth stage are
@@ -1518,7 +1550,8 @@ class Taker(TakerMonitoringMixin):
             return False
 
         self._session.podle_commitment = new_commitment
-        logger.info("Rotated PoDLE commitment for auth-stage maker replacement")
+        self._activate_coinjoin_log_context()
+        logger.debug("Rotated PoDLE commitment for auth-stage maker replacement")
         return True
 
     async def _fill_replacement_makers(
@@ -1545,10 +1578,10 @@ class Taker(TakerMonitoringMixin):
             self._session.maker_sessions[nick] = MakerSession(
                 nick=nick, offer=offer, supports_neutrino_compat=False
             )
-            logger.info(f"Added replacement maker for auth: {nick}")
+            logger.debug(f"Added replacement maker for auth: {nick}")
         self._session.last_used_nicks.update(replacement_offers.keys())
 
-        logger.info("Running fill phase for replacement makers...")
+        logger.debug("Running fill phase for replacement makers...")
         new_maker_nicks = list(replacement_offers.keys())
 
         commitment_hex = self._session.podle_commitment.to_commitment_str()
@@ -1613,7 +1646,7 @@ class Taker(TakerMonitoringMixin):
         max_replacement_attempts: int,
     ) -> bool:
         self.state = TakerState.FILLING
-        logger.info("Phase 1: Sending !fill to makers...")
+        logger.debug("Phase 1: Sending !fill to makers...")
         directory_count = len(self.directory_client.clients)
         directories = [
             f"{client.host}:{client.port}" for client in self.directory_client.clients.values()
@@ -1631,7 +1664,10 @@ class Taker(TakerMonitoringMixin):
 
         spawn_task(
             get_notifier().notify_coinjoin_start(
-                self._session.cj_amount, len(self._session.maker_sessions), destination
+                self._session.cj_amount,
+                len(self._session.maker_sessions),
+                destination,
+                self._current_coinjoin_id(),
             )
         )
 
@@ -1736,6 +1772,7 @@ class Taker(TakerMonitoringMixin):
                         return False
 
                     self._session.podle_commitment = new_commitment
+                    self._activate_coinjoin_log_context()
                     self._session.maker_sessions = {
                         nick: MakerSession(nick=nick, offer=offer, supports_neutrino_compat=False)
                         for nick, offer in selected_offers.items()
@@ -1871,8 +1908,8 @@ class Taker(TakerMonitoringMixin):
             f"Transaction size:     {actual_vsize} vbytes ({len(self._session.final_tx)} bytes)"
         )
         logger.info("-" * 70)
-        logger.info("Transaction hex (for manual verification/broadcast):")
-        logger.info(self._session.final_tx.hex())
+        logger.debug("Transaction hex (for manual verification/broadcast):")
+        logger.debug(self._session.final_tx.hex())
         logger.info("=" * 70)
 
         if hasattr(self, "confirmation_callback") and self.confirmation_callback:
@@ -1917,7 +1954,7 @@ class Taker(TakerMonitoringMixin):
                 return None
 
         self.state = TakerState.BROADCASTING
-        logger.info("Phase 5: Broadcasting transaction...")
+        logger.debug("Phase 5: Broadcasting transaction...")
 
         self._session.txid = await self._session._phase_broadcast()
         if not self._session.txid:
@@ -1965,6 +2002,7 @@ class Taker(TakerMonitoringMixin):
                 self._session.cj_amount,
                 len(self._session.maker_sessions),
                 total_fees,
+                self._current_coinjoin_id(),
             )
         )
 

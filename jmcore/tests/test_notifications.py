@@ -92,6 +92,21 @@ class TestNotificationConfig:
         assert config.use_tor is False
 
 
+class TestCoinJoinNotificationIDs:
+    """CoinJoin notifications include an optional log correlation ID."""
+
+    @pytest.mark.asyncio
+    async def test_coinjoin_start_id_is_optional_and_rendered_when_present(self) -> None:
+        notifier = Notifier(NotificationConfig(enabled=True, urls=["test://"]))
+        notifier._send = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+        await notifier.notify_coinjoin_start(100_000, 2, "INTERNAL")
+        assert "CoinJoin ID:" not in notifier._send.call_args.kwargs["body"]
+
+        await notifier.notify_coinjoin_start(100_000, 2, "INTERNAL", "cj-abcdef123456")
+        assert "CoinJoin ID: cj-abcdef123456" in notifier._send.call_args.kwargs["body"]
+
+
 class TestLoadNotificationConfig:
     """Tests for load_notification_config."""
 
