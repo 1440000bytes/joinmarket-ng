@@ -54,6 +54,7 @@ from jmcore.protocol import (
     FeatureSet,
     MessageType,
     create_handshake_request,
+    is_valid_nick,
     parse_peerlist_entry,
     peer_supports_neutrino_compat,
 )
@@ -1415,6 +1416,10 @@ class DirectoryClient:
                             to_nick = parts[1]
                             rest = COMMAND_PREFIX.join(parts[2:])
 
+                            if not is_valid_nick(from_nick):
+                                logger.debug("Dropping message from invalid JoinMarket nick")
+                                continue
+
                             # Accept PUBLIC broadcasts or messages addressed to us
                             if to_nick == "PUBLIC" or to_nick == self.nick:
                                 # If we don't have features for this peer, it's a new peer.
@@ -1548,6 +1553,10 @@ class DirectoryClient:
             bond_data is the parsed fidelity bond dict or None.
             neutrino_compat is True if the deprecated !neutrino flag was present.
         """
+        if not is_valid_nick(from_nick):
+            logger.debug("Dropping offer from invalid JoinMarket nick")
+            return None
+
         offer_types = ["sw0absoffer", "sw0reloffer", "swabsoffer", "swreloffer"]
         for offer_type in offer_types:
             if not rest.startswith(offer_type):

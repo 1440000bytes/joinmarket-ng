@@ -16,11 +16,11 @@ from coincurve import verify_signature as coincurve_verify
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from jmcore.crypto import NickIdentity, bitcoin_message_hash_bytes, nick_from_pubkey_hex
+from jmcore.protocol import is_valid_nick
 
 _LOWER_HEX_64_RE = re.compile(r"[0-9a-f]{64}")
 _COMPRESSED_PUBKEY_RE = re.compile(r"0[23][0-9a-f]{64}")
 _ONION_HOST_RE = re.compile(r"[a-z2-7]{56}\.onion")
-_NICK_RE = re.compile(r"J[0-9][1-9A-HJ-NP-Za-km-zO]{14}")
 _DIRECTORY_ID_RE = re.compile(r"[a-z0-9][a-z0-9.:_-]*")
 _SECP256K1_ORDER = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
 _NICK_AUTH_DOMAIN = b"nick-auth-v1"
@@ -253,7 +253,7 @@ def build_nick_auth_signed_message(
     challenge = _validate_lower_hex_64(challenge, "challenge")
     directory_id = validate_directory_id(directory_id)
     handshake_sha256 = _validate_lower_hex_64(handshake_sha256, "handshake-sha256")
-    if _NICK_RE.fullmatch(nick) is None:
+    if not is_valid_nick(nick):
         raise ValueError("nick must use the JMP-0001 nick format")
     NickAuthProof.validate_pubkey(pubkey)
     transcript = f"nick-auth|{challenge}|{directory_id}|{handshake_sha256}|{nick}|{pubkey}"

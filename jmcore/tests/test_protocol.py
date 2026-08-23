@@ -25,12 +25,34 @@ from jmcore.protocol import (
     format_jm_message,
     format_utxo_list,
     get_nick_version,
+    is_valid_nick,
     parse_jm_message,
     parse_peer_location,
     parse_peerlist_entry,
     parse_utxo_list,
     peer_supports_neutrino_compat,
 )
+
+
+@pytest.mark.parametrize("nick", ["J57wPBk1VfjSP5Te", "J5" + "O" * 14])
+def test_valid_nick_format(nick: str) -> None:
+    assert is_valid_nick(nick)
+
+
+@pytest.mark.parametrize(
+    "nick",
+    [
+        "",
+        "maker1",
+        "J57wPBk1VfjSP5T",
+        "J57wPBk1VfjSP5TeX",
+        "JX7wPBk1VfjSP5Te",
+        "J57wPBk1VfjSP5TI",
+        '<img src=x onerror="alert(1)">',
+    ],
+)
+def test_invalid_nick_format(nick: str) -> None:
+    assert not is_valid_nick(nick)
 
 
 def test_protocol_message_serialization():

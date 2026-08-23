@@ -368,6 +368,33 @@ test.describe("feature display names", () => {
   });
 });
 
+test.describe("orderbook rendering safety", () => {
+  test("renders a hostile counterparty as text without executing markup", async ({ page }) => {
+    const maliciousNick = '<img src=x onerror="window.__nickXssExecuted=true">';
+    const offers: FixtureOffer[] = [{
+      counterparty: maliciousNick,
+      oid: 0,
+      ordertype: "sw0reloffer",
+      cjfee: "0.0001",
+      minsize: 100_000,
+      maxsize: 1_000_000,
+      txfee: 0,
+      directory_nodes: [],
+      features: {},
+    }];
+    const server = await openChart(page, payload(offers));
+
+    try {
+      const counterparty = page.locator("#orderbook-tbody .counterparty .cell-value");
+      await expect(counterparty).toHaveText(maliciousNick);
+      await expect(counterparty.locator("img")).toHaveCount(0);
+      expect(await page.evaluate(() => Reflect.get(window, "__nickXssExecuted"))).toBeUndefined();
+    } finally {
+      server.close();
+    }
+  });
+});
+
 test.describe("offer selection probability", () => {
   test("counts offers sharing a fidelity bond as one candidate", async ({ page }) => {
     const sharedTxid = "f".repeat(64);
@@ -499,12 +526,14 @@ test.describe("offer selection probability", () => {
     );
 
     try {
-      const bondedChance = page.locator("#orderbook-tbody tr", { hasText: "bonded0" })
+      const bondedChance = page.locator("#orderbook-tbody tr")
+        .filter({ has: page.locator('.counterparty .cell-value:text-is("bonded0")') })
         .locator(".selection-probability");
       const lowBondChance = page.locator("#orderbook-tbody tr")
         .filter({ has: page.locator('.counterparty .cell-value:text-is("bonded1")') })
         .locator(".selection-probability");
-      const bondlessChance = page.locator("#orderbook-tbody tr", { hasText: "bondless0" })
+      const bondlessChance = page.locator("#orderbook-tbody tr")
+        .filter({ has: page.locator('.counterparty .cell-value:text-is("bondless0")') })
         .locator(".selection-probability");
       const feeChargingChance = page.locator(
         "#orderbook-tbody tr",

@@ -24,6 +24,13 @@ from jmcore.nick_auth import (
 from jmcore.protocol import FEATURE_NICK_AUTH, FEATURE_PEERLIST_FEATURES
 
 TEST_DIRECTORY_ID = "test:directory-a"
+VALID_MAKER_NICK = "J57wPBk1VfjSP5Te"
+VALID_MAKER_NICKS = (
+    VALID_MAKER_NICK,
+    "J57wPBk1VfjSP5Tf",
+    "J57wPBk1VfjSP5Tg",
+    "J57wPBk1VfjSP5Th",
+)
 
 
 def _handshake_response(*, nick_auth: bool = False) -> bytes:
@@ -764,7 +771,7 @@ async def test_privmsg_fidelity_bond_taker_nick():
     client.connection = AsyncMock()
 
     # Maker sending the offer
-    maker_nick = "MakerNick"
+    maker_nick = VALID_MAKER_NICK
     offer_msg = f"{maker_nick}!MyNick!sw0reloffer 0 1000 100000 500 0.001!tbond BOND_PROOF_BASE64"
 
     msg_data = {"type": MessageType.PRIVMSG.value, "line": offer_msg}
@@ -1125,7 +1132,9 @@ async def test_get_peerlist_with_features_buffers_unexpected_messages():
 # ---------------------------------------------------------------------------
 
 
-def _make_offer_msg(nick: str = "maker1", offer_type: str = "sw0reloffer") -> dict[str, Any]:
+def _make_offer_msg(
+    nick: str = VALID_MAKER_NICK, offer_type: str = "sw0reloffer"
+) -> dict[str, Any]:
     """Create a mock PUBMSG containing an offer."""
     # Absolute offers (absoffer) use integer satoshi fees; relative use float fractions
     cjfee = "1000" if "abs" in offer_type else "0.001"
@@ -1133,6 +1142,30 @@ def _make_offer_msg(nick: str = "maker1", offer_type: str = "sw0reloffer") -> di
         "type": MessageType.PUBMSG.value,
         "line": f"{nick}!PUBLIC!{offer_type} 0 750000 790107726787 500 {cjfee}",
     }
+
+
+def test_offer_parser_rejects_noncanonical_sender_nick() -> None:
+    client = DirectoryClient("host", 1234, "mainnet")
+    offer = "sw0reloffer 0 750000 790107726787 500 0.001"
+
+    assert (
+        client._parse_offer_from_message(
+            offer,
+            '<img src=x onerror="alert(1)">',
+            "PUBLIC",
+            MessageType.PUBMSG.value,
+        )
+        is None
+    )
+    assert (
+        client._parse_offer_from_message(
+            offer,
+            VALID_MAKER_NICK,
+            "PUBLIC",
+            MessageType.PUBMSG.value,
+        )
+        is not None
+    )
 
 
 def _make_non_offer_msg() -> dict[str, Any]:
@@ -1241,7 +1274,7 @@ async def test_adaptive_fetch_respects_max_wait():
         counter += 1
         # Always return an offer (never quiet)
         await asyncio.sleep(min(duration, 0.1))
-        return [_make_offer_msg(nick=f"maker{counter}")]
+        return [_make_offer_msg()]
 
     client.listen_for_messages = mock_listen  # type: ignore[assignment]
 
@@ -1303,10 +1336,10 @@ async def test_adaptive_fetch_counts_different_offer_types():
         call_count += 1
         if call_count == 1:
             return [
-                _make_offer_msg("maker1", "sw0reloffer"),
-                _make_offer_msg("maker2", "sw0absoffer"),
-                _make_offer_msg("maker3", "swreloffer"),
-                _make_offer_msg("maker4", "swabsoffer"),
+                _make_offer_msg(VALID_MAKER_NICKS[0], "sw0reloffer"),
+                _make_offer_msg(VALID_MAKER_NICKS[1], "sw0absoffer"),
+                _make_offer_msg(VALID_MAKER_NICKS[2], "swreloffer"),
+                _make_offer_msg(VALID_MAKER_NICKS[3], "swabsoffer"),
                 _make_non_offer_msg(),  # peerlist, not an offer
             ]
         await asyncio.sleep(duration)

@@ -71,6 +71,7 @@ ONION_VIRTUAL_PORT = 5222
 NOT_SERVING_ONION_HOSTNAME = "NOT-SERVING-ONION"
 NICK_HASH_LENGTH = 10
 NICK_MAX_ENCODED = 14
+_NICK_RE = re.compile(rf"J[0-9][1-9A-HJ-NP-Za-km-zO]{{{NICK_MAX_ENCODED}}}")
 
 # Feature flag constants
 FEATURE_NEUTRINO_COMPAT = "neutrino_compat"
@@ -243,6 +244,11 @@ def get_nick_version(nick: str) -> int:
     if nick and len(nick) >= 2 and nick[0] == "J" and nick[1].isdigit():
         return int(nick[1])
     return JM_VERSION
+
+
+def is_valid_nick(nick: str) -> bool:
+    """Return whether ``nick`` uses the canonical JMP-0001 wire format."""
+    return isinstance(nick, str) and _NICK_RE.fullmatch(nick) is not None
 
 
 @dataclass

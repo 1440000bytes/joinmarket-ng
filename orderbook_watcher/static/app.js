@@ -321,18 +321,25 @@ function findMatchingBond(offer) {
     ) || null;
 }
 
-function formatExpiredBondValue(value) {
-    const warning = 'Certificate expired; takers treat this maker as unbonded. ' +
-        'Restart the maker to renew the certificate.';
-    return `${formatNumber(Math.round(value))} ` +
-        `<span class="bond-expired-indicator" title="${warning}" aria-label="${warning}">!</span>`;
+function createBondStatusIndicator(className, symbol, warning) {
+    const indicator = document.createElement('span');
+    indicator.className = className;
+    indicator.title = warning;
+    indicator.setAttribute('aria-label', warning);
+    indicator.textContent = symbol;
+    return indicator;
 }
 
-function formatUnverifiedCertificateValue(value) {
+function createExpiredBondIndicator() {
+    const warning = 'Certificate expired; takers treat this maker as unbonded. ' +
+        'Restart the maker to renew the certificate.';
+    return createBondStatusIndicator('bond-expired-indicator', '!', warning);
+}
+
+function createUnverifiedCertificateIndicator() {
     const warning = 'Certificate expiry could not be verified; takers treat this maker as ' +
         'unbonded until block height is available.';
-    return `${formatNumber(Math.round(value))} ` +
-        `<span class="bond-unverified-indicator" title="${warning}" aria-label="${warning}">?</span>`;
+    return createBondStatusIndicator('bond-unverified-indicator', '?', warning);
 }
 
 // Advertised proof data counts only while its certificate is known to be active.
@@ -1248,6 +1255,21 @@ function formatTimeUntil(date) {
     }
 }
 
+function appendTableCell(row, label, text, className = '') {
+    const cell = document.createElement('td');
+    cell.dataset.label = label;
+    if (className) {
+        cell.className = className;
+    }
+
+    const value = document.createElement('span');
+    value.className = 'cell-value';
+    value.textContent = String(text);
+    cell.appendChild(value);
+    row.appendChild(cell);
+    return value;
+}
+
 function renderTable() {
     const tbody = document.getElementById('orderbook-tbody');
     const fragment = document.createDocumentFragment();
@@ -1264,6 +1286,7 @@ function renderTable() {
 
         let hasBond = '';
         let bondValue;
+        let bondIndicator = null;
         const matchingBond = findMatchingBond(offer);
         const economicBondValue = offer.fidelity_bond_value || matchingBond?.bond_value || 0;
         if (economicBondValue > 0 &&
@@ -1276,12 +1299,18 @@ function renderTable() {
             if (!hasActiveCertificate(offer.fidelity_bond_data)) {
                 if (Number.isSafeInteger(orderbookData.current_block_height)) {
                     bondValue = economicBondValue > 0
-                        ? formatExpiredBondValue(economicBondValue)
+                        ? formatNumber(Math.round(economicBondValue))
                         : 'Expired';
+                    if (economicBondValue > 0) {
+                        bondIndicator = createExpiredBondIndicator();
+                    }
                 } else {
                     bondValue = economicBondValue > 0
-                        ? formatUnverifiedCertificateValue(economicBondValue)
+                        ? formatNumber(Math.round(economicBondValue))
                         : 'Pending';
+                    if (economicBondValue > 0) {
+                        bondIndicator = createUnverifiedCertificateIndicator();
+                    }
                 }
             } else {
                 bondValue = bondAmount > 0 ? '0' : 'Pending';
@@ -1293,45 +1322,79 @@ function renderTable() {
         const directoryBadges = offer.directory_nodes.map(node => {
             const abbr = getDirectoryAbbreviation(node);
             const color = getDirectoryColor(node);
-            return `<span class="dir-badge" style="background-color: ${color}" title="${node}">${abbr}</span>`;
-        }).join('');
+            const badge = document.createElement('span');
+            badge.className = 'dir-badge';
+            badge.style.backgroundColor = color;
+            badge.title = node;
+            badge.textContent = abbr;
+            return badge;
+        });
 
         // Generate feature badges
         const features = offer.features || {};
         const featureKeys = Object.keys(features).filter(k => features[k]);
-        let featureBadges;
+        const featureBadges = [];
         if (featureKeys.length === 0) {
-            featureBadges = `<span class="feature-badge feature-legacy" title="Reference implementation (no features)">Ref</span>`;
+            const badge = document.createElement('span');
+            badge.className = 'feature-badge feature-legacy';
+            badge.title = 'Reference implementation (no features)';
+            badge.textContent = 'Ref';
+            featureBadges.push(badge);
         } else {
-            featureBadges = featureKeys.map(feature => {
+            featureKeys.forEach(feature => {
                 const displayName = getFeatureDisplayName(feature);
                 const color = FEATURE_COLORS[feature] || '#6e7681';
-                return `<span class="feature-badge" style="background-color: ${color}" title="${feature}">${displayName}</span>`;
-            }).join('');
+                const badge = document.createElement('span');
+                badge.className = 'feature-badge';
+                badge.style.backgroundColor = color;
+                badge.title = feature;
+                badge.textContent = displayName;
+                featureBadges.push(badge);
+            });
         }
 
         // Direct connection indicator: badge appears when we have successfully
         // reached this maker's onion address directly (issue #105). null means
         // not yet checked; false means a check ran and failed.
-        let directBadge = '';
+        let directBadge = null;
         if (offer.directly_reachable === true) {
-            directBadge = ' <span class="direct-badge direct-yes" title="Directly reachable via onion address">DIRECT</span>';
+            directBadge = document.createElement('span');
+            directBadge.className = 'direct-badge direct-yes';
+            directBadge.title = 'Directly reachable via onion address';
+            directBadge.textContent = 'DIRECT';
         } else if (offer.directly_reachable === false) {
-            directBadge = ' <span class="direct-badge direct-no" title="Direct connection attempted and failed">NO DIRECT</span>';
+            directBadge = document.createElement('span');
+            directBadge.className = 'direct-badge direct-no';
+            directBadge.title = 'Direct connection attempted and failed';
+            directBadge.textContent = 'NO DIRECT';
         }
 
-        row.innerHTML = `
-            <td data-label="Type" class="${typeClass}"><span class="cell-value">${OFFER_TYPE_NAMES[offer.ordertype]}</span></td>
-            <td data-label="Counterparty" class="counterparty"><span class="cell-value">${offer.counterparty}${directBadge}</span></td>
-            <td data-label="Order ID"><span class="cell-value">${offer.oid}</span></td>
-            <td data-label="Fee" class="${feeClass}"><span class="cell-value">${formatFee(offer)}</span></td>
-            <td data-label="Min Size"><span class="cell-value">${formatNumber(offer.minsize)}</span></td>
-            <td data-label="Max Size"><span class="cell-value">${formatNumber(offer.maxsize)}</span></td>
-            <td data-label="Pick Chance" class="selection-probability" title="${selectionProbability.title}"><span class="cell-value">${selectionProbability.text}</span></td>
-            <td data-label="Bond Value" class="${hasBond}"><span class="cell-value">${bondValue}</span></td>
-            <td data-label="Features" class="feature-badges"><span class="cell-value">${featureBadges}</span></td>
-            <td data-label="Directories" class="directory-badges"><span class="cell-value">${directoryBadges}</span></td>
-        `;
+        appendTableCell(row, 'Type', OFFER_TYPE_NAMES[offer.ordertype], typeClass);
+        const counterpartyValue = appendTableCell(
+            row, 'Counterparty', offer.counterparty, 'counterparty'
+        );
+        if (directBadge) {
+            counterpartyValue.appendChild(document.createTextNode(' '));
+            counterpartyValue.appendChild(directBadge);
+        }
+        appendTableCell(row, 'Order ID', offer.oid);
+        appendTableCell(row, 'Fee', formatFee(offer), feeClass);
+        appendTableCell(row, 'Min Size', formatNumber(offer.minsize));
+        appendTableCell(row, 'Max Size', formatNumber(offer.maxsize));
+        const probabilityValue = appendTableCell(
+            row, 'Pick Chance', selectionProbability.text, 'selection-probability'
+        );
+        probabilityValue.parentElement.title = selectionProbability.title;
+        const bondValueElement = appendTableCell(row, 'Bond Value', bondValue, hasBond);
+        if (bondIndicator) {
+            bondValueElement.appendChild(document.createTextNode(' '));
+            bondValueElement.appendChild(bondIndicator);
+        }
+
+        const featureValue = appendTableCell(row, 'Features', '', 'feature-badges');
+        featureBadges.forEach(badge => featureValue.appendChild(badge));
+        const directoryValue = appendTableCell(row, 'Directories', '', 'directory-badges');
+        directoryBadges.forEach(badge => directoryValue.appendChild(badge));
 
         if (offer.fidelity_bond_data) {
             const bondCell = row.querySelector('.bond-value-clickable');
