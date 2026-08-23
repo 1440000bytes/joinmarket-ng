@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.37.1] - 2026-08-23
+
+Multiple fixes and security hardening.
+
+### Fixed
+
+- Avoid duplicate maker mempool notifications after restart and identify sent notification events in INFO logs ([8c3f3175](../../commit/8c3f31753b6659a03b867b6a8ac6b6e6b65552bf))
+- Stop dropping working makers when restoring the requested CoinJoin counterparty count ([2a0b769a](../../commit/2a0b769a425a90bac96200e80118643b0a54fc62))
+- Avoid duplicate auth requests during Neutrino maker replacement ([7630bc76](../../commit/7630bc76cd1c2fc119ace8dd7ddc7251f86df133))
+- Rotate disclosed PoDLE commitments for auth-stage maker replacements ([d0ada08e](../../commit/d0ada08e9759c732d9d56a01fe105082486fc9fd))
+- Prevent malicious directory offer data from injecting HTML into the orderbook watcher ([54ad0ff3](../../commit/54ad0ff34a454622775f74917f9a1856296a21a5))
+- Avoid blacklisting makers when Neutrino UTXO lookups are temporarily unavailable ([c4c9f1f7](../../commit/c4c9f1f7bf871ad14cd2cecf0b3cf2d85cc1e2eb))
+
+### Configuration Changes
+
+This release did not change the bundled `config.toml.template`.
+
 ## [0.37.0] - 2026-08-21
 
 Big performance improvements for wallet commands, direct-send and taker CJ coin control, PSBT signing, fidelity bond status tracking, better md0 protections to not harm makers' liquidity, plus a few bug fixes.
@@ -3711,7 +3728,8 @@ This release did not change the bundled `config.toml.template`.
 - Pre-built image support for directory server compose.
 - Tor configuration instructions.
 
-[Unreleased]: ../../compare/0.37.0...HEAD
+[Unreleased]: ../../compare/0.37.1...HEAD
+[0.37.1]: ../../compare/0.37.0...0.37.1
 [0.37.0]: ../../compare/0.36.0...0.37.0
 [0.36.0]: ../../compare/0.35.0...0.36.0
 [0.35.0]: ../../compare/0.34.2...0.35.0
