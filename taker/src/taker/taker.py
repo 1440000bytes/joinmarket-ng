@@ -1397,9 +1397,8 @@ class Taker(TakerMonitoringMixin):
         logger.info("Phase 2: Sending !auth and receiving !ioauth...")
 
         auth_replacement_attempt = 0
-        # Nicks that failed at any point during this auth stage (incompatible,
-        # no/invalid !ioauth, failed replacement mini-fill). Hard-excluded from
-        # re-selection so the same maker is never retried within this round.
+        # Nicks that failed or could not be verified during this auth stage are
+        # hard-excluded from re-selection so no auth session or PoDLE proof is replayed.
         failed_nicks: set[str] = set()
         target_makers = max(self._session.maker_target_count, self.config.minimum_makers)
         while True:
@@ -1413,6 +1412,12 @@ class Taker(TakerMonitoringMixin):
                 self.orderbook_manager.add_ignored_maker(failed_nick)
                 failed_nicks.add(failed_nick)
                 logger.debug(f"Added {failed_nick} to ignored makers (failed auth)")
+            for unavailable_nick in auth_result.unavailable_makers:
+                failed_nicks.add(unavailable_nick)
+                logger.debug(
+                    f"Hard-excluded {unavailable_nick} for this round "
+                    "(UTXO verification unavailable)"
+                )
 
             # A successful floor-level auth still needs target restoration. A
             # failed auth can only be recovered when it identified makers to replace.

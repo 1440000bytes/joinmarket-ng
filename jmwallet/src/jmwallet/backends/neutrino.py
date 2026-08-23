@@ -59,6 +59,10 @@ class NeutrinoNetworkMismatchError(Exception):
     """Raised when the neutrino server is serving a different network."""
 
 
+class _UTXOVerificationUnavailableError(Exception):
+    """Raised when a single-outpoint verification cannot reach the backend."""
+
+
 @dataclass
 class ServerCapabilities:
     """Detected capabilities of the neutrino-api server.
@@ -120,6 +124,12 @@ class NeutrinoBackend(BlockchainBackend):
     _INITIAL_RESCAN_TIMEOUT_SECONDS: float = 1800.0
     _ONGOING_INITIAL_RESCAN_CHECK_TIMEOUT_SECONDS: float = 30.0
     _TRIVIAL_RESCAN_BLOCKS: int = 1000
+    _UTXO_VERIFICATION_ATTEMPTS: int = 3
+    # New neutrino-api servers budget 25 seconds for a lookup, then finish the
+    # current bounded peer query before returning. Leave enough client time to
+    # receive that retryable response while still bounding older servers.
+    _UTXO_VERIFICATION_ATTEMPT_TIMEOUT_SECONDS: float = 65.0
+    _UTXO_VERIFICATION_RETRYABLE_STATUS_CODES: frozenset[int] = frozenset({408, 425, 429})
 
     def __init__(
         self,
@@ -696,10 +706,10 @@ class NeutrinoBackend(BlockchainBackend):
             if status_code == 404 or status_code in expected:
                 logger.debug(f"Neutrino API returned {status_code}: {endpoint}")
             else:
-                logger.error(f"Neutrino API call failed: {endpoint} - {e}")
+                logger.error(f"Neutrino API call failed: {endpoint} - {type(e).__name__}: {e}")
             raise
         except httpx.HTTPError as e:
-            logger.error(f"Neutrino API call failed: {endpoint} - {e}")
+            logger.error(f"Neutrino API call failed: {endpoint} - {type(e).__name__}: {e}")
             raise
 
     async def _wait_for_rescan(
@@ -1802,7 +1812,16 @@ class NeutrinoBackend(BlockchainBackend):
         enforce_rescan_depth: bool,
     ) -> UTXOVerificationResult:
         # Security: Validate blockheight to prevent rescan abuse
-        tip_height = await self.get_block_height()
+        try:
+            tip_height = await self.get_block_height()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            return UTXOVerificationResult(
+                valid=False,
+                error=f"Could not get chain tip while verifying UTXO: {exc}",
+                conclusive=False,
+            )
 
         if blockheight < self._min_valid_blockheight:
             return UTXOVerificationResult(
@@ -1854,21 +1873,22 @@ class NeutrinoBackend(BlockchainBackend):
             # We use blockheight - 1 as a safety margin in case of reorgs
             start_height = max(0, blockheight - 1)
 
-            result = await self._api_call(
-                "GET",
-                f"v1/utxo/{txid}/{vout}",
-                params={
-                    "address": address,
-                    "start_height": start_height,
-                    # Mempool overlay matters here: a confirmed UTXO with a
-                    # pending spend is not safe to treat as available, even
-                    # though the chain still reports it unspent.
-                    **({"include_mempool": "false"} if not self.include_mempool else {}),
-                },
+            result = await self._get_utxo_verification_response(
+                txid=txid,
+                vout=vout,
+                address=address,
+                start_height=start_height,
             )
 
+            if not isinstance(result.get("unspent"), bool):
+                return UTXOVerificationResult(
+                    valid=False,
+                    error="UTXO response is missing a valid unspent status",
+                    conclusive=False,
+                )
+
             # Check if UTXO is unspent
-            if not result.get("unspent", False):
+            if not result["unspent"]:
                 spending_txid = result.get("spending_txid", "unknown")
                 spending_height = result.get("spending_height", "unknown")
                 return UTXOVerificationResult(
@@ -1909,6 +1929,7 @@ class NeutrinoBackend(BlockchainBackend):
                     valid=False,
                     value=result.get("value", 0),
                     error="UTXO response is missing a confirmed block height",
+                    conclusive=False,
                 )
             tip_height = await self.get_block_height()
             if actual_blockheight > tip_height:
@@ -1918,6 +1939,7 @@ class NeutrinoBackend(BlockchainBackend):
                     error=(
                         f"UTXO block height {actual_blockheight} is above chain tip {tip_height}"
                     ),
+                    conclusive=False,
                 )
             confirmations = tip_height - actual_blockheight + 1
 
@@ -1933,6 +1955,8 @@ class NeutrinoBackend(BlockchainBackend):
                 scriptpubkey_matches=True,
             )
 
+        except _UTXOVerificationUnavailableError as exc:
+            return UTXOVerificationResult(valid=False, error=str(exc), conclusive=False)
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
                 return UTXOVerificationResult(
@@ -1942,12 +1966,77 @@ class NeutrinoBackend(BlockchainBackend):
             return UTXOVerificationResult(
                 valid=False,
                 error=f"UTXO query failed: {e}",
+                conclusive=False,
             )
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             return UTXOVerificationResult(
                 valid=False,
                 error=f"Verification failed: {e}",
+                conclusive=False,
             )
+
+    async def _get_utxo_verification_response(
+        self,
+        *,
+        txid: str,
+        vout: int,
+        address: str,
+        start_height: int,
+    ) -> dict[str, Any]:
+        """Fetch one UTXO with bounded retries for transient backend failures."""
+        endpoint = f"v1/utxo/{txid}/{vout}"
+        params = {
+            "address": address,
+            "start_height": start_height,
+            # Mempool overlay matters here: a confirmed UTXO with a pending spend
+            # is not safe to treat as available, even though the chain reports it unspent.
+            **({"include_mempool": "false"} if not self.include_mempool else {}),
+        }
+        last_error: BaseException | None = None
+
+        for attempt in range(1, self._UTXO_VERIFICATION_ATTEMPTS + 1):
+            try:
+                response = await asyncio.wait_for(
+                    self._api_call("GET", endpoint, params=params),
+                    timeout=self._UTXO_VERIFICATION_ATTEMPT_TIMEOUT_SECONDS,
+                )
+                if not isinstance(response, dict):
+                    raise _UTXOVerificationUnavailableError(
+                        "UTXO query returned an invalid response"
+                    )
+                return response
+            except asyncio.CancelledError:
+                raise
+            except httpx.HTTPStatusError as exc:
+                status_code = exc.response.status_code
+                if (
+                    status_code not in self._UTXO_VERIFICATION_RETRYABLE_STATUS_CODES
+                    and not 500 <= status_code < 600
+                ):
+                    raise
+                last_error = exc
+            except (TimeoutError, httpx.TransportError) as exc:
+                last_error = exc
+
+            if attempt < self._UTXO_VERIFICATION_ATTEMPTS:
+                logger.warning(
+                    "UTXO query {}/{} failed transiently on attempt {}/{}: {}: {}",
+                    txid,
+                    vout,
+                    attempt,
+                    self._UTXO_VERIFICATION_ATTEMPTS,
+                    type(last_error).__name__,
+                    last_error,
+                )
+                await asyncio.sleep(float(attempt))
+
+        raise _UTXOVerificationUnavailableError(
+            f"UTXO verification backend unavailable after "
+            f"{self._UTXO_VERIFICATION_ATTEMPTS} attempts: "
+            f"{type(last_error).__name__}: {last_error}"
+        )
 
     def _scriptpubkey_to_address(self, scriptpubkey: str) -> str | None:
         """Convert a scriptPubKey hex string to a Bitcoin address."""

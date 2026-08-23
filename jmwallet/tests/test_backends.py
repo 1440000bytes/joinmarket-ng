@@ -2,8 +2,10 @@
 Integration tests for DescriptorWalletBackend and NeutrinoBackend
 """
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from jmwallet.backends.base import BlockchainBackend, BondVerificationRequest, Transaction
@@ -2455,6 +2457,7 @@ class TestNeutrinoBackend:
             )
             assert result.valid is False
             assert "confirmed block height" in (result.error or "")
+            assert result.unavailable is True
         finally:
             await backend.close()
 
@@ -2491,6 +2494,152 @@ class TestNeutrinoBackend:
             ]
             assert len(calls) == 1
             assert calls[0][1]["params"].get("include_mempool") == "false"
+        finally:
+            await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_verify_utxo_retries_transient_failure_then_succeeds(self):
+        backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="regtest")
+        scriptpubkey = "0014" + "00" * 20
+        backend.get_block_height = AsyncMock(return_value=800010)
+        backend._api_call = AsyncMock(
+            side_effect=[
+                httpx.ReadTimeout("temporary timeout"),
+                {
+                    "unspent": True,
+                    "value": 100000,
+                    "scriptpubkey": scriptpubkey,
+                    "block_height": 800000,
+                },
+            ]
+        )
+
+        try:
+            with patch("jmwallet.backends.neutrino.asyncio.sleep", new_callable=AsyncMock):
+                result = await backend.verify_utxo_with_metadata(
+                    txid="a" * 64,
+                    vout=0,
+                    scriptpubkey=scriptpubkey,
+                    blockheight=800000,
+                )
+            assert result.valid is True
+            assert result.conclusive is True
+            assert backend._api_call.await_count == 2
+        finally:
+            await backend.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failure", ["timeout", "transport", "retryable_status"])
+    async def test_verify_utxo_marks_transient_exhaustion_unavailable(self, failure: str):
+        backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="regtest")
+        scriptpubkey = "0014" + "00" * 20
+        backend.get_block_height = AsyncMock(return_value=800010)
+        if failure == "timeout":
+            error: BaseException = TimeoutError()
+        elif failure == "transport":
+            error = httpx.ConnectError("offline")
+        else:
+            request = httpx.Request("GET", "http://localhost:8334/v1/utxo/test/0")
+            error = httpx.HTTPStatusError(
+                "overloaded", request=request, response=httpx.Response(503, request=request)
+            )
+        backend._api_call = AsyncMock(side_effect=error)
+
+        try:
+            with patch("jmwallet.backends.neutrino.asyncio.sleep", new_callable=AsyncMock):
+                result = await backend.verify_utxo_with_metadata(
+                    txid="a" * 64,
+                    vout=0,
+                    scriptpubkey=scriptpubkey,
+                    blockheight=800000,
+                )
+            assert result.valid is False
+            assert result.unavailable is True
+            assert backend._api_call.await_count == backend._UTXO_VERIFICATION_ATTEMPTS
+        finally:
+            await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_verify_utxo_preserves_cancellation(self):
+        backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="regtest")
+        backend.get_block_height = AsyncMock(return_value=800010)
+        backend._api_call = AsyncMock(side_effect=asyncio.CancelledError)
+
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                await backend.verify_utxo_with_metadata(
+                    txid="a" * 64,
+                    vout=0,
+                    scriptpubkey="0014" + "00" * 20,
+                    blockheight=800000,
+                )
+        finally:
+            await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_verify_utxo_treats_not_found_as_conclusive(self):
+        backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="regtest")
+        request = httpx.Request("GET", "http://localhost:8334/v1/utxo/test/0")
+        backend.get_block_height = AsyncMock(return_value=800010)
+        backend._api_call = AsyncMock(
+            side_effect=httpx.HTTPStatusError(
+                "not found", request=request, response=httpx.Response(404, request=request)
+            )
+        )
+
+        try:
+            result = await backend.verify_utxo_with_metadata(
+                txid="a" * 64,
+                vout=0,
+                scriptpubkey="0014" + "00" * 20,
+                blockheight=800000,
+            )
+            assert result.valid is False
+            assert result.conclusive is True
+            assert result.unavailable is False
+            backend._api_call.assert_awaited_once()
+        finally:
+            await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_verify_utxo_treats_api_rejection_as_unavailable(self):
+        backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="regtest")
+        request = httpx.Request("GET", "http://localhost:8334/v1/utxo/test/0")
+        backend.get_block_height = AsyncMock(return_value=800010)
+        backend._api_call = AsyncMock(
+            side_effect=httpx.HTTPStatusError(
+                "unauthorized", request=request, response=httpx.Response(401, request=request)
+            )
+        )
+
+        try:
+            result = await backend.verify_utxo_with_metadata(
+                txid="a" * 64,
+                vout=0,
+                scriptpubkey="0014" + "00" * 20,
+                blockheight=800000,
+            )
+            assert result.valid is False
+            assert result.unavailable is True
+            backend._api_call.assert_awaited_once()
+        finally:
+            await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_verify_utxo_requires_explicit_unspent_status(self):
+        backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="regtest")
+        backend.get_block_height = AsyncMock(return_value=800010)
+        backend._api_call = AsyncMock(return_value={"value": 100000})
+
+        try:
+            result = await backend.verify_utxo_with_metadata(
+                txid="a" * 64,
+                vout=0,
+                scriptpubkey="0014" + "00" * 20,
+                blockheight=800000,
+            )
+            assert result.valid is False
+            assert result.unavailable is True
         finally:
             await backend.close()
 

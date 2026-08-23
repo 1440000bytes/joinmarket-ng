@@ -74,6 +74,12 @@ class UTXOVerificationResult:
     confirmations: int = 0
     error: str | None = None
     scriptpubkey_matches: bool = False
+    conclusive: bool = True
+
+    @property
+    def unavailable(self) -> bool:
+        """Whether verification failed without reaching a chain conclusion."""
+        return not self.valid and not self.conclusive
 
 
 @dataclass

@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import secrets
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from jmcore.bitcoin import get_txid, pubkey_to_p2wpkh_script
@@ -55,6 +56,14 @@ if TYPE_CHECKING:
     from taker.config import TakerConfig
     from taker.multi_directory import MultiDirectoryClient
     from taker.taker import Taker
+
+
+@dataclass(frozen=True)
+class _MakerUTXOVerificationOutcome:
+    """Fail-closed result that separates bad maker data from backend outages."""
+
+    error: str | None = None
+    unavailable: bool = False
 
 
 class CoinJoinSession:
@@ -727,6 +736,7 @@ class CoinJoinSession:
         # Track failed makers for potential replacement, seeded with the makers
         # already dropped for incompatibility so they are ignored going forward.
         failed_makers: list[str] = list(incompatible_makers)
+        unavailable_makers: list[str] = []
 
         # Process responses
         # Maker sends !ioauth as ENCRYPTED space-separated:
@@ -827,12 +837,13 @@ class CoinJoinSession:
                         session.supports_neutrino_compat = True
                         logger.debug(f"Maker {nick} sent extended UTXO format (neutrino_compat)")
 
-                    failure_reason = await self._verify_maker_utxos(
-                        nick, session, utxo_metadata_list
-                    )
-                    if failure_reason is not None:
-                        logger.warning(f"Dropping maker {nick}: {failure_reason}")
-                        failed_makers.append(nick)
+                    verification = await self._verify_maker_utxos(nick, session, utxo_metadata_list)
+                    if verification.error is not None:
+                        logger.warning(f"Dropping maker {nick}: {verification.error}")
+                        if verification.unavailable:
+                            unavailable_makers.append(nick)
+                        else:
+                            failed_makers.append(nick)
                         del self.maker_sessions[nick]
                         continue
 
@@ -917,12 +928,14 @@ class CoinJoinSession:
             return PhaseResult(
                 success=False,
                 failed_makers=failed_makers,
+                unavailable_makers=unavailable_makers,
                 podle_revealed=podle_revealed,
             )
 
         return PhaseResult(
             success=True,
             failed_makers=failed_makers,
+            unavailable_makers=unavailable_makers,
             podle_revealed=podle_revealed,
         )
 
@@ -931,7 +944,7 @@ class CoinJoinSession:
         nick: str,
         session: MakerSession,
         utxo_metadata_list: list[UTXOMetadata],
-    ) -> str | None:
+    ) -> _MakerUTXOVerificationOutcome:
         """Verify a maker's declared UTXOs on-chain, populating ``session.utxos``.
 
         Every outpoint must be unique within the maker's own list (duplicates
@@ -943,7 +956,8 @@ class CoinJoinSession:
         value instead would let a single bad maker abort the whole round at
         tx-build time.
 
-        Returns None on success, or a human-readable failure reason.
+        Returns a fail-closed outcome. Backend unavailability is distinct from
+        conclusive invalid maker data so callers do not blacklist honest makers.
         """
         declared_outpoints: set[tuple[str, int]] = set()
         for utxo_meta in utxo_metadata_list:
@@ -954,7 +968,7 @@ class CoinJoinSession:
             # An outpoint listed twice would put a duplicate input in
             # the transaction, which is consensus-invalid.
             if (txid, vout) in declared_outpoints:
-                return f"declared duplicate input {txid}:{vout}"
+                return _MakerUTXOVerificationOutcome(f"declared duplicate input {txid}:{vout}")
             declared_outpoints.add((txid, vout))
 
             try:
@@ -967,11 +981,12 @@ class CoinJoinSession:
                         blockheight=utxo_meta.blockheight,  # type: ignore
                     )
                     if not result.valid:
-                        return (
-                            f"Neutrino UTXO verification failed for {txid}:{vout}: {result.error}"
+                        return _MakerUTXOVerificationOutcome(
+                            f"Neutrino UTXO verification failed for {txid}:{vout}: {result.error}",
+                            unavailable=result.unavailable,
                         )
                     if result.confirmations <= 0:
-                        return f"UTXO {txid}:{vout} is unconfirmed"
+                        return _MakerUTXOVerificationOutcome(f"UTXO {txid}:{vout} is unconfirmed")
                     value = result.value
                     address = ""  # Not available from verification
                     scriptpubkey = utxo_meta.scriptpubkey or ""
@@ -980,14 +995,20 @@ class CoinJoinSession:
                     # Full node: direct UTXO lookup.
                     utxo_info = await self.backend.get_utxo(txid, vout)
                     if utxo_info is None:
-                        return f"UTXO {txid}:{vout} is spent or does not exist"
+                        return _MakerUTXOVerificationOutcome(
+                            f"UTXO {txid}:{vout} is spent or does not exist"
+                        )
                     if utxo_info.confirmations <= 0:
-                        return f"UTXO {txid}:{vout} is unconfirmed"
+                        return _MakerUTXOVerificationOutcome(f"UTXO {txid}:{vout} is unconfirmed")
                     value = utxo_info.value
                     address = utxo_info.address
                     scriptpubkey = utxo_info.scriptpubkey or ""
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
-                return f"error verifying UTXO {txid}:{vout}: {e}"
+                return _MakerUTXOVerificationOutcome(
+                    f"error verifying UTXO {txid}:{vout}: {e}", unavailable=True
+                )
 
             session.utxos.append(
                 {
@@ -1001,7 +1022,7 @@ class CoinJoinSession:
             )
             logger.debug(f"Added UTXO from {nick}: {txid}:{vout} = {value} sats")
 
-        return None
+        return _MakerUTXOVerificationOutcome()
 
     def _parse_utxos(self, utxos_dict: dict[str, Any]) -> list[dict[str, Any]]:
         """Parse UTXO data from !ioauth response."""

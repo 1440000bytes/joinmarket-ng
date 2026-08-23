@@ -11,6 +11,7 @@ Tests:
 
 from __future__ import annotations
 
+import asyncio
 import base64
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
@@ -2196,7 +2197,7 @@ class TestPhaseAuthMakerAuthentication:
         from coincurve import PrivateKey
         from jmcore.bitcoin import pubkey_to_p2wpkh_script
         from jmcore.crypto import ecdsa_sign
-        from jmwallet.backends.base import UTXO
+        from jmwallet.backends.base import UTXO, UTXOVerificationResult
 
         from taker.coinjoin_session import CoinJoinSession
 
@@ -2230,8 +2231,11 @@ class TestPhaseAuthMakerAuthentication:
         signer = auth_key if valid_btc_sig else PrivateKey()
         btc_sig = ecdsa_sign(maker_nacl_pk_hex, signer.secret)
 
+        is_neutrino_unavailable = backend_utxo == "unavailable"
         if utxo_list_override is not None:
             utxo_list = utxo_list_override
+        elif is_neutrino_unavailable:
+            utxo_list = f"{txid}:{vout}:{stored_spk}:1"
         else:
             extra = ",".join(f"{i:064x}:{vout}" for i in range(declared_utxos - 1))
             utxo_list = f"{txid}:{vout}" + (f",{extra}" if extra else "")
@@ -2239,7 +2243,12 @@ class TestPhaseAuthMakerAuthentication:
         encrypted = maker_crypto.encrypt(ioauth)
 
         nick = "J5maker"
-        session = MakerSession(nick=nick, offer=offer, pubkey=maker_nacl_pk_hex)
+        session = MakerSession(
+            nick=nick,
+            offer=offer,
+            pubkey=maker_nacl_pk_hex,
+            supports_neutrino_compat=is_neutrino_unavailable,
+        )
         object.__setattr__(session, "crypto", taker_crypto)
 
         with patch.object(Taker, "__init__", lambda self, *a, **k: None):
@@ -2248,7 +2257,9 @@ class TestPhaseAuthMakerAuthentication:
             taker._session.attach(taker)
             taker.wallet = MagicMock()
             taker.backend = AsyncMock()
-            taker.backend.requires_neutrino_metadata = MagicMock(return_value=False)
+            taker.backend.requires_neutrino_metadata = MagicMock(
+                return_value=is_neutrino_unavailable
+            )
             if backend_utxo == "spent":
                 taker.backend.get_utxo = AsyncMock(return_value=None)
             elif backend_utxo == "unconfirmed":
@@ -2275,6 +2286,14 @@ class TestPhaseAuthMakerAuthentication:
                 )
             elif backend_utxo == "error":
                 taker.backend.get_utxo = AsyncMock(side_effect=RuntimeError("backend down"))
+            elif backend_utxo == "cancelled":
+                taker.backend.get_utxo = AsyncMock(side_effect=asyncio.CancelledError)
+            elif is_neutrino_unavailable:
+                taker.backend.verify_utxo_with_metadata = AsyncMock(
+                    return_value=UTXOVerificationResult(
+                        valid=False, error="backend unavailable", conclusive=False
+                    )
+                )
             else:
                 taker.backend.get_utxo = AsyncMock(
                     return_value=UTXO(
@@ -2436,8 +2455,8 @@ class TestPhaseAuthMakerAuthentication:
         assert nick in session_state.maker_sessions
 
     @pytest.mark.asyncio
-    async def test_rejects_maker_when_backend_lookup_fails(self):
-        """A backend error must not be treated as a zero-value UTXO.
+    async def test_marks_maker_unavailable_when_full_node_lookup_fails(self):
+        """A backend error must fail closed without blaming the maker.
 
         Zero-crediting used to push the failure to tx-build time, where one
         bad maker aborted the whole round instead of being dropped.
@@ -2447,7 +2466,26 @@ class TestPhaseAuthMakerAuthentication:
         )
         assert result.success is False
         assert nick not in session_state.maker_sessions
-        assert nick in result.failed_makers
+        assert nick in result.unavailable_makers
+        assert nick not in result.failed_makers
+
+    @pytest.mark.asyncio
+    async def test_marks_maker_unavailable_when_neutrino_cannot_verify(self):
+        result, session_state, nick = await self._drive_phase_auth(
+            auth_owns_utxo=True, valid_btc_sig=True, backend_utxo="unavailable"
+        )
+
+        assert result.success is False
+        assert nick not in session_state.maker_sessions
+        assert result.unavailable_makers == [nick]
+        assert result.failed_makers == []
+
+    @pytest.mark.asyncio
+    async def test_preserves_backend_verification_cancellation(self):
+        with pytest.raises(asyncio.CancelledError):
+            await self._drive_phase_auth(
+                auth_owns_utxo=True, valid_btc_sig=True, backend_utxo="cancelled"
+            )
 
     @pytest.mark.asyncio
     async def test_rejects_maker_declaring_same_outpoint_twice(self):
@@ -3181,6 +3219,51 @@ class TestReplacementTargetRestoration:
         assert below_floor_ok is False
         assert below_floor_taker.state is TakerState.FAILED
         assert below_floor_taker._session.last_failure_reason is not None
+
+    @pytest.mark.asyncio
+    async def test_auth_hard_excludes_unavailable_maker_without_ignoring(self):
+        taker = self._make_taker(minimum_makers=1, target_makers=2, current_makers=1)
+        survivor = next(iter(taker._session.maker_sessions.values()))
+        survivor.responded_auth = True
+        taker._session.podle_commitment = MagicMock()
+        taker._session.preselected_utxos = [MagicMock()]
+        taker.podle_manager = MagicMock()
+        taker.podle_manager.generate_fresh_commitment.return_value = MagicMock()
+        taker._session._phase_auth = AsyncMock(
+            side_effect=[
+                PhaseResult(
+                    success=True,
+                    unavailable_makers=["J5unavailable"],
+                    podle_revealed=True,
+                ),
+                PhaseResult(success=True),
+            ]
+        )
+        taker.orderbook_manager.select_makers.return_value = (
+            self._replacement_offers("J5replacement"),
+            0,
+        )
+
+        async def mini_fill(replacement_offers, failed_nicks):
+            for nick, offer in replacement_offers.items():
+                taker._session.maker_sessions[nick] = MakerSession(nick=nick, offer=offer)
+            return True
+
+        taker._fill_replacement_makers = AsyncMock(side_effect=mini_fill)
+
+        ok = await taker._run_auth_with_replacements(
+            required_features=None,
+            get_private_key=MagicMock(),
+            max_replacement_attempts=1,
+        )
+
+        assert ok is True
+        taker.orderbook_manager.add_ignored_maker.assert_not_called()
+        assert (
+            "J5unavailable"
+            in taker.orderbook_manager.select_makers.call_args.kwargs["hard_exclude_nicks"]
+        )
+        assert "J5replacement" in taker._session.maker_sessions
 
     @pytest.mark.asyncio
     async def test_auth_replacement_rotates_revealed_commitment_before_mini_fill(self):
