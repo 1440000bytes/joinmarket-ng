@@ -716,6 +716,40 @@ test.describe("fidelity bond certificate expiry", () => {
     }
   });
 
+  test("bond warning stays attached to its value on narrow screens", async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 800 });
+    const server = await openChart(page, bondPayload(BOND_EXPIRY + 1));
+    try {
+      const bondValue = page.locator(".bond-value-clickable > .cell-value");
+      const warning = page.locator(".bond-expired-indicator");
+      await expect(warning).toBeVisible();
+
+      const layout = await bondValue.evaluate(element => {
+        const textNode = element.firstChild;
+        const indicator = element.querySelector(".bond-expired-indicator");
+        if (!textNode || !indicator) throw new Error("Bond value layout is incomplete");
+        const textRange = document.createRange();
+        textRange.selectNodeContents(textNode);
+        const textRect = textRange.getBoundingClientRect();
+        const indicatorRect = indicator.getBoundingClientRect();
+        return {
+          textRight: textRect.right,
+          textTop: textRect.top,
+          indicatorLeft: indicatorRect.left,
+          indicatorTop: indicatorRect.top,
+          clientWidth: document.documentElement.clientWidth,
+          scrollWidth: document.documentElement.scrollWidth,
+        };
+      });
+
+      expect(layout.indicatorLeft).toBeGreaterThanOrEqual(layout.textRight);
+      expect(Math.abs(layout.indicatorTop - layout.textTop)).toBeLessThanOrEqual(4);
+      expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth);
+    } finally {
+      server.close();
+    }
+  });
+
   test("modal amount matches the complete script claim", async ({ page }) => {
     const body = bondPayload(BOND_EXPIRY) as any;
     body.fidelitybonds.unshift({

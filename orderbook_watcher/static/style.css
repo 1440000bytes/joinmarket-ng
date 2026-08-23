@@ -701,16 +701,20 @@ tbody tr:hover {
     color: #79c0ff;
 }
 
-.bond-expired-indicator {
+.bond-value-clickable > .cell-value {
+    white-space: nowrap;
+}
+
+.bond-expired-indicator,
+.bond-unverified-indicator {
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    flex: 0 0 16px;
     width: 16px;
     height: 16px;
     margin-left: 3px;
-    border: 1px solid #d29922;
     border-radius: 50%;
-    color: #d29922;
     font-size: 11px;
     font-weight: 700;
     line-height: 1;
@@ -718,21 +722,14 @@ tbody tr:hover {
     vertical-align: text-bottom;
 }
 
+.bond-expired-indicator {
+    border: 1px solid #d29922;
+    color: #d29922;
+}
+
 .bond-unverified-indicator {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 16px;
-    height: 16px;
-    margin-left: 3px;
     border: 1px solid #58a6ff;
-    border-radius: 50%;
     color: #58a6ff;
-    font-size: 11px;
-    font-weight: 700;
-    line-height: 1;
-    text-decoration: none;
-    vertical-align: text-bottom;
 }
 
 /* Bond Verification Summary */
