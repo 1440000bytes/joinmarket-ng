@@ -799,6 +799,9 @@ class TestNeutrinoCoinJoin:
             counterparty_count=1,  # Only need 1 maker for this test
             minimum_makers=1,  # Allow single maker CoinJoin
             taker_utxo_age=required_utxo_confirmations,
+            # Neutrino has no local fee estimator. Use a rate above the Docker
+            # Core makers' 20 sat/vB fallback floor so they will sign the tx.
+            fee_rate=25.0,
             # Docker makers advertise nonzero fees without fidelity bonds.
             bondless_makers_allowance_require_zero_fee=False,
             # NOT_SELF is the policy this test actually asserts: a neutrino taker

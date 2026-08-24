@@ -275,14 +275,14 @@ class TestTakerFeeResolution:
             mnemonic=mnemonic,
             network=NetworkType.TESTNET,
             directory_servers=["127.0.0.1:5222"],
-            fee_rate=2.5,  # Manual fee rate
+            fee_rate=100.0,  # Manual fee rate above the regtest node floor
         )
 
         taker = Taker(wallet=wallet, backend=bitcoin_backend, config=config)
 
         fee_rate = await taker._session._resolve_fee_rate()
 
-        assert fee_rate == 2.5, f"Expected manual fee rate 2.5, got {fee_rate}"
+        assert fee_rate == 100.0, f"Expected manual fee rate 100.0, got {fee_rate}"
         logger.info(f"Taker using manual fee rate: {fee_rate} sat/vB")
 
     async def test_taker_uses_block_target(self, bitcoin_backend):
@@ -318,8 +318,8 @@ class TestTakerFeeResolution:
         assert fee_rate > 0
         logger.info(f"Taker resolved fee rate with 6-block target: {fee_rate} sat/vB")
 
-    async def test_taker_sub_sat_fee_rate(self, bitcoin_backend):
-        """Test that Taker supports sub-1 sat/vB fee rates."""
+    async def test_taker_rejects_sub_sat_fee_rate(self, bitcoin_backend):
+        """Test that Taker rejects a manual rate below the node-derived floor."""
         from jmcore.models import NetworkType
         from jmwallet.wallet.service import WalletService
         from taker.config import TakerConfig
@@ -345,18 +345,8 @@ class TestTakerFeeResolution:
 
         taker = Taker(wallet=wallet, backend=bitcoin_backend, config=config)
 
-        fee_rate = await taker._session._resolve_fee_rate()
-
-        assert fee_rate == 0.5, f"Expected 0.5 sat/vB, got {fee_rate}"
-        logger.info(f"Taker using sub-sat fee rate: {fee_rate} sat/vB")
-
-        # Test fee calculation with sub-sat rate
-        # 10 inputs, 10 outputs: vsize = 10*68 + 10*31 + 11 = 1001 vbytes
-        # Fee at 0.5 sat/vB * 3.0 factor = 1.5 sat/vB effective
-        # 1001 * 1.5 = 1501.5, rounded up = 1502 sats
-        estimated_fee = taker._session._estimate_tx_fee(num_inputs=10, num_outputs=10)
-        logger.info(f"Estimated fee for 10in/10out at 0.5 sat/vB: {estimated_fee} sats")
-        assert estimated_fee > 0
+        with pytest.raises(ValueError, match="below the required minimum"):
+            await taker._session._resolve_fee_rate()
 
 
 # ==============================================================================
