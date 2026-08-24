@@ -28,18 +28,14 @@ test.describe("Maker / Earn", () => {
     // Dismiss the Cheatsheet dialog which opens on every page navigation.
     await dismissDialogs(page);
 
-    // Fill in the earn form with an absolute fee offer.
-    // The inputs start disabled while the form loads wallet state — wait for enabled.
-    // Use force:true to bypass any lingering Radix backdrop that intercepts pointer events.
-    const feeInput = page.locator("#offerAbsoluteFee");
-    await expect(feeInput).toBeEnabled({ timeout: 20_000 });
-    await feeInput.fill("250");
-
+    // Bondless makers can only publish the default free offer. The minimum
+    // amount is available under the collapsed Earn options section.
+    await page.getByRole("button", { name: "Earn options" }).click();
     const minAmountInput = page.locator("#offerMinAmount");
+    await expect(minAmountInput).toBeEnabled({ timeout: 20_000 });
     await minAmountInput.fill("100000");
 
-    // Click "Start Earning!" — force:true to bypass any backdrop.
-    await page.getByRole("button", { name: "Start Earning!" }).click({ force: true });
+    await page.getByRole("button", { name: "Start", exact: true }).click();
 
     // The maker should start. We might briefly see "Waiting for maker
     // to start..." or "Loading offer..." but it should resolve.
@@ -71,7 +67,7 @@ test.describe("Maker / Earn", () => {
 
     // Wait for the maker to stop - the form should reappear.
     await expect(
-      page.getByRole("button", { name: "Start Earning!" }),
+      page.getByRole("button", { name: "Start", exact: true }),
     ).toBeVisible({ timeout: 30_000 });
   });
 
