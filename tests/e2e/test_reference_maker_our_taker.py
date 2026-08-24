@@ -696,11 +696,12 @@ def _build_taker_docker_cmd(
     amount: int = 10_000_000,
     counterparties: int = 2,
     mixdepth: int = 0,
+    round_up_cj_fees: bool = False,
 ) -> list[str]:
     """Build the ``docker compose run ... taker-reference jm-taker coinjoin`` command."""
     from tests.e2e.docker_utils import get_compose_cmd_prefix
 
-    return get_compose_cmd_prefix() + [
+    cmd = get_compose_cmd_prefix() + [
         "run",
         "--rm",
         "-e",
@@ -740,6 +741,11 @@ def _build_taker_docker_cmd(
         "DEBUG",
         "--yes",
     ]
+    if round_up_cj_fees:
+        cmd.append("--round-up-cj-fees")
+    else:
+        cmd.append("--no-round-up-cj-fees")
+    return cmd
 
 
 def _run_taker_cmd(cmd: list[str]) -> subprocess.CompletedProcess[str]:
@@ -1043,6 +1049,34 @@ async def test_our_taker_with_reference_makers(
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(600)
+async def test_rounded_fees_are_rejected_by_legacy_reference_makers(
+    reference_maker_services, running_yieldgenerators
+):
+    """Old JAM makers exact-match change and therefore do not sign overpayment."""
+    compose_file = reference_maker_services["compose_file"]
+    destination = await _prepare_taker_environment(compose_file)
+
+    result = _run_taker_cmd(
+        _build_taker_docker_cmd(compose_file, destination, round_up_cj_fees=True)
+    )
+    output, output_lower, has_success = _analyze_taker_output(result)
+
+    assert not has_success, (
+        f"Unexpected broadcast with legacy makers:\n{output[-3000:]}"
+    )
+    assert result.returncode != 0
+    assert "missing signatures" in output_lower or "invalid signatures" in output_lower
+    maker_logs = "\n".join(
+        get_yieldgenerator_logs(maker_id) for maker_id in [1, 2]
+    ).lower()
+    assert "wrong change" in maker_logs, (
+        "The legacy maker did not record its expected exact-change rejection:\n"
+        f"{maker_logs[-3000:]}"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(600)
 async def test_our_taker_replaces_failed_reference_maker_without_duplicate_auth(
     reference_maker_services, mixed_replacement_makers, monkeypatch
 ):
@@ -1085,6 +1119,7 @@ async def test_our_taker_replaces_failed_reference_maker_without_duplicate_auth(
         max_maker_replacement_attempts=2,
         max_cj_fee=MaxCjFee(abs_fee=100_000, rel_fee="0.01"),
         bondless_makers_allowance_require_zero_fee=False,
+        round_up_cj_fees=False,
         data_dir=data_dir,
     )
     taker = Taker(wallet, backend, config)

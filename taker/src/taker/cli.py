@@ -205,6 +205,20 @@ def coinjoin(
             help="For bondless spots, require a zero advertised CoinJoin fee",
         ),
     ] = None,
+    quantized_offers_only: Annotated[
+        bool | None,
+        typer.Option(
+            "--quantized-offers-only/--allow-non-quantized-offers",
+            help="Only select offers whose advertised CoinJoin fee is on the public grid",
+        ),
+    ] = None,
+    round_up_cj_fees: Annotated[
+        bool | None,
+        typer.Option(
+            "--round-up-cj-fees/--no-round-up-cj-fees",
+            help="Round selected maker fees up to public fee quanta",
+        ),
+    ] = None,
     select_utxos: Annotated[
         bool,
         typer.Option(
@@ -301,6 +315,8 @@ def coinjoin(
             bondless_makers_allowance=bondless_makers_allowance,
             bond_value_exponent=bond_value_exponent,
             bondless_require_zero_fee=bondless_require_zero_fee,
+            require_quantized_cj_fees=quantized_offers_only,
+            round_up_cj_fees=round_up_cj_fees,
         )
     except ValueError as e:
         logger.error(str(e))

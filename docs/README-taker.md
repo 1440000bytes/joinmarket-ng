@@ -92,6 +92,14 @@ Backend setup and defaults: [Installation](install.md#configure-backend).
 of `0.2` picks a session fee rate between the base rate and `base_rate * 1.2`; `0` disables
 randomization.
 
+By default, `taker.round_up_cj_fees = true` rounds every selected maker's fee up to the
+closest public quantum of the same type. Older makers that exact-match their expected change
+can reject the resulting transaction; use `--no-round-up-cj-fees` while interacting with
+those makers. `taker.require_quantized_cj_fees` only selects offers already on that grid and
+is independent of rounding. The recommended future policy is
+`require_quantized_cj_fees = true` with `round_up_cj_fees = false`; it is intended to become
+the default.
+
 `taker.counterparty_count` is the per-round target. During fill and authentication, the taker
 uses up to `taker.max_maker_replacement_attempts` (default `3`) to restore that target after a
 maker fails. `taker.minimum_makers` is only the final floor after those attempts are exhausted

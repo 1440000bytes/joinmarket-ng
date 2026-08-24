@@ -34,12 +34,13 @@ def test_help_output_is_alphabetically_sorted() -> None:
     assert find_unsorted_help(app) == []
 
 
-def test_coinjoin_help_includes_explicit_input_option() -> None:
+def test_coinjoin_help_includes_fee_quantization_and_explicit_input_options() -> None:
     result = runner.invoke(app, ["coinjoin", "--help"], prog_name="jm-taker")
     output = click.unstyle(result.stdout)
 
     assert result.exit_code == 0
     assert "--input-utxo" in output
+    assert "round-up-cj" in output
 
 
 def test_coinjoin_rejects_interactive_and_explicit_selection_together() -> None:
@@ -133,6 +134,8 @@ class TestBuildTakerConfig:
         settings.taker.max_cj_fee_abs = 1000
         settings.taker.max_cj_fee_rel = "0.002"
         settings.taker.max_sweep_fee_change = 0.8
+        settings.taker.round_up_cj_fees = True
+        settings.taker.require_quantized_cj_fees = False
         settings.taker.fee_rate = None  # Not set in config
         settings.taker.fee_block_target = None  # Not set in config
         settings.taker.bondless_makers_allowance = 0.1
@@ -783,6 +786,24 @@ class TestBuildTakerConfig:
             max_sweep_fee_change=0.5,
         )
         assert config_override.max_sweep_fee_change == 0.5
+
+    def test_fee_quantization_policy_flows_into_config(
+        self, sample_mnemonic: str, mock_settings: MagicMock
+    ) -> None:
+        mock_settings.taker.round_up_cj_fees = False
+        mock_settings.taker.require_quantized_cj_fees = True
+
+        config = build_taker_config(
+            settings=mock_settings,
+            mnemonic=sample_mnemonic,
+            passphrase="",
+            destination="bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
+            amount=100000,
+            mixdepth=0,
+        )
+
+        assert config.round_up_cj_fees is False
+        assert config.require_quantized_cj_fees is True
 
     def test_max_maker_replacement_attempts_flows_into_config(
         self, sample_mnemonic: str, mock_settings: MagicMock

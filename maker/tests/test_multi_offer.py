@@ -26,12 +26,12 @@ class TestOfferConfig:
     """Tests for OfferConfig model."""
 
     def test_default_offer_config(self):
-        """Test default OfferConfig values match upstream JoinMarket reference."""
+        """Test default OfferConfig values."""
         cfg = OfferConfig()
         assert cfg.offer_type == OfferType.SW0_RELATIVE
-        # Defaults aligned with upstream yg-privacyenhanced (issue #468)
+        # Public default policy uses a quantized relative fee.
         assert cfg.min_size == 100_000
-        assert cfg.cj_fee_relative == "0.00002"
+        assert cfg.cj_fee_relative == "0.0001"
         assert cfg.cj_fee_absolute == 500
         assert cfg.tx_fee_contribution == 0
         assert cfg.cjfee_factor == 0.0

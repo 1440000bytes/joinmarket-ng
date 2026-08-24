@@ -387,12 +387,8 @@
 # offer_type = "sw0reloffer"
 
 # Fee settings (only one is used based on offer_type above)
-# The relative default (0.00002) is exactly the lowest fee-quantization quantum,
-# so default makers sit on the grid and share one homogenized fee with every
-# other default maker, maximizing the anonymity set. It also matches the upstream
-# JoinMarket reference. If you set a non-quantized value, enable cjfee_factor
-# randomization below so your exact fee is not a fingerprint.
-# cj_fee_relative = "0.00002"  # 0.00002 = 0.002% relative fee (for sw0reloffer)
+# The relative default (0.0001) is a public fee-quantization quantum.
+# cj_fee_relative = "0.0001"   # 0.0001 = 0.01% relative fee (for sw0reloffer)
 # cj_fee_absolute = 500        # Absolute fee in satoshis (for sw0absoffer)
 # tx_fee_contribution = 0      # Mining fee contribution in satoshis
 
@@ -401,9 +397,8 @@
 # announcement so observers cannot correlate balance changes with exact values.
 # Set any factor to 0 to disable randomization for that field.
 # cjfee_factor defaults to 0 (no fee randomization) so a default maker stays
-# exactly on its quantization quantum and blends with other default makers. Only
-# enable it (the upstream reference uses 0.1, i.e. +-10%) if you deviate to a
-# non-quantized fee, where an exact value would otherwise be a fingerprint.
+# exactly on its quantization quantum. Randomized and other off-grid offers can
+# be excluded by takers that require quantized fees.
 # cjfee_factor = 0
 # txfee_contribution_factor = 0.3
 # size_factor = 0.1
@@ -486,6 +481,14 @@
 # max_cj_fee_abs = 500        # Absolute fee in satoshis per maker
 # max_cj_fee_rel = "0.001"    # Relative fee (0.001 = 0.1%)
 # max_sweep_fee_change = 0.8  # Relative fee tolerance for sweep transactions
+# Round each selected maker fee up to the closest same-type public quantum.
+# Disable temporarily for exact-fee compatibility with older makers that reject
+# any overpayment.
+# round_up_cj_fees = true
+# Only consider offers already on the public fee grid. This remains effective
+# when rounding is disabled. Recommended future policy (planned default):
+# require_quantized_cj_fees = true with round_up_cj_fees = false.
+# require_quantized_cj_fees = false
 
 # Maximum inputs a single maker may contribute to the CoinJoin.
 # The taker pays the mining fee for EVERY input, so a maker with many inputs

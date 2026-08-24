@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from jmcore.bitcoin import calculate_sweep_amount
 from jmcore.models import Offer, OfferType
 
 from taker.config import MaxCjFee
@@ -23,6 +24,7 @@ from taker.orderbook import (
     fidelity_bond_weighted_choose,
     filter_offers,
     is_fee_within_limits,
+    is_quantized_cj_fee,
     maker_selection_keys,
     prefer_offers_with_confirmed_features,
     random_order_choose,
@@ -188,6 +190,55 @@ class TestCalculateCjFee:
         assert calculate_cj_fee(offer, 100_000) == 5000
         assert calculate_cj_fee(offer, 1_000_000) == 5000
 
+    def test_rounds_each_fee_type_up_to_its_public_quantum(self) -> None:
+        relative = Offer(
+            counterparty="relative",
+            oid=0,
+            ordertype=OfferType.SW0_RELATIVE,
+            minsize=10_000,
+            maxsize=1_000_000,
+            txfee=0,
+            cjfee="0.00015",
+        )
+        absolute = Offer(
+            counterparty="absolute",
+            oid=0,
+            ordertype=OfferType.SW0_ABSOLUTE,
+            minsize=10_000,
+            maxsize=1_000_000,
+            txfee=0,
+            cjfee=350,
+        )
+
+        assert calculate_cj_fee(relative, 100_000, round_up_cj_fees=True) == 20
+        assert calculate_cj_fee(absolute, 100_000, round_up_cj_fees=True) == 500
+        assert calculate_cj_fee(relative, 100_000, round_up_cj_fees=False) == 15
+        assert calculate_cj_fee(absolute, 100_000, round_up_cj_fees=False) == 350
+
+    def test_exact_quantum_is_not_changed(self) -> None:
+        relative = Offer(
+            counterparty="relative",
+            oid=0,
+            ordertype=OfferType.SW0_RELATIVE,
+            minsize=10_000,
+            maxsize=1_000_000,
+            txfee=0,
+            cjfee="0.0002",
+        )
+        absolute = Offer(
+            counterparty="absolute",
+            oid=0,
+            ordertype=OfferType.SW0_ABSOLUTE,
+            minsize=10_000,
+            maxsize=1_000_000,
+            txfee=0,
+            cjfee=500,
+        )
+        assert is_quantized_cj_fee(relative)
+        assert is_quantized_cj_fee(absolute)
+        assert calculate_cj_fee(relative, 100_000, round_up_cj_fees=True) == 20
+        assert calculate_cj_fee(absolute, 100_000, round_up_cj_fees=True) == 500
+
 
 class TestIsFeeWithinLimits:
     """Tests for is_fee_within_limits."""
@@ -295,6 +346,110 @@ class TestFilterOffers:
         assert len(filtered) == 1
         assert filtered[0].counterparty == "maker3"
 
+    def test_quantized_only_filter_applies_when_rounding_is_disabled(self) -> None:
+        on_grid = Offer(
+            counterparty="on-grid",
+            oid=0,
+            ordertype=OfferType.SW0_ABSOLUTE,
+            minsize=10_000,
+            maxsize=1_000_000,
+            txfee=0,
+            cjfee=500,
+        )
+        off_grid = on_grid.model_copy(update={"counterparty": "off-grid", "cjfee": 350})
+
+        eligible = filter_offers(
+            [on_grid, off_grid],
+            100_000,
+            MaxCjFee(abs_fee=1_000, rel_fee="0.01"),
+            require_quantized_cj_fees=True,
+            round_up_cj_fees=False,
+        )
+
+        assert [offer.counterparty for offer in eligible] == ["on-grid"]
+
+    def test_rounding_rejects_fee_above_grid_or_realized_limit(self) -> None:
+        above_grid = Offer(
+            counterparty="above-grid",
+            oid=0,
+            ordertype=OfferType.SW0_ABSOLUTE,
+            minsize=10_000,
+            maxsize=1_000_000,
+            txfee=0,
+            cjfee=10_001,
+        )
+        rounds_past_limit = Offer(
+            counterparty="rounds-past-limit",
+            oid=0,
+            ordertype=OfferType.SW0_RELATIVE,
+            minsize=10_000,
+            maxsize=1_000_000,
+            txfee=0,
+            cjfee="0.00015",
+        )
+        max_fee = MaxCjFee(abs_fee=10_000, rel_fee="0.00015")
+
+        assert not is_fee_within_limits(above_grid, 100_000, max_fee, round_up_cj_fees=True)
+        assert not is_fee_within_limits(rounds_past_limit, 100_000, max_fee, round_up_cj_fees=True)
+        assert is_fee_within_limits(rounds_past_limit, 100_000, max_fee, round_up_cj_fees=False)
+
+
+class TestRoundedOrderAccounting:
+    @staticmethod
+    def _offers() -> list[Offer]:
+        return [
+            Offer(
+                counterparty="relative",
+                oid=0,
+                ordertype=OfferType.SW0_RELATIVE,
+                minsize=10_000,
+                maxsize=10_000_000,
+                txfee=0,
+                cjfee="0.00015",
+            ),
+            Offer(
+                counterparty="absolute",
+                oid=0,
+                ordertype=OfferType.SW0_ABSOLUTE,
+                minsize=10_000,
+                maxsize=10_000_000,
+                txfee=0,
+                cjfee=350,
+            ),
+        ]
+
+    def test_normal_selection_totals_realized_rounded_fees(self) -> None:
+        selected, total_fee = choose_orders(
+            self._offers(),
+            100_000,
+            2,
+            MaxCjFee(abs_fee=1_000, rel_fee="0.01"),
+            choose_fn=lambda offers, _n: offers,
+            bondless_require_zero_fee=False,
+            round_up_cj_fees=True,
+        )
+
+        assert set(selected) == {"relative", "absolute"}
+        assert total_fee == 520
+
+    def test_sweep_uses_rounded_policies_in_its_equation(self) -> None:
+        _selected, cj_amount, total_fee = choose_sweep_orders(
+            self._offers(),
+            total_input_value=1_000_000,
+            my_txfee=100,
+            n=2,
+            max_cj_fee=MaxCjFee(abs_fee=1_000, rel_fee="0.01"),
+            choose_fn=lambda offers, _n: offers,
+            bondless_require_zero_fee=False,
+            round_up_cj_fees=True,
+        )
+
+        expected_amount = calculate_sweep_amount(1_000_000 - 100 - 500, ["0.0002"])
+        assert cj_amount == expected_amount
+        assert total_fee == 500 + calculate_cj_fee(
+            self._offers()[0], cj_amount, round_up_cj_fees=True
+        )
+
 
 class TestDedupeOffersByMaker:
     """Tests for dedupe_offers_by_maker."""
@@ -324,6 +479,31 @@ class TestDedupeOffersByMaker:
         deduped = dedupe_offers_by_maker(offers)
         assert len(deduped) == 1
         assert deduped[0].cjfee == "0.001"
+
+    def test_compares_realized_rounded_fee_at_coinjoin_amount(self) -> None:
+        absolute = Offer(
+            counterparty="maker1",
+            oid=0,
+            ordertype=OfferType.SW0_ABSOLUTE,
+            minsize=10_000,
+            maxsize=1_000_000,
+            txfee=0,
+            cjfee=122,
+        )
+        relative = Offer(
+            counterparty="maker1",
+            oid=1,
+            ordertype=OfferType.SW0_RELATIVE,
+            minsize=10_000,
+            maxsize=1_000_000,
+            txfee=0,
+            cjfee="0.001",
+        )
+
+        assert dedupe_offers_by_maker([absolute, relative], 123_456) == [absolute]
+        assert dedupe_offers_by_maker([absolute, relative], 123_456, round_up_cj_fees=True) == [
+            relative
+        ]
 
 
 class TestDedupeOffersByBond:

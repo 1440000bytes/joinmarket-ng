@@ -223,11 +223,10 @@ class TestSettingsDefaults:
         """Test default maker settings."""
         settings = JoinMarketSettings()
 
-        # Defaults track the upstream JoinMarket reference (yg-privacyenhanced)
-        # to avoid making jm-ng makers fingerprintable. See issue #468.
+        # Default maker policy uses a public relative-fee quantum.
         assert settings.maker.min_size == 100_000
         assert settings.maker.offer_type == "sw0reloffer"
-        assert settings.maker.cj_fee_relative == "0.00002"
+        assert settings.maker.cj_fee_relative == "0.0001"
         assert settings.maker.cj_fee_absolute == 500
         assert settings.maker.merge_algorithm == "default"
         assert settings.maker.cjfee_factor == 0.0
@@ -260,6 +259,8 @@ class TestSettingsDefaults:
         assert settings.taker.max_cj_fee_abs == 500
         assert settings.taker.max_cj_fee_rel == "0.001"
         assert settings.taker.max_sweep_fee_change == 0.8
+        assert settings.taker.round_up_cj_fees is True
+        assert settings.taker.require_quantized_cj_fees is False
         assert settings.taker.tx_broadcast == "random-peer"
 
 

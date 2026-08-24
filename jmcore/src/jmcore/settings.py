@@ -701,14 +701,9 @@ class MakerSettings(BaseModel):
         description="Offer type: sw0reloffer (relative) or sw0absoffer (absolute)",
     )
     cj_fee_relative: str = Field(
-        default="0.00002",
+        default="0.0001",
         description=(
-            "Relative CoinJoin fee. Default 0.00002 (0.002%) is exactly the "
-            "lowest fee-quantization quantum, so default makers sit on the grid "
-            "and share a homogenized fee with every other default maker, "
-            "maximizing the anonymity set (and matching the upstream JoinMarket "
-            "reference). If you set a non-quantized value, enable randomization "
-            "(cjfee_factor=0.1) so the exact fee is not a fingerprint."
+            "Relative CoinJoin fee. Default 0.0001 (0.01%) is a public fee-quantization quantum."
         ),
     )
     cj_fee_absolute: int = Field(
@@ -996,6 +991,14 @@ class TakerSettings(BaseModel):
     max_cj_fee_rel: str = Field(
         default="0.001",
         description="Maximum relative CoinJoin fee (0.001 = 0.1%)",
+    )
+    require_quantized_cj_fees: bool = Field(
+        default=False,
+        description="Only consider offers whose advertised CoinJoin fee is on the public grid",
+    )
+    round_up_cj_fees: bool = Field(
+        default=True,
+        description="Round each selected maker fee up to the next public fee quantum",
     )
     max_sweep_fee_change: float = Field(
         default=0.8,

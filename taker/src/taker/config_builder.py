@@ -62,6 +62,8 @@ def build_taker_config_kwargs(
     bondless_makers_allowance: float | None = None,
     bond_value_exponent: float | None = None,
     bondless_require_zero_fee: bool | None = None,
+    require_quantized_cj_fees: bool | None = None,
+    round_up_cj_fees: bool | None = None,
 ) -> dict[str, Any]:
     """
     Resolve unified settings plus overrides into ``TakerConfig`` kwargs.
@@ -252,6 +254,14 @@ def build_taker_config_kwargs(
         "mixdepth": mixdepth,
         "counterparty_count": effective_counterparties,
         "max_cj_fee": MaxCjFee(abs_fee=effective_max_abs_fee, rel_fee=effective_max_rel_fee),
+        "require_quantized_cj_fees": (
+            require_quantized_cj_fees
+            if require_quantized_cj_fees is not None
+            else settings.taker.require_quantized_cj_fees
+        ),
+        "round_up_cj_fees": (
+            round_up_cj_fees if round_up_cj_fees is not None else settings.taker.round_up_cj_fees
+        ),
         "max_sweep_fee_change": effective_max_sweep_fee_change,
         "tx_fee_factor": (
             tx_fee_factor if tx_fee_factor is not None else settings.taker.tx_fee_factor
@@ -315,6 +325,8 @@ def build_taker_config(
     bondless_makers_allowance: float | None = None,
     bond_value_exponent: float | None = None,
     bondless_require_zero_fee: bool | None = None,
+    require_quantized_cj_fees: bool | None = None,
+    round_up_cj_fees: bool | None = None,
 ) -> TakerConfig:
     """
     Build TakerConfig from unified settings with CLI overrides.
@@ -353,5 +365,7 @@ def build_taker_config(
             bondless_makers_allowance=bondless_makers_allowance,
             bond_value_exponent=bond_value_exponent,
             bondless_require_zero_fee=bondless_require_zero_fee,
+            require_quantized_cj_fees=require_quantized_cj_fees,
+            round_up_cj_fees=round_up_cj_fees,
         )
     )

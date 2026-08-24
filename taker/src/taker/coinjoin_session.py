@@ -156,6 +156,10 @@ class CoinJoinSession:
 
         # Human-readable failure reason exposed for tumbler diagnostics.
         self.last_failure_reason: str | None = None
+        # Makers that failed to provide valid signatures after receiving !tx.
+        # The owner adds these nicks to the persistent ignored-maker set after
+        # the round fails; replacing them here would invalidate the transaction.
+        self.failed_signer_nicks: set[str] = set()
 
         # Addresses recorded for broadcast verification and history reconciliation.
         self.cj_destination: str = ""
@@ -208,6 +212,7 @@ class CoinJoinSession:
         self.last_used_nicks = set()
         self.last_used_maker_keys = set()
         self.last_failure_reason = None
+        self.failed_signer_nicks = set()
         self.cj_destination = ""
         self.taker_change_address = ""
         self._sweep_tx_fee_budget = 0
@@ -882,7 +887,9 @@ class CoinJoinSession:
                     # either way the whole round dies after PoDLE commitments were
                     # burned. Drop such makers here so they can be replaced.
                     maker_total_input = sum(u["value"] for u in session.utxos)
-                    maker_cjfee = calculate_cj_fee(session.offer, self.cj_amount)
+                    maker_cjfee = calculate_cj_fee(
+                        session.offer, self.cj_amount, self.config.round_up_cj_fees
+                    )
                     maker_change = (
                         maker_total_input - self.cj_amount - session.offer.txfee + maker_cjfee
                     )
@@ -1055,7 +1062,8 @@ class CoinJoinSession:
 
             # Calculate total input needed (now with exact maker UTXOs)
             total_maker_fee = sum(
-                calculate_cj_fee(s.offer, self.cj_amount) for s in self.maker_sessions.values()
+                calculate_cj_fee(s.offer, self.cj_amount, self.config.round_up_cj_fees)
+                for s in self.maker_sessions.values()
             )
 
             # Estimate tx fee with actual input counts
@@ -1290,7 +1298,9 @@ class CoinJoinSession:
             # Build maker data
             maker_data = {}
             for nick, session in self.maker_sessions.items():
-                cjfee = calculate_cj_fee(session.offer, self.cj_amount)
+                cjfee = calculate_cj_fee(
+                    session.offer, self.cj_amount, self.config.round_up_cj_fees
+                )
                 # JoinMarket protocol: txfee in offer is the total transaction fee
                 # the maker contributes (in satoshis), not a per-input/output fee
                 maker_txfee = session.offer.txfee
@@ -1606,7 +1616,7 @@ class CoinJoinSession:
         # If we crash after sending !tx but before broadcast, the addresses won't be reused.
         try:
             total_maker_fees = sum(
-                calculate_cj_fee(session.offer, self.cj_amount)
+                calculate_cj_fee(session.offer, self.cj_amount, self.config.round_up_cj_fees)
                 for session in self.maker_sessions.values()
             )
             maker_nicks = list(self.maker_sessions.keys())
@@ -1832,6 +1842,10 @@ class CoinJoinSession:
         missing_makers = required_makers - signed_makers
 
         if missing_makers:
+            self.failed_signer_nicks.update(missing_makers)
+            self.last_failure_reason = (
+                f"Missing or invalid signatures from maker(s): {', '.join(sorted(missing_makers))}"
+            )
             logger.error(
                 f"Missing signatures from {len(missing_makers)} maker(s) "
                 f"whose inputs are in the transaction: {missing_makers}. "

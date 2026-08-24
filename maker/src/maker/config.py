@@ -84,15 +84,10 @@ class OfferConfig(BaseModel):
         ),
     )
     cj_fee_relative: str = Field(
-        default="0.00002",
+        default="0.0001",
         description=(
-            "Relative CJ fee as decimal. Default 0.00002 (0.002%) is exactly the "
-            "lowest fee-quantization quantum, so default makers sit on the grid "
-            "and share a homogenized fee with every other default maker, "
-            "maximizing the anonymity set (and matching the upstream JoinMarket "
-            "reference). If you deviate to a non-quantized value, enable "
-            "randomization (cjfee_factor=0.1) so your exact policy is not a "
-            "fingerprint."
+            "Relative CJ fee as decimal. Default 0.0001 (0.01%) is a public "
+            "fee-quantization quantum."
         ),
     )
     cj_fee_absolute: int = Field(
@@ -270,11 +265,10 @@ class MakerConfig(WalletConfig):
     )
     min_size: int = Field(default=100_000, ge=0, description="Minimum CoinJoin amount in satoshis")
     cj_fee_relative: str = Field(
-        default="0.00002",
+        default="0.0001",
         description=(
-            "Relative CJ fee. Default 0.00002 (0.002%) is exactly the lowest "
-            "fee-quantization quantum, so default makers share a homogenized fee "
-            "and a larger anonymity set. See OfferConfig.cj_fee_relative."
+            "Relative CJ fee. Default 0.0001 (0.01%) is a public fee-quantization "
+            "quantum. See OfferConfig.cj_fee_relative."
         ),
     )
     cj_fee_absolute: int = Field(default=500, ge=0, description="Absolute CJ fee in satoshis")

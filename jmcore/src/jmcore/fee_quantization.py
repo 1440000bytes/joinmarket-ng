@@ -1,24 +1,14 @@
 """
 Maker fee quantization grid and helpers.
 
-Background
-----------
-Each maker advertises a per-CoinJoin fee policy. Because policies on the live
-network are diverse, the realized fee paid to each maker slot is typically
-unique within a round. A passive on-chain observer can use that uniqueness to
-attribute an equal output to a specific maker slot when it is reused in a
-downstream CoinJoin (see issue #508).
+Takers can round each selected maker's fee up to the closest value on this
+small, shared public grid. This prevents an off-grid advertised fee from
+becoming a distinctive realized payment while preserving each maker's offered
+fee type and independent fee amount (see issue #508).
 
-The mitigation is *fee homogenization*: if every maker slot in a round is paid
-the same effective fee, the within-round fingerprint disappears and the
-attribution stops working. To make that fee land on a small, shared, public set
-of values (so it is also stable across rounds and takers), we round fees onto a
-coarse base-10 grid.
-
-This module only defines the grid and the rounding primitives. The taker-side
-policy that selects a per-round quantum and the per-slot homogenized fee lives
-in the taker package; the orderbook watcher uses the same grid (exposed in its
-JSON payload) to chart where maker offers land.
+This module defines the grid and rounding primitives. The taker-side policy
+lives in the taker package; the orderbook watcher uses the same grid in its
+JSON payload.
 """
 
 from __future__ import annotations

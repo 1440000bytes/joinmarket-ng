@@ -18,8 +18,8 @@ from jmcore.bitcoin import (
     calculate_relative_fee,
     calculate_sweep_amount,
 )
+from jmcore.fee_quantization import QUANT_ABS, QUANT_REL, quantize_abs_up, quantize_rel_up
 from jmcore.models import Offer, OfferType
-from jmcore.models import calculate_cj_fee as _calculate_cj_fee_raw
 from jmcore.paths import get_ignored_makers_path
 from jmcore.protocol import FEATURE_NEUTRINO_COMPAT, get_nick_version
 from jmcore.randomness import secure_random
@@ -105,7 +105,24 @@ def choose_with_repeat_penalty(
     return selected
 
 
-def calculate_cj_fee(offer: Offer, cj_amount: int) -> int:
+def is_quantized_cj_fee(offer: Offer) -> bool:
+    """Return whether an offer advertises a fee exactly on its public grid."""
+    if offer.ordertype in (OfferType.SW0_ABSOLUTE, OfferType.SWA_ABSOLUTE):
+        return int(offer.cjfee) in QUANT_ABS
+    return Decimal(str(offer.cjfee)) in QUANT_REL
+
+
+def _paid_fee_policy(offer: Offer, round_up_cj_fees: bool) -> int | Decimal | None:
+    """Return the fee policy paid for an offer, or None when it cannot be rounded."""
+    if offer.ordertype in (OfferType.SW0_ABSOLUTE, OfferType.SWA_ABSOLUTE):
+        advertised_absolute = int(offer.cjfee)
+        return quantize_abs_up(advertised_absolute) if round_up_cj_fees else advertised_absolute
+
+    advertised_relative = Decimal(str(offer.cjfee))
+    return quantize_rel_up(advertised_relative) if round_up_cj_fees else advertised_relative
+
+
+def calculate_cj_fee(offer: Offer, cj_amount: int, round_up_cj_fees: bool = False) -> int:
     """
     Calculate the CoinJoin fee for a specific offer and amount.
 
@@ -119,10 +136,20 @@ def calculate_cj_fee(offer: Offer, cj_amount: int) -> int:
     Returns:
         Fee in satoshis
     """
-    return _calculate_cj_fee_raw(offer.ordertype, offer.cjfee, cj_amount)
+    policy = _paid_fee_policy(offer, round_up_cj_fees)
+    if policy is None:
+        raise ValueError(f"Offer from {offer.counterparty} has no upper fee quantum")
+    if offer.ordertype in (OfferType.SW0_ABSOLUTE, OfferType.SWA_ABSOLUTE):
+        return int(policy)
+    return calculate_relative_fee(cj_amount, str(policy))
 
 
-def is_fee_within_limits(offer: Offer, cj_amount: int, max_cj_fee: MaxCjFee) -> bool:
+def is_fee_within_limits(
+    offer: Offer,
+    cj_amount: int,
+    max_cj_fee: MaxCjFee,
+    round_up_cj_fees: bool = False,
+) -> bool:
     """
     Check if an offer's fee is within the configured limits.
 
@@ -139,16 +166,12 @@ def is_fee_within_limits(offer: Offer, cj_amount: int, max_cj_fee: MaxCjFee) -> 
     Returns:
         True if fee is acceptable
     """
+    policy = _paid_fee_policy(offer, round_up_cj_fees)
+    if policy is None:
+        return False
     if offer.ordertype in (OfferType.SW0_ABSOLUTE, OfferType.SWA_ABSOLUTE):
-        # For absolute offers, check against absolute limit directly
-        return int(offer.cjfee) <= max_cj_fee.abs_fee
-    else:
-        # For relative offers, check against relative limit directly
-        # Compare by calculating fee on a large reference amount
-        ref_amount = 100_000_000_000  # 1000 BTC
-        fee_val = calculate_relative_fee(ref_amount, str(offer.cjfee))
-        limit_val = calculate_relative_fee(ref_amount, max_cj_fee.rel_fee)
-        return fee_val <= limit_val
+        return int(policy) <= max_cj_fee.abs_fee
+    return Decimal(policy) <= Decimal(max_cj_fee.rel_fee)
 
 
 def filter_offers(
@@ -159,6 +182,8 @@ def filter_offers(
     allowed_types: set[OfferType] | None = None,
     min_nick_version: int | None = None,
     required_features: set[str] | None = None,
+    require_quantized_cj_fees: bool = False,
+    round_up_cj_fees: bool = False,
 ) -> list[Offer]:
     """
     Filter offers based on amount range, fee limits, and other criteria.
@@ -230,6 +255,10 @@ def filter_offers(
             )
             continue
 
+        if require_quantized_cj_fees and not is_quantized_cj_fee(offer):
+            logger.debug(f"Ignoring offer from {offer.counterparty}: fee is not on the public grid")
+            continue
+
         # Filter by amount range
         if cj_amount < offer.minsize:
             logger.trace(
@@ -246,8 +275,11 @@ def filter_offers(
             continue
 
         # Filter by fee limits
-        if not is_fee_within_limits(offer, cj_amount, max_cj_fee):
-            fee = calculate_cj_fee(offer, cj_amount)
+        if not is_fee_within_limits(offer, cj_amount, max_cj_fee, round_up_cj_fees):
+            policy = _paid_fee_policy(offer, round_up_cj_fees)
+            fee = (
+                calculate_cj_fee(offer, cj_amount, round_up_cj_fees) if policy is not None else None
+            )
             logger.trace(f"Ignoring offer from {offer.counterparty}: fee {fee} exceeds limits")
             continue
 
@@ -257,12 +289,18 @@ def filter_offers(
     return eligible
 
 
-def dedupe_offers_by_maker(offers: list[Offer]) -> list[Offer]:
+def dedupe_offers_by_maker(
+    offers: list[Offer],
+    cj_amount: int = 100_000_000,
+    round_up_cj_fees: bool = False,
+) -> list[Offer]:
     """
     Keep only the cheapest offer from each maker.
 
     Args:
         offers: List of offers (possibly multiple per maker)
+        cj_amount: CoinJoin amount used to compare realized fees
+        round_up_cj_fees: Whether comparisons include taker fee rounding
 
     Returns:
         List with at most one offer per maker (the cheapest)
@@ -276,9 +314,10 @@ def dedupe_offers_by_maker(offers: list[Offer]) -> list[Offer]:
 
     result = []
     for maker, maker_offers in by_maker.items():
-        # Sort by absolute fee equivalent at some reference amount (1 BTC)
-        reference_amount = 100_000_000  # 1 BTC
-        sorted_offers = sorted(maker_offers, key=lambda o: calculate_cj_fee(o, reference_amount))
+        sorted_offers = sorted(
+            maker_offers,
+            key=lambda o: calculate_cj_fee(o, cj_amount, round_up_cj_fees),
+        )
         result.append(sorted_offers[0])
         if len(maker_offers) > 1:
             logger.debug(f"Kept cheapest of {len(maker_offers)} offers from {maker}")
@@ -286,7 +325,9 @@ def dedupe_offers_by_maker(offers: list[Offer]) -> list[Offer]:
     return result
 
 
-def dedupe_offers_by_bond(offers: list[Offer], cj_amount: int) -> list[Offer]:
+def dedupe_offers_by_bond(
+    offers: list[Offer], cj_amount: int, round_up_cj_fees: bool = False
+) -> list[Offer]:
     """
     Deduplicate offers by fidelity bond UTXO, keeping only the cheapest per bond.
 
@@ -302,6 +343,7 @@ def dedupe_offers_by_bond(offers: list[Offer], cj_amount: int) -> list[Offer]:
     Args:
         offers: List of offers (possibly from different makers using same bond)
         cj_amount: The actual CoinJoin amount for accurate fee comparison
+        round_up_cj_fees: Whether comparisons include taker fee rounding
 
     Returns:
         List with at most one offer per bond UTXO (the cheapest), plus all unbonded offers
@@ -328,12 +370,15 @@ def dedupe_offers_by_bond(offers: list[Offer], cj_amount: int) -> list[Offer]:
     # For each bond UTXO, keep only the cheapest offer
     result = []
     for bond_key, bond_offers in by_bond.items():
-        sorted_offers = sorted(bond_offers, key=lambda o: calculate_cj_fee(o, cj_amount))
+        sorted_offers = sorted(
+            bond_offers,
+            key=lambda o: calculate_cj_fee(o, cj_amount, round_up_cj_fees),
+        )
         result.append(sorted_offers[0])
         if len(bond_offers) > 1:
             kept = sorted_offers[0]
             dropped = [o.counterparty for o in sorted_offers[1:]]
-            kept_fee = calculate_cj_fee(kept, cj_amount)
+            kept_fee = calculate_cj_fee(kept, cj_amount, round_up_cj_fees)
             logger.warning(
                 f"Bond sybil protection: Kept {kept.counterparty} (fee={kept_fee}), "
                 f"dropped {dropped} sharing same bond UTXO {bond_key[:16]}..."
@@ -635,6 +680,8 @@ def choose_orders(
     required_features: set[str] | None = None,
     penalized_maker_keys: set[str] | None = None,
     maker_repeat_penalty: float = DEFAULT_MAKER_REPEAT_PENALTY,
+    require_quantized_cj_fees: bool = False,
+    round_up_cj_fees: bool = False,
 ) -> tuple[dict[str, Offer], int]:
     """
     Choose n orders from the orderbook for a CoinJoin.
@@ -675,14 +722,16 @@ def choose_orders(
         ignored_makers=ignored_makers,
         min_nick_version=min_nick_version,
         required_features=required_features,
+        require_quantized_cj_fees=require_quantized_cj_fees,
+        round_up_cj_fees=round_up_cj_fees,
     )
 
     # Dedupe by maker (keep cheapest offer per counterparty)
-    deduped_by_maker = dedupe_offers_by_maker(eligible)
+    deduped_by_maker = dedupe_offers_by_maker(eligible, cj_amount, round_up_cj_fees)
 
     # Dedupe by bond UTXO (sybil protection: keep cheapest offer per bond)
     # This must come after maker dedup so we compare the best offer from each nick
-    deduped = dedupe_offers_by_bond(deduped_by_maker, cj_amount)
+    deduped = dedupe_offers_by_bond(deduped_by_maker, cj_amount, round_up_cj_fees)
 
     # When enough makers confirm the required features, avoid unknown-status
     # ones (they may fail feature negotiation mid-session and need replacement).
@@ -707,7 +756,7 @@ def choose_orders(
     result = {offer.counterparty: offer for offer in selected}
 
     # Calculate total fee
-    total_fee = sum(calculate_cj_fee(offer, cj_amount) for offer in selected)
+    total_fee = sum(calculate_cj_fee(offer, cj_amount, round_up_cj_fees) for offer in selected)
 
     logger.info(
         f"Selected {len(result)} makers from {len(offers)} offers, total fee: {total_fee} sats"
@@ -730,6 +779,8 @@ def choose_sweep_orders(
     required_features: set[str] | None = None,
     penalized_maker_keys: set[str] | None = None,
     maker_repeat_penalty: float = DEFAULT_MAKER_REPEAT_PENALTY,
+    require_quantized_cj_fees: bool = False,
+    round_up_cj_fees: bool = False,
 ) -> tuple[dict[str, Offer], int, int]:
     """
     Choose n orders for a sweep transaction (no change).
@@ -781,14 +832,16 @@ def choose_sweep_orders(
         ignored_makers=ignored_makers,
         min_nick_version=min_nick_version,
         required_features=required_features,
+        require_quantized_cj_fees=require_quantized_cj_fees,
+        round_up_cj_fees=round_up_cj_fees,
     )
 
     # Dedupe by maker
-    deduped_by_maker = dedupe_offers_by_maker(eligible)
+    deduped_by_maker = dedupe_offers_by_maker(eligible, estimated_cj_amount, round_up_cj_fees)
 
     # Dedupe by bond UTXO (sybil protection)
     # Use estimated_cj_amount for fee comparison since we don't know exact amount yet
-    deduped = dedupe_offers_by_bond(deduped_by_maker, estimated_cj_amount)
+    deduped = dedupe_offers_by_bond(deduped_by_maker, estimated_cj_amount, round_up_cj_fees)
 
     # When enough makers confirm the required features, avoid unknown-status
     # ones (they may fail feature negotiation mid-session and need replacement).
@@ -838,9 +891,13 @@ def choose_sweep_orders(
 
     for offer in selected:
         if offer.ordertype in (OfferType.SW0_ABSOLUTE, OfferType.SWA_ABSOLUTE):
-            sum_abs_fees += int(offer.cjfee)
+            policy = _paid_fee_policy(offer, round_up_cj_fees)
+            assert isinstance(policy, int)
+            sum_abs_fees += policy
         else:
-            rel_fees.append(str(offer.cjfee))
+            policy = _paid_fee_policy(offer, round_up_cj_fees)
+            assert isinstance(policy, Decimal)
+            rel_fees.append(str(policy))
 
     available = total_input_value - my_txfee - sum_abs_fees
     cj_amount = calculate_sweep_amount(available, rel_fees)
@@ -855,7 +912,7 @@ def choose_sweep_orders(
             return {}, 0, 0
 
     result = {offer.counterparty: offer for offer in selected}
-    total_fee = sum(calculate_cj_fee(offer, cj_amount) for offer in selected)
+    total_fee = sum(calculate_cj_fee(offer, cj_amount, round_up_cj_fees) for offer in selected)
 
     logger.info(f"Sweep: selected {len(result)} makers, cj_amount={cj_amount}, fee={total_fee}")
 
@@ -872,10 +929,14 @@ class OrderbookManager:
         bondless_require_zero_fee: bool = True,
         data_dir: Any = None,  # Path | None, but avoid import
         own_wallet_nicks: set[str] | None = None,
+        require_quantized_cj_fees: bool = False,
+        round_up_cj_fees: bool = False,
     ):
         self.max_cj_fee = max_cj_fee
         self.bondless_makers_allowance = bondless_makers_allowance
         self.bondless_require_zero_fee = bondless_require_zero_fee
+        self.require_quantized_cj_fees = require_quantized_cj_fees
+        self.round_up_cj_fees = round_up_cj_fees
         self.offers: list[Offer] = []
         self.bonds: dict[str, Any] = {}  # maker -> bond info
         self.ignored_makers: set[str] = set()
@@ -1046,6 +1107,8 @@ class OrderbookManager:
             bondless_require_zero_fee=self.bondless_require_zero_fee,
             required_features=required_features,
             penalized_maker_keys=penalized_maker_keys,
+            require_quantized_cj_fees=self.require_quantized_cj_fees,
+            round_up_cj_fees=self.round_up_cj_fees,
         )
         if len(result) >= n or not soft:
             return result, fee
@@ -1073,6 +1136,8 @@ class OrderbookManager:
             bondless_require_zero_fee=self.bondless_require_zero_fee,
             required_features=required_features,
             penalized_maker_keys=penalized_maker_keys,
+            require_quantized_cj_fees=self.require_quantized_cj_fees,
+            round_up_cj_fees=self.round_up_cj_fees,
         )
         result.update(topup_result)
         return result, fee + topup_fee
@@ -1135,6 +1200,8 @@ class OrderbookManager:
             bondless_require_zero_fee=self.bondless_require_zero_fee,
             required_features=required_features,
             penalized_maker_keys=penalized_maker_keys,
+            require_quantized_cj_fees=self.require_quantized_cj_fees,
+            round_up_cj_fees=self.round_up_cj_fees,
         )
         if len(result[0]) >= n or not soft:
             return result
@@ -1156,4 +1223,6 @@ class OrderbookManager:
             bondless_require_zero_fee=self.bondless_require_zero_fee,
             required_features=required_features,
             penalized_maker_keys=penalized_maker_keys,
+            require_quantized_cj_fees=self.require_quantized_cj_fees,
+            round_up_cj_fees=self.round_up_cj_fees,
         )

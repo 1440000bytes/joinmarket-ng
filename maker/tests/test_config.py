@@ -26,6 +26,11 @@ def test_valid_config() -> None:
     assert config.cj_fee_relative == "0.001"
 
 
+def test_default_relative_fee_is_public_quantum() -> None:
+    config = MakerConfig(mnemonic=TEST_MNEMONIC)
+    assert config.cj_fee_relative == "0.0001"
+
+
 def test_minimum_fee_floor_cannot_exceed_maximum_fee_rate() -> None:
     with pytest.raises(ValidationError, match="min_fee_rate_sat_vb"):
         MakerConfig(mnemonic=TEST_MNEMONIC, min_fee_rate_sat_vb=2.0, max_fee_rate_sat_vb=1.0)

@@ -214,6 +214,8 @@ class Taker(TakerMonitoringMixin):
             bondless_require_zero_fee=config.bondless_makers_allowance_require_zero_fee,
             data_dir=config.data_dir,
             own_wallet_nicks=own_wallet_nicks,
+            require_quantized_cj_fees=config.require_quantized_cj_fees,
+            round_up_cj_fees=config.round_up_cj_fees,
         )
 
         # PoDLE manager for commitment tracking
@@ -397,6 +399,11 @@ class Taker(TakerMonitoringMixin):
     def last_used_maker_keys(self) -> set[str]:
         """Maker nick and bond keys in the most recently broadcast CoinJoin."""
         return self._session.last_used_maker_keys
+
+    @property
+    def failed_signer_nicks(self) -> set[str]:
+        """Maker nicks that failed to provide valid signatures in the current round."""
+        return self._session.failed_signer_nicks
 
     async def _resolve_explicit_input_utxos(
         self,
@@ -1217,7 +1224,11 @@ class Taker(TakerMonitoringMixin):
                     # Build maker details for confirmation
                     maker_details = []
                     for nick, session in self._session.maker_sessions.items():
-                        fee = session.offer.calculate_fee(self._session.cj_amount)
+                        fee = calculate_cj_fee(
+                            session.offer,
+                            self._session.cj_amount,
+                            self.config.round_up_cj_fees,
+                        )
                         bond_value = session.offer.fidelity_bond_value
                         # Get maker's location from any connected directory
                         location = None
@@ -1316,6 +1327,8 @@ class Taker(TakerMonitoringMixin):
 
             sig_success = await self._session._phase_collect_signatures()
             if not sig_success:
+                for nick in self._session.failed_signer_nicks:
+                    self.orderbook_manager.add_ignored_maker(nick)
                 logger.error("Signature collection failed")
                 self.state = TakerState.FAILED
                 return None
@@ -1901,7 +1914,11 @@ class Taker(TakerMonitoringMixin):
         actual_mining_fee = total_input_value - total_output_value
 
         total_maker_fees = sum(
-            calculate_cj_fee(session.offer, self._session.cj_amount)
+            calculate_cj_fee(
+                session.offer,
+                self._session.cj_amount,
+                self.config.round_up_cj_fees,
+            )
             for session in self._session.maker_sessions.values()
         )
         total_cost = total_maker_fees + actual_mining_fee
@@ -1953,7 +1970,11 @@ class Taker(TakerMonitoringMixin):
             try:
                 maker_details = []
                 for nick, session in self._session.maker_sessions.items():
-                    fee = calculate_cj_fee(session.offer, self._session.cj_amount)
+                    fee = calculate_cj_fee(
+                        session.offer,
+                        self._session.cj_amount,
+                        self.config.round_up_cj_fees,
+                    )
                     bond_value = session.offer.fidelity_bond_value
                     location = None
                     for client in self.directory_client.clients.values():

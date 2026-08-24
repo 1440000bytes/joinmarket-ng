@@ -804,6 +804,7 @@ class TestPhaseCollectSignaturesCompleteness:
             "_phase_collect_signatures must fail when a maker whose inputs are "
             "in the transaction doesn't respond"
         )
+        assert taker.failed_signer_nicks == {"maker1", "maker2"}
         assert taker._session.signing_boundary_crossed is True
         assert taker.wallet.renew_coinjoin_inputs.call_count >= 1
         taker.wallet.renew_coinjoin_inputs.reset_mock()
