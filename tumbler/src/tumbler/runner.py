@@ -31,6 +31,7 @@ from typing import Any, Protocol
 from jmcore.settings import get_settings
 from jmwallet.wallet.service import WalletService
 from loguru import logger
+from taker.orderbook import maker_nick_selection_key
 
 from tumbler.persistence import save_plan
 from tumbler.plan import MakerSessionPhase, Phase, PhaseStatus, Plan, PlanStatus, TakerCoinjoinPhase
@@ -132,15 +133,12 @@ class TumbleRunner:
         self._stop_requested = asyncio.Event()
         self._active_taker: Any | None = None
         self._active_maker: Any | None = None
-        # Counterparty nicks used in the previous taker phase. We exclude
-        # them from the next phase's order selection so consecutive
-        # CoinJoins don't share makers, which would erode the privacy
-        # gain from running multiple rounds. We deliberately scope this
-        # to the immediately preceding phase rather than accumulating
-        # forever — accumulating risks exhausting the available maker
-        # set on long plans, and the reference implementation likewise
-        # only tracks recently-used nicks.
-        self._previous_phase_nicks: set[str] = set()
+        # Public nickname and fidelity-bond identities in the previous
+        # successful taker phase. The next phase probabilistically penalizes
+        # them by 0.8 per avoidable overlap. One-phase RAM-only state improves
+        # counterparty diversity without creating a deterministic blacklist or
+        # changing the canonical fidelity-bond values.
+        self._previous_phase_maker_keys: set[str] = set()
 
     # -------------------------------------------------------------- lifecycle
 
@@ -539,9 +537,10 @@ class TumbleRunner:
             amount = await self._resolve_amount(phase, taker)
             # ``Taker.do_coinjoin(amount, destination, mixdepth, counterparty_count)``
             # returns the broadcast txid as a str, or None on failure.
-            # ``exclude_nicks`` keeps consecutive phases from sharing makers.
+            # ``penalized_maker_keys`` discourages consecutive phases from
+            # sharing makers while retaining a non-zero selection probability.
             # Older taker implementations may not accept the kwarg, so we
-            # fall back gracefully -- losing the privacy gain but not the
+            # fall back gracefully -- losing the diversity gain but not the
             # phase.
             do_coinjoin_kwargs: dict[str, Any] = {
                 "amount": amount,
@@ -549,15 +548,14 @@ class TumbleRunner:
                 "mixdepth": phase.mixdepth,
                 "counterparty_count": phase.counterparty_count,
             }
-            if self._previous_phase_nicks:
-                do_coinjoin_kwargs["exclude_nicks"] = set(self._previous_phase_nicks)
+            if self._previous_phase_maker_keys:
+                do_coinjoin_kwargs["penalized_maker_keys"] = set(self._previous_phase_maker_keys)
             try:
                 result = await taker.do_coinjoin(**do_coinjoin_kwargs)
             except TypeError:
-                # Older taker without ``exclude_nicks`` support; retry without
-                # the kwarg so we stay backwards compatible with reference
-                # builds and existing test fakes.
-                do_coinjoin_kwargs.pop("exclude_nicks", None)
+                # Older taker without ``penalized_maker_keys`` support; retry
+                # without the kwarg for reference builds and existing fakes.
+                do_coinjoin_kwargs.pop("penalized_maker_keys", None)
                 result = await taker.do_coinjoin(**do_coinjoin_kwargs)
             if result is None:
                 taker_reason = getattr(taker, "last_failure_reason", None)
@@ -576,16 +574,21 @@ class TumbleRunner:
                 txid = getattr(result, "txid", None)
                 if isinstance(txid, str):
                     phase.txid = txid
-            # Capture the nicks the taker actually used so the next phase
-            # can avoid them. Defensive getattr keeps us compatible with
-            # taker fakes that don't track this.
-            used = getattr(taker, "last_used_nicks", None)
-            if isinstance(used, set) and used:
-                self._previous_phase_nicks = set(used)
+            # Capture public identities from the makers in the broadcast. Fall
+            # back to nickname keys for older takers that do not expose bond
+            # identities.
+            used_keys = getattr(taker, "last_used_maker_keys", None)
+            if isinstance(used_keys, set) and used_keys:
+                self._previous_phase_maker_keys = set(used_keys)
             else:
-                # Successful phase but no nick info -- clear the exclusion
-                # set so we don't keep stale exclusions forever.
-                self._previous_phase_nicks = set()
+                used_nicks = getattr(taker, "last_used_nicks", None)
+                if isinstance(used_nicks, set) and used_nicks:
+                    self._previous_phase_maker_keys = {
+                        maker_nick_selection_key(nick) for nick in used_nicks
+                    }
+                else:
+                    # Successful phase but no identity info: clear stale state.
+                    self._previous_phase_maker_keys = set()
         finally:
             await self._teardown_taker()
 

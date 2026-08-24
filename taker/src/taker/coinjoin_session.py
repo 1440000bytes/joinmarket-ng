@@ -77,8 +77,8 @@ class CoinJoinSession:
     ``attach(taker)`` wires the persistent dependencies (wallet, backend,
     config, directory client) from the owning ``Taker``. ``reset()`` clears
     transient state at the start of each ``do_coinjoin`` invocation so that
-    consumers reading ``last_used_nicks`` / ``last_failure_reason`` after a
-    previous round see only the current round's values.
+    consumers reading successful maker identities or ``last_failure_reason``
+    after a previous round see only the current round's values.
     """
 
     # Persistent dependencies are resolved lazily from the owning Taker via
@@ -149,9 +149,10 @@ class CoinJoinSession:
         # onward input locks are retained and renewed instead of released.
         self.signing_boundary_crossed = False
 
-        # Counterparty nicks selected during this call (initial + replacements).
-        # Tumbler reads this on the Taker to exclude reused makers across phases.
+        # Counterparty identities in the successfully broadcast transaction.
+        # The tumbler reads these after success to penalize immediate reuse.
         self.last_used_nicks: set[str] = set()
+        self.last_used_maker_keys: set[str] = set()
 
         # Human-readable failure reason exposed for tumbler diagnostics.
         self.last_failure_reason: str | None = None
@@ -205,6 +206,7 @@ class CoinJoinSession:
         self.input_lock_owner = secrets.token_hex(32)
         self.signing_boundary_crossed = False
         self.last_used_nicks = set()
+        self.last_used_maker_keys = set()
         self.last_failure_reason = None
         self.cj_destination = ""
         self.taker_change_address = ""

@@ -53,7 +53,7 @@ from taker.eligibility import (
 from taker.models import MakerSession, PhaseResult, TakerState
 from taker.monitoring import TakerMonitoringMixin
 from taker.multi_directory import MultiDirectoryClient
-from taker.orderbook import OrderbookManager, calculate_cj_fee
+from taker.orderbook import OrderbookManager, calculate_cj_fee, maker_selection_keys
 from taker.podle_manager import PoDLEManager
 
 # Backward-compatible re-exports: many tests and modules import these from taker.taker
@@ -390,8 +390,13 @@ class Taker(TakerMonitoringMixin):
 
     @property
     def last_used_nicks(self) -> set[str]:
-        """Maker nicks used by the most recent ``do_coinjoin`` call."""
+        """Maker nicks in the most recently broadcast CoinJoin."""
         return self._session.last_used_nicks
+
+    @property
+    def last_used_maker_keys(self) -> set[str]:
+        """Maker nick and bond keys in the most recently broadcast CoinJoin."""
+        return self._session.last_used_maker_keys
 
     async def _resolve_explicit_input_utxos(
         self,
@@ -783,6 +788,7 @@ class Taker(TakerMonitoringMixin):
         counterparty_count: int | None = None,
         exclude_nicks: set[str] | None = None,
         input_utxos: list[str] | None = None,
+        penalized_maker_keys: set[str] | None = None,
     ) -> str | None:
         """Run one CoinJoin with fresh, non-reusable per-round state."""
         if self._round_lock.locked():
@@ -800,6 +806,7 @@ class Taker(TakerMonitoringMixin):
                 mixdepth=mixdepth,
                 counterparty_count=counterparty_count,
                 exclude_nicks=exclude_nicks,
+                penalized_maker_keys=penalized_maker_keys,
                 input_utxos=input_utxos,
             )
 
@@ -811,6 +818,7 @@ class Taker(TakerMonitoringMixin):
         counterparty_count: int | None = None,
         exclude_nicks: set[str] | None = None,
         input_utxos: list[str] | None = None,
+        penalized_maker_keys: set[str] | None = None,
     ) -> str | None:
         """
         Execute a single CoinJoin transaction.
@@ -825,10 +833,12 @@ class Taker(TakerMonitoringMixin):
             counterparty_count: Number of makers (default from config)
             exclude_nicks: Additional maker nicks to exclude from selection
                 (on top of ``orderbook_manager.ignored_makers`` and
-                ``own_wallet_nicks``). Tumbler uses this to prevent the
-                same maker from re-appearing across consecutive plan phases.
+                ``own_wallet_nicks``).
             input_utxos: Optional exact ``txid:vout`` input set. Explicit
                 inputs are never expanded with other wallet UTXOs.
+            penalized_maker_keys: Recent maker nick and bond identity keys to
+                probabilistically penalize without excluding them. The tumbler
+                uses this for one-phase counterparty diversity.
 
         Returns:
             Transaction ID if successful, None otherwise
@@ -837,6 +847,7 @@ class Taker(TakerMonitoringMixin):
             # Reset per-call state so callers reading ``last_used_nicks`` after
             # a failure don't pick up nicks from a previous successful round.
             self._session.last_used_nicks = set()
+            self._session.last_used_maker_keys = set()
             # When the caller does not pin a counterparty count, fall back to
             # the configured value (which may itself be ``None`` to request a
             # random draw from the upstream-aligned [8, 10] range).
@@ -1064,6 +1075,7 @@ class Taker(TakerMonitoringMixin):
                         n=n_makers,
                         required_features=required_features,
                         exclude_nicks=exclude_nicks,
+                        penalized_maker_keys=penalized_maker_keys,
                     )
                 )
 
@@ -1077,11 +1089,6 @@ class Taker(TakerMonitoringMixin):
                 logger.info(
                     f"Sweep: cj_amount={self._session.cj_amount:,} sats calculated for zero change"
                 )
-                # Record initial counterparties so callers (e.g. the tumbler)
-                # can avoid reusing them in the next round, even if a
-                # replacement maker is later swapped in.
-                self._session.last_used_nicks = set(selected_offers.keys())
-
             else:
                 # NORMAL MODE: Select minimum UTXOs needed
                 self._session.cj_amount = amount
@@ -1092,6 +1099,7 @@ class Taker(TakerMonitoringMixin):
                     n=n_makers,
                     required_features=required_features,
                     exclude_nicks=exclude_nicks,
+                    penalized_maker_keys=penalized_maker_keys,
                 )
 
                 if len(selected_offers) < self.config.minimum_makers:
@@ -1100,11 +1108,6 @@ class Taker(TakerMonitoringMixin):
                     self._session.last_failure_reason = reason
                     self.state = TakerState.FAILED
                     return None
-
-                # Record initial counterparties so callers (e.g. the tumbler)
-                # can avoid reusing them in the next round, even if a
-                # replacement maker is later swapped in.
-                self._session.last_used_nicks = set(selected_offers.keys())
 
                 # Pre-select UTXOs for CoinJoin, then generate PoDLE from one of them
                 # This ensures the PoDLE UTXO is one we'll actually use in the transaction
@@ -1282,6 +1285,7 @@ class Taker(TakerMonitoringMixin):
                 mixdepth=mixdepth,
                 get_private_key=get_private_key,
                 max_replacement_attempts=max_replacement_attempts,
+                penalized_maker_keys=penalized_maker_keys,
             ):
                 return None
 
@@ -1289,6 +1293,7 @@ class Taker(TakerMonitoringMixin):
                 required_features=required_features,
                 get_private_key=get_private_key,
                 max_replacement_attempts=max_replacement_attempts,
+                penalized_maker_keys=penalized_maker_keys,
             ):
                 return None
 
@@ -1440,6 +1445,7 @@ class Taker(TakerMonitoringMixin):
         required_features: set[str] | None,
         get_private_key: Any,
         max_replacement_attempts: int,
+        penalized_maker_keys: set[str] | None = None,
     ) -> bool:
         self.state = TakerState.AUTHENTICATING
         logger.debug("Phase 2: Sending !auth and receiving !ioauth...")
@@ -1496,6 +1502,7 @@ class Taker(TakerMonitoringMixin):
                     n=needed,
                     hard_exclude_nicks=current_session_nicks | failed_nicks,
                     required_features=required_features,
+                    penalized_maker_keys=penalized_maker_keys,
                 )
 
                 if not replacement_offers:
@@ -1595,8 +1602,6 @@ class Taker(TakerMonitoringMixin):
                 nick=nick, offer=offer, supports_neutrino_compat=False
             )
             logger.debug(f"Added replacement maker for auth: {nick}")
-        self._session.last_used_nicks.update(replacement_offers.keys())
-
         logger.debug("Running fill phase for replacement makers...")
         new_maker_nicks = list(replacement_offers.keys())
 
@@ -1660,6 +1665,7 @@ class Taker(TakerMonitoringMixin):
         mixdepth: int,
         get_private_key: Any,
         max_replacement_attempts: int,
+        penalized_maker_keys: set[str] | None = None,
     ) -> bool:
         self.state = TakerState.FILLING
         logger.debug("Phase 1: Sending !fill to makers...")
@@ -1843,6 +1849,7 @@ class Taker(TakerMonitoringMixin):
                 n=needed,
                 hard_exclude_nicks=current_session_nicks | failed_nicks,
                 required_features=required_features,
+                penalized_maker_keys=penalized_maker_keys,
             )
 
             if not replacement_offers:
@@ -1873,7 +1880,6 @@ class Taker(TakerMonitoringMixin):
                 )
                 logger.info(f"Added replacement maker: {nick}")
             selected_offers.update(replacement_offers)
-            self._session.last_used_nicks.update(replacement_offers.keys())
 
     async def _finalize_and_broadcast(self, destination: str) -> str | None:
         # Final confirmation before broadcast
@@ -1992,6 +1998,13 @@ class Taker(TakerMonitoringMixin):
             logger.error("Broadcast failed")
             self.state = TakerState.FAILED
             return None
+
+        self._session.last_used_nicks = set(self._session.maker_sessions)
+        self._session.last_used_maker_keys = {
+            key
+            for session in self._session.maker_sessions.values()
+            for key in maker_selection_keys(session.offer)
+        }
 
         self.state = TakerState.COMPLETE
         logger.info(f"CoinJoin COMPLETE! txid: {self._session.txid}")

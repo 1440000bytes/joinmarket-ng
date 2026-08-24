@@ -27,6 +27,83 @@ from loguru import logger
 
 from taker.config import MaxCjFee
 
+DEFAULT_MAKER_REPEAT_PENALTY = 0.8
+_MAX_REPEAT_PENALTY_DRAWS = 64
+
+
+def maker_nick_selection_key(nick: str) -> str:
+    """Return the history key used to recognize a maker nickname."""
+    return f"nick:{nick}"
+
+
+def maker_selection_keys(offer: Offer) -> set[str]:
+    """Return stable selection-history keys for an offer.
+
+    A verified positive-value bond is the strongest public identity available
+    across nickname changes. The nickname remains useful for bondless makers
+    and for a bonded maker that rotates its advertised bond.
+    """
+    keys = {maker_nick_selection_key(offer.counterparty)}
+    bond_data = offer.fidelity_bond_data
+    if not bond_data or offer.fidelity_bond_value <= 0:
+        return keys
+
+    txid = bond_data.get("utxo_txid")
+    vout = bond_data.get("utxo_vout")
+    if isinstance(txid, str) and isinstance(vout, int):
+        keys.add(f"bond:{txid}:{vout}")
+    return keys
+
+
+def choose_with_repeat_penalty(
+    offers: list[Offer],
+    n: int,
+    choose_fn: Callable[[list[Offer], int], list[Offer]],
+    penalized_maker_keys: set[str] | None,
+    repeat_penalty: float = DEFAULT_MAKER_REPEAT_PENALTY,
+) -> list[Offer]:
+    """Tilt a baseline maker-set chooser away from recent counterparties.
+
+    A baseline set with ``k`` avoidable repeated makers is accepted with
+    probability ``repeat_penalty ** k``. This preserves full support and leaves
+    canonical fidelity-bond values untouched. Repeats forced by a thin pool do
+    not count toward ``k`` because their common factor cannot change the
+    normalized selection distribution.
+
+    The draw bound prevents pathological custom maker counts or chooser
+    implementations from stalling selection. On exhaustion, the final valid
+    baseline draw is returned, so diversity policy can never fail a CoinJoin.
+    """
+    if not 0 < repeat_penalty <= 1:
+        raise ValueError("repeat_penalty must be in the interval (0, 1]")
+    if not penalized_maker_keys or repeat_penalty == 1:
+        return choose_fn(offers, n)
+
+    fresh_offer_count = sum(
+        not bool(maker_selection_keys(offer) & penalized_maker_keys) for offer in offers
+    )
+    selected: list[Offer] = []
+    for attempt in range(1, _MAX_REPEAT_PENALTY_DRAWS + 1):
+        selected = choose_fn(offers, n)
+        overlap = sum(
+            bool(maker_selection_keys(offer) & penalized_maker_keys) for offer in selected
+        )
+        unavoidable_overlap = max(0, len(selected) - fresh_offer_count)
+        avoidable_overlap = max(0, overlap - unavoidable_overlap)
+        if secure_random.random() <= repeat_penalty**avoidable_overlap:
+            if attempt > 1:
+                logger.debug(
+                    f"Accepted maker set after {attempt} diversity draws "
+                    f"({avoidable_overlap} avoidable repeats)"
+                )
+            return selected
+
+    logger.debug(
+        f"Maker diversity draw limit reached; accepting baseline set with "
+        f"repeat_penalty={repeat_penalty}"
+    )
+    return selected
+
 
 def calculate_cj_fee(offer: Offer, cj_amount: int) -> int:
     """
@@ -556,6 +633,8 @@ def choose_orders(
     bondless_makers_allowance: float = 0.2,
     bondless_require_zero_fee: bool = True,
     required_features: set[str] | None = None,
+    penalized_maker_keys: set[str] | None = None,
+    maker_repeat_penalty: float = DEFAULT_MAKER_REPEAT_PENALTY,
 ) -> tuple[dict[str, Offer], int]:
     """
     Choose n orders from the orderbook for a CoinJoin.
@@ -571,6 +650,8 @@ def choose_orders(
         bondless_makers_allowance: Probability of random selection vs fidelity bond weighting
         bondless_require_zero_fee: If True, bondless spots only select zero-fee offers
         required_features: Feature names that makers must support (passed to filter_offers)
+        penalized_maker_keys: Recent maker nick and bond keys to probabilistically penalize
+        maker_repeat_penalty: Per-repeated-maker acceptance multiplier
 
     Returns:
         (dict of counterparty -> offer, total_cj_fee)
@@ -614,7 +695,13 @@ def choose_orders(
         n = len(deduped)
 
     # Select makers
-    selected = choose_fn(deduped, n)
+    selected = choose_with_repeat_penalty(
+        deduped,
+        n,
+        choose_fn,
+        penalized_maker_keys,
+        maker_repeat_penalty,
+    )
 
     # Build result
     result = {offer.counterparty: offer for offer in selected}
@@ -641,6 +728,8 @@ def choose_sweep_orders(
     bondless_makers_allowance: float = 0.2,
     bondless_require_zero_fee: bool = True,
     required_features: set[str] | None = None,
+    penalized_maker_keys: set[str] | None = None,
+    maker_repeat_penalty: float = DEFAULT_MAKER_REPEAT_PENALTY,
 ) -> tuple[dict[str, Offer], int, int]:
     """
     Choose n orders for a sweep transaction (no change).
@@ -660,6 +749,8 @@ def choose_sweep_orders(
         bondless_makers_allowance: Probability of random selection vs fidelity bond weighting
         bondless_require_zero_fee: If True, bondless spots only select zero-fee offers
         required_features: Feature names that makers must support (passed to filter_offers)
+        penalized_maker_keys: Recent maker nick and bond keys to probabilistically penalize
+        maker_repeat_penalty: Per-repeated-maker acceptance multiplier
 
     Returns:
         (dict of counterparty -> offer, cj_amount, total_cj_fee)
@@ -733,7 +824,13 @@ def choose_sweep_orders(
         return {}, 0, 0
 
     # Select makers
-    selected = choose_fn(deduped, n)
+    selected = choose_with_repeat_penalty(
+        deduped,
+        n,
+        choose_fn,
+        penalized_maker_keys,
+        maker_repeat_penalty,
+    )
 
     # Now solve for exact cj_amount
     sum_abs_fees = 0
@@ -869,6 +966,7 @@ class OrderbookManager:
         exclude_nicks: set[str] | None = None,
         hard_exclude_nicks: set[str] | None = None,
         required_features: set[str] | None = None,
+        penalized_maker_keys: set[str] | None = None,
     ) -> tuple[dict[str, Offer], int]:
         """
         Select makers for a CoinJoin.
@@ -878,16 +976,16 @@ class OrderbookManager:
             n: Number of makers
             honest_only: Only select from honest makers
             min_nick_version: Minimum required nick version (e.g., 6 for neutrino takers)
-            exclude_nicks: Soft exclusion nicks. Preferred to be excluded (used by
-                tumbler to avoid repeating makers across phases), but if not enough
-                eligible makers remain after applying both hard and soft exclusions,
-                we relax this set rather than fail. ``ignored_makers`` is treated
-                the same way (best-effort avoidance).
+            exclude_nicks: Caller-supplied soft exclusion nicks. If not enough eligible
+                makers remain after applying both hard and soft exclusions, this set is
+                relaxed rather than failing. ``ignored_makers`` is treated the same way.
             hard_exclude_nicks: Strict exclusion nicks. Never relaxed. Use this for
                 makers that just rejected/failed inside the *current* CoinJoin
                 attempt (re-asking them would just fail again) and for any caller
                 that genuinely cannot include the nick.
             required_features: Feature names that makers must support
+            penalized_maker_keys: Recent maker nick and bond keys to penalize with
+                :data:`DEFAULT_MAKER_REPEAT_PENALTY` while retaining full support
 
         Returns:
             (selected offers dict, total fee)
@@ -900,6 +998,7 @@ class OrderbookManager:
             exclude_nicks=exclude_nicks,
             hard_exclude_nicks=hard_exclude_nicks,
             required_features=required_features,
+            penalized_maker_keys=penalized_maker_keys,
         )
 
     def _select_with_soft_fallback(
@@ -911,6 +1010,7 @@ class OrderbookManager:
         exclude_nicks: set[str] | None,
         hard_exclude_nicks: set[str] | None,
         required_features: set[str] | None,
+        penalized_maker_keys: set[str] | None,
     ) -> tuple[dict[str, Offer], int]:
         """Select makers, falling back to soft-excluded ones if needed.
 
@@ -945,13 +1045,14 @@ class OrderbookManager:
             bondless_makers_allowance=self.bondless_makers_allowance,
             bondless_require_zero_fee=self.bondless_require_zero_fee,
             required_features=required_features,
+            penalized_maker_keys=penalized_maker_keys,
         )
         if len(result) >= n or not soft:
             return result, fee
 
         logger.warning(
             f"Only {len(result)}/{n} makers available with soft exclusions "
-            f"(ignored / previously-used: {len(soft)} nicks). Topping up from "
+            f"({len(soft)} ignored or caller-excluded nicks). Topping up from "
             "soft-excluded pool to avoid failing the CoinJoin."
         )
         # Top-up: keep the strict pick (so we don't accidentally drop the
@@ -971,6 +1072,7 @@ class OrderbookManager:
             bondless_makers_allowance=self.bondless_makers_allowance,
             bondless_require_zero_fee=self.bondless_require_zero_fee,
             required_features=required_features,
+            penalized_maker_keys=penalized_maker_keys,
         )
         result.update(topup_result)
         return result, fee + topup_fee
@@ -985,6 +1087,7 @@ class OrderbookManager:
         exclude_nicks: set[str] | None = None,
         hard_exclude_nicks: set[str] | None = None,
         required_features: set[str] | None = None,
+        penalized_maker_keys: set[str] | None = None,
     ) -> tuple[dict[str, Offer], int, int]:
         """
         Select makers for a sweep CoinJoin.
@@ -999,6 +1102,8 @@ class OrderbookManager:
                 makers remain). See :meth:`select_makers` for full semantics.
             hard_exclude_nicks: Strict exclusion nicks (never relaxed).
             required_features: Feature names that makers must support
+            penalized_maker_keys: Recent maker nick and bond keys to penalize while
+                retaining full support
 
         Returns:
             (selected offers dict, cj_amount, total fee)
@@ -1029,6 +1134,7 @@ class OrderbookManager:
             bondless_makers_allowance=self.bondless_makers_allowance,
             bondless_require_zero_fee=self.bondless_require_zero_fee,
             required_features=required_features,
+            penalized_maker_keys=penalized_maker_keys,
         )
         if len(result[0]) >= n or not soft:
             return result
@@ -1049,4 +1155,5 @@ class OrderbookManager:
             bondless_makers_allowance=self.bondless_makers_allowance,
             bondless_require_zero_fee=self.bondless_require_zero_fee,
             required_features=required_features,
+            penalized_maker_keys=penalized_maker_keys,
         )

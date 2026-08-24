@@ -104,7 +104,7 @@ class FakeTaker:
 
     Mirrors the real ``Taker.do_coinjoin`` signature
     ``(amount, destination, mixdepth=0, counterparty_count=None,
-    exclude_nicks=None) -> str | None``. Accepting only those kwargs means
+    penalized_maker_keys=None) -> str | None``. Accepting only those kwargs means
     the test suite fails loudly if the runner ever leaks a stray
     ``rounding`` / ``amount_fraction`` kwarg again.
     """
@@ -117,9 +117,9 @@ class FakeTaker:
         self.state = "idle"
         self.last_failure_reason: str | None = None
         self.config = SimpleNamespace(taker_utxo_age=0)
-        # Default last_used_nicks: the runner reads this to populate the
-        # exclusion set for the next phase. Tests override per-instance.
+        # Default successful maker identities. Tests override per-instance.
         self.last_used_nicks: set[str] = set()
+        self.last_used_maker_keys: set[str] = set()
 
     async def start(self) -> None:
         self.started = True
@@ -131,6 +131,7 @@ class FakeTaker:
         mixdepth: int = 0,
         counterparty_count: int | None = None,
         exclude_nicks: set[str] | None = None,
+        penalized_maker_keys: set[str] | None = None,
     ) -> str | None:
         self.do_coinjoin_kwargs = {
             "amount": amount,
@@ -138,6 +139,7 @@ class FakeTaker:
             "mixdepth": mixdepth,
             "counterparty_count": counterparty_count,
             "exclude_nicks": exclude_nicks,
+            "penalized_maker_keys": penalized_maker_keys,
         }
         # txid derived from inputs so tests can assert stable output.
         return f"txid-{mixdepth}-{amount}"
@@ -154,6 +156,7 @@ class ExplodingTaker(FakeTaker):
         mixdepth: int = 0,
         counterparty_count: int | None = None,
         exclude_nicks: set[str] | None = None,
+        penalized_maker_keys: set[str] | None = None,
     ) -> str | None:
         raise RuntimeError("simulated failure")
 
@@ -808,6 +811,7 @@ class TestRunnerCancellation:
                 mixdepth: int = 0,
                 counterparty_count: int | None = None,
                 exclude_nicks: set[str] | None = None,
+                penalized_maker_keys: set[str] | None = None,
             ) -> str | None:
                 started.set()
                 # Stuck forever; does not observe the cooperative stop event.
@@ -1291,16 +1295,13 @@ class TestRunnerTakerInterop:
         assert all(p.txid == "obj-txid-xyz" for p in taker_phases)
 
 
-class TestMakerNickExclusion:
-    """The runner must exclude the previous phase's makers from the next
-    phase's order selection so consecutive CoinJoins don't share counterparties.
-    The exclusion window is *one* phase deep (not cumulative) to avoid
-    starving long plans of available makers.
+class TestMakerRepeatPenalty:
+    """The runner penalizes the previous phase's successful maker identities.
+
+    The penalty window is one phase deep and retains full selection support.
     """
 
-    async def test_first_phase_has_no_exclusion(self, tmp_path: Path) -> None:
-        # The runner starts with an empty exclusion set, so the very first
-        # taker phase must be invoked without an exclude_nicks kwarg.
+    async def test_first_phase_has_no_penalty(self, tmp_path: Path) -> None:
         plan = _plan(tmp_path)
         captured: list[set[str] | None] = []
 
@@ -1310,7 +1311,7 @@ class TestMakerNickExclusion:
             original = t.do_coinjoin
 
             async def spy(**kwargs: Any) -> str | None:
-                captured.append(kwargs.get("exclude_nicks"))
+                captured.append(kwargs.get("penalized_maker_keys"))
                 return await original(**kwargs)
 
             t.do_coinjoin = spy  # type: ignore[assignment]
@@ -1318,22 +1319,23 @@ class TestMakerNickExclusion:
 
         await TumbleRunner(plan, _ctx(tmp_path, taker_factory=make_taker)).run()
         assert captured, "expected at least one taker phase"
-        # First phase must have no exclusion -- nothing has been used yet.
+        # Nothing has been used before the first phase.
         assert captured[0] is None
 
-    async def test_subsequent_phase_excludes_previous_nicks(self, tmp_path: Path) -> None:
+    async def test_subsequent_phase_penalizes_previous_keys(self, tmp_path: Path) -> None:
         plan = _plan(tmp_path)
         captured: list[set[str] | None] = []
 
         async def make_taker(phase: Any) -> FakeTaker:
             t = FakeTaker(phase)
-            # Each phase advertises a deterministic nick set so we can assert
-            # that the *next* phase received exactly that set as exclusion.
-            t.last_used_nicks = {f"maker_{phase.index}_a", f"maker_{phase.index}_b"}
+            t.last_used_maker_keys = {
+                f"nick:maker_{phase.index}_a",
+                f"bond:{phase.index:064x}:0",
+            }
             original = t.do_coinjoin
 
             async def spy(**kwargs: Any) -> str | None:
-                captured.append(kwargs.get("exclude_nicks"))
+                captured.append(kwargs.get("penalized_maker_keys"))
                 return await original(**kwargs)
 
             t.do_coinjoin = spy  # type: ignore[assignment]
@@ -1343,19 +1345,16 @@ class TestMakerNickExclusion:
         assert result.status == PlanStatus.COMPLETED
         taker_phases = [p for p in result.phases if isinstance(p, TakerCoinjoinPhase)]
         assert len(captured) == len(taker_phases)
-        # Phase i (i>0) must have been called with the nicks reported by
-        # phase i-1's taker -- not a cumulative union, just the prior round.
+        # Only the previous successful phase is carried forward.
         for i in range(1, len(taker_phases)):
             prev_index = taker_phases[i - 1].index
-            expected = {f"maker_{prev_index}_a", f"maker_{prev_index}_b"}
-            assert captured[i] == expected, (
-                f"phase {i} should exclude phase {i - 1}'s nicks {expected}, got {captured[i]}"
-            )
+            expected = {
+                f"nick:maker_{prev_index}_a",
+                f"bond:{prev_index:064x}:0",
+            }
+            assert captured[i] == expected
 
-    async def test_no_used_nicks_clears_exclusion(self, tmp_path: Path) -> None:
-        # If a taker reports no last_used_nicks (e.g. a fake or an older
-        # implementation), the exclusion set must be cleared so we don't
-        # carry stale exclusions forward indefinitely.
+    async def test_nickname_fallback_and_empty_history_clear(self, tmp_path: Path) -> None:
         plan = _plan(tmp_path)
         captured: list[set[str] | None] = []
         call_index = {"i": 0}
@@ -1371,23 +1370,20 @@ class TestMakerNickExclusion:
             original = t.do_coinjoin
 
             async def spy(**kwargs: Any) -> str | None:
-                captured.append(kwargs.get("exclude_nicks"))
+                captured.append(kwargs.get("penalized_maker_keys"))
                 return await original(**kwargs)
 
             t.do_coinjoin = spy  # type: ignore[assignment]
             return t
 
         await TumbleRunner(plan, _ctx(tmp_path, taker_factory=make_taker)).run()
-        # First phase: empty exclusion.
         assert captured[0] is None
-        # Second phase: exclusion is the first phase's nicks.
         if len(captured) >= 2:
-            assert captured[1] == {"maker_a", "maker_b"}
-        # Third phase: cleared because phase 2 reported no nicks.
+            assert captured[1] == {"nick:maker_a", "nick:maker_b"}
         if len(captured) >= 3:
             assert captured[2] is None
 
-    async def test_legacy_taker_without_exclude_nicks_kwarg(self, tmp_path: Path) -> None:
+    async def test_legacy_taker_without_penalty_kwarg(self, tmp_path: Path) -> None:
         # Older taker builds (or simple test fakes) may not accept the new
         # kwarg. The runner must fall back gracefully so the phase still runs.
         plan = _plan(tmp_path)
@@ -1401,7 +1397,7 @@ class TestMakerNickExclusion:
                 mixdepth: int = 0,
                 counterparty_count: int | None = None,
             ) -> str | None:
-                # No ``exclude_nicks`` kwarg -- TypeError on first attempt
+                # No ``penalized_maker_keys`` kwarg: TypeError on first attempt
                 # forces the runner's fallback path.
                 seen_kwargs.append(
                     {
@@ -1846,6 +1842,7 @@ class TestRunnerSkipsUnfundedPhases:
                 mixdepth: int = 0,
                 counterparty_count: int | None = None,
                 exclude_nicks: set[str] | None = None,
+                penalized_maker_keys: set[str] | None = None,
             ) -> str | None:
                 if mixdepth in unfunded_mixdepths:
                     t.state = "failed"

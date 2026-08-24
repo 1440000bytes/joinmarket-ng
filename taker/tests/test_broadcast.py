@@ -598,9 +598,56 @@ class TestTakerBroadcast:
 
         assert result is None
         assert taker.state.value == "failed"
+        assert taker.last_used_nicks == set()
+        assert taker.last_used_maker_keys == set()
         taker.backend.broadcast_transaction.assert_not_awaited()
         taker.wallet.release_coinjoin_inputs.assert_not_called()
         taker.wallet.renew_coinjoin_inputs.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_successful_broadcast_records_final_maker_identities(self, taker) -> None:
+        from jmcore.models import Offer, OfferType
+
+        from taker.models import MakerSession
+
+        bond_txid = "a" * 64
+        offer = Offer(
+            counterparty="J5finalmaker",
+            oid=0,
+            ordertype=OfferType.SW0_ABSOLUTE,
+            minsize=1_000,
+            maxsize=1_000_000,
+            txfee=0,
+            cjfee=0,
+            fidelity_bond_value=10_000,
+            fidelity_bond_data={"utxo_txid": bond_txid, "utxo_vout": 2},
+        )
+        maker_session = MakerSession(nick=offer.counterparty, offer=offer)
+        maker_session.utxos = [{"value": 10_000}]
+        taker._session.maker_sessions = {offer.counterparty: maker_session}
+        taker._session.selected_utxos = []
+        taker._session.cj_amount = 1_000
+        taker._session._minimum_fee_rate_sat_vb = 0.1
+        taker._session.cj_destination = "bcrt1qdestination"
+        taker._session._phase_broadcast = AsyncMock(return_value="txid123")
+        taker._session._get_taker_cj_output_index = MagicMock(return_value=0)
+        taker._update_pending_transaction_now = AsyncMock()
+        taker.wallet.wallet_fingerprint = "deadbeef"
+
+        with (
+            patch("taker.taker.update_taker_awaiting_transaction_broadcast", return_value=True),
+            patch("taker.taker.get_notifier") as get_notifier,
+            patch("taker.taker.spawn_task"),
+        ):
+            get_notifier.return_value.notify_coinjoin_complete = MagicMock()
+            result = await taker._finalize_and_broadcast("bcrt1qdestination")
+
+        assert result == "txid123"
+        assert taker.last_used_nicks == {"J5finalmaker"}
+        assert taker.last_used_maker_keys == {
+            "nick:J5finalmaker",
+            f"bond:{bond_txid}:2",
+        }
 
     @pytest.mark.asyncio
     async def test_final_signed_vsize_fee_floor_rejects_before_confirmation_or_broadcast(

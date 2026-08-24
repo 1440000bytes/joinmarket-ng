@@ -1,7 +1,7 @@
 """Tests for Taker forwarding of per-round session diagnostics.
 
-The tumbler runner reads ``taker.last_failure_reason`` / ``taker.last_used_nicks``
-to explain why a round did not broadcast and to avoid reusing makers. These
+The tumbler runner reads the taker's failure reason and successful maker identities
+to explain why a round did not broadcast and to discourage maker reuse. These
 live on the per-round ``CoinJoinSession``; the ``Taker`` must expose them as
 read-only properties so external consumers see the real values instead of
 ``None`` (which previously broke the tumbler's confirmation-aware retry hint).
@@ -40,3 +40,11 @@ async def test_last_used_nicks_property_forwards() -> None:
     assert taker.last_used_nicks == set()
     taker._session.last_used_nicks = {"J5Maker"}
     assert taker.last_used_nicks == {"J5Maker"}
+
+
+@pytest.mark.asyncio
+async def test_last_used_maker_keys_property_forwards() -> None:
+    taker = _taker()
+    assert taker.last_used_maker_keys == set()
+    taker._session.last_used_maker_keys = {"nick:J5Maker", f"bond:{'a' * 64}:0"}
+    assert taker.last_used_maker_keys == {"nick:J5Maker", f"bond:{'a' * 64}:0"}

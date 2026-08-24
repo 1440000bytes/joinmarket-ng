@@ -140,10 +140,11 @@ plans on-chain. Concretely:
   to pre-tumble history) and "stage 2" (drain the resulting internal
   balances out to the external destinations). Stage-1 phases get the
   longer wait by design.
-- **Non-overlapping makers.** Within one tumble, the runner remembers
-  which counterparty nicks were used in the previous phase and excludes
-  them from the next maker selection. A coordinated set of malicious
-  makers cannot trivially intersect across phases.
+- **Probabilistic maker diversity.** Within one tumble, the runner remembers
+  the public nickname and fidelity-bond identities from the previous successful
+  phase. A candidate set with `k` avoidable repeats is accepted with probability
+  `0.8^k`. Every maker remains selectable, unavoidable repeats in a thin
+  orderbook are not penalized, and the history is forgotten when the run ends.
 
 If you reduce any of these knobs (smaller waits, fewer destinations,
 disabled maker sessions, disabled rounding) you trade real privacy for

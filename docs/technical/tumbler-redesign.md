@@ -345,19 +345,28 @@ computed from the in-memory runner on every request (never cached), and
 is `null` whenever no tumble is running, matching the reference, which
 also returns no schedule for single-shot taker CoinJoins.
 
-## Maker exclusion across phases
+## Maker diversity across phases
 
-Within a single tumble, the runner remembers which counterparty nicks
-were used in the previous phase and passes them as `exclude_nicks` to
-`Taker.do_coinjoin` for the next one. The exclusion window is one phase
-deep (not cumulative): a longer window risks starving long plans of
-counterparties when the orderbook is thin. This frustrates a coordinated
-set of malicious makers from intersecting the same wallet across
-consecutive phases of the same tumble.
+Within a single tumble, the runner remembers public identity keys for
+the makers in the previous successful broadcast. Each maker contributes
+a nickname key. A maker with a positive verified fidelity bond also
+contributes its bond outpoint, which recognizes the same bond when its
+nickname changes.
 
-The runner falls back to the legacy `do_coinjoin` signature on
-`TypeError` so it stays compatible with reference takers and existing
-test fakes that have not yet adopted the kwarg.
+The next phase passes those keys to `Taker.do_coinjoin` as
+`penalized_maker_keys`. The ordinary maker selector remains the baseline.
+A complete candidate set with `k` avoidable identity overlaps is accepted
+with probability `0.8^k`; rejected sets are redrawn. All makers retain a
+non-zero probability, and overlap forced by a thin orderbook is not
+penalized. A bounded draw count falls back to the final valid baseline set,
+so this privacy policy cannot make a CoinJoin fail.
+
+The history is one successful phase deep, is held only in RAM, and is not
+restored after a process restart. Failed and merely contacted makers do not
+enter it. Fidelity-bond values themselves are never modified. The runner
+falls back to the legacy `do_coinjoin` signature on `TypeError` so it stays
+compatible with reference takers and existing test fakes that have not yet
+adopted the keyword argument.
 
 ## Maker policy in tumbler-driven sessions
 

@@ -5,6 +5,7 @@ Unit tests for orderbook management and order selection.
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from jmcore.models import Offer, OfferType
@@ -16,11 +17,13 @@ from taker.orderbook import (
     cheapest_order_choose,
     choose_orders,
     choose_sweep_orders,
+    choose_with_repeat_penalty,
     dedupe_offers_by_bond,
     dedupe_offers_by_maker,
     fidelity_bond_weighted_choose,
     filter_offers,
     is_fee_within_limits,
+    maker_selection_keys,
     prefer_offers_with_confirmed_features,
     random_order_choose,
     weighted_order_choose,
@@ -738,6 +741,129 @@ class TestChooseSweepOrders:
         assert set(orders) == expected_zero_fee_policy_nicks()
 
 
+class TestMakerRepeatPenalty:
+    @staticmethod
+    def _offer(nick: str, bond_txid: str | None = None) -> Offer:
+        bond_data = {"utxo_txid": bond_txid, "utxo_vout": 0} if bond_txid is not None else None
+        return Offer(
+            counterparty=nick,
+            oid=0,
+            ordertype=OfferType.SW0_ABSOLUTE,
+            minsize=1_000,
+            maxsize=1_000_000,
+            txfee=0,
+            cjfee=0,
+            fidelity_bond_value=10_000 if bond_data else 0,
+            fidelity_bond_data=bond_data,
+        )
+
+    def test_rejects_repeated_set_at_alpha_boundary(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        repeated = self._offer("old-maker", "a" * 64)
+        fresh = self._offer("fresh-maker", "b" * 64)
+        choices = iter([[repeated], [fresh]])
+        random_values = iter([0.800_001, 0.999])
+        monkeypatch.setattr(
+            "taker.orderbook.secure_random",
+            SimpleNamespace(random=lambda: next(random_values)),
+        )
+
+        selected = choose_with_repeat_penalty(
+            [repeated, fresh],
+            1,
+            lambda _offers, _n: next(choices),
+            maker_selection_keys(repeated),
+        )
+
+        assert selected == [fresh]
+
+    def test_alpha_08_keeps_repeated_set_selectable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        repeated = self._offer("old-maker", "a" * 64)
+        fresh = self._offer("fresh-maker", "b" * 64)
+        calls = 0
+
+        def choose(_offers: list[Offer], _n: int) -> list[Offer]:
+            nonlocal calls
+            calls += 1
+            return [repeated]
+
+        monkeypatch.setattr(
+            "taker.orderbook.secure_random",
+            SimpleNamespace(random=lambda: 0.8),
+        )
+
+        selected = choose_with_repeat_penalty(
+            [repeated, fresh], 1, choose, maker_selection_keys(repeated)
+        )
+
+        assert selected == [repeated]
+        assert calls == 1
+
+    def test_bond_key_penalizes_nickname_rotation(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        old_offer = self._offer("old-nick", "a" * 64)
+        rotated_nick = self._offer("new-nick", "a" * 64)
+        fresh = self._offer("fresh-maker", "b" * 64)
+        choices = iter([[rotated_nick], [fresh]])
+        random_values = iter([0.9, 0.9])
+        monkeypatch.setattr(
+            "taker.orderbook.secure_random",
+            SimpleNamespace(random=lambda: next(random_values)),
+        )
+
+        selected = choose_with_repeat_penalty(
+            [rotated_nick, fresh],
+            1,
+            lambda _offers, _n: next(choices),
+            maker_selection_keys(old_offer),
+        )
+
+        assert selected == [fresh]
+
+    def test_unavoidable_repeat_is_not_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        repeated = self._offer("old-maker", "a" * 64)
+        fresh = self._offer("fresh-maker", "b" * 64)
+        calls = 0
+
+        def choose(_offers: list[Offer], _n: int) -> list[Offer]:
+            nonlocal calls
+            calls += 1
+            return [repeated, fresh]
+
+        monkeypatch.setattr(
+            "taker.orderbook.secure_random",
+            SimpleNamespace(random=lambda: 0.999),
+        )
+
+        selected = choose_with_repeat_penalty(
+            [repeated, fresh], 2, choose, maker_selection_keys(repeated)
+        )
+
+        assert selected == [repeated, fresh]
+        assert calls == 1
+
+    def test_draw_bound_returns_valid_baseline_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        repeated = self._offer("old-maker", "a" * 64)
+        fresh = self._offer("fresh-maker", "b" * 64)
+        calls = 0
+
+        def choose(_offers: list[Offer], _n: int) -> list[Offer]:
+            nonlocal calls
+            calls += 1
+            return [repeated]
+
+        monkeypatch.setattr(
+            "taker.orderbook.secure_random",
+            SimpleNamespace(random=lambda: 1.0),
+        )
+
+        selected = choose_with_repeat_penalty(
+            [repeated, fresh], 1, choose, maker_selection_keys(repeated)
+        )
+
+        assert selected == [repeated]
+        assert calls == 64
+        assert repeated.fidelity_bond_value == 10_000
+
+
 class TestOrderbookManager:
     """Tests for OrderbookManager."""
 
@@ -822,11 +948,7 @@ class TestOrderbookManager:
     def test_select_makers_exclude_nicks(
         self, sample_offers: list[Offer], max_cj_fee: MaxCjFee, tmp_path: Path
     ) -> None:
-        """Test maker selection with explicit nick exclusion.
-
-        This tests the exclude_nicks parameter used during maker replacement
-        to avoid re-selecting makers that are already in the current session.
-        """
+        """Test maker selection with caller-supplied soft nick exclusion."""
         manager = OrderbookManager(max_cj_fee, bondless_require_zero_fee=False, data_dir=tmp_path)
         manager.update_offers(sample_offers)
 
