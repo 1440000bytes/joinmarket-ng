@@ -84,6 +84,7 @@ class MakerSession:
     def __init__(self, inner: CoinJoinSession) -> None:
         self.inner = inner
         self.lock = asyncio.Lock()
+        self.podle_outpoint: tuple[str, int] | None = None
         # This is deliberately independent of an event loop so sessions remain
         # safe to construct in synchronous tests and embedding contexts.
         self.deadline = time.monotonic() + inner.session_timeout_sec
@@ -173,7 +174,7 @@ class MakerSession:
             renewed = self.inner.wallet.renew_coinjoin_inputs(
                 set(self.our_utxos),
                 owner=self.inner.input_lock_owner,
-                ttl=self.inner.input_lock_ttl_sec,
+                ttl=self.inner.pending_broadcast_ttl_sec,
             )
         except Exception as exc:  # pragma: no cover - best-effort retention
             logger.error(f"Failed to retain signed input locks for {self.taker_nick}: {exc}")
@@ -209,6 +210,17 @@ class MakerSession:
     def remaining_timeout(self) -> float:
         """Return the time left before the session's absolute deadline."""
         return max(0.0, self.deadline - time.monotonic())
+
+    def begin_pre_sign_wait(self) -> bool:
+        """Shorten the deadline and renew locks before disclosing maker inputs."""
+        phase_deadline = time.monotonic() + self.inner.pre_sign_timeout_sec
+        self.deadline = min(self.deadline, phase_deadline)
+        self.inner.deadline = self.deadline
+        return self.inner.wallet.renew_coinjoin_inputs(
+            set(self.our_utxos),
+            owner=self.inner.input_lock_owner,
+            ttl=self.remaining_timeout(),
+        )
 
     def is_active(self, bot: MakerBotProtocol) -> bool:
         """Return whether this exact session may still progress."""
@@ -251,6 +263,7 @@ class MakerSession:
         kphex: str,
         exclude_utxos: set[tuple[str, int]] | None = None,
         active_check: Callable[[], bool] | None = None,
+        podle_admission: Callable[[tuple[str, int]], bool] | None = None,
     ) -> tuple[bool, dict[str, Any]]:
         return await self.inner.handle_auth(
             commitment,
@@ -258,6 +271,7 @@ class MakerSession:
             kphex,
             exclude_utxos=exclude_utxos,
             active_check=active_check,
+            podle_admission=podle_admission,
         )
 
     async def handle_tx(
@@ -359,6 +373,7 @@ class MakerSession:
                 revelation,
                 kphex,
                 active_check=lambda: self.is_active(bot),
+                podle_admission=lambda outpoint: bot._reserve_podle_outpoint(outpoint, self),
             )
             if not self.is_active(bot):
                 return
@@ -397,11 +412,20 @@ class MakerSession:
                     )
                     if bot.active_sessions.get(taker_nick) is self:
                         bot.active_sessions.pop(taker_nick)
+                        bot._release_podle_outpoint(self)
                         self.release_input_locks()
                         bot._release_commitment_reservation(commitment)
                     return
 
                 if not self.is_active(bot):
+                    return
+                if not self.begin_pre_sign_wait():
+                    logger.error("Maker input lock ownership was lost before !ioauth")
+                    if bot.active_sessions.get(taker_nick) is self:
+                        bot.active_sessions.pop(taker_nick)
+                        bot._release_podle_outpoint(self)
+                        self.release_input_locks()
+                        bot._release_commitment_reservation(commitment)
                     return
                 sent = await self.send_response(bot, "ioauth", response)
                 if not self.is_active(bot):
@@ -434,6 +458,7 @@ class MakerSession:
                 # work so notifier failures cannot extend the reservation.
                 if bot.active_sessions.get(taker_nick) is self:
                     bot.active_sessions.pop(taker_nick)
+                    bot._release_podle_outpoint(self)
                     self.release_input_locks()
                     bot._release_commitment_reservation(commitment)
 
@@ -516,6 +541,7 @@ class MakerSession:
                     )
                     if bot.active_sessions.get(taker_nick) is self:
                         bot.active_sessions.pop(taker_nick)
+                        bot._release_podle_outpoint(self)
                     self.retain_input_locks()
                     return
                 for sig in signatures:
@@ -582,6 +608,7 @@ class MakerSession:
                 if bot.active_sessions.get(taker_nick) is self:
                     self.state = CoinJoinState.COMPLETE
                     bot.active_sessions.pop(taker_nick)
+                    bot._release_podle_outpoint(self)
 
                 # Schedule wallet re-sync in background to avoid blocking !push handling
                 spawn_task(bot._deferred_wallet_resync())
@@ -592,6 +619,7 @@ class MakerSession:
                 # the persisted locks through their TTL.
                 if bot.active_sessions.get(taker_nick) is self:
                     bot.active_sessions.pop(taker_nick)
+                    bot._release_podle_outpoint(self)
                     if self.signing_boundary_crossed:
                         self.retain_input_locks()
                     else:

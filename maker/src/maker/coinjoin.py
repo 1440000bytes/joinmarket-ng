@@ -72,6 +72,7 @@ class CoinJoinSession:
         taker_utxo_age: int = 5,
         taker_utxo_amtpercent: int = 20,
         session_timeout_sec: int = 300,
+        pre_sign_timeout_sec: int = 180,
         input_lock_ttl_sec: float = 3600,
         merge_algorithm: str = "default",
         restrict_md0: bool = True,
@@ -100,11 +101,12 @@ class CoinJoinSession:
         self.taker_nacl_pk = ""  # Taker's NaCl pubkey (hex) for btc_sig
         self.created_at = time.monotonic()
         self.session_timeout_sec = session_timeout_sec
+        self.pre_sign_timeout_sec = pre_sign_timeout_sec
         self.deadline = self.created_at + session_timeout_sec
-        # Reservations span the remaining protocol and then a pending signed
-        # transaction window, so cover both sequential intervals.
+        # A pre-sign reservation only needs to survive until this session's
+        # deadline. It is renewed for the longer pending-broadcast window
+        # immediately before a signature can be produced.
         self.pending_broadcast_ttl_sec = float(input_lock_ttl_sec)
-        self.input_lock_ttl_sec = self.pending_broadcast_ttl_sec + float(session_timeout_sec)
         self.input_lock_owner = secrets.token_hex(32)
         self.signing_boundary_crossed = False
         self.comm_channel = ""  # Track communication channel ("direct" or "dir:<node_id>")
@@ -262,6 +264,7 @@ class CoinJoinSession:
         kphex: str,
         exclude_utxos: set[tuple[str, int]] | None = None,
         active_check: Callable[[], bool] | None = None,
+        podle_admission: Callable[[tuple[str, int]], bool] | None = None,
     ) -> tuple[bool, dict[str, Any]]:
         """
         Handle !auth message from taker.
@@ -447,6 +450,16 @@ class CoinJoinSession:
             )
             self.commitment_authenticated = True
 
+            if podle_admission is not None and not podle_admission((utxo_txid, utxo_vout)):
+                logger.warning(
+                    f"Rejecting concurrent PoDLE outpoint from {self.taker_nick}: "
+                    f"{utxo_txid[:16]}...:{utxo_vout}"
+                )
+                return False, {
+                    "error": "Maker is already processing this authorization UTXO",
+                    "error_code": "authorization UTXO already active",
+                }
+
             utxos_dict, cj_addr, change_addr, mixdepth = await self._select_our_utxos(
                 exclude_utxos=exclude_utxos,
                 active_check=active_check,
@@ -596,7 +609,7 @@ class CoinJoinSession:
             if not self.wallet.renew_coinjoin_inputs(
                 set(self.our_utxos),
                 owner=self.input_lock_owner,
-                ttl=self.input_lock_ttl_sec,
+                ttl=self.pending_broadcast_ttl_sec,
             ):
                 self.state = CoinJoinState.FAILED
                 return False, {"error": "Maker input lock ownership was lost before signing"}
@@ -777,9 +790,12 @@ class CoinJoinSession:
 
                 if active_check is not None and not active_check():
                     return {}, "", "", -1
+                remaining_session = self.deadline - time.monotonic()
+                if remaining_session <= 0:
+                    return {}, "", "", -1
                 if not self.wallet.reserve_coinjoin_inputs(
                     set(candidate_dict),
-                    ttl=self.input_lock_ttl_sec,
+                    ttl=min(float(self.pre_sign_timeout_sec), remaining_session),
                     owner=self.input_lock_owner,
                 ):
                     logger.warning(

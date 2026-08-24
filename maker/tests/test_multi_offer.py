@@ -465,7 +465,7 @@ class TestMakerBotMultiOfferFill:
         inner.commitment_authenticated = False
         inner.our_utxos = {}
         inner.input_lock_owner = "test-owner"
-        inner.input_lock_ttl_sec = 3600.0
+        inner.pending_broadcast_ttl_sec = 3600.0
         return MakerSession(inner)
 
     """Tests for MakerBot !fill handling with multiple offers."""
@@ -570,6 +570,7 @@ class TestMakerBotMultiOfferFill:
         assert call_kwargs["offer"].oid == 0
         assert call_kwargs["offer"].ordertype == OfferType.SW0_RELATIVE
         assert call_kwargs["min_confirmations"] == maker_bot.config.min_confirmations
+        assert call_kwargs["pre_sign_timeout_sec"] == maker_bot.config.pre_sign_timeout_sec
         assert call_kwargs["input_lock_ttl_sec"] == maker_bot.config.pending_tx_timeout_min * 60
 
     @pytest.mark.asyncio
@@ -625,6 +626,40 @@ class TestMakerBotMultiOfferFill:
         assert "J5FirstTaker" in maker_bot.active_sessions
         assert "J5SecondTaker" not in maker_bot.active_sessions
         assert "ab" * 32 in maker_bot._reserved_commitments
+
+    def test_podle_outpoint_allows_only_one_concurrent_session(self, maker_bot) -> None:
+        """Different NUMS commitments cannot multiply one UTXO's local admission."""
+        first = self._session("J5FirstTaker", "11" * 32)
+        second = self._session("J5SecondTaker", "22" * 32)
+        outpoint = ("ab" * 32, 1)
+
+        assert maker_bot._reserve_podle_outpoint(outpoint, first) is True
+        assert maker_bot._reserve_podle_outpoint(outpoint, second) is False
+
+        maker_bot._release_podle_outpoint(first)
+        assert maker_bot._reserve_podle_outpoint(outpoint, second) is True
+
+    @pytest.mark.asyncio
+    async def test_fill_rejects_new_session_at_generous_global_cap(self, maker_bot) -> None:
+        """Unauthenticated signed nicks cannot grow retained session state without bound."""
+        from maker.protocol_handlers import MAX_ACTIVE_MAKER_SESSIONS
+
+        maker_bot.active_sessions = {
+            f"J5Existing{i}": MagicMock() for i in range(MAX_ACTIVE_MAKER_SESSIONS)
+        }
+        commitment = "bc" * 32
+
+        with (
+            patch("maker.protocol_handlers.CoinJoinSession") as session_class,
+            patch("maker.protocol_handlers.check_commitment", return_value=True),
+        ):
+            await maker_bot._handle_fill(
+                "J5NewTaker",
+                f"fill 0 500000 taker_pk_hex P{commitment}",
+            )
+
+        session_class.assert_not_called()
+        assert commitment not in maker_bot._reserved_commitments
 
     @pytest.mark.asyncio
     async def test_fill_failure_releases_commitment_reservation(self, maker_bot):
@@ -832,13 +867,17 @@ class TestMakerBotMultiOfferFill:
         session.lock = asyncio.Lock()
         session.commitment = bytes.fromhex(commitment)
         session.state = CoinJoinState.PUBKEY_SENT
+        podle_outpoint = ("cd" * 32, 0)
+        session.podle_outpoint = podle_outpoint
         maker_bot.active_sessions["J5TimedOutTaker"] = session
+        maker_bot._active_podle_outpoints[podle_outpoint] = session
         maker_bot._reserved_commitments.add(commitment)
 
         await maker_bot._cleanup_timed_out_sessions()
 
         assert "J5TimedOutTaker" not in maker_bot.active_sessions
         assert commitment not in maker_bot._reserved_commitments
+        assert podle_outpoint not in maker_bot._active_podle_outpoints
         session.release_input_locks.assert_called_once_with()
 
     @pytest.mark.asyncio

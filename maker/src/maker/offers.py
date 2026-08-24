@@ -182,7 +182,7 @@ class OfferManager:
 
         except Exception as e:
             logger.error(f"Failed to create offers: {e}")
-            return []
+            raise
 
     def _randomize_offer_fees(
         self,

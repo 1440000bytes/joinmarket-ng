@@ -342,6 +342,15 @@ class MakerConfig(WalletConfig):
         le=86_400,
         description="Maximum time for a CoinJoin session to complete (all states)",
     )
+    pre_sign_timeout_sec: int = Field(
+        default=180,
+        ge=60,
+        le=3_600,
+        description=(
+            "Maximum time to wait for the taker's transaction after maker inputs "
+            "have been reserved and disclosed"
+        ),
+    )
 
     # Pending transaction timeout
     pending_tx_timeout_min: int = Field(

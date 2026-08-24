@@ -117,6 +117,7 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
         self._directory_pool.clients = self.directory_clients
         self.active_sessions: dict[str, MakerSession] = {}
         self._reserved_commitments: set[str] = set()
+        self._active_podle_outpoints: dict[tuple[str, int], MakerSession] = {}
         self.current_offers: list[Offer] = []
         self.fidelity_bond: FidelityBondInfo | None = None
         self.current_block_height: int = 0  # Cached block height for bond proof generation
@@ -923,6 +924,24 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
         """Release a commitment reserved by an in-flight local session."""
         self._reserved_commitments.discard(commitment.lower())
 
+    def _reserve_podle_outpoint(self, outpoint: tuple[str, int], session: MakerSession) -> bool:
+        """Reserve one validated PoDLE UTXO for a single local session."""
+        owner = self._active_podle_outpoints.get(outpoint)
+        if owner is not None and owner is not session:
+            return False
+        self._active_podle_outpoints[outpoint] = session
+        session.podle_outpoint = outpoint
+        return True
+
+    def _release_podle_outpoint(self, session: MakerSession) -> None:
+        """Release a PoDLE UTXO reservation if this session still owns it."""
+        outpoint = session.podle_outpoint
+        if outpoint is None:
+            return
+        if self._active_podle_outpoints.get(outpoint) is session:
+            self._active_podle_outpoints.pop(outpoint, None)
+        session.podle_outpoint = None
+
     async def _resync_wallet_and_update_offers(self) -> None:
         """Re-sync wallet and update offers if balance changed.
 
@@ -1015,36 +1034,13 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
         try:
             new_offers = await self.offer_manager.create_offers()
 
-            if not new_offers:
-                logger.warning(
-                    "No offers could be created (insufficient balance?). "
-                    "Keeping existing offers active."
-                )
+            if self.current_offers == new_offers:
+                logger.debug("Offers unchanged, skipping re-announcement")
                 return
 
-            # Check if offers actually changed (compare maxsize for each offer by ID)
-            offers_changed = False
-            if self.current_offers and new_offers:
-                # Build lookup by offer ID for comparison
-                old_offers_by_id = {o.oid: o for o in self.current_offers}
-                new_offers_by_id = {o.oid: o for o in new_offers}
-
-                # Check if offer count changed
-                if set(old_offers_by_id.keys()) != set(new_offers_by_id.keys()):
-                    offers_changed = True
-                else:
-                    # Check if any offer's maxsize changed
-                    for oid, new_offer in new_offers_by_id.items():
-                        old_offer = old_offers_by_id.get(oid)
-                        if old_offer is None or old_offer.maxsize != new_offer.maxsize:
-                            offers_changed = True
-                            break
-
-                if not offers_changed:
-                    logger.debug("Offer maxsizes unchanged, skipping re-announcement")
-                    return
-            else:
-                offers_changed = True  # First time or recovering from no offers
+            old_oids = {offer.oid for offer in self.current_offers}
+            new_oids = {offer.oid for offer in new_offers}
+            canceled_oids = old_oids - new_oids
 
             # Regenerate nick when offers change for additional privacy
             # This makes it harder for observers to track maker activity over time
@@ -1064,11 +1060,25 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
                 )
                 await asyncio.sleep(delay)
 
-            await self._announce_offers()
-            offer_summary = ", ".join(f"oid={o.oid}:{o.maxsize:,}" for o in new_offers)
-            logger.info(f"Updated and re-announced {len(new_offers)} offer(s): {offer_summary}")
+            await self._cancel_offers(canceled_oids)
+            if new_offers:
+                await self._announce_offers()
+                offer_summary = ", ".join(f"oid={o.oid}:{o.maxsize:,}" for o in new_offers)
+                logger.info(f"Updated and re-announced {len(new_offers)} offer(s): {offer_summary}")
+            else:
+                logger.warning("Withdrew all offers because no fillable liquidity remains")
         except Exception as e:
             logger.error(f"Failed to update offers: {e}")
+
+    async def _cancel_offers(self, offer_ids: set[int]) -> None:
+        """Withdraw OIDs using the reference-compatible public cancel command."""
+        for offer_id in sorted(offer_ids):
+            for client in self.directory_clients.values():
+                try:
+                    await client.send_public_message(f"cancel {offer_id}")
+                    logger.debug(f"Canceled offer {offer_id} on directory")
+                except Exception as e:
+                    logger.error(f"Failed to cancel offer {offer_id}: {e}")
 
     async def _announce_offers(self) -> None:
         """Announce offers to all connected directory servers (public broadcast, NO bonds)"""

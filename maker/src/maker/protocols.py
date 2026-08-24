@@ -70,6 +70,7 @@ class MakerBotProtocol(Protocol):
     _mempool_notified_txids: set[str]
     _own_wallet_nicks: set[str]
     _reserved_commitments: set[str]
+    _active_podle_outpoints: dict[tuple[str, int], MakerSession]
     _hp2_own_broadcast_semaphore: asyncio.Semaphore
     _hp2_relay_broadcast_semaphore: asyncio.Semaphore
     _session_cleanup_task: asyncio.Task[None] | None
@@ -131,6 +132,10 @@ class MakerBotProtocol(Protocol):
     async def _drain_pending_signed_rounds(self) -> None: ...
 
     def _release_commitment_reservation(self, commitment: str) -> None: ...
+
+    def _reserve_podle_outpoint(self, outpoint: tuple[str, int], session: MakerSession) -> bool: ...
+
+    def _release_podle_outpoint(self, session: MakerSession) -> None: ...
 
     async def _resync_wallet_and_update_offers(self) -> None: ...
 

@@ -491,6 +491,7 @@ async def test_neutrino_maker_accepts_neutrino_compat_taker_auth():
         ),
         patch("jmcore.crypto.ecdsa_sign", return_value="mock_sig"),
     ):
+        podle_admission = MagicMock(return_value=True)
         mock_parse.return_value = {
             "P": bytes.fromhex("02" + "cc" * 32),
             "P2": bytes.fromhex("02" + "dd" * 32),
@@ -506,6 +507,7 @@ async def test_neutrino_maker_accepts_neutrino_compat_taker_auth():
             commitment="aa" * 32,
             revelation=revelation,
             kphex="",
+            podle_admission=podle_admission,
         )
 
     # Should succeed
@@ -522,6 +524,31 @@ async def test_neutrino_maker_accepts_neutrino_compat_taker_auth():
         blockheight=100,
     )
     mock_backend.get_utxo.assert_not_called()
+    podle_admission.assert_called_once_with(("bb" * 32, 0))
+
+
+def test_pre_sign_wait_shortens_only_the_remaining_session_deadline() -> None:
+    """After !ioauth, a stalled taker gets the shorter pre-sign window."""
+    from unittest.mock import MagicMock, patch
+
+    from maker.maker_session import MakerSession
+
+    inner = MagicMock()
+    inner.session_timeout_sec = 300
+    inner.pre_sign_timeout_sec = 180
+    inner.input_lock_owner = "owner"
+    inner.our_utxos = {("aa" * 32, 0): MagicMock()}
+    inner.wallet.renew_coinjoin_inputs.return_value = True
+    with patch("maker.maker_session.time.monotonic", return_value=100.0):
+        session = MakerSession(inner)
+        assert session.deadline == 400.0
+        assert session.begin_pre_sign_wait()
+
+    assert session.deadline == 280.0
+    assert inner.deadline == 280.0
+    inner.wallet.renew_coinjoin_inputs.assert_called_once_with(
+        set(inner.our_utxos), owner="owner", ttl=180.0
+    )
 
 
 @pytest.mark.asyncio
@@ -606,7 +633,9 @@ async def test_select_our_utxos_forwards_exclude_to_wallet():
         offer, 1_000_000
     )
     mock_wallet.reserve_coinjoin_inputs.assert_called_once_with(
-        {("ab" * 32, 1)}, ttl=session.input_lock_ttl_sec, owner=session.input_lock_owner
+        {("ab" * 32, 1)},
+        ttl=pytest.approx(session.pre_sign_timeout_sec, abs=1.0),
+        owner=session.input_lock_owner,
     )
 
 
@@ -943,11 +972,17 @@ async def test_handle_auth_allows_hp2_seen_after_fill(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("auth_success", "persistence_success", "session_replaced"),
-    [(True, True, False), (True, False, False), (False, False, False), (False, False, True)],
+    ("auth_success", "lock_renewal_success", "persistence_success", "session_replaced"),
+    [
+        (True, True, True, False),
+        (True, True, False, False),
+        (True, False, False, False),
+        (False, True, False, False),
+        (False, True, False, True),
+    ],
 )
 async def test_on_auth_releases_reservation_only_after_persistence(
-    auth_success, persistence_success, session_replaced
+    auth_success, lock_renewal_success, persistence_success, session_replaced
 ):
     """Authenticated commitments stay reserved until local persistence succeeds."""
     from unittest.mock import AsyncMock, MagicMock, patch
@@ -959,6 +994,8 @@ async def test_on_auth_releases_reservation_only_after_persistence(
     taker_nick = "J5ReservationTaker"
     inner = MagicMock()
     inner.taker_nick = taker_nick
+    inner.session_timeout_sec = 300
+    inner.pre_sign_timeout_sec = 180
     inner.state = CoinJoinState.PUBKEY_SENT
     inner.commitment = bytes.fromhex(commitment)
     inner.crypto.is_encrypted = True
@@ -968,6 +1005,7 @@ async def test_on_auth_releases_reservation_only_after_persistence(
     inner.amount = 500_000
     inner.cj_address = "bcrt1qcoinjoin"
     inner.change_address = "bcrt1qchange"
+    inner.wallet.renew_coinjoin_inputs.return_value = lock_renewal_success
     inner.handle_auth = AsyncMock(
         return_value=(
             auth_success,
@@ -1009,11 +1047,12 @@ async def test_on_auth_releases_reservation_only_after_persistence(
     ):
         await session.on_auth(bot, "auth ciphertext", "dir:test")
 
-    if auth_success:
+    if auth_success and lock_renewal_success:
         assert create_history.call_args.kwargs["input_value"] == 612_345
         bot._broadcast_commitment.assert_awaited_once_with(commitment)
         assert bot.active_sessions[taker_nick] is session
         assert session.state == CoinJoinState.IOAUTH_SENT
+        inner.wallet.renew_coinjoin_inputs.assert_called_once()
         inner.wallet.release_coinjoin_inputs.assert_not_called()
         if persistence_success:
             bot._release_commitment_reservation.assert_called_once_with(commitment)
@@ -1021,8 +1060,20 @@ async def test_on_auth_releases_reservation_only_after_persistence(
         else:
             bot._release_commitment_reservation.assert_not_called()
             assert commitment in bot._reserved_commitments
+    elif auth_success:
+        assert create_history.call_args.kwargs["input_value"] == 612_345
+        inner.wallet.renew_coinjoin_inputs.assert_called_once()
+        session.send_response.assert_not_awaited()
+        bot._broadcast_commitment.assert_not_awaited()
+        bot._release_commitment_reservation.assert_called_once_with(commitment)
+        assert commitment not in bot._reserved_commitments
+        assert taker_nick not in bot.active_sessions
+        inner.wallet.release_coinjoin_inputs.assert_called_once_with(
+            {outpoint}, owner=inner.input_lock_owner
+        )
     else:
         bot._broadcast_commitment.assert_not_awaited()
+        inner.wallet.renew_coinjoin_inputs.assert_not_called()
         if session_replaced:
             bot._release_commitment_reservation.assert_not_called()
             assert commitment in bot._reserved_commitments

@@ -31,17 +31,19 @@ def test_minimum_fee_floor_cannot_exceed_maximum_fee_rate() -> None:
         MakerConfig(mnemonic=TEST_MNEMONIC, min_fee_rate_sat_vb=2.0, max_fee_rate_sat_vb=1.0)
 
 
-def test_maximum_maker_lock_window_fits_metadata_ttl_cap() -> None:
+def test_maximum_maker_lock_windows_fit_metadata_ttl_cap() -> None:
     from jmwallet.wallet.utxo_metadata import MAX_COINJOIN_LOCK_TTL
 
     config = MakerConfig(
         mnemonic=TEST_MNEMONIC,
         session_timeout_sec=86_400,
+        pre_sign_timeout_sec=3_600,
         pending_tx_timeout_min=1440,
     )
 
-    assert config.session_timeout_sec + config.pending_tx_timeout_min * 60 == 172_800
-    assert 172_800 <= MAX_COINJOIN_LOCK_TTL
+    assert config.pre_sign_timeout_sec <= config.session_timeout_sec
+    assert config.session_timeout_sec <= MAX_COINJOIN_LOCK_TTL
+    assert config.pending_tx_timeout_min * 60 <= MAX_COINJOIN_LOCK_TTL
 
 
 def test_maker_session_timeout_rejects_value_above_ttl_design_limit() -> None:
@@ -923,6 +925,16 @@ class TestNewSettingsWiring:
         settings.maker.min_confirmations = 2
         config = build_maker_config(settings=settings, mnemonic=TEST_MNEMONIC, passphrase="")
         assert config.min_confirmations == 2
+
+    def test_pre_sign_timeout_passed_from_settings(self) -> None:
+        from jmcore.settings import JoinMarketSettings
+
+        from maker.cli import build_maker_config
+
+        settings = JoinMarketSettings()
+        settings.maker.pre_sign_timeout_sec = 240
+        config = build_maker_config(settings=settings, mnemonic=TEST_MNEMONIC, passphrase="")
+        assert config.pre_sign_timeout_sec == 240
 
     def test_minimum_fee_policy_passed_from_settings(self) -> None:
         from jmcore.settings import JoinMarketSettings

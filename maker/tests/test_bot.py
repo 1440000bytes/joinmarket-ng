@@ -538,7 +538,7 @@ class TestHiddenServiceListener:
         inner.commitment_authenticated = False
         inner.our_utxos = {}
         inner.input_lock_owner = "direct-timeout-owner"
-        inner.input_lock_ttl_sec = 3600.0
+        inner.pending_broadcast_ttl_sec = 3600.0
         session = MakerSession(inner)
 
         async def block_auth(*args):
@@ -1425,19 +1425,69 @@ class TestWalletRescanAndOfferUpdate:
         )
 
     @pytest.mark.asyncio
-    async def test_update_offers_keeps_old_if_create_fails(self, maker_bot):
-        """Test that old offers are kept if new offer creation fails."""
+    async def test_update_offers_withdraws_old_offer_when_liquidity_is_empty(self, maker_bot):
+        """A successful empty refresh must not leave an unfillable offer advertised."""
         from unittest.mock import AsyncMock
 
-        old_maxsize = maker_bot.current_offers[0].maxsize
-        maker_bot.offer_manager.create_offers = AsyncMock(return_value=[])  # No offers created
+        maker_bot.offer_manager.create_offers = AsyncMock(return_value=[])
+        maker_bot._cancel_offers = AsyncMock()
         maker_bot._announce_offers = AsyncMock()
 
         await maker_bot._update_offers()
 
-        # Old offers should be kept
-        assert maker_bot.current_offers[0].maxsize == old_maxsize
+        assert maker_bot.current_offers == []
+        maker_bot._cancel_offers.assert_awaited_once_with({0})
         maker_bot._announce_offers.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_update_offers_keeps_old_offer_on_operational_failure(self, maker_bot):
+        """An unknown refresh failure is not misclassified as an empty wallet."""
+        from unittest.mock import AsyncMock
+
+        old_offers = list(maker_bot.current_offers)
+        maker_bot.offer_manager.create_offers = AsyncMock(side_effect=RuntimeError("backend down"))
+        maker_bot._cancel_offers = AsyncMock()
+        maker_bot._announce_offers = AsyncMock()
+
+        await maker_bot._update_offers()
+
+        assert maker_bot.current_offers == old_offers
+        maker_bot._cancel_offers.assert_not_awaited()
+        maker_bot._announce_offers.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_update_offers_cancels_only_removed_oid(self, maker_bot):
+        """Reduced dual offers withdraw the omitted OID and keep the surviving offer."""
+        from unittest.mock import AsyncMock
+
+        removed = maker_bot.current_offers[0].model_copy(update={"oid": 1})
+        maker_bot.current_offers.append(removed)
+        surviving = maker_bot.current_offers[0].model_copy(update={"maxsize": 524_288})
+        maker_bot.offer_manager.create_offers = AsyncMock(return_value=[surviving])
+        maker_bot._cancel_offers = AsyncMock()
+        maker_bot._announce_offers = AsyncMock()
+
+        await maker_bot._update_offers()
+
+        assert maker_bot.current_offers == [surviving]
+        maker_bot._cancel_offers.assert_awaited_once_with({1})
+        maker_bot._announce_offers.assert_awaited_once_with()
+
+    @pytest.mark.asyncio
+    async def test_cancel_offers_broadcasts_reference_payload_in_oid_order(self, maker_bot):
+        first = MagicMock()
+        first.send_public_message = AsyncMock()
+        second = MagicMock()
+        second.send_public_message = AsyncMock()
+        maker_bot.directory_clients = {"first": first, "second": second}
+
+        await maker_bot._cancel_offers({2, 0})
+
+        for client in (first, second):
+            assert [call.args[0] for call in client.send_public_message.await_args_list] == [
+                "cancel 0",
+                "cancel 2",
+            ]
 
     @pytest.mark.asyncio
     async def test_update_offers_skips_if_maxsize_unchanged(self, maker_bot):
@@ -1455,11 +1505,13 @@ class TestWalletRescanAndOfferUpdate:
             cjfee="0.001",
         )
         maker_bot.offer_manager.create_offers = AsyncMock(return_value=[new_offer])
+        maker_bot._cancel_offers = AsyncMock()
         maker_bot._announce_offers = AsyncMock()
 
         await maker_bot._update_offers()
 
         # Announcement should be skipped (no change)
+        maker_bot._cancel_offers.assert_not_awaited()
         maker_bot._announce_offers.assert_not_called()
 
     def test_config_has_rescan_settings(self, config):
@@ -1698,6 +1750,7 @@ class TestOfferPrivacy:
             ],
         )
         mock_wallet.get_balance_for_offers = AsyncMock(return_value=180_000)
+        mock_wallet.get_maker_rotation_lineage_outpoints = AsyncMock(return_value=set())
 
         manager = OfferManager(mock_wallet, config, "J5TestMaker")
         with patch("maker.offers.get_best_fidelity_bond", new=AsyncMock(return_value=None)):
@@ -3113,7 +3166,7 @@ class TestListenTasksMemoryLeak:
             inner.commitment_authenticated = True
             inner.our_utxos = {("ab" * 32, 0): MagicMock()}
             inner.input_lock_owner = f"owner-{nick}"
-            inner.input_lock_ttl_sec = 3600.0
+            inner.pending_broadcast_ttl_sec = 3600.0
             return MakerSession(inner)
 
         pre_sign = session("J5PreSign", "d2" * 32, CoinJoinState.IOAUTH_SEND_STARTED)
@@ -3137,7 +3190,7 @@ class TestListenTasksMemoryLeak:
         post_sign.inner.wallet.renew_coinjoin_inputs.assert_called_once_with(
             set(post_sign.our_utxos),
             owner=post_sign.inner.input_lock_owner,
-            ttl=post_sign.inner.input_lock_ttl_sec,
+            ttl=post_sign.inner.pending_broadcast_ttl_sec,
         )
         assert maker_bot._broadcast_commitment.await_count == 2
 

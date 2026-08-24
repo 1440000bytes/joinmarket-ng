@@ -49,6 +49,7 @@ _HANDLER_CANCEL_GRACE_SEC = 0.5
 # Admission is capped before task creation, which also bounds the
 # cancellation-suppressing subset retained after reaper detachment.
 MAX_SESSION_HANDLER_TASKS = 128
+MAX_ACTIVE_MAKER_SESSIONS = 128
 MAX_PENDING_SIGNED_ROUNDS = 1024
 
 
@@ -474,6 +475,17 @@ class ProtocolHandlersMixin:
                 )
                 return
 
+            if (
+                taker_nick not in self.active_sessions
+                and len(self.active_sessions) >= MAX_ACTIVE_MAKER_SESSIONS
+            ):
+                self._log_rate_limited(
+                    "maker-active-session-cap",
+                    f"Rejecting new maker session at cap ({MAX_ACTIVE_MAKER_SESSIONS})",
+                    interval=10.0,
+                )
+                return
+
             # Reserve synchronously before the first await. Network !hp2
             # broadcasts may blacklist this commitment while the same
             # multi-maker round is in progress, but a second local session must
@@ -517,6 +529,7 @@ class ProtocolHandlersMixin:
                 backend=self.backend,
                 min_confirmations=self.config.min_confirmations,
                 session_timeout_sec=self.config.session_timeout_sec,
+                pre_sign_timeout_sec=self.config.pre_sign_timeout_sec,
                 input_lock_ttl_sec=self.config.pending_tx_timeout_min * 60,
                 merge_algorithm=self.config.merge_algorithm.value,
                 restrict_md0=not self.config.allow_mixdepth_zero_merge,
@@ -553,6 +566,7 @@ class ProtocolHandlersMixin:
                         )
                         return
                     previous_session.release_input_locks()
+                    self._release_podle_outpoint(previous_session)
                     self._release_commitment_reservation(previous_session.commitment.hex())
 
                 self.active_sessions[taker_nick] = session
@@ -580,6 +594,7 @@ class ProtocolHandlersMixin:
             if session is not None:
                 if self.active_sessions.get(taker_nick) is session:
                     self.active_sessions.pop(taker_nick, None)
+                    self._release_podle_outpoint(session)
             logger.error(f"Failed to handle !fill: {e}")
         finally:
             if log_context is not None:
@@ -710,6 +725,7 @@ class ProtocolHandlersMixin:
 
         if self.active_sessions.get(taker_nick) is session:
             self.active_sessions.pop(taker_nick)
+        self._release_podle_outpoint(session)
         session.detached = True
         session.detached_event.set()
         state = session.state

@@ -428,6 +428,7 @@
 
 # Timeouts and intervals
 # session_timeout_sec = 300      # Range: 60-86400 seconds
+# pre_sign_timeout_sec = 180     # Wait after !ioauth for !tx (range: 60-3600 seconds)
 # rescan_interval_sec = 600
 # pending_tx_timeout_min = 60   # Minutes before marking unbroadcast CoinJoins as failed
 # pending_tx_abandon_hours = 72  # Hours before abandoning a broadcast but unconfirmed tx
