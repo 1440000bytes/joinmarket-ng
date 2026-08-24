@@ -2,16 +2,23 @@
 
 ## Reporting a Vulnerability
 
-**Do not open a public issue for security vulnerabilities.**
+Please report suspected security vulnerabilities privately through
+[GitHub's private vulnerability reporting][report-vulnerability].
 
-Report security vulnerabilities by email to **m0wer [at] sgn [dot] space**, encrypted with the PGP key below.
+Do not open a public issue or discuss the vulnerability in a public channel
+before it has been addressed.
 
-### PGP Key
+Alternatively, report security vulnerabilities by email to
+**m0wer [at] sgn [dot] space**, encrypted with the PGP key below.
+
+### Encrypted Email
 
 Fingerprint: `1C53A412D11EF3051704419C44912E1E03005B31`
 
 The full public key is available in the repository at
 [`signatures/pubkeys/1C53A412D11EF3051704419C44912E1E03005B31.asc`](signatures/pubkeys/1C53A412D11EF3051704419C44912E1E03005B31.asc).
+
+[report-vulnerability]: https://github.com/joinmarket-ng/joinmarket-ng/security/advisories/new
 
 ## What to Include
 
