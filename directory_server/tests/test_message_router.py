@@ -592,6 +592,94 @@ class TestOfferTracking:
         assert stats["peers_with_offers"] == 1
 
     @pytest.mark.anyio
+    @pytest.mark.parametrize("cancel_command", ["cancel", "!cancel"])
+    async def test_public_cancel_removes_only_authenticated_owner_offer(
+        self, registry, cancel_command
+    ):
+        sent_messages: list[tuple[str, bytes]] = []
+
+        async def mock_send(peer_key: str, data: bytes, connection_id: str | None) -> None:
+            sent_messages.append((peer_key, data))
+
+        router = MessageRouter(peer_registry=registry, send_callback=mock_send)
+        makers = []
+        for index, onion_char in enumerate(("a", "b")):
+            maker = PeerInfo(
+                nick=f"maker{index}",
+                onion_address=f"{onion_char * 56}.onion",
+                port=5222,
+                network=NetworkType.MAINNET,
+                status=PeerStatus.HANDSHAKED,
+            )
+            registry.register(maker)
+            makers.append(maker)
+
+        for maker in makers:
+            for oid in (0, 1):
+                await router._handle_public_message(
+                    MessageEnvelope(
+                        message_type=MessageType.PUBMSG,
+                        payload=f"{maker.nick}!PUBLIC!sw0absoffer {oid} 30000 72590 0 1000",
+                    ),
+                    maker.nick,
+                )
+
+        sent_messages.clear()
+        cancellation = MessageEnvelope(
+            message_type=MessageType.PUBMSG,
+            payload=f"{makers[0].nick}!PUBLIC!{cancel_command} 0",
+        )
+        await router._handle_public_message(cancellation, makers[0].nick)
+
+        assert router._peer_offers[
+            (makers[0].nick, registry.get_connection_id(makers[0].nick))
+        ] == {"1"}
+        assert router._peer_offers[
+            (makers[1].nick, registry.get_connection_id(makers[1].nick))
+        ] == {
+            "0",
+            "1",
+        }
+        assert router.get_offer_stats()["total_offers"] == 3
+        assert [peer_key for peer_key, _data in sent_messages] == [makers[1].nick]
+        relayed = MessageEnvelope.from_bytes(sent_messages[0][1])
+        assert relayed.message_type == cancellation.message_type
+        assert relayed.payload == cancellation.payload
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("payload", ["cancel", "cancel -1", "cancel 0 extra"])
+    async def test_malformed_or_negative_public_cancel_keeps_offers(self, registry, payload):
+        async def mock_send(peer_key: str, data: bytes, connection_id: str | None) -> None:
+            pass
+
+        router = MessageRouter(peer_registry=registry, send_callback=mock_send)
+        maker = PeerInfo(
+            nick="maker1",
+            onion_address="a" * 56 + ".onion",
+            port=5222,
+            network=NetworkType.MAINNET,
+            status=PeerStatus.HANDSHAKED,
+        )
+        registry.register(maker)
+        await router._handle_public_message(
+            MessageEnvelope(
+                message_type=MessageType.PUBMSG,
+                payload=f"{maker.nick}!PUBLIC!sw0absoffer 0 30000 72590 0 1000",
+            ),
+            maker.nick,
+        )
+
+        await router._handle_public_message(
+            MessageEnvelope(
+                message_type=MessageType.PUBMSG,
+                payload=f"{maker.nick}!PUBLIC!{payload}",
+            ),
+            maker.nick,
+        )
+
+        assert router.get_offer_stats()["total_offers"] == 1
+
+    @pytest.mark.anyio
     async def test_peers_with_many_offers(self, registry):
         """Should identify peers with more than 2 offers."""
         sent_messages = []

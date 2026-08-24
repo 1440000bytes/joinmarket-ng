@@ -1471,6 +1471,9 @@ class DirectoryClient:
                                         except Exception as e:
                                             logger.debug(f"Failed to send !orderbook: {e}")
 
+                                if msg_type == MessageType.PUBMSG.value and to_nick == "PUBLIC":
+                                    self._handle_public_offer_cancellation(rest, from_nick)
+
                                 # Parse offer announcements
                                 result = self._parse_offer_from_message(
                                     rest, from_nick, to_nick, msg_type
@@ -1528,6 +1531,20 @@ class DirectoryClient:
             + (" (with bond)" if bond_data else "")
         )
         return True
+
+    def _handle_public_offer_cancellation(self, rest: str, from_nick: str) -> None:
+        """Remove a cached offer when its owner broadcasts ``cancel <oid>``."""
+        parts = rest.split()
+        if len(parts) != 2 or parts[0] not in {"cancel", "!cancel"}:
+            return
+
+        oid_text = parts[1]
+        if not oid_text.isascii() or not oid_text.isdecimal():
+            return
+
+        oid = int(oid_text)
+        if self._remove_offer((from_nick, oid)):
+            logger.debug(f"Removed canceled offer from {from_nick} oid={oid}")
 
     def _parse_offer_from_message(
         self,
@@ -1729,6 +1746,22 @@ class DirectoryClient:
         )
         return True
 
+    def _remove_offer(self, offer_key: tuple[str, int]) -> bool:
+        """Remove one cached offer and its associated bond indexes."""
+        offer_data = self.offers.pop(offer_key, None)
+        if offer_data is None:
+            return False
+
+        bond_utxo_key = offer_data.bond_utxo_key
+        if bond_utxo_key is not None:
+            bond_offers = self._bond_to_offers.get(bond_utxo_key)
+            if bond_offers is not None:
+                bond_offers.discard(offer_key)
+                if not bond_offers:
+                    self._bond_to_offers.pop(bond_utxo_key, None)
+                    self.bonds.pop(bond_utxo_key, None)
+        return True
+
     def _update_offer_features(self, nick: str, features: dict[str, bool]) -> int:
         """
         Update features on all cached offers for a specific peer.
@@ -1795,12 +1828,8 @@ class DirectoryClient:
         removed = 0
 
         for key in keys_to_remove:
-            offer_data = self.offers.pop(key, None)
-            if offer_data:
+            if self._remove_offer(key):
                 removed += 1
-                # Clean up bond mapping
-                if offer_data.bond_utxo_key and offer_data.bond_utxo_key in self._bond_to_offers:
-                    self._bond_to_offers[offer_data.bond_utxo_key].discard(key)
 
         if removed > 0:
             logger.debug(f"Removed {removed} offers for nick {nick} (left/offline)")
@@ -1866,15 +1895,9 @@ class DirectoryClient:
 
         removed = 0
         for key in stale_keys:
-            removed_offer: OfferWithTimestamp | None = self.offers.pop(key, None)
-            if removed_offer:
+            removed_offer = self.offers.get(key)
+            if removed_offer and self._remove_offer(key):
                 removed += 1
-                # Clean up bond mapping
-                if (
-                    removed_offer.bond_utxo_key
-                    and removed_offer.bond_utxo_key in self._bond_to_offers
-                ):
-                    self._bond_to_offers[removed_offer.bond_utxo_key].discard(key)
                 logger.debug(
                     f"Removed stale offer from {key[0]} oid={key[1]} "
                     f"(age={current_time - removed_offer.received_at:.0f}s)"

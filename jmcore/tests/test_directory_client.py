@@ -148,6 +148,75 @@ def test_offer_bond_rotation_removes_old_reverse_index() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_command", ["cancel", "!cancel"])
+async def test_public_cancel_removes_only_matching_offer_and_bond_indexes(
+    cancel_command: str,
+) -> None:
+    client = DirectoryClient("directory-a", 5222, "mainnet")
+    maker_nick = VALID_MAKER_NICK
+    first_bond_data = {
+        "utxo_txid": "ab" * 32,
+        "utxo_vout": 0,
+        "locktime": 2_000_000_000,
+        "utxo_pub": "02" + "11" * 32,
+        "cert_expiry": 901_152,
+    }
+    second_bond_data = {**first_bond_data, "utxo_txid": "cd" * 32}
+    first_bond_key = _fidelity_bond_claim_key(first_bond_data)
+    second_bond_key = _fidelity_bond_claim_key(second_bond_data)
+    client._cache_offer_announcement(maker_nick, _bond_offer(maker_nick, 0), first_bond_data)
+    client._cache_offer_announcement(maker_nick, _bond_offer(maker_nick, 1), second_bond_data)
+    client.connection = AsyncMock()
+    client.connection.receive.side_effect = [
+        json.dumps(
+            {
+                "type": MessageType.PUBMSG.value,
+                "line": f"{maker_nick}!PUBLIC!{cancel_command} 0",
+            }
+        ).encode(),
+        asyncio.CancelledError(),
+    ]
+    client.get_peerlist_with_features = AsyncMock()
+
+    await client.listen_continuously(request_orderbook=False)
+
+    assert set(client.offers) == {(maker_nick, 1)}
+    assert first_bond_key not in client._bond_to_offers
+    assert first_bond_key not in client.bonds
+    assert client._bond_to_offers[second_bond_key] == {(maker_nick, 1)}
+    assert second_bond_key in client.bonds
+
+
+@pytest.mark.asyncio
+async def test_invalid_or_nonpublic_cancel_does_not_remove_offer() -> None:
+    client = DirectoryClient("directory-a", 5222, "mainnet")
+    maker_nick = VALID_MAKER_NICK
+    client._store_offer((maker_nick, 0), _bond_offer(maker_nick, 0))
+    client.connection = AsyncMock()
+    client.connection.receive.side_effect = [
+        json.dumps(
+            {"type": MessageType.PUBMSG.value, "line": f"{maker_nick}!PUBLIC!cancel"}
+        ).encode(),
+        json.dumps(
+            {"type": MessageType.PUBMSG.value, "line": f"{maker_nick}!PUBLIC!cancel -0"}
+        ).encode(),
+        json.dumps(
+            {"type": MessageType.PUBMSG.value, "line": f"{maker_nick}!another-nick!cancel 0"}
+        ).encode(),
+        json.dumps(
+            {"type": MessageType.PRIVMSG.value, "line": f"{maker_nick}!{client.nick}!cancel 0"}
+        ).encode(),
+        json.dumps({"type": MessageType.PUBMSG.value, "line": "invalid!PUBLIC!cancel 0"}).encode(),
+        asyncio.CancelledError(),
+    ]
+    client.get_peerlist_with_features = AsyncMock()
+
+    await client.listen_continuously(request_orderbook=False)
+
+    assert set(client.offers) == {(maker_nick, 0)}
+
+
+@pytest.mark.asyncio
 async def test_nick_auth_prefer_verified_falls_back_to_legacy_directory() -> None:
     connection = AsyncMock()
     connection.receive.return_value = _handshake_response()

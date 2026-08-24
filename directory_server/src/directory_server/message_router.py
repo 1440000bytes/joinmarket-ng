@@ -132,6 +132,19 @@ class MessageRouter:
                     )
                 except (ValueError, IndexError):
                     pass
+            elif (
+                len(message_parts) == 2
+                and message_parts[0] in {"cancel", "!cancel"}
+                and message_parts[1].isascii()
+                and message_parts[1].isdecimal()
+            ):
+                offer_owner = (from_key, connection_id)
+                offers = self._peer_offers.get(offer_owner)
+                if offers is not None:
+                    offers.discard(message_parts[1])
+                    if not offers:
+                        self._peer_offers.pop(offer_owner, None)
+                logger.trace(f"Removed canceled offer {message_parts[1]} from {from_nick}")
 
         # Pre-serialize envelope once instead of per-peer
         envelope_bytes = envelope.to_bytes()
