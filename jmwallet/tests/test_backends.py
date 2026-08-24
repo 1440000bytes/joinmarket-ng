@@ -2569,6 +2569,38 @@ class TestNeutrinoBackend:
             await backend.close()
 
     @pytest.mark.asyncio
+    async def test_verify_utxo_bounds_gateway_timeout_retries(self):
+        backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="regtest")
+        scriptpubkey = "0014" + "00" * 20
+        backend.get_block_height = AsyncMock(return_value=800010)
+        request = httpx.Request("GET", "http://localhost:8334/v1/utxo/test/0")
+        backend._api_call = AsyncMock(
+            side_effect=httpx.HTTPStatusError(
+                "lookup timed out",
+                request=request,
+                response=httpx.Response(504, request=request),
+            )
+        )
+
+        try:
+            with patch("jmwallet.backends.neutrino.asyncio.sleep", new_callable=AsyncMock):
+                result = await backend.verify_utxo_with_metadata(
+                    txid="a" * 64,
+                    vout=0,
+                    scriptpubkey=scriptpubkey,
+                    blockheight=800000,
+                )
+            assert result.valid is False
+            assert result.unavailable is True
+            assert "Enable PREFETCH_FILTERS" in (result.error or "")
+            assert (
+                backend._api_call.await_count
+                == backend._UTXO_VERIFICATION_ATTEMPTS_AFTER_GATEWAY_TIMEOUT
+            )
+        finally:
+            await backend.close()
+
+    @pytest.mark.asyncio
     async def test_verify_utxo_preserves_cancellation(self):
         backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="regtest")
         backend.get_block_height = AsyncMock(return_value=800010)

@@ -125,6 +125,10 @@ class NeutrinoBackend(BlockchainBackend):
     _ONGOING_INITIAL_RESCAN_CHECK_TIMEOUT_SECONDS: float = 30.0
     _TRIVIAL_RESCAN_BLOCKS: int = 1000
     _UTXO_VERIFICATION_ATTEMPTS: int = 3
+    # A 504 consumes the server's full 25-second historical lookup budget.
+    # More than one retry would exceed the taker's default 60-second response
+    # timeout before the maker can return a protocol error.
+    _UTXO_VERIFICATION_ATTEMPTS_AFTER_GATEWAY_TIMEOUT: int = 2
     # New neutrino-api servers budget 25 seconds for a lookup, then finish the
     # current bounded peer query before returning. Leave enough client time to
     # receive that retryable response while still bounding older servers.
@@ -1999,6 +2003,7 @@ class NeutrinoBackend(BlockchainBackend):
             **({"include_mempool": "false"} if not self.include_mempool else {}),
         }
         last_error: BaseException | None = None
+        gateway_timeout_seen = False
 
         for attempt in range(1, self._UTXO_VERIFICATION_ATTEMPTS + 1):
             try:
@@ -2021,25 +2026,38 @@ class NeutrinoBackend(BlockchainBackend):
                 ):
                     raise
                 last_error = exc
+                gateway_timeout_seen = gateway_timeout_seen or status_code == 504
             except (TimeoutError, httpx.TransportError) as exc:
                 last_error = exc
 
-            if attempt < self._UTXO_VERIFICATION_ATTEMPTS:
+            attempt_limit = (
+                self._UTXO_VERIFICATION_ATTEMPTS_AFTER_GATEWAY_TIMEOUT
+                if gateway_timeout_seen
+                else self._UTXO_VERIFICATION_ATTEMPTS
+            )
+            if attempt < attempt_limit:
                 logger.warning(
                     "UTXO query {}/{} failed transiently on attempt {}/{}: {}: {}",
                     txid,
                     vout,
                     attempt,
-                    self._UTXO_VERIFICATION_ATTEMPTS,
+                    attempt_limit,
                     type(last_error).__name__,
                     last_error,
                 )
                 await asyncio.sleep(float(attempt))
+            else:
+                break
 
+        prefetch_hint = (
+            "; neutrino-api exhausted its historical lookup deadline. "
+            "Enable PREFETCH_FILTERS and wait for compact-filter prefetch to finish"
+            if gateway_timeout_seen
+            else ""
+        )
         raise _UTXOVerificationUnavailableError(
             f"UTXO verification backend unavailable after "
-            f"{self._UTXO_VERIFICATION_ATTEMPTS} attempts: "
-            f"{type(last_error).__name__}: {last_error}"
+            f"{attempt} attempts: {type(last_error).__name__}: {last_error}{prefetch_hint}"
         )
 
     def _scriptpubkey_to_address(self, scriptpubkey: str) -> str | None:
