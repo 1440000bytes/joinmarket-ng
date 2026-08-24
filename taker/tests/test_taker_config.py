@@ -92,6 +92,8 @@ class TestTakerConfig:
         assert config.min_fee_block_target == 10
         assert config.round_up_cj_fees is True
         assert config.require_quantized_cj_fees is False
+        assert config.bondless_makers_allowance == 0.05
+        assert config.bondless_makers_allowance_require_zero_fee is True
 
     @pytest.mark.parametrize(
         ("field", "value"),

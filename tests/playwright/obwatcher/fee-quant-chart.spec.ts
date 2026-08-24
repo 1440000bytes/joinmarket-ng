@@ -550,8 +550,8 @@ test.describe("offer selection probability", () => {
 
       await expect(bondedChance).toHaveText(/^1\/1(?:\.\d)?$/);
       expect(await lowBondChance.textContent()).not.toBe(await bondedChance.textContent());
-      await expect(bondlessChance).toHaveText("1/20");
-      await expect(bondedChance).toHaveAttribute("title", /20% bondless allowance/);
+      await expect(bondlessChance).toHaveText("1/44");
+      await expect(bondedChance).toHaveAttribute("title", /5% zero-fee allowance/);
       await expect(feeChargingChance).toHaveText("0");
       await expect(feeChargingChance).toHaveAttribute("title", /nonzero-fee bondless offer/);
       await expect(legacyChance).toHaveText("0");
@@ -567,6 +567,59 @@ test.describe("offer selection probability", () => {
 
       await page.locator('th[data-sort="selection_probability"]').click();
       await expect(page.locator("#orderbook-tbody tr").first()).toContainText("bonded");
+    } finally {
+      server.close();
+    }
+  });
+
+  test("gives zero-fee bonded offers access to allowance slots", async ({ page }) => {
+    const offers: FixtureOffer[] = [
+      ...Array.from({ length: 10 }, (_, i) => ({
+        counterparty: `bonded-fee-${i}`,
+        oid: 0,
+        ordertype: "sw0absoffer",
+        cjfee: 100,
+        minsize: 100_000,
+        maxsize: 10_000_000,
+        fidelity_bond_value: 10_000,
+        directory_nodes: [],
+        features: {},
+      })),
+      ...Array.from({ length: 10 }, (_, i) => ({
+        counterparty: `bonded-zero-${i}`,
+        oid: 0,
+        ordertype: "sw0absoffer",
+        cjfee: 0,
+        minsize: 100_000,
+        maxsize: 10_000_000,
+        fidelity_bond_value: 10_000,
+        directory_nodes: [],
+        features: {},
+      })),
+      ...Array.from({ length: 10 }, (_, i) => ({
+        counterparty: `bondless-zero-${i}`,
+        oid: 0,
+        ordertype: "sw0absoffer",
+        cjfee: 0,
+        minsize: 100_000,
+        maxsize: 10_000_000,
+        fidelity_bond_value: 0,
+        directory_nodes: [],
+        features: {},
+      })),
+    ];
+    const server = await openChart(page, payload(offers));
+
+    try {
+      const feeChanceText = await page.locator("#orderbook-tbody tr", {
+        hasText: "bonded-fee-0",
+      }).locator(".selection-probability").textContent();
+      const zeroChanceText = await page.locator("#orderbook-tbody tr", {
+        hasText: "bonded-zero-0",
+      }).locator(".selection-probability").textContent();
+      const denominator = (text: string | null) => Number(text?.replace("1/", ""));
+
+      expect(denominator(zeroChanceText)).toBeLessThan(denominator(feeChanceText));
     } finally {
       server.close();
     }

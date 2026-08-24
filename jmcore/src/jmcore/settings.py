@@ -1043,10 +1043,10 @@ class TakerSettings(BaseModel):
         description="Target blocks for fee estimation (mutually exclusive with fee_rate)",
     )
     bondless_makers_allowance: float = Field(
-        default=0.2,
+        default=0.05,
         ge=0.0,
         le=1.0,
-        description="Per-slot probability of selecting a bondless (zero-fee) maker",
+        description="Per-slot probability of selecting uniformly from zero-fee offers",
     )
     bond_value_exponent: float = Field(
         default=1.3,
@@ -1055,7 +1055,9 @@ class TakerSettings(BaseModel):
     )
     bondless_require_zero_fee: bool = Field(
         default=True,
-        description="Require a zero advertised CoinJoin fee for bondless maker spots",
+        description=(
+            "Restrict allowance spots to zero-fee offers and reject fee-charging bondless offers"
+        ),
     )
     maker_timeout_sec: int = Field(
         default=60,

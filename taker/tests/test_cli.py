@@ -805,6 +805,24 @@ class TestBuildTakerConfig:
         assert config.round_up_cj_fees is False
         assert config.require_quantized_cj_fees is True
 
+    def test_bondless_policy_flows_into_config(
+        self, sample_mnemonic: str, mock_settings: MagicMock
+    ) -> None:
+        mock_settings.taker.bondless_makers_allowance = 0.05
+        mock_settings.taker.bondless_require_zero_fee = True
+
+        config = build_taker_config(
+            settings=mock_settings,
+            mnemonic=sample_mnemonic,
+            passphrase="",
+            destination="bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
+            amount=100000,
+            mixdepth=0,
+        )
+
+        assert config.bondless_makers_allowance == 0.05
+        assert config.bondless_makers_allowance_require_zero_fee is True
+
     def test_max_maker_replacement_attempts_flows_into_config(
         self, sample_mnemonic: str, mock_settings: MagicMock
     ) -> None:

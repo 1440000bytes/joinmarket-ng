@@ -1513,6 +1513,84 @@ class TestMixedBondedBondlessSelection:
 
         assert {offer.counterparty for offer in selected} == expected_zero_fee_policy_nicks()
 
+    def test_allowance_slot_only_selects_zero_fee_offers(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Allowance slots exclude fee-charging offers even when they are bonded."""
+        offers = [
+            Offer(
+                counterparty="bonded-nonzero",
+                oid=0,
+                ordertype=OfferType.SW0_ABSOLUTE,
+                minsize=1000,
+                maxsize=1000000,
+                txfee=0,
+                cjfee=100,
+                fidelity_bond_value=100000,
+            ),
+            Offer(
+                counterparty="bonded-zero",
+                oid=0,
+                ordertype=OfferType.SW0_ABSOLUTE,
+                minsize=1000,
+                maxsize=1000000,
+                txfee=0,
+                cjfee=0,
+                fidelity_bond_value=100000,
+            ),
+            Offer(
+                counterparty="bondless-zero",
+                oid=0,
+                ordertype=OfferType.SW0_RELATIVE,
+                minsize=1000,
+                maxsize=1000000,
+                txfee=0,
+                cjfee="0",
+                fidelity_bond_value=0,
+            ),
+        ]
+        monkeypatch.setattr("taker.orderbook.secure_random.random", lambda: 0.0)
+        monkeypatch.setattr("taker.orderbook.secure_random.choice", lambda pool: pool[0])
+
+        selected = fidelity_bond_weighted_choose(
+            offers=offers,
+            n=1,
+            bondless_makers_allowance=1.0,
+            bondless_require_zero_fee=True,
+        )
+
+        assert selected[0].counterparty == "bonded-zero"
+
+    def test_allowance_slot_falls_back_to_bonded_fee_offer(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A missing zero-fee pool does not leave an allowance slot empty."""
+        offers = [
+            Offer(
+                counterparty=f"bonded-{i}",
+                oid=0,
+                ordertype=OfferType.SW0_ABSOLUTE,
+                minsize=1000,
+                maxsize=1000000,
+                txfee=0,
+                cjfee=100,
+                fidelity_bond_value=100000,
+            )
+            for i in range(2)
+        ]
+        monkeypatch.setattr("taker.orderbook.secure_random.random", lambda: 0.0)
+        monkeypatch.setattr("taker.orderbook.secure_random.uniform", lambda _start, _end: 0.0)
+
+        selected = fidelity_bond_weighted_choose(
+            offers=offers,
+            n=1,
+            bondless_makers_allowance=1.0,
+            bondless_require_zero_fee=True,
+        )
+
+        assert len(selected) == 1
+        assert selected[0].counterparty == "bonded-0"
+
     def test_insufficient_bonded_fills_from_all(self) -> None:
         """If not enough bonded offers, fill remainder from all remaining."""
         # Only 1 bonded maker
@@ -1645,8 +1723,8 @@ class TestMixedBondedBondlessSelection:
             # All should be bonded
             assert all(o.fidelity_bond_value > 0 for o in selected)
 
-    def test_bondless_slot_picks_uniformly_from_all(self) -> None:
-        """Bondless (uniform) slots pick from ALL offers, not just bondless."""
+    def test_disabled_zero_fee_policy_picks_uniformly_from_all(self) -> None:
+        """Disabling the zero-fee policy preserves uniform-all allowance slots."""
         # 50 bonded + 1 bondless. With high allowance, the bondless maker
         # should appear rarely because they compete with 50 others uniformly.
         bonded = [

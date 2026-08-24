@@ -87,18 +87,18 @@ included in a CoinJoin and displays the result as `1/N`. For example, `1/100`
 means an offer is expected to be selected in one of every 100 rounds.
 
 The estimate uses nine makers (the average of the default randomized range of
-8 to 10), the default 20% bondless allowance, active bonded SW0 offers, and
+8 to 10), the default 5% bondless allowance, active bonded SW0 offers, and
 zero-fee bondless SW0 offers. It calculates selection without replacement and
 uses bond-value weighting for the default bonded slots; allowance slots select
-uniformly from all remaining offers. Fee and amount filtering are intentionally
+uniformly from zero-fee offers. Fee and amount filtering are intentionally
 omitted, so the estimate assumes every counted offer passes the taker's limits.
 Offers sharing one active fidelity bond UTXO count as one candidate, matching
 the taker's bond deduplication. Each sibling row shows the bond-level chance
 with an asterisk because the omitted fee and amount filters determine which
 offer the taker keeps.
 Bonded inclusion chances come from a deterministic simulation of this
-without-replacement chooser, while the symmetric bondless chance is calculated
-exactly. The UI shows `N/A` when fewer than nine qualifying offers are available.
+without-replacement chooser when weights or fee categories differ. The UI shows
+`N/A` when fewer than nine qualifying offers are available.
 
 ## API Endpoints
 

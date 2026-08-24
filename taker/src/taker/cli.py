@@ -186,7 +186,7 @@ def coinjoin(
         typer.Option(
             "--bondless-allowance",
             envvar="BONDLESS_MAKERS_ALLOWANCE",
-            help="Fraction of time to choose makers randomly (0.0-1.0)",
+            help="Fraction of allowance slots chosen uniformly from zero-fee offers (0.0-1.0)",
         ),
     ] = None,
     bond_value_exponent: Annotated[
@@ -202,7 +202,7 @@ def coinjoin(
         typer.Option(
             "--bondless-zero-fee/--no-bondless-zero-fee",
             envvar="BONDLESS_REQUIRE_ZERO_FEE",
-            help="For bondless spots, require a zero advertised CoinJoin fee",
+            help="Restrict allowance spots to zero-fee offers",
         ),
     ] = None,
     quantized_offers_only: Annotated[

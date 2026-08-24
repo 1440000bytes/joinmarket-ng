@@ -4,7 +4,7 @@ let sortDirection = 'desc';
 let offerSelectionProbabilities = new Map();
 
 const DEFAULT_MAKER_COUNT = 9;
-const BONDLESS_ALLOWANCE = 0.2;
+const BONDLESS_ALLOWANCE = 0.05;
 const SELECTION_SIMULATION_ROUNDS = 200000;
 const SELECTABLE_OFFER_TYPES = new Set(['sw0absoffer', 'sw0reloffer']);
 
@@ -415,6 +415,14 @@ function simulateBondedSelectionProbabilities(candidates) {
     const counts = new Uint32Array(itemCount);
     const active = Int32Array.from({ length: itemCount }, (_, index) => index);
     const positions = Int32Array.from({ length: itemCount }, (_, index) => index);
+    const zeroFeeIndexes = candidates
+        .map((candidate, index) => candidate.zeroFee ? index : -1)
+        .filter(index => index >= 0);
+    const activeZeroFee = Int32Array.from(zeroFeeIndexes);
+    const zeroFeePositions = new Int32Array(itemCount).fill(-1);
+    zeroFeeIndexes.forEach((index, position) => {
+        zeroFeePositions[index] = position;
+    });
     const weights = Float64Array.from(
         candidates,
         candidate => candidate.category === 'bonded'
@@ -433,27 +441,54 @@ function simulateBondedSelectionProbabilities(candidates) {
 
     for (let round = 0; round < SELECTION_SIMULATION_ROUNDS; round++) {
         let activeCount = itemCount;
+        let activeZeroFeeCount = zeroFeeIndexes.length;
         let bondTotal = initialBondTotal;
         const removals = [];
 
         for (let draw = 0; draw < DEFAULT_MAKER_COUNT; draw++) {
             let index;
-            if (random() < BONDLESS_ALLOWANCE || bondTotal <= 0) {
-                index = active[Math.floor(random() * activeCount)];
-            } else {
+            const allowanceSlot = random() < BONDLESS_ALLOWANCE;
+            if (allowanceSlot && activeZeroFeeCount > 0) {
+                index = activeZeroFee[Math.floor(random() * activeZeroFeeCount)];
+            } else if (bondTotal > 0) {
                 index = findFenwickIndex(tree, random() * bondTotal);
+            } else if (activeZeroFeeCount > 0) {
+                index = activeZeroFee[Math.floor(random() * activeZeroFeeCount)];
+            } else {
+                index = active[Math.floor(random() * activeCount)];
             }
             counts[index] += 1;
 
             const position = positions[index];
             const lastPosition = activeCount - 1;
             const swappedIndex = active[lastPosition];
-            removals.push({ index, position, lastPosition, swappedIndex });
+            const zeroFeePosition = zeroFeePositions[index];
+            const zeroFeeLastPosition = activeZeroFeeCount - 1;
+            const swappedZeroFeeIndex = zeroFeePosition >= 0
+                ? activeZeroFee[zeroFeeLastPosition]
+                : -1;
+            removals.push({
+                index,
+                position,
+                lastPosition,
+                swappedIndex,
+                zeroFeePosition,
+                zeroFeeLastPosition,
+                swappedZeroFeeIndex,
+            });
             active[position] = swappedIndex;
             positions[swappedIndex] = position;
             active[lastPosition] = index;
             positions[index] = lastPosition;
             activeCount -= 1;
+
+            if (zeroFeePosition >= 0) {
+                activeZeroFee[zeroFeePosition] = swappedZeroFeeIndex;
+                zeroFeePositions[swappedZeroFeeIndex] = zeroFeePosition;
+                activeZeroFee[zeroFeeLastPosition] = index;
+                zeroFeePositions[index] = zeroFeeLastPosition;
+                activeZeroFeeCount -= 1;
+            }
 
             const weight = weights[index];
             if (weight > 0) {
@@ -463,11 +498,25 @@ function simulateBondedSelectionProbabilities(candidates) {
         }
 
         for (let i = removals.length - 1; i >= 0; i--) {
-            const { index, position, lastPosition, swappedIndex } = removals[i];
+            const {
+                index,
+                position,
+                lastPosition,
+                swappedIndex,
+                zeroFeePosition,
+                zeroFeeLastPosition,
+                swappedZeroFeeIndex,
+            } = removals[i];
             active[position] = index;
             positions[index] = position;
             active[lastPosition] = swappedIndex;
             positions[swappedIndex] = lastPosition;
+            if (zeroFeePosition >= 0) {
+                activeZeroFee[zeroFeePosition] = index;
+                zeroFeePositions[index] = zeroFeePosition;
+                activeZeroFee[zeroFeeLastPosition] = swappedZeroFeeIndex;
+                zeroFeePositions[swappedZeroFeeIndex] = zeroFeeLastPosition;
+            }
             const weight = weights[index];
             if (weight > 0) addFenwickValue(tree, index, weight);
         }
@@ -476,8 +525,8 @@ function simulateBondedSelectionProbabilities(candidates) {
     return counts;
 }
 
-// Calculate round-level inclusion probabilities. The bondless category is exact
-// because all such offers are symmetric; unequal bonded weights are simulated.
+// Calculate round-level inclusion probabilities. Symmetric categories are exact;
+// unequal bonded weights or mixed bonded fee policies are simulated.
 function calculateOfferSelectionProbabilities(offers) {
     const candidates = [];
     const candidatesByBond = new Map();
@@ -489,21 +538,36 @@ function calculateOfferSelectionProbabilities(offers) {
         const bondKey = category === 'bonded' ? getSelectionBondKey(offer) : null;
         let candidate = bondKey === null ? null : candidatesByBond.get(bondKey);
         if (candidate === undefined || candidate === null) {
-            candidate = { offer, offers: [], category, bondKey };
+            candidate = {
+                offer,
+                offers: [],
+                category,
+                bondKey,
+                zeroFee: Number(offer.cjfee) === 0,
+            };
             candidates.push(candidate);
             if (bondKey !== null) candidatesByBond.set(bondKey, candidate);
         }
         candidate.offers.push(offer);
+        if (Number(offer.cjfee) === 0) candidate.zeroFee = true;
     }
 
     const bondedCount = candidates.filter(candidate => candidate.category === 'bonded').length;
     const bondlessCount = candidates.length - bondedCount;
     const poolSize = bondedCount + bondlessCount;
+    const zeroFeeBondedCount = candidates.filter(
+        candidate => candidate.category === 'bonded' && candidate.zeroFee,
+    ).length;
+    const mixedBondedFeePolicy = zeroFeeBondedCount > 0 && zeroFeeBondedCount < bondedCount;
     let bondedProbability = null;
     let bondlessProbability = null;
 
-    if (poolSize >= DEFAULT_MAKER_COUNT) {
+    if (poolSize === DEFAULT_MAKER_COUNT) {
+        bondedProbability = bondedCount > 0 ? 1 : null;
+        bondlessProbability = bondlessCount > 0 ? 1 : null;
+    } else if (poolSize > DEFAULT_MAKER_COUNT && !mixedBondedFeePolicy) {
         const rounds = DEFAULT_MAKER_COUNT;
+        const allBondedZeroFee = zeroFeeBondedCount === bondedCount;
         let states = new Map([[`${bondedCount},${bondlessCount}`, 1]]);
 
         for (let draw = 0; draw < rounds; draw++) {
@@ -512,9 +576,17 @@ function calculateOfferSelectionProbabilities(offers) {
                 const [bondedRemaining, bondlessRemaining] = key.split(',').map(Number);
                 const remaining = bondedRemaining + bondlessRemaining;
                 const uniformBondedChance = bondedRemaining / remaining;
-                const bondedPickChance = bondedRemaining > 0
-                    ? (1 - BONDLESS_ALLOWANCE) + BONDLESS_ALLOWANCE * uniformBondedChance
-                    : 0;
+                let bondedPickChance = 0;
+                if (bondedRemaining > 0) {
+                    if (bondlessRemaining === 0) {
+                        bondedPickChance = 1;
+                    } else if (allBondedZeroFee) {
+                        bondedPickChance = (1 - BONDLESS_ALLOWANCE) +
+                            BONDLESS_ALLOWANCE * uniformBondedChance;
+                    } else {
+                        bondedPickChance = 1 - BONDLESS_ALLOWANCE;
+                    }
+                }
                 const bondlessPickChance = 1 - bondedPickChance;
 
                 if (bondedPickChance > 0) {
@@ -556,7 +628,7 @@ function calculateOfferSelectionProbabilities(offers) {
             .filter(candidate => candidate.category === 'bonded')
             .map(candidate => candidate.offer.fidelity_bond_value || 0),
     );
-    if (poolSize > DEFAULT_MAKER_COUNT && bondWeights.size > 1) {
+    if (poolSize > DEFAULT_MAKER_COUNT && (bondWeights.size > 1 || mixedBondedFeePolicy)) {
         simulatedCounts = simulateBondedSelectionProbabilities(candidates);
     }
 
@@ -656,8 +728,8 @@ function formatSelectionProbability(offer) {
     return {
         text: `1/${denominator}${suffix}`,
         title: `${percentage}% chance per 9-maker CoinJoin, assuming every counted offer ` +
-            'passes the taker\'s fee and amount limits. Uses the 20% bondless allowance, ' +
-            'zero-fee bondless offers, and bond-value-weighted selection for bonded slots.' +
+            'passes the taker\'s fee and amount limits. Uses the 5% zero-fee allowance ' +
+            'and bond-value-weighted selection for bonded slots.' +
             sharedBondNote,
     };
 }

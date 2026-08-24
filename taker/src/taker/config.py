@@ -164,10 +164,10 @@ class TakerConfig(WalletConfig):
         description="Block target for the conservative CoinJoin miner-fee floor",
     )
     bondless_makers_allowance: float = Field(
-        default=0.2,
+        default=0.05,
         ge=0.0,
         le=1.0,
-        description="Per-slot probability of selecting a bondless (zero-fee) maker",
+        description="Per-slot probability of selecting uniformly from zero-fee offers",
     )
     bond_value_exponent: float = Field(
         default=1.3,
@@ -176,7 +176,9 @@ class TakerConfig(WalletConfig):
     )
     bondless_makers_allowance_require_zero_fee: bool = Field(
         default=True,
-        description="For bondless maker spots, require a zero advertised CoinJoin fee",
+        description=(
+            "Restrict allowance spots to zero-fee offers and reject fee-charging bondless offers"
+        ),
     )
     max_maker_utxos: int = Field(
         default=15,

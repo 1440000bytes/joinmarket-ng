@@ -536,52 +536,46 @@ def weighted_order_choose(
 def fidelity_bond_weighted_choose(
     offers: list[Offer],
     n: int,
-    bondless_makers_allowance: float = 0.2,
+    bondless_makers_allowance: float = 0.05,
     bondless_require_zero_fee: bool = True,
     cj_amount: int = 0,
 ) -> list[Offer]:
     """
     Choose n offers using per-slot probabilistic selection.
 
-    **Pre-filtering** (when ``bondless_require_zero_fee`` is True):
+    **Fee policy** (when ``bondless_require_zero_fee`` is True):
     Bondless offers (``fidelity_bond_value == 0``) that charge a non-zero
     advertised CoinJoin fee are removed before selection. This prevents an
     attacker from flooding the orderbook with fee-charging bondless offers to
     steal fees while still allowing genuine zero-fee bondless makers to
-    participate.
+    participate. Allowance slots then select only from zero-fee offers, whether
+    bonded or bondless.
 
     **Per-slot selection** (for each of the *n* slots independently):
 
     * With probability ``bondless_makers_allowance``: pick **uniformly at
-      random** from all remaining offers (bonded and bondless alike).  This
-      gives every surviving offer equal probability, so a rare bondless maker
-      naturally has low selection odds (``~ allowance / total_offers`` per
-      slot).
+      random** from the zero-fee offers. Bonded and bondless zero-fee makers
+      compete equally for these slots.
     * Otherwise: pick from the bonded pool (``fidelity_bond_value > 0``)
       **weighted by bond value**.
 
-    Fallback: if the chosen pool is empty the other pool is tried, then
-    uniform random over everything remaining.
+    Fallback: if the chosen pool is empty, the other pool is tried.
 
     This mirrors the reference JoinMarket implementation and ensures:
 
-    * High-bond makers are strongly favoured (~80% of slots with default
-      0.2 allowance).
-    * When many bondless zero-fee makers exist, roughly
-      ``n * bondless_makers_allowance`` of them appear in the final set
-      (e.g. 2 out of 10).
-    * When only a few bondless makers exist, each has low individual
-      selection probability (proportional to ``1 / total_remaining``),
-      avoiding taker fingerprinting.
-    * Smaller bonded makers also benefit from the uniform-random slots.
+    * High-bond makers are strongly favored (~95% of slots with the default
+      0.05 allowance).
+    * Zero-fee makers compete uniformly for the remaining allowance slots.
 
     Args:
         offers: Eligible offers (already filtered and deduped).
         n: Number of offers to choose.
-        bondless_makers_allowance: Per-slot probability of uniform-random
+        bondless_makers_allowance: Per-slot probability of uniform zero-fee
             selection (0.0-1.0).
         bondless_require_zero_fee: If True, pre-filter removes bondless
-            offers with a non-zero advertised CoinJoin fee.
+            offers with a non-zero advertised CoinJoin fee and allowance slots
+            only select zero-fee offers. If False, allowance slots select
+            uniformly from all offers.
         cj_amount: CoinJoin amount (reserved for future fee filtering).
 
     Returns:
@@ -623,18 +617,34 @@ def fidelity_bond_weighted_choose(
 
         picked: Offer | None = None
 
-        if secure_random.random() < bondless_makers_allowance:
-            # Bondless slot: pick uniformly from ALL remaining offers.
-            # Bonded and bondless compete on equal footing here, so a rare
-            # bondless maker has probability ~1/len(remaining).
-            picked = secure_random.choice(remaining)
+        allowance_slot = secure_random.random() < bondless_makers_allowance
+        if allowance_slot:
+            allowance_pool = (
+                [offer for offer in remaining if not _is_nonzero_cj_fee(offer)]
+                if bondless_require_zero_fee
+                else remaining
+            )
+            if allowance_pool:
+                picked = secure_random.choice(allowance_pool)
         else:
             # Bonded slot: pick weighted by bond value
             picked = _pick_weighted_bonded(remaining)
 
         if picked is None:
-            # Bonded pool empty -- fall back to uniform random
-            picked = secure_random.choice(remaining)
+            if allowance_slot:
+                picked = _pick_weighted_bonded(remaining)
+            else:
+                allowance_pool = (
+                    [offer for offer in remaining if not _is_nonzero_cj_fee(offer)]
+                    if bondless_require_zero_fee
+                    else remaining
+                )
+                if allowance_pool:
+                    picked = secure_random.choice(allowance_pool)
+
+        if picked is None:
+            logger.warning(f"No eligible offer pool after {len(selected)}/{n} picks")
+            break
 
         selected.append(picked)
         remaining.remove(picked)
@@ -675,7 +685,7 @@ def choose_orders(
     choose_fn: Callable[[list[Offer], int], list[Offer]] | None = None,
     ignored_makers: set[str] | None = None,
     min_nick_version: int | None = None,
-    bondless_makers_allowance: float = 0.2,
+    bondless_makers_allowance: float = 0.05,
     bondless_require_zero_fee: bool = True,
     required_features: set[str] | None = None,
     penalized_maker_keys: set[str] | None = None,
@@ -694,8 +704,8 @@ def choose_orders(
         choose_fn: Selection algorithm (default: fidelity_bond_weighted_choose)
         ignored_makers: Makers to exclude
         min_nick_version: Minimum required nick version (e.g., 6 for neutrino takers)
-        bondless_makers_allowance: Probability of random selection vs fidelity bond weighting
-        bondless_require_zero_fee: If True, bondless spots only select zero-fee offers
+        bondless_makers_allowance: Probability of uniform zero-fee selection vs bond weighting
+        bondless_require_zero_fee: If True, allowance spots only select zero-fee offers
         required_features: Feature names that makers must support (passed to filter_offers)
         penalized_maker_keys: Recent maker nick and bond keys to probabilistically penalize
         maker_repeat_penalty: Per-repeated-maker acceptance multiplier
@@ -774,7 +784,7 @@ def choose_sweep_orders(
     choose_fn: Callable[[list[Offer], int], list[Offer]] | None = None,
     ignored_makers: set[str] | None = None,
     min_nick_version: int | None = None,
-    bondless_makers_allowance: float = 0.2,
+    bondless_makers_allowance: float = 0.05,
     bondless_require_zero_fee: bool = True,
     required_features: set[str] | None = None,
     penalized_maker_keys: set[str] | None = None,
@@ -797,8 +807,8 @@ def choose_sweep_orders(
         choose_fn: Selection algorithm
         ignored_makers: Makers to exclude
         min_nick_version: Minimum required nick version (e.g., 6 for neutrino takers)
-        bondless_makers_allowance: Probability of random selection vs fidelity bond weighting
-        bondless_require_zero_fee: If True, bondless spots only select zero-fee offers
+        bondless_makers_allowance: Probability of uniform zero-fee selection vs bond weighting
+        bondless_require_zero_fee: If True, allowance spots only select zero-fee offers
         required_features: Feature names that makers must support (passed to filter_offers)
         penalized_maker_keys: Recent maker nick and bond keys to probabilistically penalize
         maker_repeat_penalty: Per-repeated-maker acceptance multiplier
@@ -925,7 +935,7 @@ class OrderbookManager:
     def __init__(
         self,
         max_cj_fee: MaxCjFee,
-        bondless_makers_allowance: float = 0.2,
+        bondless_makers_allowance: float = 0.05,
         bondless_require_zero_fee: bool = True,
         data_dir: Any = None,  # Path | None, but avoid import
         own_wallet_nicks: set[str] | None = None,

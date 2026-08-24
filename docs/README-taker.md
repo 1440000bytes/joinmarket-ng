@@ -223,16 +223,17 @@ Takers only require Tor SOCKS; no Tor control port is needed.
 │                                                             calculation      │
 │                                                             [env var:        │
 │                                                             BOND_VALUE_EXPO… │
-│    --bondless-all…                         FLOAT            Fraction of time │
-│                                                             to choose makers │
-│                                                             randomly         │
-│                                                             (0.0-1.0)        │
+│    --bondless-all…                         FLOAT            Fraction of      │
+│                                                             allowance slots  │
+│                                                             chosen uniformly │
+│                                                             from zero-fee    │
+│                                                             offers (0.0-1.0) │
 │                                                             [env var:        │
 │                                                             BONDLESS_MAKERS… │
-│    --bondless-zer…      --no-bondless-…                     For bondless     │
-│                                                             spots, require a │
-│                                                             zero advertised  │
-│                                                             CoinJoin fee     │
+│    --bondless-zer…      --no-bondless-…                     Restrict         │
+│                                                             allowance spots  │
+│                                                             to zero-fee      │
+│                                                             offers           │
 │                                                             [env var:        │
 │                                                             BONDLESS_REQUIR… │
 │    --config-file                           PATH             Config file path │
