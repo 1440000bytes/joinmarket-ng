@@ -174,8 +174,15 @@ docker run -d \
   -p 8334:8334 \
   -v neutrino-data:/data/neutrino \
   -e NETWORK=mainnet \
-  ghcr.io/m0wer/neutrino-api
+  -e PREFETCH_FILTERS=true \
+  -e PREFETCH_LOOKBACK=105120 \
+  ghcr.io/m0wer/neutrino-api:latest
 ```
+
+Historical UTXO verification requires compact filter bodies, not only synced
+filter headers. Wait for the prefetch completion message in the neutrino-api
+logs before starting a maker or taker. Without prefetch, older UTXO lookups may
+hit the server's 25-second historical lookup deadline.
 
 Copy credentials from neutrino-api into JoinMarket NG config directory:
 
