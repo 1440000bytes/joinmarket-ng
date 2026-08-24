@@ -48,9 +48,11 @@ _jm_taker() {
             '--max-rel-fee=[Max relative fee (0.001=0.1%)]: :' \
             '--fee-rate=[Manual fee rate in sat/vB. Mutually exclusive with --block-target.]: :' \
             '--block-target=[Target blocks for fee estimation (1-1008). Cannot be used with neutrino.]: :' \
-            '--bondless-allowance=[Fraction of time to choose makers randomly (0.0-1.0)]: :' \
+            '--bondless-allowance=[Fraction of allowance slots chosen uniformly from zero-fee offers (0.0-1.0)]: :' \
             '--bond-exponent=[Exponent for fidelity bond value calculation]: :' \
-            '--bondless-zero-fee[For bondless spots, require a zero advertised CoinJoin fee]' \
+            '--bondless-zero-fee[Restrict allowance spots to zero-fee offers]' \
+            '--quantized-offers-only[Only select offers whose advertised CoinJoin fee is on the public grid]' \
+            '--round-up-cj-fees[Round selected maker fees up to public fee quanta]' \
             '--select-utxos[Interactively select UTXOs (fzf-like TUI)]' \
             '--input-utxo=[Explicit input UTXO as txid\:vout (repeatable). CoinJoin spends exactly the given UTXOs, including for sweeps, and never adds other inputs. Every UTXO must be eligible and belong to --mixdepth. Mutually exclusive with --select-utxos.]: :' \
             '--yes[Skip confirmation prompt]' \

@@ -100,16 +100,17 @@ For full documentation, see [taker Documentation](https://joinmarket-ng.github.i
 │                                                             calculation      │
 │                                                             [env var:        │
 │                                                             BOND_VALUE_EXPO… │
-│    --bondless-all…                         FLOAT            Fraction of time │
-│                                                             to choose makers │
-│                                                             randomly         │
-│                                                             (0.0-1.0)        │
+│    --bondless-all…                         FLOAT            Fraction of      │
+│                                                             allowance slots  │
+│                                                             chosen uniformly │
+│                                                             from zero-fee    │
+│                                                             offers (0.0-1.0) │
 │                                                             [env var:        │
 │                                                             BONDLESS_MAKERS… │
-│    --bondless-zer…      --no-bondless-…                     For bondless     │
-│                                                             spots, require a │
-│                                                             zero advertised  │
-│                                                             CoinJoin fee     │
+│    --bondless-zer…      --no-bondless-…                     Restrict         │
+│                                                             allowance spots  │
+│                                                             to zero-fee      │
+│                                                             offers           │
 │                                                             [env var:        │
 │                                                             BONDLESS_REQUIR… │
 │    --config-file                           PATH             Config file path │
@@ -191,6 +192,16 @@ For full documentation, see [taker Documentation](https://joinmarket-ng.github.i
 │    --prompt-bip39…                                          Prompt for BIP39 │
 │                                                             passphrase       │
 │                                                             interactively    │
+│    --quantized-of…      --allow-non-qu…                     Only select      │
+│                                                             offers whose     │
+│                                                             advertised       │
+│                                                             CoinJoin fee is  │
+│                                                             on the public    │
+│                                                             grid             │
+│    --round-up-cj-…      --no-round-up-…                     Round selected   │
+│                                                             maker fees up to │
+│                                                             public fee       │
+│                                                             quanta           │
 │    --rpc-url                               TEXT             Bitcoin full     │
 │                                                             node RPC URL     │
 │                                                             [env var:        │

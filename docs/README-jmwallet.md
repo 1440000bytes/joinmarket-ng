@@ -1157,6 +1157,10 @@ The full CLI reference below is auto-generated from command `--help` output.
 │ *    destination      TEXT  Destination address [required]                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --allow-conflicts                                     Allow replacement of   │
+│                                                       named wallet inputs    │
+│                                                       spent by a mempool     │
+│                                                       transaction            │
 │ --amount               -a                    INTEGER  Amount in sats (0 for  │
 │                                                       sweep)                 │
 │                                                       [default: 0]           │

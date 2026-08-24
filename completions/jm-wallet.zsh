@@ -291,6 +291,7 @@ _jm_wallet() {
             '--yes[Skip confirmation prompt]' \
             '--select-utxos[Interactively select UTXOs (fzf-like TUI)]' \
             '--input-utxo=[Explicit input UTXO as txid\:vout (repeatable). Spends exactly the given UTXOs (also for sweeps) instead of auto-selecting; every UTXO must already be unfrozen and belong to --mixdepth. Mutually exclusive with --select-utxos.]: :' \
+            '--allow-conflicts[Allow replacement of named wallet inputs spent by a mempool transaction]' \
             '--data-dir=[Data directory (default\: ~/.joinmarket-ng or $JOINMARKET_DATA_DIR)]:file:_files' \
             '--config-file=[Config file path (decoupled from data dir). Defaults to <data-dir>/config.toml]:file:_files' \
             '--log-level=[Log level]: :' \

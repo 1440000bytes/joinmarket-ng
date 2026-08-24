@@ -315,6 +315,16 @@ Takers only require Tor SOCKS; no Tor control port is needed.
 │    --prompt-bip39…                                          Prompt for BIP39 │
 │                                                             passphrase       │
 │                                                             interactively    │
+│    --quantized-of…      --allow-non-qu…                     Only select      │
+│                                                             offers whose     │
+│                                                             advertised       │
+│                                                             CoinJoin fee is  │
+│                                                             on the public    │
+│                                                             grid             │
+│    --round-up-cj-…      --no-round-up-…                     Round selected   │
+│                                                             maker fees up to │
+│                                                             public fee       │
+│                                                             quanta           │
 │    --rpc-url                               TEXT             Bitcoin full     │
 │                                                             node RPC URL     │
 │                                                             [env var:        │

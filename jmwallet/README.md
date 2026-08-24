@@ -1097,6 +1097,10 @@ For full documentation, see [jmwallet Documentation](https://joinmarket-ng.githu
 │ *    destination      TEXT  Destination address [required]                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --allow-conflicts                                     Allow replacement of   │
+│                                                       named wallet inputs    │
+│                                                       spent by a mempool     │
+│                                                       transaction            │
 │ --amount               -a                    INTEGER  Amount in sats (0 for  │
 │                                                       sweep)                 │
 │                                                       [default: 0]           │
