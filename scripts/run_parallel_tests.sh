@@ -887,6 +887,15 @@ run_suite_unit() {
             --cov=orderbook_watcher --cov=maker --cov=taker \
             --cov-report=term-missing \
             jmcore/ jmwallet/ directory_server/ jmwalletd/ tumbler/ orderbook_watcher/ maker/ taker/
+
+        # Repo-root tests use a separate invocation because component packages
+        # each expose a top-level tests module that conflicts during collection.
+        COVERAGE_FILE=.coverage.unit-root pytest -c pytest.ini --fail-on-skip \
+            -lv \
+            --ignore=tests/playwright \
+            --cov=scripts --cov=jmcore \
+            --cov-report=term-missing \
+            tests/
     } > "$log" 2>&1
 }
 

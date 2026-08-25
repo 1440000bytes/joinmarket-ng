@@ -155,6 +155,17 @@ def test_parallel_runner_imports_this_worktree() -> None:
         assert f'"$PROJECT_ROOT/{component}/src"' in script
 
 
+def test_parallel_runner_runs_repo_root_tests_separately() -> None:
+    script = PARALLEL_TEST_SCRIPT.read_text()
+    unit_runner = script.split("run_suite_unit()", maxsplit=1)[1].split(
+        "run_suite_e2e()", maxsplit=1
+    )[0]
+
+    assert "COVERAGE_FILE=.coverage.unit-root" in unit_runner
+    assert "--ignore=tests/playwright" in unit_runner
+    assert re.search(r"(?m)^\s+tests/$", unit_runner)
+
+
 def test_parallel_runner_uses_shared_images() -> None:
     script = PARALLEL_TEST_SCRIPT.read_text()
 
