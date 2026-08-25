@@ -52,6 +52,7 @@ JAM_DOCKER_CONTEXT_RE = re.compile(
 JAM_DOCKER_TEST_COMMIT_RE = re.compile(
     r'(?m)^(JAM_DOCKER_COMMIT = ")([a-f0-9]{40})(")$'
 )
+JAM_REPO_TEST_REF_RE = re.compile(r'(?m)^(JAM_REPO_REF = ")([^"\s]+)(")$')
 JAM_REPO_REF_RE = re.compile(
     r"(?m)(^\s*JAM_REPO_REF:\s*\$\{JAM_REPO_REF:-)([^}\s]+)(\}[ \t]*$)"
 )
@@ -354,6 +355,26 @@ def replace_jam_test_commit(text: str, commit: str) -> str:
     return updated
 
 
+def extract_jam_test_ref(text: str) -> str:
+    matches = list(JAM_REPO_TEST_REF_RE.finditer(text))
+    if len(matches) != 1:
+        raise UpdateError(
+            f"Expected one JAM_REPO_REF in JAM Dockerfile tests, found {len(matches)}"
+        )
+    return matches[0].group(2)
+
+
+def replace_jam_test_ref(text: str, jam_ref: str) -> str:
+    extract_jam_test_ref(text)
+    updated, count = JAM_REPO_TEST_REF_RE.subn(
+        lambda match: f"{match.group(1)}{jam_ref}{match.group(3)}",
+        text,
+    )
+    if count != 1:
+        raise UpdateError("Failed to update JAM_REPO_REF in JAM Dockerfile tests")
+    return updated
+
+
 def report_url_sha(
     name: str, current_url: str, current_sha: str, latest_url: str, latest_sha: str
 ) -> bool:
@@ -394,6 +415,21 @@ def report_jam_docker_pins(compose_commit: str, test_commit: str, latest: str) -
             print(f"  New:            {latest}")
     else:
         print("[OK] jam-docker is up to date")
+    return changed
+
+
+def report_jam_release_pins(compose_ref: str, test_ref: str, latest: str) -> bool:
+    changed = compose_ref != latest or test_ref != latest
+    if changed:
+        print("[UPDATE] JAM release")
+        if compose_ref != latest:
+            print(f"  Compose ref: {compose_ref}")
+            print(f"  New:         {latest}")
+        if test_ref != latest:
+            print(f"  Test ref:    {test_ref}")
+            print(f"  New:         {latest}")
+    else:
+        print("[OK] JAM release is up to date")
     return changed
 
 
@@ -439,7 +475,7 @@ def main() -> int:
         type=Path,
         default=default_jam_pin_test_path,
         help=(
-            "Path to the test containing JAM_DOCKER_COMMIT "
+            "Path to the test containing JAM_REPO_REF and JAM_DOCKER_COMMIT "
             "(default: tests/test_jmwalletd_dockerfile.py)"
         ),
     )
@@ -478,6 +514,7 @@ def main() -> int:
     )
     current_jam_commit = extract_jam_commit(manifest_text)
     current_jam_ref, current_jam_docker_commit = extract_jam_compose_pins(compose_text)
+    current_jam_test_ref = extract_jam_test_ref(jam_pin_test_text)
     current_jam_test_commit = extract_jam_test_commit(jam_pin_test_text)
 
     libevent_release = latest_release("libevent/libevent")
@@ -545,7 +582,11 @@ def main() -> int:
             latest_neutrino_arm64_url,
             latest_neutrino_arm64_sha,
         ),
-        report_version("JAM release", current_jam_ref, latest_jam_ref),
+        report_jam_release_pins(
+            current_jam_ref,
+            current_jam_test_ref,
+            latest_jam_ref,
+        ),
         report_commit("JAM Flatpak source", current_jam_commit, latest_jam_commit),
         report_jam_docker_pins(
             current_jam_docker_commit,
@@ -607,6 +648,10 @@ def main() -> int:
     updated_jam_pin_test = replace_jam_test_commit(
         jam_pin_test_text,
         latest_jam_docker,
+    )
+    updated_jam_pin_test = replace_jam_test_ref(
+        updated_jam_pin_test,
+        latest_jam_ref,
     )
 
     manifest_path.write_text(updated_manifest, encoding="utf-8")

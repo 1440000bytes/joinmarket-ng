@@ -95,6 +95,21 @@ def test_replace_jam_test_commit_updates_expectation() -> None:
     assert current_commit not in updated_text
 
 
+def test_replace_jam_test_ref_updates_expectation() -> None:
+    module = _load_update_flatpak_deps_module()
+    test_path = (
+        Path(__file__).resolve().parents[1] / "tests" / "test_jmwalletd_dockerfile.py"
+    )
+    test_text = test_path.read_text(encoding="utf-8")
+
+    current_ref = module.extract_jam_test_ref(test_text)
+    new_ref = "v9.8.7-beta.6"
+    updated_text = module.replace_jam_test_ref(test_text, new_ref)
+
+    assert module.extract_jam_test_ref(updated_text) == new_ref
+    assert current_ref not in updated_text
+
+
 def test_extract_jam_test_commit_rejects_duplicate_pin() -> None:
     module = _load_update_flatpak_deps_module()
     test_text = f'''JAM_DOCKER_COMMIT = "{"a" * 40}"
@@ -109,6 +124,20 @@ JAM_DOCKER_COMMIT = "{"b" * 40}"
         raise AssertionError("Expected duplicate JAM test pins to be rejected")
 
 
+def test_extract_jam_test_ref_rejects_duplicate_pin() -> None:
+    module = _load_update_flatpak_deps_module()
+    test_text = """JAM_REPO_REF = "v2.0.0-beta.2"
+JAM_REPO_REF = "v2.0.0-beta.3"
+"""
+
+    try:
+        module.extract_jam_test_ref(test_text)
+    except module.UpdateError as error:
+        assert "found 2" in str(error)
+    else:
+        raise AssertionError("Expected duplicate JAM test refs to be rejected")
+
+
 def test_report_jam_docker_pins_detects_stale_test_expectation() -> None:
     module = _load_update_flatpak_deps_module()
     latest_commit = "a" * 40
@@ -117,6 +146,17 @@ def test_report_jam_docker_pins_detects_stale_test_expectation() -> None:
         latest_commit,
         "b" * 40,
         latest_commit,
+    )
+
+
+def test_report_jam_release_pins_detects_stale_test_expectation() -> None:
+    module = _load_update_flatpak_deps_module()
+    latest_ref = "v2.0.0-beta.3"
+
+    assert module.report_jam_release_pins(
+        latest_ref,
+        "v2.0.0-beta.2",
+        latest_ref,
     )
 
 
