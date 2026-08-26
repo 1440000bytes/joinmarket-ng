@@ -27,6 +27,7 @@ from jmwallet.wallet.signing import (
 
 if TYPE_CHECKING:
     from jmwallet.backends.base import BlockchainBackend
+    from jmwallet.wallet.coin_selection import DirectSendSelection
     from jmwallet.wallet.service import WalletService
 
 
@@ -377,7 +378,7 @@ async def _reconstruct_conflicted_input(
         raise ValueError(msg)
     try:
         parent_bytes = bytes.fromhex(parent.raw)
-        if get_txid(parent_bytes) != txid:
+        if get_txid(parent.raw) != txid:
             raise ValueError("parent txid mismatch")
         parent_tx = deserialize_transaction(parent_bytes)
     except Exception as exc:
@@ -502,6 +503,56 @@ def estimate_fee(
 
     vsize = estimate_vsize(input_types, output_types)
     return math.ceil(vsize * fee_rate), vsize
+
+
+async def select_automatic_direct_send_inputs(
+    *,
+    wallet: WalletService,
+    amount_sats: int,
+    destination: str,
+    fee_rate: float,
+    mixdepth: int | None,
+) -> tuple[DirectSendSelection, int]:
+    """Select a direct-send source and inputs using the shared privacy policy.
+
+    An explicit mixdepth is authoritative. Otherwise, mixdepths are considered
+    from highest to lowest and the first one with a sufficient admissible
+    selection wins, regardless of how many inputs a lower mixdepth would need.
+    """
+    if amount_sats <= 0:
+        raise ValueError("Automatic source selection requires a positive send amount")
+
+    from jmwallet.wallet.coin_selection import (
+        DirectSendSearchLimitError,
+        select_direct_send_utxos,
+    )
+
+    mixdepths = (
+        [mixdepth] if mixdepth is not None else list(range(wallet.mixdepth_count - 1, -1, -1))
+    )
+    failures: list[str] = []
+    for candidate_mixdepth in mixdepths:
+        raw_utxos = await wallet.get_utxos(candidate_mixdepth)
+        try:
+            selection = select_direct_send_utxos(
+                raw_utxos,
+                amount_sats,
+                destination,
+                fee_rate,
+                mixdepth=candidate_mixdepth,
+            )
+        except DirectSendSearchLimitError:
+            # The highest-priority source remains unresolved, so do not skip it.
+            raise
+        except ValueError as exc:
+            failures.append(f"mixdepth {candidate_mixdepth}: {exc}")
+            continue
+        return selection, candidate_mixdepth
+
+    if mixdepth is not None and failures:
+        raise ValueError(failures[0])
+    detail = "; ".join(failures)
+    raise ValueError(f"No mixdepth has sufficient eligible funds ({detail})")
 
 
 def _build_unsigned_tx(
@@ -698,17 +749,14 @@ async def prepare_direct_send(
             )
             utxos = [u for u in bond_candidates if _is_signable_fidelity_bond(wallet, u)]
     else:
-        # Non-sweep: use greedy coin selection to pick the minimum UTXOs needed.
-        # This avoids building oversized transactions when the wallet has many UTXOs.
-        # Add a generous fee buffer (5× estimated fee) to ensure enough inputs.
-        fee_buffer = max(10_000, int(amount_sats * 0.05))
-        try:
-            utxos = wallet.select_utxos(mixdepth, amount_sats + fee_buffer)
-        except ValueError:
-            # Fallback: use all spendable UTXOs if coin selection fails
-            # (e.g. many dust UTXOs where the sum exceeds target but individually small).
-            raw_utxos = await wallet.get_utxos(mixdepth)
-            utxos = select_spendable_utxos(raw_utxos)
+        selection, _selected_mixdepth = await select_automatic_direct_send_inputs(
+            wallet=wallet,
+            amount_sats=amount_sats,
+            destination=destination,
+            fee_rate=fee_rate,
+            mixdepth=mixdepth,
+        )
+        utxos = selection.utxos
 
     if not utxos:
         msg = f"No spendable UTXOs in mixdepth {mixdepth}"
@@ -730,10 +778,14 @@ async def prepare_direct_send(
     else:
         send_amount = amount_sats
         change_amount = total_input - send_amount - fee
-        if change_amount < 0:
-            msg = f"Insufficient funds: need {send_amount + fee}, have {total_input}"
-            raise ValueError(msg)
         if change_amount < DUST_THRESHOLD:
+            minimum_no_change_fee, _ = estimate_fee(utxos, destination, fee_rate, has_change=False)
+            if total_input < send_amount + minimum_no_change_fee:
+                msg = (
+                    f"Insufficient funds: need {send_amount + minimum_no_change_fee}, "
+                    f"have {total_input}"
+                )
+                raise ValueError(msg)
             # With no change output, every satoshi not sent is the actual fee.
             # Keep the reported fee consistent with the serialized transaction.
             fee = total_input - send_amount

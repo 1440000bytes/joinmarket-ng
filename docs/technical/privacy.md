@@ -29,6 +29,15 @@ Treat mixdepth boundaries as privacy boundaries when making manual sends. For
 the exact HD paths, address branches, and wallet behavior, see
 [Technical Wallet Notes](wallet.md#hd-structure).
 
+Automatic fixed-amount direct sends stay within one mixdepth. When the source
+is not pinned, they use the highest mixdepth with a fee-sufficient admissible
+selection. Selection minimizes script clusters before input count and excess
+value, and treats every UTXO sharing a script as one atomic cluster. Frozen or
+unconfirmed members prevent automatic partial spending of that cluster. In
+mixdepth 0, more than one cluster may be consolidated only when every selected
+outpoint has exact CoinJoin provenance. Sweeps require an explicit mixdepth;
+manual and explicit input selection remain authoritative.
+
 ## PoDLE
 
 Proof of Discrete Log Equivalence (PoDLE) prevents cost-free probing of maker

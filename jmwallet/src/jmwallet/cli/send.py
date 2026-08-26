@@ -91,6 +91,8 @@ async def _select_input_utxos(
     amount: int,
     mixdepth: int | None,
     interactive: bool,
+    destination: str,
+    fee_rate: float,
 ) -> tuple[list[UTXOInfo], int] | None:
     """Pick the transaction inputs, interactively or automatically.
 
@@ -135,8 +137,26 @@ async def _select_input_utxos(
         logger.info(f"Selected {len(selected_utxos)} UTXOs from mixdepth {mixdepth}")
         return selected_utxos, mixdepth
 
+    if amount > 0:
+        from jmwallet.wallet.spend import select_automatic_direct_send_inputs
+
+        try:
+            selection, selected_mixdepth = await select_automatic_direct_send_inputs(
+                wallet=wallet,
+                amount_sats=amount,
+                destination=destination,
+                fee_rate=fee_rate,
+                mixdepth=mixdepth,
+            )
+        except ValueError as exc:
+            logger.error(str(exc))
+            raise typer.Exit(1) from exc
+        logger.info(f"Selected {len(selection.utxos)} UTXO(s) from mixdepth {selected_mixdepth}")
+        return selection.utxos, selected_mixdepth
+
     if mixdepth is None:
-        mixdepth = 0
+        logger.error("--mixdepth is required when sweeping (--amount 0)")
+        raise typer.Exit(1)
 
     balance = await wallet.get_balance(mixdepth)
     logger.info(f"Mixdepth {mixdepth} balance: {balance:,} sats")
@@ -174,8 +194,9 @@ def send(
         typer.Option(
             "--mixdepth",
             "-m",
-            help="Source mixdepth (default 0; with --select-utxos, derived from "
-            "the selection unless set explicitly)",
+            help="Source mixdepth. Fixed-amount automatic sends use the highest funded "
+            "mixdepth unless set explicitly; sweeps require this option. With "
+            "--select-utxos, it is derived from the selection unless set explicitly.",
         ),
     ] = None,
     fee_rate: Annotated[
@@ -272,6 +293,10 @@ def send(
 
     if allow_conflicts and not input_utxo:
         logger.error("--allow-conflicts requires at least one --input-utxo")
+        raise typer.Exit(1)
+
+    if amount == 0 and mixdepth is None:
+        logger.error("--mixdepth is required when sweeping (--amount 0)")
         raise typer.Exit(1)
 
     # Effective cap comes from settings (with hard-coded fallback). The same
@@ -507,7 +532,13 @@ async def _send_transaction(
             logger.info(f"Using {len(utxos)} explicitly selected UTXO(s) from mixdepth {mixdepth}")
         else:
             selection = await _select_input_utxos(
-                wallet, backend_settings, amount, mixdepth, interactive_utxo_selection
+                wallet,
+                backend_settings,
+                amount,
+                mixdepth,
+                interactive_utxo_selection,
+                destination,
+                resolved_fee_rate,
             )
             if selection is None:
                 raise typer.Exit(1)
@@ -544,10 +575,19 @@ async def _send_transaction(
             change_amount = 0
         else:
             change_amount = total_input - send_amount - estimated_fee
-            if change_amount < 0:
-                logger.error(f"Insufficient funds after fee: need {send_amount + estimated_fee:,}")
-                raise typer.Exit(1)
             if change_amount < DUST_THRESHOLD:
+                minimum_no_change_fee, _ = estimate_fee(
+                    utxos,
+                    destination,
+                    resolved_fee_rate,
+                    has_change=False,
+                )
+                if total_input < send_amount + minimum_no_change_fee:
+                    logger.error(
+                        f"Insufficient funds after fee: "
+                        f"need {send_amount + minimum_no_change_fee:,}"
+                    )
+                    raise typer.Exit(1)
                 # With no change output, every satoshi not sent is the actual fee.
                 estimated_fee = total_input - send_amount
                 change_amount = 0
@@ -578,6 +618,10 @@ async def _send_transaction(
                 mining_fee=estimated_fee,
                 additional_info={
                     "Source Mixdepth": mixdepth,
+                    "Inputs": (
+                        f"{len(utxos)} UTXO(s) across "
+                        f"{len({utxo.scriptpubkey for utxo in utxos})} address(es)"
+                    ),
                     "Change": format_amount(change_amount) if change_amount > 0 else "None",
                     "Miner Fee Rate": f"{resolved_fee_rate:.2f} sat/vB",
                     **(

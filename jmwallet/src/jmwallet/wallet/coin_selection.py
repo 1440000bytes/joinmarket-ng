@@ -6,9 +6,284 @@ Provides UTXO selection strategies for CoinJoin transactions and sweeps.
 
 from __future__ import annotations
 
+import math
+from dataclasses import dataclass
+
+from jmcore.bitcoin import estimate_vsize, get_address_type
 from jmcore.randomness import secure_random
 
 from jmwallet.wallet.models import UTXOInfo
+
+
+class DirectSendSearchLimitError(ValueError):
+    """Raised when bounded selection cannot prove the optimal input set."""
+
+
+@dataclass
+class DirectSendSelection:
+    """Fee-aware result of privacy-preserving direct-send coin selection."""
+
+    utxos: list[UTXOInfo]
+    fee: int
+    change_amount: int
+    vsize: int
+
+
+@dataclass(frozen=True)
+class _DirectSendScriptGroup:
+    """Atomic direct-send input group for one scriptPubKey."""
+
+    scriptpubkey: str
+    utxos: tuple[UTXOInfo, ...]
+    value: int
+    all_coinjoin_outputs: bool
+
+
+def _direct_send_fee_and_vsize(
+    utxos: list[UTXOInfo], destination: str, fee_rate: float, *, has_change: bool
+) -> tuple[int, int]:
+    """Estimate direct-send fees with the shared transaction-vsize helpers."""
+    input_types = ["p2wsh" if utxo.is_p2wsh else "p2wpkh" for utxo in utxos]
+    try:
+        destination_type = get_address_type(destination)
+    except ValueError:
+        # Direct-send currently accepts bech32 destinations, but preserve the
+        # wallet's conservative P2WPKH fallback for callers of this pure helper.
+        destination_type = "p2wpkh"
+    output_types = [destination_type]
+    if has_change:
+        output_types.append("p2wpkh")
+    vsize = estimate_vsize(input_types, output_types)
+    return math.ceil(vsize * fee_rate), vsize
+
+
+def _evaluate_direct_send_selection(
+    utxos: list[UTXOInfo],
+    amount_sats: int,
+    destination: str,
+    fee_rate: float,
+    dust_threshold: int,
+) -> DirectSendSelection | None:
+    """Return fee/change details when *utxos* can fund a direct send."""
+    total_value = sum(utxo.value for utxo in utxos)
+    fee_with_change, vsize_with_change = _direct_send_fee_and_vsize(
+        utxos, destination, fee_rate, has_change=True
+    )
+    change_amount = total_value - amount_sats - fee_with_change
+    if change_amount >= dust_threshold:
+        return DirectSendSelection(utxos, fee_with_change, change_amount, vsize_with_change)
+
+    fee_without_change, vsize_without_change = _direct_send_fee_and_vsize(
+        utxos, destination, fee_rate, has_change=False
+    )
+    actual_fee = total_value - amount_sats
+    if actual_fee >= fee_without_change:
+        return DirectSendSelection(utxos, actual_fee, 0, vsize_without_change)
+    return None
+
+
+def _direct_send_score(
+    groups: tuple[_DirectSendScriptGroup, ...],
+) -> tuple[int, int, int, tuple[str, ...]]:
+    """Return the direct-send privacy objective for an admissible group set."""
+    utxos = [utxo for group in groups for utxo in group.utxos]
+    outpoints = tuple(sorted(utxo.outpoint for utxo in utxos))
+    return len(groups), len(utxos), sum(utxo.value for utxo in utxos), outpoints
+
+
+def _direct_send_greedy_baseline(
+    groups: list[_DirectSendScriptGroup],
+    amount_sats: int,
+    destination: str,
+    fee_rate: float,
+    dust_threshold: int,
+    *,
+    mixdepth: int,
+    restrict_md0: bool,
+) -> tuple[tuple[_DirectSendScriptGroup, ...], DirectSendSelection] | None:
+    """Build a deterministic valid baseline before bounded optimization."""
+    ordered_groups = sorted(
+        groups,
+        key=lambda group: (-group.value, len(group.utxos), group.scriptpubkey),
+    )
+
+    # A singleton is necessarily the least possible script-group count.
+    for group in ordered_groups:
+        selected = list(group.utxos)
+        result = _evaluate_direct_send_selection(
+            selected, amount_sats, destination, fee_rate, dust_threshold
+        )
+        if result is not None:
+            return (group,), result
+
+    if mixdepth == 0 and restrict_md0:
+        ordered_groups = [group for group in ordered_groups if group.all_coinjoin_outputs]
+
+    selected_groups: list[_DirectSendScriptGroup] = []
+    for group in ordered_groups:
+        selected_groups.append(group)
+        selected = [utxo for selected_group in selected_groups for utxo in selected_group.utxos]
+        result = _evaluate_direct_send_selection(
+            selected, amount_sats, destination, fee_rate, dust_threshold
+        )
+        if result is not None:
+            return tuple(selected_groups), result
+    return None
+
+
+def select_direct_send_utxos(
+    utxos: list[UTXOInfo],
+    amount_sats: int,
+    destination: str,
+    fee_rate: float,
+    *,
+    mixdepth: int,
+    min_confirmations: int = 1,
+    dust_threshold: int = 546,
+    restrict_md0: bool = True,
+    max_search_nodes: int = 100_000,
+) -> DirectSendSelection:
+    """Select direct-send inputs without joining independent script clusters.
+
+    Every eligible regular UTXO at a scriptPubKey is selected atomically. The
+    selector minimizes script groups, then input count, then selected value.
+    In mixdepth zero, multiple groups are allowed only when every selected
+    input is an exact CoinJoin output.
+    """
+    if amount_sats <= 0:
+        raise ValueError("Direct-send amount must be positive")
+    if not math.isfinite(fee_rate) or fee_rate < 0:
+        raise ValueError(
+            f"Direct-send fee rate must be a finite non-negative value, got {fee_rate!r}"
+        )
+    if min_confirmations < 0:
+        raise ValueError("Minimum confirmations cannot be negative")
+    if dust_threshold < 0:
+        raise ValueError("Dust threshold cannot be negative")
+    if max_search_nodes <= 0:
+        raise ValueError("Direct-send selection search limit must be positive")
+
+    # A frozen or under-confirmed regular coin marks its whole script cluster
+    # unavailable. Spending only its eligible sibling would still link it.
+    regular_utxos = [
+        utxo for utxo in utxos if utxo.mixdepth == mixdepth and not utxo.is_fidelity_bond
+    ]
+    blocked_scripts = {
+        utxo.scriptpubkey
+        for utxo in regular_utxos
+        if utxo.frozen or utxo.confirmations < min_confirmations
+    }
+    eligible_utxos = [
+        utxo
+        for utxo in regular_utxos
+        if utxo.scriptpubkey not in blocked_scripts
+        and not utxo.frozen
+        and utxo.confirmations >= min_confirmations
+    ]
+
+    grouped_utxos: dict[str, list[UTXOInfo]] = {}
+    for utxo in eligible_utxos:
+        grouped_utxos.setdefault(utxo.scriptpubkey, []).append(utxo)
+    groups = [
+        _DirectSendScriptGroup(
+            scriptpubkey=scriptpubkey,
+            utxos=tuple(sorted(group_utxos, key=lambda utxo: utxo.outpoint)),
+            value=sum(utxo.value for utxo in group_utxos),
+            all_coinjoin_outputs=all(utxo.coinjoin_output for utxo in group_utxos),
+        )
+        for scriptpubkey, group_utxos in grouped_utxos.items()
+    ]
+    if not groups:
+        raise ValueError(f"No eligible direct-send UTXOs in mixdepth {mixdepth}")
+
+    baseline = _direct_send_greedy_baseline(
+        groups,
+        amount_sats,
+        destination,
+        fee_rate,
+        dust_threshold,
+        mixdepth=mixdepth,
+        restrict_md0=restrict_md0,
+    )
+    best_groups: tuple[_DirectSendScriptGroup, ...] | None = None
+    best_result: DirectSendSelection | None = None
+    best_score: tuple[int, int, int, tuple[str, ...]] | None = None
+    if baseline is not None:
+        best_groups, best_result = baseline
+        best_score = _direct_send_score(best_groups)
+
+    nodes_visited = 0
+    search_exhausted = False
+    search_group_limit = len(best_groups) if best_groups is not None else len(groups)
+
+    def search_group_count(
+        candidates: list[_DirectSendScriptGroup],
+        required_count: int,
+        start: int,
+        selected_groups: list[_DirectSendScriptGroup],
+    ) -> bool:
+        """Search one script-group count, returning False when the node cap hits."""
+        nonlocal best_groups, best_result, best_score, nodes_visited
+        if len(selected_groups) == required_count:
+            nodes_visited += 1
+            if nodes_visited > max_search_nodes:
+                return False
+            candidate_groups = tuple(selected_groups)
+            candidate_utxos = sorted(
+                [utxo for group in candidate_groups for utxo in group.utxos],
+                key=lambda utxo: utxo.outpoint,
+            )
+            result = _evaluate_direct_send_selection(
+                candidate_utxos, amount_sats, destination, fee_rate, dust_threshold
+            )
+            if result is None:
+                return True
+            score = _direct_send_score(candidate_groups)
+            if best_score is None or score < best_score:
+                best_groups = candidate_groups
+                best_result = result
+                best_score = score
+            return True
+
+        remaining_needed = required_count - len(selected_groups)
+        last_start = len(candidates) - remaining_needed
+        for index in range(start, last_start + 1):
+            selected_groups.append(candidates[index])
+            if not search_group_count(candidates, required_count, index + 1, selected_groups):
+                selected_groups.pop()
+                return False
+            selected_groups.pop()
+        return True
+
+    for group_count in range(1, search_group_limit + 1):
+        candidates = groups
+        if mixdepth == 0 and restrict_md0 and group_count > 1:
+            candidates = [group for group in groups if group.all_coinjoin_outputs]
+        if len(candidates) < group_count:
+            continue
+        if not search_group_count(candidates, group_count, 0, []):
+            search_exhausted = True
+            break
+        if best_groups is not None and len(best_groups) == group_count:
+            break
+
+    if search_exhausted:
+        raise DirectSendSearchLimitError(
+            f"Direct-send selection search exceeded {max_search_nodes:,} candidates "
+            "before proving an optimal privacy-admissible selection"
+        )
+
+    if best_result is None:
+        if len(groups) == 1:
+            raise ValueError(f"Insufficient eligible funds in mixdepth {mixdepth}")
+        if mixdepth == 0 and restrict_md0:
+            raise ValueError(
+                "No privacy-admissible sufficient direct-send selection in mixdepth 0; "
+                "multiple script clusters require exact CoinJoin outputs"
+            )
+        raise ValueError(f"No sufficient eligible direct-send UTXOs in mixdepth {mixdepth}")
+
+    return best_result
 
 
 class CoinSelectionMixin:

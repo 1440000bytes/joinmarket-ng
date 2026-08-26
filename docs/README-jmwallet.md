@@ -31,9 +31,20 @@ JoinMarket uses 5 mixdepths. Keep mixdepths isolated and avoid merging across mi
 ### 3) Send funds
 
 ```bash
-# Sweep amount=0, otherwise set sats with --amount
+# Fixed amount, source mixdepth is selected automatically
 jm-wallet send <destination_address> --amount 100000
+
+# Sweeps require an explicit source mixdepth
+jm-wallet send <destination_address> --amount 0 --mixdepth 2
 ```
+
+For fixed amounts without `--mixdepth`, automatic selection checks mixdepths
+from highest to lowest and uses the first one that can fund the amount and fee.
+Within that mixdepth it minimizes linked address clusters first, then input
+count, then excess value. All UTXOs at a reused address are spent together;
+frozen, unconfirmed, and fidelity-bond UTXOs are excluded. In mixdepth 0,
+automatic consolidation across addresses is allowed only for outputs with exact
+CoinJoin provenance. Use `--mixdepth` to pin the source.
 
 Use `--select-utxos` on `jm-wallet send` for manual coin control. The selector
 shows every UTXO in the wallet grouped by mixdepth (same layout as
@@ -1208,12 +1219,16 @@ The full CLI reference below is auto-generated from command `--help` output.
 │                                                       exclusive with         │
 │                                                       --select-utxos.        │
 │ --log-level            -l                    TEXT     Log level              │
-│ --mixdepth             -m                    INTEGER  Source mixdepth        │
-│                                                       (default 0; with       │
-│                                                       --select-utxos,        │
-│                                                       derived from the       │
+│ --mixdepth             -m                    INTEGER  Source mixdepth.       │
+│                                                       Fixed-amount automatic │
+│                                                       sends use the highest  │
+│                                                       funded mixdepth unless │
+│                                                       set explicitly; sweeps │
+│                                                       require this option.   │
+│                                                       With --select-utxos,   │
+│                                                       it is derived from the │
 │                                                       selection unless set   │
-│                                                       explicitly)            │
+│                                                       explicitly.            │
 │ --mnemonic-file        -f                    PATH     [env var:              │
 │                                                       MNEMONIC_FILE]         │
 │ --network              -n                    TEXT     Bitcoin network        │

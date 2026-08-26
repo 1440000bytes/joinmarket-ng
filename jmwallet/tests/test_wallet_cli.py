@@ -573,6 +573,17 @@ def test_send_help_exposes_no_broadcast_flag() -> None:
     assert "--no-broadcast" in output
 
 
+def test_send_sweep_requires_explicit_mixdepth() -> None:
+    with patch("jmwallet.cli.send.resolve_mnemonic") as mock_resolve:
+        result = runner.invoke(
+            app,
+            ["send", "bcrt1qtestdestination000000000000000000000000000", "--amount", "0"],
+        )
+
+    assert result.exit_code == 1
+    mock_resolve.assert_not_called()
+
+
 def test_send_rejects_excessive_manual_fee_rate():
     """send should fail fast on absurdly high manual fee rate."""
     with patch("jmwallet.cli.send.resolve_mnemonic") as mock_resolve:

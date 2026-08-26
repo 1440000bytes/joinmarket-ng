@@ -1148,12 +1148,16 @@ For full documentation, see [jmwallet Documentation](https://joinmarket-ng.githu
 │                                                       exclusive with         │
 │                                                       --select-utxos.        │
 │ --log-level            -l                    TEXT     Log level              │
-│ --mixdepth             -m                    INTEGER  Source mixdepth        │
-│                                                       (default 0; with       │
-│                                                       --select-utxos,        │
-│                                                       derived from the       │
+│ --mixdepth             -m                    INTEGER  Source mixdepth.       │
+│                                                       Fixed-amount automatic │
+│                                                       sends use the highest  │
+│                                                       funded mixdepth unless │
+│                                                       set explicitly; sweeps │
+│                                                       require this option.   │
+│                                                       With --select-utxos,   │
+│                                                       it is derived from the │
 │                                                       selection unless set   │
-│                                                       explicitly)            │
+│                                                       explicitly.            │
 │ --mnemonic-file        -f                    PATH     [env var:              │
 │                                                       MNEMONIC_FILE]         │
 │ --network              -n                    TEXT     Bitcoin network        │

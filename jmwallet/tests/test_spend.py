@@ -13,6 +13,7 @@ from jmcore.btc_script import mk_freeze_script
 
 from jmwallet.backends.base import BlockchainBackend, MempoolSpenderLookupResult, Transaction
 from jmwallet.wallet.address import pubkey_to_p2wpkh_script
+from jmwallet.wallet.coin_selection import DirectSendSearchLimitError
 from jmwallet.wallet.models import UTXOInfo
 from jmwallet.wallet.spend import (
     DUST_THRESHOLD,
@@ -27,6 +28,7 @@ from jmwallet.wallet.spend import (
     parse_outpoint,
     prepare_direct_send,
     resolve_input_utxos,
+    select_automatic_direct_send_inputs,
     select_spendable_utxos,
 )
 
@@ -617,7 +619,7 @@ class TestDirectSend:
         wallet = _make_mock_wallet(utxos)
         backend = _make_mock_backend()
 
-        with pytest.raises(ValueError, match="Insufficient funds"):
+        with pytest.raises(ValueError, match="Insufficient eligible funds"):
             await direct_send(
                 wallet=wallet,
                 backend=backend,
@@ -632,7 +634,7 @@ class TestDirectSend:
         wallet = _make_mock_wallet([])
         backend = _make_mock_backend()
 
-        with pytest.raises(ValueError, match="No spendable UTXOs"):
+        with pytest.raises(ValueError, match="No eligible direct-send UTXOs"):
             await direct_send(
                 wallet=wallet,
                 backend=backend,
@@ -1443,7 +1445,7 @@ class TestResolveConflictedInputs:
 
     @pytest.mark.anyio
     async def test_omitting_input_utxos_keeps_automatic_selection(self) -> None:
-        """Backward compatibility: omitting the argument selects as before."""
+        """Omitting explicit inputs uses the privacy-aware selector."""
         utxos = [_make_utxo(txid="aa" * 32, vout=0, value=200_000)]
         wallet = _make_mock_wallet(utxos)
         backend = _make_mock_backend()
@@ -1458,7 +1460,90 @@ class TestResolveConflictedInputs:
         )
 
         assert result.selected_utxos == [("aa" * 32, 0)]
-        wallet.select_utxos.assert_called_once()
+        wallet.get_utxos.assert_awaited_once_with(0)
+        wallet.select_utxos.assert_not_called()
+
+
+class TestAutomaticDirectSendSource:
+    @pytest.mark.anyio
+    async def test_uses_highest_sufficient_mixdepth(self) -> None:
+        high = _make_utxo(txid="cc" * 32, value=100_000, mixdepth=2)
+        lower = _make_utxo(txid="bb" * 32, value=500_000, mixdepth=1)
+        wallet = MagicMock()
+        wallet.mixdepth_count = 3
+        wallet.get_utxos = AsyncMock(side_effect=lambda md: {2: [high], 1: [lower]}[md])
+
+        selection, mixdepth = await select_automatic_direct_send_inputs(
+            wallet=wallet,
+            amount_sats=50_000,
+            destination=REGTEST_P2WPKH_ADDR,
+            fee_rate=1.0,
+            mixdepth=None,
+        )
+
+        assert mixdepth == 2
+        assert selection.utxos == [high]
+        assert [call.args[0] for call in wallet.get_utxos.await_args_list] == [2]
+
+    @pytest.mark.anyio
+    async def test_skips_insufficient_higher_mixdepth(self) -> None:
+        high = _make_utxo(txid="cc" * 32, value=1_000, mixdepth=2)
+        middle = _make_utxo(txid="bb" * 32, value=100_000, mixdepth=1)
+        wallet = MagicMock()
+        wallet.mixdepth_count = 3
+        wallet.get_utxos = AsyncMock(side_effect=lambda md: {2: [high], 1: [middle]}[md])
+
+        selection, mixdepth = await select_automatic_direct_send_inputs(
+            wallet=wallet,
+            amount_sats=50_000,
+            destination=REGTEST_P2WPKH_ADDR,
+            fee_rate=1.0,
+            mixdepth=None,
+        )
+
+        assert mixdepth == 1
+        assert selection.utxos == [middle]
+        assert [call.args[0] for call in wallet.get_utxos.await_args_list] == [2, 1]
+
+    @pytest.mark.anyio
+    async def test_explicit_mixdepth_does_not_fall_back(self) -> None:
+        wallet = MagicMock()
+        wallet.mixdepth_count = 3
+        wallet.get_utxos = AsyncMock(return_value=[_make_utxo(value=1_000, mixdepth=2)])
+
+        with pytest.raises(ValueError, match="mixdepth 2"):
+            await select_automatic_direct_send_inputs(
+                wallet=wallet,
+                amount_sats=50_000,
+                destination=REGTEST_P2WPKH_ADDR,
+                fee_rate=1.0,
+                mixdepth=2,
+            )
+
+        wallet.get_utxos.assert_awaited_once_with(2)
+
+    @pytest.mark.anyio
+    async def test_search_limit_does_not_skip_higher_mixdepth(self) -> None:
+        wallet = MagicMock()
+        wallet.mixdepth_count = 3
+        wallet.get_utxos = AsyncMock(return_value=[])
+
+        with (
+            patch(
+                "jmwallet.wallet.coin_selection.select_direct_send_utxos",
+                side_effect=DirectSendSearchLimitError("search capped"),
+            ),
+            pytest.raises(DirectSendSearchLimitError, match="search capped"),
+        ):
+            await select_automatic_direct_send_inputs(
+                wallet=wallet,
+                amount_sats=50_000,
+                destination=REGTEST_P2WPKH_ADDR,
+                fee_rate=1.0,
+                mixdepth=None,
+            )
+
+        wallet.get_utxos.assert_awaited_once_with(2)
 
 
 class TestDirectSendExplicitInputs:

@@ -53,6 +53,8 @@ async def test_selector_preserves_user_and_fidelity_bond_labels(
         amount=50_000,
         mixdepth=None,
         interactive=True,
+        destination="bcrt1qq6hag67dl53wl99vzg42z8eyzfz2xlkvwk6f7m",
+        fee_rate=1.0,
     )
 
     assert selected == ([user_labeled], 0)
@@ -85,6 +87,8 @@ async def test_selector_classifies_unlabeled_regular_utxo(
         amount=50_000,
         mixdepth=None,
         interactive=True,
+        destination="bcrt1qq6hag67dl53wl99vzg42z8eyzfz2xlkvwk6f7m",
+        fee_rate=1.0,
     )
 
     assert selected == ([unlabeled], 0)
