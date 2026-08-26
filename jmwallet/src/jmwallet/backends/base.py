@@ -217,6 +217,18 @@ class BlockchainBackend(ABC):
         """
         return None
 
+    async def address_has_history(self, address: str) -> bool | None:
+        """Return whether ``address`` has receive history, or ``None`` if unknown.
+
+        History-capable backends can implement :meth:`get_address_usage` once and
+        inherit this per-address privacy check. Backends with a cheaper direct
+        lookup may override it.
+        """
+        used_addresses = await self.get_address_usage([address])
+        if used_addresses is None:
+            return None
+        return address in used_addresses
+
     def get_history_state_id(self) -> str:
         """Return the stable backend-instance identity used by durable cursors."""
         backend_type = type(self)

@@ -7,6 +7,7 @@ information including derivation paths, statuses, and xpubs.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import AsyncMock, Mock
@@ -23,6 +24,7 @@ from jmwallet.history import (
 from jmwallet.wallet.bip32 import HDKey
 from jmwallet.wallet.models import UTXOInfo
 from jmwallet.wallet.service import WalletService
+from jmwallet.wallet.utxo_metadata import AddressReservationError
 
 
 class TestAddressStatusDetermination:
@@ -1544,6 +1546,34 @@ class TestSafeDepositAddress:
         assert third == wallet.get_receive_address(0, 2)
 
     @pytest.mark.asyncio
+    async def test_concurrent_verified_requests_reserve_before_backend_wait(self, wallet) -> None:
+        started = asyncio.Event()
+        release = asyncio.Event()
+        calls = 0
+
+        async def blocked_verifier(_address: str) -> bool:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                started.set()
+            await release.wait()
+            return False
+
+        wallet.backend.address_has_history = blocked_verifier
+        first = asyncio.create_task(wallet.get_new_address_verified(0))
+        second = asyncio.create_task(wallet.get_new_address_verified(0))
+        await asyncio.wait_for(started.wait(), timeout=1)
+        release.set()
+
+        addresses = await asyncio.gather(first, second)
+
+        assert len(set(addresses)) == 2
+        assert set(addresses) == {
+            wallet.get_receive_address(0, 0),
+            wallet.get_receive_address(0, 1),
+        }
+
+    @pytest.mark.asyncio
     async def test_skips_addresses_with_onchain_history(self, wallet, used_set: set[str]):
         """Backend says index 0 has history -> picker must advance to index 1
         and persist the catch so subsequent picks don't repropose it."""
@@ -1569,10 +1599,8 @@ class TestSafeDepositAddress:
         assert addr == wallet.get_receive_address(0, 2)
 
     @pytest.mark.asyncio
-    async def test_falls_back_when_verifier_returns_none(self, test_mnemonic, test_network):
-        """Backend RPC failure (None) -> use sync-layer pick rather than
-        block indefinitely. Preserves availability when bitcoind is
-        unreachable; defense in depth degrades to the persisted store."""
+    async def test_blocks_when_verifier_returns_none(self, test_mnemonic, test_network):
+        """Backend RPC failure must not expose an address with uncertain history."""
         backend = Mock()
         backend.get_utxos = AsyncMock(return_value=[])
         backend.close = AsyncMock()
@@ -1590,15 +1618,13 @@ class TestSafeDepositAddress:
         )
         wallet.utxo_cache = {i: [] for i in range(5)}
 
-        addr, idx = await wallet.get_next_safe_deposit_address(0)
-        # Synchronous picker chooses index 0; we don't downgrade.
-        assert idx == 0
-        assert addr == wallet.get_receive_address(0, 0)
+        with pytest.raises(RuntimeError, match="address-history verification failed"):
+            await wallet.get_next_safe_deposit_address(0)
+        assert wallet.get_receive_address(0, 0) in wallet.reserved_addresses
 
     @pytest.mark.asyncio
-    async def test_works_without_verifier_method(self, test_mnemonic, test_network):
-        """Backends without ``address_has_history`` (e.g. neutrino without
-        this method) fall back to the sync picker; no regression."""
+    async def test_blocks_without_verifier_method(self, test_mnemonic, test_network):
+        """Backends without history verification cannot issue deposit addresses."""
         backend = Mock(spec=["get_utxos", "close"])
         backend.get_utxos = AsyncMock(return_value=[])
         backend.close = AsyncMock()
@@ -1611,9 +1637,8 @@ class TestSafeDepositAddress:
         )
         wallet.utxo_cache = {i: [] for i in range(5)}
 
-        addr, idx = await wallet.get_next_safe_deposit_address(0)
-        assert idx == 0
-        assert addr == wallet.get_receive_address(0, 0)
+        with pytest.raises(RuntimeError, match="verification is unavailable"):
+            await wallet.get_next_safe_deposit_address(0)
 
     @pytest.mark.asyncio
     async def test_max_attempts_safety_limit(self, wallet, used_set: set[str]):
@@ -1677,6 +1702,73 @@ class TestReservedAddressPersistence:
         assert second != first
         assert second == wallet2.get_receive_address(0, 1)
 
+    def test_internal_allocation_is_skipped_after_restart_without_receive_label(
+        self, mock_backend, temp_data_dir, test_mnemonic, test_network
+    ):
+        wallet = self._make_wallet(mock_backend, temp_data_dir, test_mnemonic, test_network)
+        first = wallet.get_new_internal_address(0)
+
+        restarted = self._make_wallet(mock_backend, temp_data_dir, test_mnemonic, test_network)
+
+        assert restarted.get_new_internal_address(0) == restarted.get_change_address(0, 1)
+        assert first in restarted.reserved_addresses
+        assert first not in restarted.get_reserved_addresses()
+
+    def test_shared_metadata_selects_distinct_internal_addresses(
+        self, mock_backend, temp_data_dir, test_mnemonic, test_network
+    ):
+        first_wallet = self._make_wallet(mock_backend, temp_data_dir, test_mnemonic, test_network)
+        second_wallet = self._make_wallet(mock_backend, temp_data_dir, test_mnemonic, test_network)
+
+        first = first_wallet.get_new_internal_address(0)
+        second = second_wallet.get_new_internal_address(0)
+
+        assert first != second
+        assert {first, second} == {
+            first_wallet.get_change_address(0, 0),
+            first_wallet.get_change_address(0, 1),
+        }
+
+    def test_shared_metadata_contention_is_not_bounded_by_scan_range(
+        self, mock_backend, temp_data_dir, test_mnemonic, test_network
+    ):
+        wallets = [
+            WalletService(
+                mnemonic=test_mnemonic,
+                backend=mock_backend,
+                network=test_network,
+                mixdepth_count=1,
+                scan_range=1,
+                data_dir=temp_data_dir,
+            )
+            for _ in range(2)
+        ]
+
+        first = wallets[0].get_new_internal_address(0)
+        second = wallets[1].get_new_internal_address(0)
+
+        assert first == wallets[0].get_change_address(0, 0)
+        assert second == wallets[1].get_change_address(0, 1)
+
+    def test_allocation_persistence_failure_does_not_update_memory(
+        self, mock_backend, temp_data_dir, test_mnemonic, test_network, monkeypatch
+    ):
+        wallet = self._make_wallet(mock_backend, temp_data_dir, test_mnemonic, test_network)
+        assert wallet.metadata_store is not None
+
+        def fail_reservation(*_args, **_kwargs) -> str:
+            raise AddressReservationError("metadata unavailable")
+
+        monkeypatch.setattr(
+            wallet.metadata_store,
+            "reserve_first_available_address",
+            fail_reservation,
+        )
+
+        with pytest.raises(AddressReservationError, match="metadata unavailable"):
+            wallet.get_new_internal_address(0)
+        assert wallet.reserved_addresses == set()
+
     @pytest.mark.asyncio
     async def test_reserve_and_release_roundtrip(
         self, mock_backend, temp_data_dir, test_mnemonic, test_network
@@ -1696,6 +1788,9 @@ class TestReservedAddressPersistence:
 
         # Releasing clears it durably.
         assert wallet2.unreserve_address(addr) is True
+        assert addr not in wallet2.reserved_addresses
+        assert addr not in wallet2.issued_receive_addresses
+        assert addr not in wallet2.reserved_address_labels
         wallet3 = self._make_wallet(mock_backend, temp_data_dir, test_mnemonic, test_network)
         assert addr not in wallet3.get_reserved_addresses()
 

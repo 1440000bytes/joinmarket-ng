@@ -45,6 +45,11 @@ class WalletDisplayMixin:
     def get_next_address_index(self, mixdepth: int, change: int) -> int:
         raise NotImplementedError
 
+    def allocate_output_address(
+        self, mixdepth: int, change: int, *, user_visible: bool = False
+    ) -> str:
+        raise NotImplementedError
+
     def _record_history_address(self, address: str, origin: str | None = None) -> None:
         raise NotImplementedError
 
@@ -439,31 +444,36 @@ class WalletDisplayMixin:
         runs at the moment we are about to hand an address to the
         user.
 
-        On backend RPC failure (``address_has_history`` returns
-        ``None``) we fall back to the synchronous picker's decision
-        rather than blocking indefinitely; this preserves availability
-        when bitcoind is unreachable, with the caveat that defense in
-        depth is reduced to whatever the persisted store and
-        blockchain-history set already know.
+        A candidate is reserved before the backend round-trip. Verification
+        outages fail closed, leaving that candidate reserved rather than
+        exposing an address whose history is uncertain.
         """
+        del used_addresses
         backend = getattr(self, "backend", None)
         verify = getattr(backend, "address_has_history", None) if backend else None
-
-        address, index = self.get_next_after_last_used_address(mixdepth, used_addresses)
-        if verify is None:
-            return address, index
+        if not callable(verify):
+            raise RuntimeError(
+                "Cannot issue a deposit address because backend address-history verification "
+                "is unavailable. Configure a backend that supports address_has_history."
+            )
 
         for _ in range(max_attempts):
+            address = self.allocate_output_address(mixdepth, 0, user_visible=True)
             on_chain = await verify(address)
             if on_chain is True:
                 # Belt-and-suspenders catch. Record so future picks
                 # (this run and across restarts) skip the address.
-                self._record_history_address(address, origin="onchain-verify")
-                index += 1
-                address = self.get_receive_address(mixdepth, index)
+                mark_used = getattr(self, "_mark_verified_address_used", None)
+                if not callable(mark_used):
+                    raise RuntimeError("Wallet cannot persist verifier-confirmed address history")
+                mark_used(address)
                 continue
-            # ``False`` or ``None`` (RPC failed) -> use the candidate.
-            return address, index
+            if on_chain is False:
+                return address, self.address_cache[address][2]
+            raise RuntimeError(
+                "Cannot issue a deposit address because address-history verification failed. "
+                "Restore backend connectivity and try again."
+            )
 
         raise RuntimeError(
             f"get_next_safe_deposit_address: could not find an unused "

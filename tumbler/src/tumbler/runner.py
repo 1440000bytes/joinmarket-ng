@@ -633,16 +633,8 @@ class TumbleRunner:
         return self._get_internal_address(next_mixdepth)
 
     def _get_internal_address(self, mixdepth: int) -> str:
-        """Return the next unused internal (change-chain) address for a mixdepth.
-
-        ``WalletService`` does not expose a one-shot helper for internal addresses,
-        so we follow the same pattern as :class:`taker.taker.Taker` for its
-        destination / change picks: advance the change-chain index counter and
-        request that index on the change chain.
-        """
-        wallet = self.ctx.wallet_service
-        index = wallet.get_next_address_index(mixdepth, 1)
-        return str(wallet.get_change_address(mixdepth, index))
+        """Allocate a durably reserved internal address for a tumbler output."""
+        return str(self.ctx.wallet_service.get_new_internal_address(mixdepth))
 
     async def _teardown_taker(self) -> None:
         taker = self._active_taker

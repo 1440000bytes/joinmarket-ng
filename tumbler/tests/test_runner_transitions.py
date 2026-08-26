@@ -62,6 +62,10 @@ class FakeWalletService:
         self._counter += 1
         return f"bcrt1qfake{mixdepth}{index}{self._counter:04d}"
 
+    def get_new_internal_address(self, mixdepth: int) -> str:
+        index = self.get_next_address_index(mixdepth, 1)
+        return self.get_change_address(mixdepth, index)
+
     async def get_balance(
         self,
         mixdepth: int,

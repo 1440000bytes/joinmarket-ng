@@ -714,8 +714,7 @@ async def _send_transaction(
         # Change (if any)
         change_addr = ""
         if change_amount > 0:
-            change_index = wallet.get_next_address_index(mixdepth, 1)
-            change_addr = wallet.get_change_address(mixdepth, change_index)
+            change_addr = wallet.get_new_internal_address(mixdepth)
             change_key = wallet.get_key_for_address(change_addr)
             if not change_key:
                 logger.error(

@@ -22,6 +22,7 @@ import pytest
 from jmwallet.wallet.utxo_metadata import (
     USED_LABEL_PREFIX,
     AddressRecord,
+    AddressReservationError,
     OutputRecord,
     ReservedAddressRecord,
     UTXOMetadataStore,
@@ -826,6 +827,51 @@ class TestReservedAddresses:
         s2.load()
         assert s2.get_used_addresses() == set()
         assert s2.foreign_addr_lines == []
+
+    def test_reserve_first_available_skips_used_and_reserved(self, tmp_path):
+        path = tmp_path / "m.jsonl"
+        store = UTXOMetadataStore(path=path)
+        store.mark_address_used("bcrt1qused")
+        store.reserve_address("bcrt1qreserved", "Alice")
+
+        allocated = store.reserve_first_available_address(
+            ["bcrt1qused", "bcrt1qreserved", "bcrt1qavailable"],
+            internal=True,
+        )
+
+        assert allocated == "bcrt1qavailable"
+        reloaded = UTXOMetadataStore(path=path)
+        reloaded.load()
+        assert reloaded.reserved_records[allocated].internal is True
+        assert allocated not in reloaded.get_reserved_labels()
+
+    def test_reserve_first_available_is_cross_process_safe(self, tmp_path):
+        path = tmp_path / "m.jsonl"
+        candidates = ["bcrt1qfirst", "bcrt1qsecond"]
+        barrier = threading.Barrier(2)
+
+        def allocate() -> str:
+            store = UTXOMetadataStore(path=path)
+            barrier.wait()
+            return store.reserve_first_available_address(candidates, internal=True)
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(lambda _unused: allocate(), range(2)))
+
+        assert set(results) == set(candidates)
+
+    def test_reserve_first_available_rolls_back_on_persistence_failure(self, tmp_path, monkeypatch):
+        store = UTXOMetadataStore(path=tmp_path / "m.jsonl")
+
+        def fail_save() -> None:
+            raise OSError("read-only filesystem")
+
+        monkeypatch.setattr(store, "save", fail_save)
+
+        with pytest.raises(AddressReservationError, match="Could not persist reservation"):
+            store.reserve_first_available_address(["bcrt1qcandidate"], internal=True)
+
+        assert store.reserved_records == {}
 
 
 class TestReuseObservations:

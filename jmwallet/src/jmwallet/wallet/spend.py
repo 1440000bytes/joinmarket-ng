@@ -798,8 +798,7 @@ async def prepare_direct_send(
     change_script: bytes | None = None
     change_addr: str = ""
     if change_amount > 0:
-        change_index = wallet.get_next_address_index(mixdepth, 1)
-        change_addr = wallet.get_change_address(mixdepth, change_index)
+        change_addr = wallet.get_new_internal_address(mixdepth)
         change_key = wallet.get_key_for_address(change_addr)
         if change_key is None:
             msg = f"Cannot derive key for change address {change_addr}"

@@ -630,6 +630,25 @@ class NeutrinoBackend(BlockchainBackend):
         cursor_str = str(new_cursor) if isinstance(new_cursor, int) else cursor
         return entries, cursor_str
 
+    async def address_has_history(self, address: str) -> bool | None:
+        """Verify receive history after establishing historical scan coverage."""
+        if not self._server_capabilities.detected:
+            await self._detect_server_capabilities()
+        if (
+            not self._server_capabilities.detected
+            or not self._server_capabilities.has_tx_enumeration
+        ):
+            return None
+
+        try:
+            await self.ensure_addresses_scanned([address])
+        except Exception as exc:
+            logger.warning(
+                f"Could not establish Neutrino history coverage for {address[:12]}...: {exc}"
+            )
+            return None
+        return await super().address_has_history(address)
+
     async def get_address_usage(self, addresses: list[str]) -> set[str] | None:
         """Return watched addresses with receive history, including spent outputs."""
         if not addresses:

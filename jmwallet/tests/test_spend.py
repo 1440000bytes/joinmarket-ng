@@ -31,6 +31,7 @@ from jmwallet.wallet.spend import (
     select_automatic_direct_send_inputs,
     select_spendable_utxos,
 )
+from jmwallet.wallet.utxo_metadata import AddressReservationError
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -397,8 +398,7 @@ def _make_mock_wallet(utxos: list[UTXOInfo], change_addr: str = REGTEST_P2WPKH_A
     # Raise ValueError so direct_send falls back to get_utxos for coin selection
     wallet.select_utxos = MagicMock(side_effect=ValueError("no coin selection in tests"))
     wallet.get_key_for_address = MagicMock(return_value=_make_mock_key())
-    wallet.get_next_address_index = MagicMock(return_value=0)
-    wallet.get_change_address = MagicMock(return_value=change_addr)
+    wallet.get_new_internal_address = MagicMock(return_value=change_addr)
     return wallet
 
 
@@ -443,6 +443,29 @@ class TestDirectSend:
         assert result.num_inputs == 1
         assert result.tx_hex
         backend.broadcast_transaction.assert_called_once()
+
+    @pytest.mark.anyio
+    async def test_change_reservation_failure_prevents_transaction_build_and_broadcast(
+        self,
+    ) -> None:
+        utxos = [_make_utxo(value=200_000)]
+        wallet = _make_mock_wallet(utxos)
+        wallet.get_new_internal_address.side_effect = AddressReservationError(
+            "metadata unavailable"
+        )
+        backend = _make_mock_backend()
+
+        with pytest.raises(AddressReservationError, match="metadata unavailable"):
+            await direct_send(
+                wallet=wallet,
+                backend=backend,
+                mixdepth=0,
+                amount_sats=50_000,
+                destination=REGTEST_P2WPKH_ADDR,
+                fee_rate=1.0,
+            )
+
+        backend.broadcast_transaction.assert_not_called()
 
     @pytest.mark.anyio
     async def test_sweep(self) -> None:

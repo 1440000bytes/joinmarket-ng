@@ -227,6 +227,7 @@ def test_bip39_import_with_passphrase_zpub_and_address():
         mock_backend = MagicMock(spec=DescriptorWalletBackend)
         mock_backend.get_utxos = AsyncMock(return_value=[])
         mock_backend.close = AsyncMock()
+        mock_backend.address_has_history = AsyncMock(return_value=False)
         mock_backend.supports_watch_address = False
         mock_backend.supports_descriptor_scan = False
 
@@ -418,6 +419,7 @@ def test_bip39_prompt_passphrase():
         mock_backend = MagicMock(spec=DescriptorWalletBackend)
         mock_backend.get_utxos = AsyncMock(return_value=[])
         mock_backend.close = AsyncMock()
+        mock_backend.address_has_history = AsyncMock(return_value=False)
         mock_backend.supports_watch_address = False
         mock_backend.supports_descriptor_scan = False
 
@@ -1046,8 +1048,7 @@ async def test_send_fails_when_change_key_unavailable():
         mock_wallet.get_balance = AsyncMock(return_value=100_000)
         mock_wallet.get_utxos = AsyncMock(return_value=[utxo])
         mock_wallet.close = AsyncMock()
-        mock_wallet.get_next_address_index.return_value = 0
-        mock_wallet.get_change_address.return_value = change_addr
+        mock_wallet.get_new_internal_address.return_value = change_addr
         mock_wallet.get_key_for_address.side_effect = lambda address: (
             None if address == change_addr else MagicMock()
         )
@@ -1603,6 +1604,7 @@ def test_info_uses_default_wallet(monkeypatch):
         mock_backend = MagicMock(spec=DescriptorWalletBackend)
         mock_backend.get_utxos = AsyncMock(return_value=[])
         mock_backend.close = AsyncMock()
+        mock_backend.address_has_history = AsyncMock(return_value=False)
         mock_backend.supports_watch_address = False
         mock_backend.supports_descriptor_scan = False
 
@@ -2520,6 +2522,7 @@ def _make_descriptor_info_mock_backend() -> MagicMock:
     mock_backend = MagicMock(spec=DescriptorWalletBackend)
     mock_backend.get_utxos = AsyncMock(return_value=[])
     mock_backend.close = AsyncMock()
+    mock_backend.address_has_history = AsyncMock(return_value=False)
     mock_backend.supports_watch_address = False
     mock_backend.supports_descriptor_scan = True
     return mock_backend

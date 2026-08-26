@@ -88,6 +88,10 @@ DEFAULT_COINJOIN_LOCK_TTL = 600.0
 MAX_COINJOIN_LOCK_TTL = 31 * 24 * 60 * 60.0
 
 
+class AddressReservationError(Exception):
+    """Raised when an address reservation cannot be durably persisted."""
+
+
 def _validate_lock_ttl(ttl: float) -> float:
     """Return a finite, positive lease TTL within the internal safety cap."""
     if isinstance(ttl, bool):
@@ -327,6 +331,7 @@ class ReservedAddressRecord:
 
     ref: str
     user_label: str = ""
+    internal: bool = False
 
     @property
     def label(self) -> str:
@@ -335,9 +340,12 @@ class ReservedAddressRecord:
             return f"{RESERVED_LABEL_PREFIX}:{self.user_label}"
         return RESERVED_LABEL_PREFIX
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict[str, str | bool]:
         """Serialize to a BIP-329 JSON dict."""
-        return {"type": "addr", "ref": self.ref, "label": self.label}
+        result: dict[str, str | bool] = {"type": "addr", "ref": self.ref, "label": self.label}
+        if self.internal:
+            result["jm_internal_allocation"] = True
+        return result
 
     @classmethod
     def from_dict(cls, d: dict[str, str | bool]) -> ReservedAddressRecord | None:
@@ -357,7 +365,7 @@ class ReservedAddressRecord:
             return None
         rest = label[len(RESERVED_LABEL_PREFIX) :]
         user_label = rest[1:] if rest.startswith(":") else ""
-        return cls(ref=ref, user_label=user_label)
+        return cls(ref=ref, user_label=user_label, internal=d.get("jm_internal_allocation") is True)
 
 
 @dataclass
@@ -1070,13 +1078,65 @@ class UTXOMetadataStore:
         with self._exclusive_file_lock():
             self.load()
             existing = self.reserved_records.get(address)
-            if existing is not None and existing.user_label == user_label:
+            if existing is not None and existing.user_label == user_label and not existing.internal:
                 return False
+            before = copy.deepcopy(self.reserved_records)
             self.reserved_records[address] = ReservedAddressRecord(
-                ref=address, user_label=user_label
+                ref=address,
+                user_label=user_label,
             )
-            self.save()
+            try:
+                self.save()
+            except Exception as exc:
+                self.reserved_records = before
+                msg = f"Could not persist reservation for address {address}"
+                raise AddressReservationError(msg) from exc
             return True
+
+    def reserve_first_available_address(
+        self,
+        candidates: Iterable[str],
+        *,
+        internal: bool,
+        label: str = "",
+    ) -> str:
+        """Durably reserve the first candidate not already used or reserved.
+
+        The candidate sequence must be ordered. State is reloaded while holding
+        the metadata sidecar lock, then one reservation is atomically written,
+        preventing wallet processes sharing this metadata file from selecting
+        the same derivation path.
+        """
+        with self._exclusive_file_lock():
+            self.load()
+            unavailable = set(self.address_records) | set(self.reserved_records)
+            saw_candidate = False
+            address = None
+            for candidate in candidates:
+                if not candidate:
+                    continue
+                saw_candidate = True
+                if candidate not in unavailable:
+                    address = candidate
+                    break
+            if address is None:
+                if not saw_candidate:
+                    raise ValueError("Address allocation requires at least one candidate")
+                raise AddressReservationError("No available address candidates could be reserved")
+
+            before = copy.deepcopy(self.reserved_records)
+            self.reserved_records[address] = ReservedAddressRecord(
+                ref=address,
+                user_label=label or "",
+                internal=internal,
+            )
+            try:
+                self.save()
+            except Exception as exc:
+                self.reserved_records = before
+                msg = f"Could not persist reservation for address {address}"
+                raise AddressReservationError(msg) from exc
+            return address
 
     def unreserve_address(self, address: str) -> bool:
         """Remove any reservation for ``address``. Returns ``True`` if changed."""
@@ -1098,7 +1158,9 @@ class UTXOMetadataStore:
 
     def get_reserved_labels(self) -> dict[str, str]:
         """Return a mapping of reserved address -> user label (may be empty)."""
-        return {ref: rec.user_label for ref, rec in self.reserved_records.items()}
+        return {
+            ref: rec.user_label for ref, rec in self.reserved_records.items() if not rec.internal
+        }
 
     # -- Forced-address-reuse observation state (persisted across restarts) --
 

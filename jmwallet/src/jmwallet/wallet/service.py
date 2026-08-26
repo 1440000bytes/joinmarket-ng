@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
+from itertools import count
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 from jmcore.btc_script import mk_freeze_script
@@ -25,6 +27,7 @@ from jmwallet.wallet.sync import WalletSyncMixin
 from jmwallet.wallet.utxo_metadata import (
     AUTO_FREEZE_REUSE_LABEL,
     DEFAULT_COINJOIN_LOCK_TTL,
+    AddressReservationError,
     UTXOMetadataStore,
     load_metadata_store,
 )
@@ -68,6 +71,7 @@ class WalletService(
         reconstruct_history: bool = True,
     ):
         self.backend = backend
+        self._address_allocation_lock = Lock()
         self.network = network
         self.mixdepth_count = mixdepth_count
         # ``gap_limit`` is the BIP44 trailing-empty threshold (default 20).
@@ -224,6 +228,7 @@ class WalletService(
             # Feed the in-memory picker skip-set so reserved addresses are not
             # reissued as the next unused deposit address after a restart.
             self.issued_receive_addresses.update(self.reserved_address_labels.keys())
+            self.reserved_addresses.update(self.metadata_store.get_reserved_addresses())
         # Cache for fidelity bond locktimes (address -> locktime)
         self.fidelity_bond_locktime_cache: dict[str, int] = {}
         # Lazily-built cache of every canonical fidelity-bond address (all
@@ -251,7 +256,7 @@ class WalletService(
         # (after a restart the reservation is loaded from disk, but the
         # address itself has not been derived yet). Reserved addresses are few
         # and typically at low indices, so this is cheap.
-        for reserved_addr in list(self.reserved_address_labels):
+        for reserved_addr in list(self.reserved_addresses):
             if reserved_addr not in self.address_cache:
                 try:
                     self._find_address_path(reserved_addr, max_scan=self.scan_range)
@@ -869,17 +874,50 @@ class WalletService(
         logger.debug(f"Reserved {len(addresses)} addresses: {addresses}")
 
     def get_new_internal_address(self, mixdepth: int) -> str:
-        """Allocate and reserve the next internal address for a CoinJoin output.
+        """Allocate a durably reserved internal address for an owned output."""
+        return self.allocate_output_address(mixdepth, 1)
 
-        Reserving within the same synchronous operation ensures consecutive
-        allocations from one branch receive distinct indices. This matters for
-        one-mixdepth wallets, where the equal output and change both use the
-        same ``(mixdepth=0, branch=1)`` sequence.
+    def allocate_output_address(
+        self, mixdepth: int, change: int, *, user_visible: bool = False
+    ) -> str:
+        """Allocate and durably reserve the next address on a wallet branch.
+
+        No asynchronous work occurs here. With metadata configured, selection
+        and persistence are serialized across processes by the metadata store.
+        The in-process lock preserves the same all-or-nothing behavior for
+        ephemeral wallets that do not have a metadata store.
         """
-        index = self.get_next_address_index(mixdepth, 1)
-        address = self.get_change_address(mixdepth, index)
-        self.reserve_addresses({address})
-        return address
+        with self._address_allocation_lock:
+            start_index = self.get_next_address_index(mixdepth, change)
+            candidates = (self.get_address(mixdepth, change, index) for index in count(start_index))
+
+            store = self.metadata_store
+            if store is not None:
+                address = store.reserve_first_available_address(
+                    candidates,
+                    internal=not user_visible,
+                )
+            else:
+                unavailable = (
+                    self.addresses_with_history
+                    | self.reserved_addresses
+                    | self.issued_receive_addresses
+                )
+                address = next(
+                    (candidate for candidate in candidates if candidate not in unavailable),
+                    None,
+                )
+                if address is None:
+                    raise AddressReservationError(
+                        "No available address candidates could be reserved"
+                    )
+
+            # Update local state only after the reservation has succeeded.
+            self.reserved_addresses.add(address)
+            if user_visible:
+                self.issued_receive_addresses.add(address)
+                self.reserved_address_labels[address] = ""
+            return address
 
     async def sync(self) -> dict[int, list[UTXOInfo]]:
         """Sync wallet (alias for sync_all for backward compatibility)."""
@@ -898,10 +936,7 @@ class WalletService(
         endpoints) should prefer :meth:`get_new_address_verified`,
         which adds a per-candidate ``getreceivedbyaddress`` check.
         """
-        next_index = self.get_next_address_index(mixdepth, 0)
-        address = self.get_receive_address(mixdepth, next_index)
-        self.reserve_address(address)
-        return address
+        return self.allocate_output_address(mixdepth, 0, user_visible=True)
 
     async def get_new_address_verified(self, mixdepth: int) -> str:
         """Async deposit-address picker with on-chain verification.
@@ -912,9 +947,22 @@ class WalletService(
         exposes a deposit address to users or peers (``jm-wallet info``,
         jmwalletd ``/wallet/address/new``, maker/taker deposit prompts).
         """
-        address, _ = await self.get_next_safe_deposit_address(mixdepth)
-        self.reserve_address(address)
+        address, _ = await self.get_next_safe_deposit_address(
+            mixdepth,
+            max_attempts=self.scan_range,
+        )
         return address
+
+    def _mark_verified_address_used(self, address: str) -> None:
+        """Persist a verifier-confirmed address before marking it used locally."""
+        store = self.metadata_store
+        if store is not None:
+            try:
+                store.mark_address_used(address, origin="onchain-verify")
+            except Exception as exc:
+                msg = f"Could not persist used address {address} after history verification"
+                raise AddressReservationError(msg) from exc
+        self.addresses_with_history.add(address)
 
     def reserve_address(self, address: str, label: str = "") -> None:
         """Reserve (set aside) a deposit address so it is never reissued.
@@ -928,14 +976,13 @@ class WalletService(
         """
         if not address:
             return
-        self.issued_receive_addresses.add(address)
-        self.reserved_address_labels[address] = label or ""
-        store = getattr(self, "metadata_store", None)
-        if store is not None:
-            try:
+        with self._address_allocation_lock:
+            store = self.metadata_store
+            if store is not None:
                 store.reserve_address(address, label or "")
-            except Exception as exc:  # pragma: no cover - disk failures are rare
-                logger.warning(f"Failed to persist reserved address {address}: {exc}")
+            self.reserved_addresses.add(address)
+            self.issued_receive_addresses.add(address)
+            self.reserved_address_labels[address] = label or ""
 
     def unreserve_address(self, address: str) -> bool:
         """Remove a reservation so the address may be reissued.
@@ -944,16 +991,21 @@ class WalletService(
         reissued (the pickers also consult ``addresses_with_history``); this
         only clears the "set aside" marker and its label.
         """
-        changed = self.reserved_address_labels.pop(address, None) is not None
-        self.issued_receive_addresses.discard(address)
-        store = getattr(self, "metadata_store", None)
-        if store is not None:
-            try:
-                if store.unreserve_address(address):
-                    changed = True
-            except Exception as exc:  # pragma: no cover - disk failures are rare
-                logger.warning(f"Failed to remove reserved address {address}: {exc}")
-        return changed
+        with self._address_allocation_lock:
+            changed = (
+                address in self.reserved_addresses
+                or address in self.issued_receive_addresses
+                or address in self.reserved_address_labels
+            )
+            store = self.metadata_store
+            if store is not None and store.unreserve_address(address):
+                changed = True
+
+            # Update memory only after the durable state change succeeds.
+            self.reserved_addresses.discard(address)
+            self.issued_receive_addresses.discard(address)
+            self.reserved_address_labels.pop(address, None)
+            return changed
 
     def is_address_reserved(self, address: str) -> bool:
         """Return True if ``address`` has been reserved/set aside by the user."""

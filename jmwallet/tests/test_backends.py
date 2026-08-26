@@ -230,6 +230,7 @@ class TestNeutrinoBackend:
         backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="regtest")
         backend._server_capabilities.detected = True
         backend._server_capabilities.has_tx_enumeration = True
+        backend._watched_addresses.update({"bcrt1qused", "bcrt1qunused"})
         backend._api_call = AsyncMock(
             return_value={
                 "transactions": [
@@ -244,11 +245,43 @@ class TestNeutrinoBackend:
         )
 
         assert await backend.get_address_usage(["bcrt1qused", "bcrt1qunused"]) == {"bcrt1qused"}
+        assert await backend.address_has_history("bcrt1qused") is True
+        assert await backend.address_has_history("bcrt1qunused") is False
         # The full daemon-global history is cached across gap batches.
         assert await backend.get_address_usage(["bcrt1qother"]) == {"bcrt1qother"}
         backend._api_call.assert_awaited_once_with(
             "GET", "v1/transactions", params={"since_height": 0}
         )
+        await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_address_has_history_backfills_new_address(self):
+        """Deposit verification establishes scan coverage before enumeration."""
+        backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="regtest")
+        backend._server_capabilities.detected = True
+        backend._server_capabilities.has_tx_enumeration = True
+        backend.ensure_addresses_scanned = AsyncMock(return_value=True)  # type: ignore[method-assign]
+        backend.get_address_usage = AsyncMock(  # type: ignore[method-assign]
+            return_value={"bcrt1qused"}
+        )
+
+        assert await backend.address_has_history("bcrt1qused") is True
+        backend.ensure_addresses_scanned.assert_awaited_once_with(["bcrt1qused"])
+        backend.get_address_usage.assert_awaited_once_with(["bcrt1qused"])
+        await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_address_has_history_is_unknown_without_tx_enumeration(self):
+        """Old Neutrino servers fail deposit-address verification closed."""
+        backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="regtest")
+        backend._server_capabilities.detected = True
+        backend._server_capabilities.has_tx_enumeration = False
+        backend._api_call = AsyncMock()  # type: ignore[method-assign]
+        backend.ensure_addresses_scanned = AsyncMock()  # type: ignore[method-assign]
+
+        assert await backend.address_has_history("bcrt1qunknown") is None
+        backend._api_call.assert_not_awaited()
+        backend.ensure_addresses_scanned.assert_not_awaited()
         await backend.close()
 
     @pytest.mark.asyncio
