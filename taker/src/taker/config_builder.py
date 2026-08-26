@@ -234,6 +234,7 @@ def build_taker_config_kwargs(
         "backend_type": effective_backend_type,
         "backend_config": backend_config,
         "directory_servers": dir_servers,
+        "allow_clearnet_connections": settings.network_config.allow_clearnet_connections,
         "nick_auth_mode": settings.network_config.nick_auth_mode,
         "nick_auth_directory_ids": settings.network_config.nick_auth_directory_ids,
         "socks_host": effective_socks_host,

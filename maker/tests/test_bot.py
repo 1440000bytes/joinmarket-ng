@@ -2625,6 +2625,7 @@ class TestDirectConnectionHandshake:
             mnemonic="test " * 12,
             directory_servers=["localhost:5222"],
             network=NetworkType.SIGNET,
+            allow_clearnet_connections=True,
         )
         mock_wallet = MagicMock()
         mock_wallet.mixdepth_count = 5
@@ -2683,6 +2684,7 @@ class TestDirectConnectionHandshake:
             mnemonic="test " * 12,
             directory_servers=["localhost:5222"],
             network=NetworkType.TESTNET,
+            allow_clearnet_connections=True,
         )
         mock_wallet = MagicMock()
         mock_wallet.mixdepth_count = 5

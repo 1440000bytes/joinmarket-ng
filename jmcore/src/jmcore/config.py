@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field, SecretStr, field_validator, model_validat
 from jmcore.constants import DUST_THRESHOLD
 from jmcore.models import NetworkType
 from jmcore.nick_auth import NickAuthMode, validate_directory_endpoint, validate_directory_id
+from jmcore.protocol import is_onion_hostname
 
 
 class TorConfig(BaseModel):
@@ -211,6 +212,13 @@ class WalletConfig(BaseModel):
         default_factory=list,
         description="List of directory server URLs (e.g., ['onion_host:port', ...])",
     )
+    allow_clearnet_connections: bool = Field(
+        default=False,
+        description=(
+            "Allow direct TCP connections to non-onion JoinMarket directories and peers. "
+            "Development and local testing only; regtest permits local connections without this."
+        ),
+    )
     nick_auth_mode: NickAuthMode = Field(
         default=NickAuthMode.PREFER_VERIFIED,
         description="Client policy for authenticating nick ownership to directory servers",
@@ -227,6 +235,26 @@ class WalletConfig(BaseModel):
             validate_directory_endpoint(endpoint): validate_directory_id(directory_id)
             for endpoint, directory_id in value.items()
         }
+
+    @model_validator(mode="after")
+    def require_onion_directories_in_production(self) -> WalletConfig:
+        """Reject direct directory endpoints outside explicit development use."""
+        if self.network is NetworkType.REGTEST or self.allow_clearnet_connections:
+            return self
+
+        clearnet_endpoints = [
+            endpoint
+            for endpoint in self.directory_servers
+            if not is_onion_hostname(endpoint.split(":", 1)[0])
+        ]
+        if clearnet_endpoints:
+            raise ValueError(
+                "Configured directory endpoints must use .onion on mainnet, signet, and testnet. "
+                "Use network=regtest for local directories, or set "
+                "network_config.allow_clearnet_connections=true for explicit development use: "
+                + ", ".join(clearnet_endpoints)
+            )
+        return self
 
     # Tor/SOCKS configuration
     socks_host: str = Field(default="127.0.0.1", description="Tor SOCKS5 proxy host")

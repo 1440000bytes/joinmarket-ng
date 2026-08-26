@@ -211,6 +211,7 @@ class DirectoryClient:
         socks_password: str | None = None,
         nick_auth_mode: NickAuthMode = NickAuthMode.PREFER_VERIFIED,
         nick_auth_directory_id: str | None = None,
+        allow_clearnet_connections: bool = False,
     ) -> None:
         """
         Initialize DirectoryClient.
@@ -232,6 +233,7 @@ class DirectoryClient:
             socks_password: SOCKS5 password for Tor stream isolation (optional)
             nick_auth_mode: Policy for authenticating nick ownership to directory servers
             nick_auth_directory_id: Expected identity of this selected directory endpoint
+            allow_clearnet_connections: Permit direct TCP for non-onion endpoints in development
         """
         self.host = host
         self.port = port
@@ -266,6 +268,7 @@ class DirectoryClient:
         self.last_offer_received_time: float | None = None
         self.neutrino_compat = neutrino_compat
         self.nick_auth_mode = nick_auth_mode
+        self.allow_clearnet_connections = allow_clearnet_connections
         self.nick_auth_directory_id = (
             validate_directory_id(nick_auth_directory_id)
             if nick_auth_directory_id is not None
@@ -328,7 +331,17 @@ class DirectoryClient:
         """Connect to the directory server and perform handshake."""
         try:
             logger.debug(f"DirectoryClient.connect: connecting to {self.host}:{self.port}")
-            if not self.host.endswith(".onion"):
+            if not self.host.lower().endswith(".onion"):
+                if self.network != "regtest" and not self.allow_clearnet_connections:
+                    raise DirectoryClientError(
+                        "Refusing direct TCP connection to non-onion directory "
+                        f"{self.host}:{self.port}. Use an .onion endpoint, use regtest for local "
+                        "development, or explicitly enable allow_clearnet_connections."
+                    )
+                logger.warning(
+                    f"Using direct TCP for non-onion directory {self.host}:{self.port}; "
+                    "this is allowed only for regtest or explicit development configuration"
+                )
                 self.connection = await connect_direct(
                     self.host,
                     self.port,

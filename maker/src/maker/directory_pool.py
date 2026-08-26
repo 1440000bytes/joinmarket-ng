@@ -74,6 +74,7 @@ class MakerDirectoryPool(DirectoryClientPool):
             location = "NOT-SERVING-ONION"
         kwargs["location"] = location
         kwargs["neutrino_compat"] = self._neutrino_compat
+        kwargs["allow_clearnet_connections"] = self._config.allow_clearnet_connections
         return kwargs
 
     def refresh_neutrino_compat(self, neutrino_compat: bool) -> None:

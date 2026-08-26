@@ -342,6 +342,13 @@ class NetworkSettings(BaseModel):
         default_factory=list,
         description="Directory server addresses (host:port). Uses defaults if empty.",
     )
+    allow_clearnet_connections: bool = Field(
+        default=False,
+        description=(
+            "Allow direct TCP connections to non-onion JoinMarket directories and peers. "
+            "Development and local testing only; regtest permits local connections without this."
+        ),
+    )
     nick_auth_mode: NickAuthMode = Field(
         default=NickAuthMode.PREFER_VERIFIED,
         description="Client policy for authenticating nick ownership to directory servers",

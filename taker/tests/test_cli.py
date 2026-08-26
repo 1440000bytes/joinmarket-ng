@@ -110,6 +110,7 @@ class TestBuildTakerConfig:
         settings.network_config.network = NetworkType.SIGNET
         settings.network_config.bitcoin_network = None
         settings.network_config.directory_servers = ["dir1.onion:5222"]
+        settings.network_config.allow_clearnet_connections = False
         settings.network_config.nick_auth_mode = NickAuthMode.PREFER_VERIFIED
         settings.network_config.nick_auth_directory_ids = {}
 
@@ -744,6 +745,22 @@ class TestBuildTakerConfig:
         )
 
         assert config.nick_auth_mode is NickAuthMode.REQUIRE_VERIFIED
+
+    def test_clearnet_development_override_flows_into_config(
+        self, sample_mnemonic: str, mock_settings: MagicMock
+    ) -> None:
+        mock_settings.network_config.allow_clearnet_connections = True
+
+        config = build_taker_config(
+            settings=mock_settings,
+            mnemonic=sample_mnemonic,
+            passphrase="",
+            destination="bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
+            amount=100000,
+            mixdepth=0,
+        )
+
+        assert config.allow_clearnet_connections is True
 
     def test_nick_auth_directory_ids_flow_into_config(
         self, sample_mnemonic: str, mock_settings: MagicMock

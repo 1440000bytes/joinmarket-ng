@@ -31,6 +31,14 @@ def test_default_relative_fee_is_public_quantum() -> None:
     assert config.cj_fee_relative == "0.0001"
 
 
+def test_direct_config_rejects_production_clearnet_directory() -> None:
+    with pytest.raises(ValidationError, match="must use .onion"):
+        MakerConfig(
+            mnemonic=TEST_MNEMONIC,
+            directory_servers=["directory.example:5222"],
+        )
+
+
 def test_minimum_fee_floor_cannot_exceed_maximum_fee_rate() -> None:
     with pytest.raises(ValidationError, match="min_fee_rate_sat_vb"):
         MakerConfig(mnemonic=TEST_MNEMONIC, min_fee_rate_sat_vb=2.0, max_fee_rate_sat_vb=1.0)
@@ -965,6 +973,36 @@ class TestNewSettingsWiring:
         )
         config = build_maker_config(settings=settings, mnemonic=TEST_MNEMONIC, passphrase="")
         assert config.nick_auth_mode is NickAuthMode.REQUIRE_VERIFIED
+
+    def test_clearnet_development_override_passed_from_settings(self) -> None:
+        from jmcore.settings import JoinMarketSettings
+
+        from maker.cli import build_maker_config
+
+        settings = JoinMarketSettings(network_config={"allow_clearnet_connections": True})
+        config = build_maker_config(settings=settings, mnemonic=TEST_MNEMONIC, passphrase="")
+
+        assert config.allow_clearnet_connections is True
+
+    def test_clearnet_development_override_reaches_directory_clients(self) -> None:
+        from jmcore.crypto import NickIdentity
+
+        from maker.directory_pool import MakerDirectoryPool
+
+        config = MakerConfig(
+            mnemonic=TEST_MNEMONIC,
+            directory_servers=["directory.example:5222"],
+            allow_clearnet_connections=True,
+        )
+        pool = MakerDirectoryPool(
+            config=config,
+            nick_identity=NickIdentity(private_key_bytes=b"\x01" * 32),
+            neutrino_compat=False,
+        )
+
+        assert pool._build_client_kwargs("directory.example", 5222)[
+            "allow_clearnet_connections"
+        ] is True
 
     def test_nick_auth_directory_ids_passed_from_settings(self) -> None:
         from jmcore.settings import JoinMarketSettings

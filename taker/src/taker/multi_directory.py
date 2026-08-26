@@ -20,7 +20,7 @@ from jmcore.directory_pool import DirectoryClientPool
 from jmcore.models import Offer
 from jmcore.network import ONION_HOSTID, OnionPeer
 from jmcore.nick_auth import NickAuthMode
-from jmcore.protocol import NOT_SERVING_ONION_HOSTNAME, parse_jm_message
+from jmcore.protocol import NOT_SERVING_ONION_HOSTNAME, is_onion_peer_location, parse_jm_message
 from jmcore.randomness import secure_random
 from loguru import logger
 
@@ -99,6 +99,7 @@ class MultiDirectoryClient(DirectoryClientPool):
         stream_isolation: bool = False,
         nick_auth_mode: NickAuthMode = NickAuthMode.PREFER_VERIFIED,
         nick_auth_directory_ids: dict[str, str] | None = None,
+        allow_clearnet_connections: bool = False,
     ):
         # Connection / SOCKS / credential setup is delegated to the
         # DirectoryClientPool base; it handles directory_servers, network,
@@ -119,6 +120,7 @@ class MultiDirectoryClient(DirectoryClientPool):
         # Taker-specific state below.
         self.nick = nick_identity.nick
         self.neutrino_compat = neutrino_compat
+        self.allow_clearnet_connections = allow_clearnet_connections
         self.on_nick_leave = on_nick_leave
 
         # Direct peer connection settings
@@ -143,6 +145,7 @@ class MultiDirectoryClient(DirectoryClientPool):
         """Inject the taker's ``neutrino_compat`` flag into the base kwargs."""
         kwargs = super()._build_client_kwargs(host, port)
         kwargs["neutrino_compat"] = self.neutrino_compat
+        kwargs["allow_clearnet_connections"] = self.allow_clearnet_connections
         return kwargs
 
     def _update_nick_status(self, nick: str, server: str, is_present: bool) -> None:
@@ -223,7 +226,15 @@ class MultiDirectoryClient(DirectoryClientPool):
         for client in self.clients.values():
             location = client._active_peers.get(nick)
             if location and location != NOT_SERVING_ONION_HOSTNAME:
-                return location
+                if is_onion_peer_location(location):
+                    return location
+                if self.network == "regtest" or self.allow_clearnet_connections:
+                    return location
+                logger.warning(
+                    f"Ignoring non-onion peer location for {nick}: {location}. "
+                    "Peer locations must be .onion outside regtest unless "
+                    "allow_clearnet_connections is explicitly enabled for development."
+                )
         return None
 
     def _should_try_direct_connect(self, nick: str) -> bool:
@@ -452,6 +463,7 @@ class MultiDirectoryClient(DirectoryClientPool):
                 nick_identity=self.nick_identity,
                 socks_username=self._peer_creds[0],
                 socks_password=self._peer_creds[1],
+                allow_clearnet_connections=self.allow_clearnet_connections,
             )
             self._peer_connections[nick] = peer
         else:

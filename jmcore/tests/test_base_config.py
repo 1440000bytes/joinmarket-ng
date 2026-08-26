@@ -218,6 +218,31 @@ class TestWalletConfig:
         assert config.mixdepth_count == 5
         assert config.gap_limit == 20
 
+    @pytest.mark.parametrize("network", [NetworkType.MAINNET, NetworkType.SIGNET, NetworkType.TESTNET])
+    def test_production_config_rejects_clearnet_directory(self, network: NetworkType):
+        with pytest.raises(ValidationError, match="must use .onion"):
+            WalletConfig(
+                mnemonic="test " * 12,
+                network=network,
+                directory_servers=["127.0.0.1:5222"],
+            )
+
+    def test_regtest_config_allows_local_directory(self):
+        config = WalletConfig(
+            mnemonic="test " * 12,
+            network=NetworkType.REGTEST,
+            directory_servers=["127.0.0.1:5222"],
+        )
+        assert config.directory_servers == ["127.0.0.1:5222"]
+
+    def test_development_override_allows_clearnet_directory(self):
+        config = WalletConfig(
+            mnemonic="test " * 12,
+            directory_servers=["directory.example:5222"],
+            allow_clearnet_connections=True,
+        )
+        assert config.allow_clearnet_connections is True
+
     def test_maker_change_threshold_is_fixed(self):
         with pytest.raises(ValidationError):
             WalletConfig(mnemonic="test " * 12, dust_threshold=27301)

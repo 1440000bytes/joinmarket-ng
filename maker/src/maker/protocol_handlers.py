@@ -1088,6 +1088,7 @@ class ProtocolHandlersMixin:
                         nick_auth_directory_id=self.config.nick_auth_directory_ids.get(
                             f"{host}:{port}"
                         ),
+                        allow_clearnet_connections=self.config.allow_clearnet_connections,
                         socks_username=socks_username,
                         socks_password=socks_password,
                     )

@@ -71,6 +71,7 @@ async def test_run_watcher_passes_mempool_transport_setting(tmp_path: Path) -> N
     settings.network_config.directory_servers = []
     settings.network_config.nick_auth_mode = NickAuthMode.REQUIRE_VERIFIED
     settings.network_config.nick_auth_directory_ids = {"directory.onion:5222": "test:directory-a"}
+    settings.network_config.allow_clearnet_connections = True
     settings.get_directory_servers.return_value = ["directory.onion:5222"]
     settings.get_data_dir.return_value = tmp_path
     settings.tor.socks_host = "127.0.0.1"
@@ -113,3 +114,4 @@ async def test_run_watcher_passes_mempool_transport_setting(tmp_path: Path) -> N
     assert aggregator_cls.call_args.kwargs["nick_auth_directory_ids"] == {
         "directory.onion:5222": "test:directory-a"
     }
+    assert aggregator_cls.call_args.kwargs["allow_clearnet_connections"] is True

@@ -282,6 +282,41 @@ class TestOnionPeerConnection:
         # But success indicates the connect+handshake worked
 
     @pytest.mark.asyncio
+    async def test_production_clearnet_peer_never_calls_direct_connector(self):
+        peer = OnionPeer(nick="J5maker", location="127.0.0.1:5222")
+
+        with patch("jmcore.network.connect_direct", new_callable=AsyncMock) as connect_direct:
+            success = await peer.connect(
+                our_nick="J5taker",
+                our_location="NOT-SERVING-ONION",
+                network="mainnet",
+            )
+
+        assert success is False
+        connect_direct.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_development_override_allows_direct_peer_connector(self):
+        peer = OnionPeer(
+            nick="J5maker",
+            location="127.0.0.1:5222",
+            allow_clearnet_connections=True,
+        )
+        peer._handshake = AsyncMock()
+        connection = AsyncMock()
+
+        with patch("jmcore.network.connect_direct", return_value=connection) as connect_direct:
+            success = await peer.connect(
+                our_nick="J5taker",
+                our_location="NOT-SERVING-ONION",
+                network="mainnet",
+            )
+
+        assert success is True
+        connect_direct.assert_awaited_once()
+        await peer.disconnect()
+
+    @pytest.mark.asyncio
     async def test_connect_records_peer_features(self):
         """OnionPeer stores features advertised by the peer during handshake.
 

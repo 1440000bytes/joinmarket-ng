@@ -95,6 +95,15 @@ class TestTakerConfig:
         assert config.bondless_makers_allowance == 0.05
         assert config.bondless_makers_allowance_require_zero_fee is True
 
+    def test_direct_config_rejects_production_clearnet_directory(
+        self, sample_mnemonic: str
+    ) -> None:
+        with pytest.raises(ValidationError, match="must use .onion"):
+            TakerConfig(
+                mnemonic=sample_mnemonic,
+                directory_servers=["directory.example:5222"],
+            )
+
     @pytest.mark.parametrize(
         ("field", "value"),
         [("min_fee_rate_sat_vb", 0.0), ("min_fee_block_target", 0), ("min_fee_block_target", 1009)],
@@ -157,7 +166,7 @@ class TestTakerConfig:
             mnemonic=sample_mnemonic,
             network="testnet",
             backend_type="descriptor_wallet",
-            directory_servers=["server1:5222", "server2:5222"],
+            directory_servers=["server1.onion:5222", "server2.onion:5222"],
             destination_address="tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx",
             amount=1_000_000,
             mixdepth=2,

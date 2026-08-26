@@ -379,6 +379,7 @@ class OnionPeer:
         nick_identity: NickIdentity | None = None,
         socks_username: str | None = None,
         socks_password: str | None = None,
+        allow_clearnet_connections: bool = False,
     ):
         """
         Initialize OnionPeer.
@@ -397,6 +398,7 @@ class OnionPeer:
                           compatibility with reference implementation)
             socks_username: SOCKS5 username for Tor stream isolation (optional)
             socks_password: SOCKS5 password for Tor stream isolation (optional)
+            allow_clearnet_connections: Permit direct TCP for non-onion peers in development
         """
         self.nick = nick
         self.location = location
@@ -410,6 +412,7 @@ class OnionPeer:
         self.on_disconnect = on_disconnect
         self.on_handshake_complete = on_handshake_complete
         self.nick_identity = nick_identity
+        self.allow_clearnet_connections = allow_clearnet_connections
 
         # Parse location
         self._hostname: str | None = None
@@ -525,7 +528,7 @@ class OnionPeer:
             logger.debug(f"Connecting to peer {self.nick} at {self.location}")
 
             # Connect via Tor
-            if self._hostname and self._hostname.endswith(".onion"):
+            if self._hostname and self._hostname.lower().endswith(".onion"):
                 self._connection = await connect_via_tor(
                     self._hostname,
                     self._port or 5222,
@@ -537,7 +540,16 @@ class OnionPeer:
                     socks_password=self.socks_password,
                 )
             else:
-                # Direct connection (for testing)
+                if network != "regtest" and not self.allow_clearnet_connections:
+                    raise OnionPeerConnectionError(
+                        "Refusing direct TCP connection to non-onion peer "
+                        f"{self.location}. Peer locations must be .onion outside regtest unless "
+                        "allow_clearnet_connections is explicitly enabled for development."
+                    )
+                logger.warning(
+                    f"Using direct TCP for non-onion peer {self.location}; "
+                    "this is allowed only for regtest or explicit development configuration"
+                )
                 self._connection = await connect_direct(
                     self._hostname or "localhost",
                     self._port or 5222,

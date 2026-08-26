@@ -196,6 +196,7 @@ class Taker(TakerMonitoringMixin):
             connection_timeout=config.connection_timeout,
             nick_auth_mode=config.nick_auth_mode,
             nick_auth_directory_ids=config.nick_auth_directory_ids,
+            allow_clearnet_connections=config.allow_clearnet_connections,
             neutrino_compat=neutrino_compat,
             stream_isolation=config.stream_isolation,
         )

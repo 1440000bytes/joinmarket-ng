@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from jmcore.crypto import NickIdentity
 from jmcore.models import Offer, OfferType
 
 from taker.multi_directory import ChannelBinding, MultiDirectoryClient
@@ -24,6 +25,8 @@ def _make_client(
     mdc._peer_connections = peer_connections or {}
     mdc._pending_connect_tasks = {}
     mdc.prefer_direct_connections = prefer_direct
+    mdc.network = "mainnet"
+    mdc.allow_clearnet_connections = False
     return mdc
 
 
@@ -144,6 +147,38 @@ def test_bind_session_last_resort_any_connected_directory():
     assert binding is not None
     assert binding.channel_id == "directory:dirA"
     assert binding.peer_location is None
+
+
+@pytest.mark.parametrize(
+    "location",
+    ["127.0.0.1:5222", "maker.example:5222", "192.0.2.1:5222"],
+)
+def test_non_onion_peerlist_location_is_ignored_in_production(location: str):
+    directory = MagicMock()
+    directory._active_peers = {"J5x": location}
+    mdc = _make_client(clients={"dir": directory})
+
+    assert mdc.get_peer_location("J5x") is None
+
+
+def test_regtest_allows_local_peerlist_location():
+    directory = MagicMock()
+    directory._active_peers = {"J5x": "127.0.0.1:5222"}
+    mdc = _make_client(clients={"dir": directory})
+    mdc.network = "regtest"
+
+    assert mdc.get_peer_location("J5x") == "127.0.0.1:5222"
+
+
+def test_clearnet_development_override_reaches_directory_clients():
+    mdc = MultiDirectoryClient(
+        directory_servers=["directory.example:5222"],
+        network="mainnet",
+        nick_identity=NickIdentity(private_key_bytes=b"\x01" * 32),
+        allow_clearnet_connections=True,
+    )
+
+    assert mdc._build_client_kwargs("directory.example", 5222)["allow_clearnet_connections"] is True
 
 
 def test_channel_binding_is_frozen():

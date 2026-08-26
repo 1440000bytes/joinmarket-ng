@@ -682,6 +682,48 @@ def test_directory_client_custom_timeout():
 
 
 @pytest.mark.asyncio
+async def test_production_clearnet_directory_never_calls_direct_connector() -> None:
+    client = DirectoryClient("directory.example", 5222, "mainnet")
+
+    with (
+        patch("jmcore.directory_client.connect_direct", new_callable=AsyncMock) as connect_direct,
+        pytest.raises(DirectoryClientError, match="Refusing direct TCP"),
+    ):
+        await client.connect()
+
+    connect_direct.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_regtest_local_directory_uses_direct_connector() -> None:
+    connection = AsyncMock()
+    client = DirectoryClient("127.0.0.1", 5222, "regtest")
+    client._handshake = AsyncMock()
+
+    with patch("jmcore.directory_client.connect_direct", return_value=connection) as connect_direct:
+        await client.connect()
+
+    connect_direct.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_development_override_allows_clearnet_directory() -> None:
+    connection = AsyncMock()
+    client = DirectoryClient(
+        "directory.example",
+        5222,
+        "mainnet",
+        allow_clearnet_connections=True,
+    )
+    client._handshake = AsyncMock()
+
+    with patch("jmcore.directory_client.connect_direct", return_value=connection) as connect_direct:
+        await client.connect()
+
+    connect_direct.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_get_peerlist_with_features_logs_correctly():
     """Test that get_peerlist_with_features logs the correct message."""
 

@@ -185,6 +185,7 @@ class TestSettingsDefaults:
         assert settings.network_config.network == NetworkType.MAINNET
         assert settings.network_config.bitcoin_network is None
         assert settings.network_config.directory_servers == []
+        assert settings.network_config.allow_clearnet_connections is False
         assert settings.network_config.nick_auth_mode is NickAuthMode.PREFER_VERIFIED
         assert settings.network_config.nick_auth_directory_ids == {}
 
@@ -820,6 +821,10 @@ class TestParseDirectoryServers:
 
     def test_nick_auth_mode_defaults_to_prefer_verified(self) -> None:
         assert NetworkSettings().nick_auth_mode is NickAuthMode.PREFER_VERIFIED
+
+    def test_allow_clearnet_connections_defaults_to_false(self) -> None:
+        assert NetworkSettings().allow_clearnet_connections is False
+        assert NetworkSettings(allow_clearnet_connections=True).allow_clearnet_connections is True
 
     def test_nick_auth_mode_parses_config_value(self) -> None:
         settings = NetworkSettings(nick_auth_mode="require_verified")

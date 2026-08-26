@@ -540,6 +540,22 @@ def parse_peer_location(location: str) -> tuple[str, int]:
         raise ValueError(f"Invalid location string: {location}") from e
 
 
+def is_onion_hostname(hostname: str) -> bool:
+    """Return whether a hostname is an onion service address."""
+    return hostname.lower().endswith(".onion")
+
+
+def is_onion_peer_location(location: str) -> bool:
+    """Return whether a peer advertisement is a connectable onion location."""
+    if location == NOT_SERVING_ONION_HOSTNAME:
+        return False
+    try:
+        hostname, _port = parse_peer_location(location)
+    except ValueError:
+        return False
+    return is_onion_hostname(hostname)
+
+
 def create_peerlist_entry(
     nick: str,
     location: str,
