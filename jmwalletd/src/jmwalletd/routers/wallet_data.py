@@ -246,6 +246,8 @@ async def wallet_history(
             change_address=e.change_address,
             utxos_used=e.utxos_used,
             broadcast_method=e.broadcast_method,
+            broadcast_policy=e.broadcast_policy,
+            broadcast_fallback_reason=e.broadcast_fallback_reason,
             network=e.network,
             source=e.source,
         )

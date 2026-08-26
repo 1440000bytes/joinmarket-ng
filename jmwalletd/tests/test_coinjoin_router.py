@@ -270,6 +270,9 @@ class TestDoCoinjoin:
         client, token = authed_client
         state = get_daemon_state()
         mock_taker = AsyncMock()
+        mock_taker.last_broadcast_policy = "random-peer"
+        mock_taker.last_broadcast_method = "self-fallback"
+        mock_taker.last_broadcast_fallback_reason = "peer_delivery_failed"
         mock_taker_cls.return_value = mock_taker
 
         from pathlib import Path
@@ -325,6 +328,9 @@ class TestDoCoinjoin:
         assert mock_backend.await_args is not None
         assert mock_backend.await_args.kwargs["network"] == "regtest"
         assert mock_taker.do_coinjoin.await_args.kwargs["input_utxos"] == input_utxos
+        assert state.last_broadcast_policy == "random-peer"
+        assert state.last_broadcast_method == "self-fallback"
+        assert state.last_broadcast_fallback_reason == "peer_delivery_failed"
 
 
 class TestBuildCoinjoinTakerConfig:

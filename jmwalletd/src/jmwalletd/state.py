@@ -84,6 +84,9 @@ class DaemonState:
         self.taker_running: bool = False
         self.offer_list: list[dict[str, str | int | float]] | None = None
         self.nickname: str | None = None
+        self.last_broadcast_policy: str | None = None
+        self.last_broadcast_method: str | None = None
+        self.last_broadcast_fallback_reason: str | None = None
 
         # Runtime references to active taker/maker instances (for stop signals).
         self._taker_ref: Any = None
@@ -257,6 +260,9 @@ class DaemonState:
         self.coinjoin_state = CoinjoinState.NOT_RUNNING
         self.offer_list = None
         self.nickname = None
+        self.last_broadcast_policy = None
+        self.last_broadcast_method = None
+        self.last_broadcast_fallback_reason = None
         self._taker_ref = None
         self._maker_ref = None
         self._maker_task = None

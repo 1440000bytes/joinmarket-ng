@@ -106,6 +106,34 @@ class TestCoinJoinNotificationIDs:
         await notifier.notify_coinjoin_start(100_000, 2, "INTERNAL", "cj-abcdef123456")
         assert "CoinJoin ID: cj-abcdef123456" in notifier._send.call_args.kwargs["body"]
 
+    @pytest.mark.asyncio
+    async def test_coinjoin_complete_reports_broadcast_outcome(self) -> None:
+        notifier = Notifier(NotificationConfig(enabled=True, urls=["test://"]))
+        notifier._send = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+        await notifier.notify_coinjoin_complete(
+            "ab" * 32,
+            100_000,
+            2,
+            500,
+            broadcast_method="maker:J5maker",
+        )
+        assert "Broadcast: maker:J5maker" in notifier._send.call_args.kwargs["body"]
+        assert notifier._send.call_args.kwargs["priority"] == NotificationPriority.SUCCESS
+
+        await notifier.notify_coinjoin_complete(
+            "cd" * 32,
+            100_000,
+            2,
+            500,
+            broadcast_method="self-fallback",
+            broadcast_fallback_reason="peer_delivery_failed",
+        )
+        call_kwargs = notifier._send.call_args.kwargs
+        assert "Broadcast: self-fallback" in call_kwargs["body"]
+        assert "Privacy fallback: peer_delivery_failed" in call_kwargs["body"]
+        assert call_kwargs["priority"] == NotificationPriority.WARNING
+
 
 class TestLoadNotificationConfig:
     """Tests for load_notification_config."""

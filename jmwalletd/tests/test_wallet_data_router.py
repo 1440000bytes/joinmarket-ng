@@ -1298,6 +1298,9 @@ class TestWalletHistory:
         txid: str = "ab" * 32,
         timestamp: str = "2024-01-01T10:00:00",
         source: str = "protocol",
+        broadcast_method: str = "",
+        broadcast_policy: str = "",
+        broadcast_fallback_reason: str = "",
     ) -> None:
         from jmwallet.history import TransactionHistoryEntry, append_history_entry
 
@@ -1314,6 +1317,9 @@ class TestWalletHistory:
                 network="regtest",
                 wallet_fingerprint=fingerprint,
                 source=source,  # type: ignore[arg-type]
+                broadcast_method=broadcast_method,
+                broadcast_policy=broadcast_policy,
+                broadcast_fallback_reason=broadcast_fallback_reason,
             ),
             data_dir=data_dir,
         )
@@ -1337,6 +1343,9 @@ class TestWalletHistory:
             cj_amount=100_000,
             fee_received=2_500,
             source="onchain",
+            broadcast_method="self-fallback",
+            broadcast_policy="random-peer",
+            broadcast_fallback_reason="peer_delivery_failed",
         )
 
         resp = client.get("/api/v1/wallet/test_wallet.jmdat/history", headers=_auth_headers(token))
@@ -1348,6 +1357,9 @@ class TestWalletHistory:
         assert history[0]["fee_received"] == 2_500
         assert history[0]["txid"] == "ab" * 32
         assert history[0]["source"] == "onchain"
+        assert history[0]["broadcast_method"] == "self-fallback"
+        assert history[0]["broadcast_policy"] == "random-peer"
+        assert history[0]["broadcast_fallback_reason"] == "peer_delivery_failed"
 
     def test_scoped_to_active_wallet_fingerprint(
         self, authed_client: tuple[TestClient, str], data_dir: Path

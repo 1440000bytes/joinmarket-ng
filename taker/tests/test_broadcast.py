@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from jmwallet.backends.base import Transaction
+from jmwallet.history import create_taker_history_entry
 
 from taker.config import BroadcastPolicy, TakerConfig
 from taker.tx_builder import CoinJoinTxBuilder
@@ -141,14 +142,29 @@ class TestTakerBroadcast:
             "00000000"  # locktime
         )
         taker._session.reserved_inputs = {("f" * 64, 0)}
+        expected_txid = CoinJoinTxBuilder(taker.config.network).get_txid(taker._session.final_tx)
+        mock_backend.broadcast_transaction.return_value = expected_txid
         return taker
 
     @pytest.mark.asyncio
     async def test_broadcast_self_success(self, taker) -> None:
         """Test self-broadcast succeeds."""
+        expected_txid = CoinJoinTxBuilder(taker.config.network).get_txid(taker._session.final_tx)
         txid = await taker._session._broadcast_self()
-        assert txid == "txid123"
+        assert txid == expected_txid
+        assert taker.last_broadcast_method == "self"
+        assert taker.last_broadcast_fallback_reason == ""
         taker.backend.broadcast_transaction.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_broadcast_self_rejects_backend_txid_mismatch(self, taker) -> None:
+        """A backend cannot claim success for a different transaction."""
+        taker.backend.broadcast_transaction.return_value = "txid123"
+
+        txid = await taker._session._broadcast_self()
+
+        assert txid == ""
+        assert taker.last_broadcast_method == ""
 
     @pytest.mark.asyncio
     async def test_broadcast_self_failure(self, taker) -> None:
@@ -175,9 +191,13 @@ class TestTakerBroadcast:
         """Test broadcast with SELF policy uses self-broadcast."""
         taker.config.tx_broadcast = BroadcastPolicy.SELF
         taker._session.maker_sessions = {}
+        expected_txid = CoinJoinTxBuilder(taker.config.network).get_txid(taker._session.final_tx)
 
         txid = await taker._session._phase_broadcast()
-        assert txid == "txid123"
+        assert txid == expected_txid
+        assert taker.last_broadcast_policy == "self"
+        assert taker.last_broadcast_method == "self"
+        assert taker.last_broadcast_fallback_reason == ""
         taker.backend.broadcast_transaction.assert_called_once()
 
     @pytest.mark.asyncio
@@ -357,12 +377,20 @@ class TestTakerBroadcast:
         """Test RANDOM_PEER policy falls back to self if no makers."""
         taker.config.tx_broadcast = BroadcastPolicy.RANDOM_PEER
         taker._session.maker_sessions = {}
+        expected_txid = CoinJoinTxBuilder(taker.config.network).get_txid(taker._session.final_tx)
 
         # With no makers, should fall back to self
-        with patch("jmcore.randomness.secure_random.shuffle", side_effect=lambda x: x):
+        with (
+            patch("jmcore.randomness.secure_random.shuffle", side_effect=lambda x: x),
+            patch("taker.coinjoin_session.logger.warning") as warning,
+        ):
             txid = await taker._session._phase_broadcast()
 
-        assert txid == "txid123"
+        assert txid == expected_txid
+        assert taker.last_broadcast_policy == "random-peer"
+        assert taker.last_broadcast_method == "self-fallback"
+        assert taker.last_broadcast_fallback_reason == "no_makers_available"
+        assert any("PRIVACY WARNING" in call.args[0] for call in warning.call_args_list)
 
     @pytest.mark.asyncio
     async def test_phase_broadcast_not_self_fails_without_makers(self, taker) -> None:
@@ -492,6 +520,7 @@ class TestTakerBroadcast:
             txid = await taker._session._broadcast_via_maker("J5maker123", tx_b64)
 
         assert txid == expected_txid
+        assert taker.last_broadcast_method == "maker:J5maker123"
         assert taker.backend.get_transaction.await_args_list == [
             call(expected_txid),
             call(expected_txid),
@@ -603,6 +632,20 @@ class TestTakerBroadcast:
         taker.backend.broadcast_transaction.assert_not_awaited()
         taker.wallet.release_coinjoin_inputs.assert_not_called()
         taker.wallet.renew_coinjoin_inputs.assert_called()
+
+    def test_manual_broadcast_entry_separates_policy_from_method(self, taker) -> None:
+        taker.config.tx_broadcast = BroadcastPolicy.NOT_SELF
+        taker._session.selected_utxos = []
+        taker._session.maker_sessions = {}
+
+        with patch(
+            "taker.coinjoin_session.create_taker_history_entry",
+            wraps=create_taker_history_entry,
+        ) as create_entry:
+            taker._session._log_manual_csv_entry(500, 250, "bcrt1qdestination")
+
+        assert create_entry.call_args.kwargs["broadcast_method"] == ""
+        assert create_entry.call_args.kwargs["broadcast_policy"] == "not-self"
 
     @pytest.mark.asyncio
     async def test_successful_broadcast_records_final_maker_identities(self, taker) -> None:
@@ -759,7 +802,11 @@ class TestTakerBroadcast:
             txid = await taker._session._phase_broadcast()
 
         # Should succeed via self fallback (full node behavior)
-        assert txid == "txid123"
+        expected_txid = CoinJoinTxBuilder(taker.config.network).get_txid(taker._session.final_tx)
+        assert txid == expected_txid
+        assert taker.last_broadcast_policy == "random-peer"
+        assert taker.last_broadcast_method == "self-fallback"
+        assert taker.last_broadcast_fallback_reason == "maker_broadcast_unverified"
 
     @pytest.mark.asyncio
     async def test_phase_broadcast_not_self_logs_tx_on_failure(self, taker, caplog) -> None:
@@ -877,6 +924,8 @@ class TestNeutrinoBroadcast:
             "00000000"
         )
         taker._session.reserved_inputs = {("f" * 64, 0)}
+        expected_txid = CoinJoinTxBuilder(taker.config.network).get_txid(taker._session.final_tx)
+        mock_neutrino_backend.broadcast_transaction.return_value = expected_txid
         return taker
 
     @pytest.fixture
@@ -905,6 +954,8 @@ class TestNeutrinoBroadcast:
             "00000000"
         )
         taker._session.reserved_inputs = {("f" * 64, 0)}
+        expected_txid = CoinJoinTxBuilder(taker.config.network).get_txid(taker._session.final_tx)
+        mock_fullnode_backend.broadcast_transaction.return_value = expected_txid
         return taker
 
     def _setup_makers(self, taker, maker_nicks: list[str]) -> None:
@@ -955,6 +1006,9 @@ class TestNeutrinoBroadcast:
         assert len(calls) == 4
         push_recipients = {call[0][0] for call in calls}
         assert push_recipients == {"J5maker1", "J5maker2", "J5maker3", "J5maker4"}
+        assert neutrino_taker.last_broadcast_policy == "multiple-peers"
+        assert neutrino_taker.last_broadcast_method == "makers-unverified:4"
+        assert neutrino_taker.last_broadcast_fallback_reason == ""
 
     @pytest.mark.asyncio
     async def test_random_peer_falls_back_to_self(self, neutrino_taker) -> None:
@@ -1039,13 +1093,18 @@ class TestNeutrinoBroadcast:
             side_effect=Exception("Connection lost")
         )
 
-        # Mock self-broadcast to succeed
-        neutrino_taker.backend.broadcast_transaction = AsyncMock(return_value="selfbroadcast_txid")
+        expected_txid = CoinJoinTxBuilder(neutrino_taker.config.network).get_txid(
+            neutrino_taker._session.final_tx
+        )
+        neutrino_taker.backend.broadcast_transaction = AsyncMock(return_value=expected_txid)
 
         txid = await neutrino_taker._session._phase_broadcast()
 
         # Should fall back to self and succeed
-        assert txid == "selfbroadcast_txid"
+        assert txid == expected_txid
+        assert neutrino_taker.last_broadcast_policy == "multiple-peers"
+        assert neutrino_taker.last_broadcast_method == "self-fallback"
+        assert neutrino_taker.last_broadcast_fallback_reason == "peer_delivery_failed"
 
         # Should have attempted to send to 2 makers
         assert neutrino_taker.directory_client.send_privmsg.call_count == 2

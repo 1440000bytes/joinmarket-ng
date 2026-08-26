@@ -214,11 +214,12 @@ class TestAppendAndReadHistory:
 
         assert read_history(temp_data_dir)[0].destination_vout == 5
 
-    def test_legacy_csv_defaults_destination_vout_and_migrates(self, temp_data_dir: Path) -> None:
+    def test_legacy_csv_defaults_appended_fields_and_migrates(self, temp_data_dir: Path) -> None:
         legacy_fieldnames = [
             field.name
             for field in fields(TransactionHistoryEntry)
-            if field.name != "destination_vout"
+            if field.name
+            not in {"destination_vout", "broadcast_policy", "broadcast_fallback_reason"}
         ]
         legacy_entry = TransactionHistoryEntry(
             timestamp="2024-01-01T00:00:00",
@@ -233,8 +234,13 @@ class TestAppendAndReadHistory:
         entries = read_history(temp_data_dir)
 
         assert entries[0].destination_vout == -1
+        assert entries[0].broadcast_policy == ""
+        assert entries[0].broadcast_fallback_reason == ""
         with open(history_path, newline="", encoding="utf-8") as f:
-            assert "destination_vout" in next(csv.reader(f))
+            migrated_header = next(csv.reader(f))
+        assert "destination_vout" in migrated_header
+        assert "broadcast_policy" in migrated_header
+        assert "broadcast_fallback_reason" in migrated_header
 
     def test_append_multiple_entries(self, temp_data_dir: Path) -> None:
         """Test appending multiple entries."""
@@ -1727,6 +1733,9 @@ class TestUpdateTakerAwaitingTransactionBroadcast:
             change_address="bc1qtakerchange123",
             txid="broadcast_txid_abcdef123456",
             mining_fee=250,
+            broadcast_method="self-fallback",
+            broadcast_policy="random-peer",
+            broadcast_fallback_reason="peer_delivery_failed",
             data_dir=temp_data_dir,
         )
         assert result is True
@@ -1737,6 +1746,9 @@ class TestUpdateTakerAwaitingTransactionBroadcast:
         assert entries[0].txid == "broadcast_txid_abcdef123456"
         assert entries[0].mining_fee_paid == 250
         assert entries[0].net_fee == -(500 + 250)  # -(maker_fees + mining_fee)
+        assert entries[0].broadcast_method == "self-fallback"
+        assert entries[0].broadcast_policy == "random-peer"
+        assert entries[0].broadcast_fallback_reason == "peer_delivery_failed"
         assert entries[0].failure_reason == "Pending confirmation"
 
     def test_update_taker_awaiting_transaction_broadcast_nonexistent(

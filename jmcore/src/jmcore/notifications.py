@@ -328,9 +328,20 @@ EVENT_TEMPLATES: dict[NotificationEvent, EventTemplate] = {
             f"TxID: {n._format_txid(f['txid'])}\n"
             f"Amount: {n._format_amount(f['cj_amount'])}\n"
             f"Makers: {f['num_makers']}\n"
-            f"Total fees: {n._format_amount(f['total_fees'])}" + _coinjoin_id_line(f)
+            f"Total fees: {n._format_amount(f['total_fees'])}"
+            + (f"\nBroadcast: {f['broadcast_method']}" if f.get("broadcast_method") else "")
+            + (
+                f"\nPrivacy fallback: {f['broadcast_fallback_reason']}"
+                if f.get("broadcast_fallback_reason")
+                else ""
+            )
+            + _coinjoin_id_line(f)
         ),
-        priority_builder=lambda _f: NotificationPriority.SUCCESS,
+        priority_builder=lambda f: (
+            NotificationPriority.WARNING
+            if f.get("broadcast_fallback_reason")
+            else NotificationPriority.SUCCESS
+        ),
     ),
     NotificationEvent.COINJOIN_FAILED: EventTemplate(
         gating_attr="notify_coinjoin_failed",
@@ -1236,6 +1247,9 @@ class Notifier:
         num_makers: int,
         total_fees: int,
         cj_id: str | None = None,
+        *,
+        broadcast_method: str = "",
+        broadcast_fallback_reason: str = "",
     ) -> bool:
         """Notify when CoinJoin completes successfully (taker)."""
         return await self.emit(
@@ -1245,6 +1259,8 @@ class Notifier:
             num_makers=num_makers,
             total_fees=total_fees,
             cj_id=cj_id,
+            broadcast_method=broadcast_method,
+            broadcast_fallback_reason=broadcast_fallback_reason,
         )
 
     async def notify_coinjoin_failed(

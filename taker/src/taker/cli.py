@@ -496,6 +496,13 @@ async def _run_coinjoin(
 
         if txid:
             logger.info(f"CoinJoin successful! txid: {txid}")
+            logger.info(f"Broadcast method: {taker.last_broadcast_method}")
+            if taker.last_broadcast_fallback_reason:
+                logger.warning(
+                    "Privacy warning: configured policy {} fell back to self-broadcast ({})",
+                    taker.last_broadcast_policy,
+                    taker.last_broadcast_fallback_reason,
+                )
         else:
             logger.error("CoinJoin failed")
             # Free our reserved inputs immediately so a retry can reuse them

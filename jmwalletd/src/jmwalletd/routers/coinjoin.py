@@ -169,6 +169,9 @@ async def do_coinjoin(
         from taker.taker import Taker
 
         state.activate_coinjoin_state(CoinjoinState.TAKER_RUNNING)
+        state.last_broadcast_policy = None
+        state.last_broadcast_method = None
+        state.last_broadcast_fallback_reason = None
 
         async def _run_coinjoin() -> None:
             taker: Any | None = None
@@ -211,6 +214,11 @@ async def do_coinjoin(
                 # background tasks do not leak. Keep the shared wallet open
                 # for any subsequent operation on the daemon.
                 if taker is not None:
+                    state.last_broadcast_policy = taker.last_broadcast_policy or None
+                    state.last_broadcast_method = taker.last_broadcast_method or None
+                    state.last_broadcast_fallback_reason = (
+                        taker.last_broadcast_fallback_reason or None
+                    )
                     try:
                         await taker.stop(close_wallet=False)
                     except Exception:

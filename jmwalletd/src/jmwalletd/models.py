@@ -154,6 +154,9 @@ class SessionResponse(BaseModel):
     rescanning: bool = False
     block_height: int | None = None
     descriptor_wallet_name: str | None = None
+    broadcast_policy: str | None = None
+    broadcast_method: str | None = None
+    broadcast_fallback_reason: str | None = None
 
 
 class WalletDisplayEntry(BaseModel):
@@ -279,6 +282,8 @@ class HistoryEntry(BaseModel):
     change_address: str = ""
     utxos_used: str = ""
     broadcast_method: str = ""
+    broadcast_policy: str = ""
+    broadcast_fallback_reason: str = ""
     network: str = ""
     # "protocol" for rows recorded at protocol time (authoritative);
     # "onchain" for rows reconstructed from blockchain data after a seed

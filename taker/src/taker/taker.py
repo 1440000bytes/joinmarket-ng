@@ -402,6 +402,21 @@ class Taker(TakerMonitoringMixin):
         return self._session.last_used_maker_keys
 
     @property
+    def last_broadcast_policy(self) -> str:
+        """Configured policy for the most recent broadcast attempt."""
+        return self._session.broadcast_policy
+
+    @property
+    def last_broadcast_method(self) -> str:
+        """Actual method used for the most recent successful broadcast."""
+        return self._session.broadcast_method
+
+    @property
+    def last_broadcast_fallback_reason(self) -> str:
+        """Stable reason a peer policy fell back to local broadcasting."""
+        return self._session.broadcast_fallback_reason
+
+    @property
     def failed_signer_nicks(self) -> set[str]:
         """Maker nicks that failed to provide valid signatures in the current round."""
         return self._session.failed_signer_nicks
@@ -2029,7 +2044,11 @@ class Taker(TakerMonitoringMixin):
         }
 
         self.state = TakerState.COMPLETE
-        logger.info(f"CoinJoin COMPLETE! txid: {self._session.txid}")
+        logger.info(
+            "CoinJoin COMPLETE! txid: {}, broadcast method: {}",
+            self._session.txid,
+            self._session.broadcast_method,
+        )
 
         try:
             updated = update_taker_awaiting_transaction_broadcast(
@@ -2037,6 +2056,9 @@ class Taker(TakerMonitoringMixin):
                 change_address=self._session.taker_change_address,  # Empty string if no change
                 txid=self._session.txid,
                 mining_fee=actual_mining_fee,
+                broadcast_method=self._session.broadcast_method,
+                broadcast_policy=self._session.broadcast_policy,
+                broadcast_fallback_reason=self._session.broadcast_fallback_reason,
                 data_dir=self.config.data_dir,
                 wallet_fingerprint=self.wallet.wallet_fingerprint,
             )
@@ -2069,6 +2091,8 @@ class Taker(TakerMonitoringMixin):
                 len(self._session.maker_sessions),
                 total_fees,
                 self._current_coinjoin_id(),
+                broadcast_method=self._session.broadcast_method,
+                broadcast_fallback_reason=self._session.broadcast_fallback_reason,
             )
         )
 

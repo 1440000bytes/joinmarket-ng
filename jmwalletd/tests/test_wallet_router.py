@@ -70,6 +70,25 @@ class TestGetSession:
         assert data["session"] is True
         assert data["wallet_name"] == "test_wallet.jmdat"
 
+    def test_broadcast_outcome_requires_auth(self, authed_client: tuple[TestClient, str]) -> None:
+        client, token = authed_client
+        state = get_daemon_state()
+        state.last_broadcast_policy = "random-peer"
+        state.last_broadcast_method = "self-fallback"
+        state.last_broadcast_fallback_reason = "peer_delivery_failed"
+
+        public_data = client.get("/api/v1/session").json()
+        assert public_data["broadcast_policy"] is None
+        assert public_data["broadcast_method"] is None
+        assert public_data["broadcast_fallback_reason"] is None
+
+        resp = client.get("/api/v1/session", headers={"Authorization": f"Bearer {token}"})
+        assert resp.status_code == 200
+        private_data = resp.json()
+        assert private_data["broadcast_policy"] == "random-peer"
+        assert private_data["broadcast_method"] == "self-fallback"
+        assert private_data["broadcast_fallback_reason"] == "peer_delivery_failed"
+
     def test_descriptor_wallet_name_exposed_when_authed(
         self,
         daemon_state_with_wallet: DaemonState,

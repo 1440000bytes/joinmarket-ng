@@ -171,6 +171,12 @@ class TransactionHistoryEntry:
     # send output amount, deposit input amount). Appended last for legacy CSV migration.
     amount: int = 0
 
+    # Configured intent and any privacy-relevant fallback are distinct from
+    # ``broadcast_method``, which records what actually happened. Keep these
+    # appended for positional compatibility with every earlier CSV schema.
+    broadcast_policy: str = ""
+    broadcast_fallback_reason: str = ""
+
     @property
     def transfer_amount(self) -> int:
         """Return the neutral amount, including rows written before it existed."""
@@ -587,6 +593,8 @@ def _row_to_entry(row: Mapping[str, str | None]) -> TransactionHistoryEntry | No
             utxos_used=_get("utxos_used"),
             source_addresses=_get("source_addresses"),
             broadcast_method=_get("broadcast_method"),
+            broadcast_policy=_get("broadcast_policy"),
+            broadcast_fallback_reason=_get("broadcast_fallback_reason"),
             network=_get("network", "mainnet"),
             wallet_fingerprint=_get("wallet_fingerprint"),
             # Rows written before the column existed (or by a corrupted
@@ -1550,6 +1558,9 @@ def update_taker_awaiting_transaction_broadcast(
     mining_fee: int,
     data_dir: Path | None = None,
     wallet_fingerprint: str | None = None,
+    broadcast_method: str | None = None,
+    broadcast_policy: str | None = None,
+    broadcast_fallback_reason: str | None = None,
 ) -> bool:
     """
     Update a pending "Awaiting transaction" entry when the taker broadcasts the tx.
@@ -1566,6 +1577,9 @@ def update_taker_awaiting_transaction_broadcast(
         data_dir: Optional data directory
         wallet_fingerprint: If provided, only match entries belonging to this
             wallet (issue #473).
+        broadcast_method: Actual successful broadcast method.
+        broadcast_policy: Configured broadcast policy.
+        broadcast_fallback_reason: Stable reason for a self-broadcast fallback.
 
     Returns:
         True if a matching entry was found and updated, False otherwise
@@ -1590,6 +1604,12 @@ def update_taker_awaiting_transaction_broadcast(
                 entry.txid = txid
                 entry.mining_fee_paid = mining_fee
                 entry.net_fee = -(entry.total_maker_fees_paid + mining_fee)
+                if broadcast_method is not None:
+                    entry.broadcast_method = broadcast_method
+                if broadcast_policy is not None:
+                    entry.broadcast_policy = broadcast_policy
+                if broadcast_fallback_reason is not None:
+                    entry.broadcast_fallback_reason = broadcast_fallback_reason
                 entry.failure_reason = "Pending confirmation"
                 logger.info(
                     f"Updated awaiting transaction for {destination_address[:20]}... "
@@ -1779,6 +1799,7 @@ def create_taker_history_entry(
     selected_utxos: list[tuple[str, int]],
     txid: str = "",
     broadcast_method: str = "self",
+    broadcast_policy: str = "",
     network: str = "mainnet",
     success: bool = False,  # Default to pending
     failure_reason: str = "Awaiting transaction",
@@ -1808,6 +1829,7 @@ def create_taker_history_entry(
         selected_utxos: List of (txid, vout) tuples for our inputs
         txid: Transaction ID (empty string if not yet known)
         broadcast_method: How the tx was/will be broadcast
+        broadcast_policy: Configured broadcast policy, when known
         network: Network name
         success: Whether the CoinJoin succeeded (default False for pending)
         failure_reason: Reason for failure if any (default "Awaiting transaction")
@@ -1840,6 +1862,7 @@ def create_taker_history_entry(
         utxos_used=",".join(f"{txid}:{vout}" for txid, vout in selected_utxos),
         source_addresses=",".join(source_addresses) if source_addresses else "",
         broadcast_method=broadcast_method,
+        broadcast_policy=broadcast_policy,
         network=network,
         wallet_fingerprint=wallet_fingerprint,
         destination_vout=destination_vout,

@@ -87,6 +87,13 @@ def _get_offer_list_from_maker(
     ]
 
 
+def _broadcast_status_value(
+    taker: object | None, attribute: str, fallback: str | None
+) -> str | None:
+    value = getattr(taker, attribute, None)
+    return value if isinstance(value, str) and value else fallback
+
+
 def _get_running_tumble_schedule(
     state: DaemonState,
 ) -> list[list[str | int | float]] | None:
@@ -190,6 +197,18 @@ async def get_session(
     if state.wallet_loaded and token_valid:
         resp.schedule = _get_running_tumble_schedule(state)
         resp.nickname = state.nickname
+        taker = state._taker_ref
+        resp.broadcast_policy = _broadcast_status_value(
+            taker, "last_broadcast_policy", state.last_broadcast_policy
+        )
+        resp.broadcast_method = _broadcast_status_value(
+            taker, "last_broadcast_method", state.last_broadcast_method
+        )
+        resp.broadcast_fallback_reason = _broadcast_status_value(
+            taker,
+            "last_broadcast_fallback_reason",
+            state.last_broadcast_fallback_reason,
+        )
 
         # Read offer_list directly from the running maker bot so that the
         # frontend receives it as soon as offers are created (the old path

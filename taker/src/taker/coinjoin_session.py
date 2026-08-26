@@ -127,6 +127,9 @@ class CoinJoinSession:
         self.tx_metadata: dict[str, Any] = {}
         self.final_tx: bytes = b""
         self.txid: str = ""
+        self.broadcast_policy: str = ""
+        self.broadcast_method: str = ""
+        self.broadcast_fallback_reason: str = ""
 
         # UTXO selection: ``preselected_utxos`` are committed to before the
         # CoinJoin; ``selected_utxos`` is the final taker input list used for
@@ -203,6 +206,9 @@ class CoinJoinSession:
         self.tx_metadata = {}
         self.final_tx = b""
         self.txid = ""
+        self.broadcast_policy = ""
+        self.broadcast_method = ""
+        self.broadcast_fallback_reason = ""
         self.preselected_utxos = []
         self.selected_utxos = []
         self.strict_input_selection = False
@@ -1635,7 +1641,8 @@ class CoinJoinSession:
                 source_mixdepth=self.tx_metadata.get("source_mixdepth", 0),
                 selected_utxos=[(utxo.txid, utxo.vout) for utxo in self.selected_utxos],
                 txid="",  # Will be updated after broadcast
-                broadcast_method=self.config.tx_broadcast.value,
+                broadcast_method="",
+                broadcast_policy=self.config.tx_broadcast.value,
                 network=(self.config.bitcoin_network or self.config.network).value,
                 failure_reason="Awaiting transaction",
                 wallet_fingerprint=self.wallet.wallet_fingerprint,
@@ -1964,7 +1971,6 @@ class CoinJoinSession:
         try:
             txid = get_txid(self.final_tx.hex())
             maker_nicks = list(self.maker_sessions.keys())
-            broadcast_method = self.config.tx_broadcast.value
             destination_vout = self._get_taker_cj_output_index()
 
             history_entry = create_taker_history_entry(
@@ -1977,7 +1983,8 @@ class CoinJoinSession:
                 source_mixdepth=self.tx_metadata.get("source_mixdepth", 0),
                 selected_utxos=[(utxo.txid, utxo.vout) for utxo in self.selected_utxos],
                 txid=txid,
-                broadcast_method=broadcast_method,
+                broadcast_method="",
+                broadcast_policy=self.config.tx_broadcast.value,
                 network=(self.config.bitcoin_network or self.config.network).value,
                 failure_reason="User declined broadcast (manual broadcast pending)",
                 wallet_fingerprint=self.wallet.wallet_fingerprint,
@@ -2074,6 +2081,9 @@ class CoinJoinSession:
             return ""
 
         policy = self.config.tx_broadcast
+        self.broadcast_policy = policy.value
+        self.broadcast_method = ""
+        self.broadcast_fallback_reason = ""
         has_mempool = self.backend.has_mempool_access()
         logger.debug(f"Broadcasting with policy: {policy.value}, mempool_access: {has_mempool}")
 
@@ -2106,6 +2116,7 @@ class CoinJoinSession:
             )
             success_count = await self._broadcast_to_all_makers(maker_nicks, tx_b64)
             if success_count > 0:
+                self.broadcast_method = f"makers-unverified:{success_count}"
                 logger.info(
                     f"!push delivered to {success_count}/{len(maker_nicks)} maker(s); "
                     f"transaction {expected_txid} will be confirmed via block monitoring"
@@ -2120,13 +2131,12 @@ class CoinJoinSession:
                     f"Transaction hex (for manual broadcast): {self.final_tx.hex()}"
                 )
                 return ""
-            return await self._broadcast_self()
+            return await self._broadcast_self(fallback_reason="peer_delivery_failed")
 
         elif policy == BroadcastPolicy.RANDOM_PEER:
             # Try makers in random order, fall back to self as last resort
             if not maker_nicks:
-                logger.warning("RANDOM_PEER policy but no makers available, using self")
-                return await self._broadcast_self()
+                return await self._broadcast_self(fallback_reason="no_makers_available")
 
             secure_random.shuffle(maker_nicks)
 
@@ -2136,14 +2146,12 @@ class CoinJoinSession:
                     return txid
 
             # Last resort: self-broadcast
-            logger.warning("All makers failed, falling back to self-broadcast")
-            return await self._broadcast_self()
+            return await self._broadcast_self(fallback_reason="maker_broadcast_unverified")
 
         elif policy == BroadcastPolicy.MULTIPLE_PEERS:
             # Broadcast to N random makers simultaneously, fall back to self
             if not maker_nicks:
-                logger.warning("MULTIPLE_PEERS policy but no makers available, using self")
-                return await self._broadcast_self()
+                return await self._broadcast_self(fallback_reason="no_makers_available")
 
             # Select N random makers (or all if less than N)
             peer_count = min(self.config.broadcast_peer_count, len(maker_nicks))
@@ -2152,6 +2160,7 @@ class CoinJoinSession:
             success_count = await self._broadcast_to_all_makers(selected_peers, tx_b64)
 
             if success_count > 0:
+                self.broadcast_method = f"makers-unverified:{success_count}"
                 if has_mempool:
                     logger.info(
                         f"Broadcast sent to {success_count}/{peer_count} makers "
@@ -2166,8 +2175,7 @@ class CoinJoinSession:
                 return expected_txid
 
             # All peers failed, fall back to self
-            logger.warning(f"All {peer_count} peer broadcast attempts failed, falling back to self")
-            return await self._broadcast_self()
+            return await self._broadcast_self(fallback_reason="peer_delivery_failed")
 
         elif policy == BroadcastPolicy.NOT_SELF:
             # Only makers can broadcast - no self fallback
@@ -2193,8 +2201,7 @@ class CoinJoinSession:
 
         else:
             # Unknown policy, fallback to self
-            logger.warning(f"Unknown broadcast policy {policy}, falling back to self")
-            return await self._broadcast_self()
+            return await self._broadcast_self(fallback_reason="unknown_policy")
 
     async def _broadcast_to_all_makers(self, maker_nicks: list[str], tx_b64: str) -> int:
         """
@@ -2246,7 +2253,7 @@ class CoinJoinSession:
 
         return success_count
 
-    async def _broadcast_self(self) -> str:
+    async def _broadcast_self(self, *, fallback_reason: str = "") -> str:
         """
         Broadcast transaction via our own backend.
 
@@ -2257,10 +2264,29 @@ class CoinJoinSession:
         """
         if not self.renew_input_locks("broadcast through the local backend"):
             return ""
+        builder = CoinJoinTxBuilder(self.config.bitcoin_network or self.config.network)
+        expected_txid = builder.get_txid(self.final_tx)
+        if fallback_reason:
+            self.broadcast_fallback_reason = fallback_reason
+            logger.warning(
+                "PRIVACY WARNING: {} policy is using local self-broadcast for transaction {} "
+                "because {}. The local backend can associate this CoinJoin with this client.",
+                self.broadcast_policy or self.config.tx_broadcast.value,
+                expected_txid,
+                fallback_reason,
+            )
         try:
             txid = await self.backend.broadcast_transaction(self.final_tx.hex())
+            if not isinstance(txid, str) or txid.lower() != expected_txid:
+                logger.error(
+                    "Local backend returned unexpected txid {!r}; expected {}",
+                    txid,
+                    expected_txid,
+                )
+                return ""
+            self.broadcast_method = "self-fallback" if fallback_reason else "self"
             logger.info(f"Broadcast via self successful: {txid}")
-            return txid
+            return expected_txid
         except Exception as e:
             error_str = str(e).lower()
 
@@ -2282,9 +2308,6 @@ class CoinJoinSession:
                 )
 
                 # Calculate expected txid and verify the CoinJoin output exists
-                builder = CoinJoinTxBuilder(self.config.bitcoin_network or self.config.network)
-                expected_txid = builder.get_txid(self.final_tx)
-
                 # Get taker's CJ output index for verification
                 taker_cj_vout = self._get_taker_cj_output_index()
                 if taker_cj_vout is None:
@@ -2306,6 +2329,7 @@ class CoinJoinSession:
                 )
 
                 if cj_verified:
+                    self.broadcast_method = "self-fallback" if fallback_reason else "self"
                     logger.info(f"Transaction was already broadcast by maker: {expected_txid}")
                     return expected_txid
 
@@ -2320,6 +2344,7 @@ class CoinJoinSession:
                 )
 
                 if cj_verified:
+                    self.broadcast_method = "self-fallback" if fallback_reason else "self"
                     logger.info(f"Transaction confirmed after propagation delay: {expected_txid}")
                     return expected_txid
 
@@ -2407,6 +2432,7 @@ class CoinJoinSession:
                             )
                             tx = None
                         if tx is not None and tx.txid == expected_txid:
+                            self.broadcast_method = f"maker:{maker_nick}"
                             total_time = time.monotonic() - start_time
                             logger.info(
                                 f"Transaction broadcast via {maker_nick} detected in mempool: "
@@ -2435,6 +2461,7 @@ class CoinJoinSession:
                             )
 
                         if cj_verified and change_verified:
+                            self.broadcast_method = f"maker:{maker_nick}"
                             total_time = time.monotonic() - start_time
                             logger.info(
                                 f"Transaction broadcast via {maker_nick} confirmed on chain: "
