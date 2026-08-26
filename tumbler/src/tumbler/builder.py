@@ -34,6 +34,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from tumbler.plan import (
+    INTERNAL_DESTINATION,
+    BitcoinNetwork,
     MakerSessionPhase,
     Phase,
     PhaseKind,
@@ -41,8 +43,6 @@ from tumbler.plan import (
     PlanParameters,
     TakerCoinjoinPhase,
 )
-
-INTERNAL_DESTINATION = "INTERNAL"
 
 
 @dataclass
@@ -57,6 +57,7 @@ class TumbleParameters:
 
     destinations: list[str]
     mixdepth_balances: Mapping[int, int]
+    network: BitcoinNetwork | None = None
     """Current confirmed balance per mixdepth, in satoshis."""
     maker_count_min: int = 5
     maker_count_max: int = 9
@@ -148,6 +149,7 @@ class PlanBuilder:
         return Plan(
             wallet_name=self.wallet_name,
             destinations=list(self.params.destinations),
+            network=self.params.network,
             parameters=plan_params,
             phases=phases,
         )

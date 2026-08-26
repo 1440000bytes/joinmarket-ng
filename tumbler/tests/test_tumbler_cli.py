@@ -318,11 +318,11 @@ class TestPlanDefaultsCounterpartyFromSettings:
                         "-w",
                         "w",
                         "--destination",
-                        "bcrt1qdest0000000000000000000000000000000000aaa",
+                        "bcrt1q4h7w2n6jnvs4fc7rvxa78a75rkcxx4ch44jl8m",
                         "--destination",
-                        "bcrt1qdest0000000000000000000000000000000000bbb",
+                        "bcrt1qgdm6ttxkdhzukec53gjgrrg728apsw7jzft949",
                         "--destination",
-                        "bcrt1qdest0000000000000000000000000000000000ccc",
+                        "bcrt1qvwak370erjn8lwfu9zvuujx84p8q84htskrffy",
                     ],
                 )
         assert result.exit_code == 0, result.stdout
@@ -369,11 +369,11 @@ class TestPlanSingleFundedMixdepth:
                     "-w",
                     "default",
                     "-d",
-                    "tb1qcfyfz4z5nwq0fk6qqjh6h74rsfghqtn5mgn2fj",
+                    "tb1qt6umtez9mdnn7rkcjdw33nfqtvs5u5v8tyf6rn",
                     "-d",
-                    "tb1qc60pcxcupzw589hwq0fcjamatsvg39k5q2el82",
+                    "tb1qglglrref79gkpx2d44ymh36sa7zldju3ytmwk0",
                     "-d",
-                    "tb1qpn5m4njfwj0zlsh5u8xfxf9pxyg3u6m6k8v5eh",
+                    "tb1q8vfw0yl8dp3n0wykafr6tmzym0mkjltxj0enu9",
                 ],
             )
 

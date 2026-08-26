@@ -33,6 +33,39 @@ def _params(
 
 
 class TestPlanBuilder:
+    _REGTEST_DESTINATIONS = [
+        "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080",
+        "bcrt1q4h7w2n6jnvs4fc7rvxa78a75rkcxx4ch44jl8m",
+    ]
+
+    def test_networked_builder_rejects_invalid_duplicate_and_internal_destinations(self) -> None:
+        for destinations, error in [
+            ([self._REGTEST_DESTINATIONS[0], self._REGTEST_DESTINATIONS[0].upper()], "duplicate"),
+            (["bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"], "invalid"),
+            (["INTERNAL"], "invalid"),
+            ([""], "invalid"),
+        ]:
+            with pytest.raises(ValueError, match=error):
+                PlanBuilder(
+                    "w",
+                    _params(
+                        destinations=destinations,
+                        network="regtest",
+                        mixdepth_balances={0: 1_000_000, 1: 0, 2: 0, 3: 0, 4: 0},
+                    ),
+                ).build()
+
+    def test_networked_builder_accepts_distinct_destinations_and_persists_network(self) -> None:
+        plan = PlanBuilder(
+            "w",
+            _params(
+                destinations=self._REGTEST_DESTINATIONS,
+                network="regtest",
+                mixdepth_balances={0: 1_000_000, 1: 0, 2: 0, 3: 0, 4: 0},
+            ),
+        ).build()
+        assert plan.network == "regtest"
+
     def test_emits_stage1_sweeps_for_nonempty_mixdepths_only(self) -> None:
         plan = PlanBuilder("w", _params()).build()
         stage1 = [

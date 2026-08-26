@@ -18,6 +18,7 @@ from enum import StrEnum
 from typing import Annotated, Literal
 from uuid import uuid4
 
+from jmcore.bitcoin import address_to_scriptpubkey_for_network
 from pydantic import BaseModel, Field, model_validator
 
 
@@ -70,6 +71,53 @@ class PlanStatus(StrEnum):
 # single address) may pass fewer destinations. Protocol-level validation
 # only requires ``>= 1`` here.
 MIN_DESTINATIONS = 3
+INTERNAL_DESTINATION = "INTERNAL"
+BitcoinNetwork = Literal["mainnet", "testnet", "signet", "regtest"]
+
+
+def validate_tumbler_destinations(
+    destinations: list[str], network: BitcoinNetwork | None = None
+) -> None:
+    """Validate user-supplied external tumbler destinations.
+
+    Networkless plans retain compatibility with older callers that use
+    synthetic addresses, but still reject empty, sentinel, and obvious
+    textual duplicates. Network-aware validation compares decoded scripts so
+    equivalent address encodings cannot be used as distinct exits.
+    """
+    textual_destinations: dict[str, int] = {}
+    script_destinations: dict[bytes, int] = {}
+    for index, destination in enumerate(destinations):
+        if not destination or not destination.strip():
+            raise ValueError(f"invalid destination at position {index + 1}: address is empty")
+        if destination.casefold() == INTERNAL_DESTINATION.casefold():
+            raise ValueError(
+                f"invalid destination at position {index + 1}: INTERNAL is not external"
+            )
+
+        lower_destination = destination.lower()
+        is_bech32_candidate = lower_destination.startswith(("bc1", "tb1", "bcrt1"))
+        is_uniform_case = destination == lower_destination or destination == destination.upper()
+        textual_key = lower_destination if is_bech32_candidate and is_uniform_case else destination
+        previous_index = textual_destinations.get(textual_key)
+        if previous_index is not None:
+            raise ValueError(
+                f"duplicate destination at positions {previous_index + 1} and {index + 1}"
+            )
+        textual_destinations[textual_key] = index
+
+        if network is None:
+            continue
+        try:
+            scriptpubkey = address_to_scriptpubkey_for_network(destination, network)
+        except ValueError as exc:
+            raise ValueError(f"invalid destination at position {index + 1}") from exc
+        previous_index = script_destinations.get(scriptpubkey)
+        if previous_index is not None:
+            raise ValueError(
+                f"duplicate destination at positions {previous_index + 1} and {index + 1}"
+            )
+        script_destinations[scriptpubkey] = index
 
 
 class _PhaseBase(BaseModel):
@@ -214,6 +262,7 @@ class Plan(BaseModel):
             "re-aggregation heuristics; library consumers may pass fewer."
         ),
     )
+    network: BitcoinNetwork | None = None
     parameters: PlanParameters = Field(default_factory=PlanParameters)
     phases: list[Phase] = Field(default_factory=list)
     current_phase: int = Field(
@@ -222,9 +271,11 @@ class Plan(BaseModel):
         description="Index of the next phase to run (0 == plan not started).",
     )
     error: str | None = None
+    previous_phase_maker_keys: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _validate_phase_indices(self) -> Plan:
+        validate_tumbler_destinations(self.destinations, self.network)
         for i, phase in enumerate(self.phases):
             if phase.index != i:
                 raise ValueError(

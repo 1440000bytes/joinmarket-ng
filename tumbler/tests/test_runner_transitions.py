@@ -18,6 +18,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from tumbler.builder import PlanBuilder, TumbleParameters
 from tumbler.persistence import load_plan, save_plan
 from tumbler.plan import (
@@ -229,6 +231,27 @@ def _ctx(
 
 
 class TestRunnerHappyPath:
+    def test_runner_rejects_old_plan_invalid_for_active_wallet_network(
+        self, tmp_path: Path
+    ) -> None:
+        plan = _plan(tmp_path)
+        plan.destinations = ["bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"]
+        ctx = _ctx(tmp_path, taker_factory=lambda _: FakeTaker(_))
+        ctx.wallet_service.network = "regtest"
+
+        with pytest.raises(ValueError, match="invalid destination"):
+            TumbleRunner(plan, ctx)
+
+    def test_runner_rejects_plan_for_different_wallet_network(self, tmp_path: Path) -> None:
+        plan = _plan(tmp_path)
+        plan.network = "mainnet"
+        plan.destinations = ["bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"]
+        ctx = _ctx(tmp_path, taker_factory=lambda _: FakeTaker(_))
+        ctx.wallet_service.network = "regtest"
+
+        with pytest.raises(ValueError, match="does not match active wallet network"):
+            TumbleRunner(plan, ctx)
+
     async def test_taker_only_plan_completes(self, tmp_path: Path) -> None:
         plan = _plan(tmp_path)
         assert all(isinstance(p, TakerCoinjoinPhase) for p in plan.phases)
@@ -320,10 +343,8 @@ class TestRunnerFailure:
 
 class TestRunnerRetry:
     """
-    Exercise the ``tweak_tumble_schedule`` equivalent: on a failed
-    taker-coinjoin phase the runner should rearm the same phase (with an
-    optional retry delay, and possibly an ``INTERNAL`` destination), up to
-    ``max_phase_retries`` times before failing the whole plan.
+    A failed taker-coinjoin phase is rearmed unchanged (with an optional retry
+    delay) up to ``max_phase_retries`` times before failing the whole plan.
     """
 
     async def test_retry_succeeds_on_second_attempt(self, tmp_path: Path) -> None:
@@ -370,13 +391,9 @@ class TestRunnerRetry:
         phase_0_attempts = [a for a in attempts if a["phase_index"] == 0]
         assert len(phase_0_attempts) == 2
 
-    async def test_retry_swaps_external_destination_to_internal(self, tmp_path: Path) -> None:
-        # Two destinations so the plan contains a non-terminal external sweep
-        # (the terminal sweep never swaps; see the dedicated test below).
+    async def test_retry_preserves_nonterminal_external_destination(self, tmp_path: Path) -> None:
         plan = _plan(tmp_path, n_destinations=2)
-        # Find the first phase that targets an external destination: with two
-        # destinations this is a non-terminal sweep whose INTERNAL deposit is
-        # spent again by a later phase, so the swap is allowed.
+        # Find the first phase that targets an external destination.
         target = next(
             p
             for p in plan.phases
@@ -412,21 +429,11 @@ class TestRunnerRetry:
         result = await runner.run()
 
         assert result.status == PlanStatus.COMPLETED
-        # First attempt saw the real address; retry saw an INTERNAL-derived
-        # wallet address (resolved via FakeWalletService.get_change_address
-        # → starts with "bcrt1qfake").
-        assert observed[0] == original_destination
-        assert observed[1].startswith("bcrt1qfake")
-        # The phase record itself now carries the INTERNAL sentinel.
-        assert result.phases[target_index].destination == "INTERNAL"
+        assert observed == [original_destination, original_destination]
+        assert result.phases[target_index].destination == original_destination
 
     async def test_retry_keeps_terminal_external_destination(self, tmp_path: Path) -> None:
-        """The plan's final external sweep must never swap to INTERNAL.
-
-        No later phase spends from the mixdepth INTERNAL would deposit into,
-        so swapping would strand the whole last-mixdepth balance in the
-        wallet and leave the destination unpaid.
-        """
+        """The plan's final external sweep remains unchanged on retry."""
         plan = _plan(tmp_path)
         # With one destination the only external phase is the terminal sweep.
         target = next(
@@ -1325,6 +1332,27 @@ class TestMakerRepeatPenalty:
         assert captured, "expected at least one taker phase"
         # Nothing has been used before the first phase.
         assert captured[0] is None
+
+    async def test_resumed_runner_penalizes_persisted_previous_keys(self, tmp_path: Path) -> None:
+        plan = _plan(tmp_path)
+        plan.previous_phase_maker_keys = ["nick:previous", "bond:previous"]
+        save_plan(plan, tmp_path)
+        resumed_plan = load_plan("RunnerTest", tmp_path)
+        captured: list[set[str] | None] = []
+
+        async def make_taker(phase: Any) -> FakeTaker:
+            taker = FakeTaker(phase)
+            original = taker.do_coinjoin
+
+            async def spy(**kwargs: Any) -> str | None:
+                captured.append(kwargs.get("penalized_maker_keys"))
+                return await original(**kwargs)
+
+            taker.do_coinjoin = spy  # type: ignore[assignment]
+            return taker
+
+        await TumbleRunner(resumed_plan, _ctx(tmp_path, taker_factory=make_taker)).run()
+        assert captured[0] == {"nick:previous", "bond:previous"}
 
     async def test_subsequent_phase_penalizes_previous_keys(self, tmp_path: Path) -> None:
         plan = _plan(tmp_path)

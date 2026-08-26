@@ -86,6 +86,37 @@ class TestSaveLoad:
         save_plan(plan, tmp_path)
         assert plan.updated_at >= first
 
+    def test_old_plan_without_new_fields_loads(self, tmp_path: Path) -> None:
+        target = plan_path("Old", tmp_path)
+        target.write_text(
+            yaml.safe_dump(
+                {
+                    "wallet_name": "Old",
+                    "destinations": ["synthetic-exit"],
+                    "phases": [],
+                }
+            )
+        )
+        loaded = load_plan("Old", tmp_path)
+        assert loaded.network is None
+        assert loaded.previous_phase_maker_keys == []
+
+    def test_networked_duplicate_plan_fails_schema_loading(self, tmp_path: Path) -> None:
+        target = plan_path("Duplicate", tmp_path)
+        address = "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080"
+        target.write_text(
+            yaml.safe_dump(
+                {
+                    "wallet_name": "Duplicate",
+                    "network": "regtest",
+                    "destinations": [address, address.upper()],
+                    "phases": [],
+                }
+            )
+        )
+        with pytest.raises(PlanCorruptError, match="duplicate destination"):
+            load_plan("Duplicate", tmp_path)
+
     def test_file_permissions_restrictive(self, tmp_path: Path) -> None:
         plan = _build_plan()
         path = save_plan(plan, tmp_path)

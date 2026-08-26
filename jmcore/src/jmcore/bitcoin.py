@@ -508,6 +508,33 @@ def address_to_scriptpubkey(address: str) -> bytes:
     raise ValueError(f"Unknown address version: {version}")
 
 
+def address_to_scriptpubkey_for_network(address: str, network: str | NetworkType) -> bytes:
+    """Validate ``address`` for ``network`` and return its scriptPubKey.
+
+    ``python-bitcointx`` validates Base58Check and Bech32/Bech32m checksums,
+    supported address types, and the active chain's address prefixes. It also
+    accepts valid all-uppercase Bech32 addresses while rejecting mixed case.
+    """
+    from bitcointx import ChainParams
+    from bitcointx.wallet import CCoinAddress, CCoinAddressError
+
+    network_value = network.value if isinstance(network, NetworkType) else network
+    chain_params = {
+        NetworkType.MAINNET.value: "bitcoin",
+        NetworkType.TESTNET.value: "bitcoin/testnet",
+        NetworkType.SIGNET.value: "bitcoin/signet",
+        NetworkType.REGTEST.value: "bitcoin/regtest",
+    }.get(network_value)
+    if chain_params is None:
+        raise ValueError(f"Unsupported network for address decoding: {network_value!r}")
+
+    try:
+        with ChainParams(chain_params):
+            return bytes(CCoinAddress(address).to_scriptPubKey())
+    except CCoinAddressError as exc:
+        raise ValueError("Invalid Bitcoin address for the selected network") from exc
+
+
 @validate_call
 def scriptpubkey_to_address(scriptpubkey: bytes, network: str | NetworkType = "mainnet") -> str:
     """

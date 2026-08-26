@@ -411,6 +411,11 @@ def plan_command(
         params = TumbleParameters(
             destinations=list(destinations),
             mixdepth_balances=balances,
+            network=(
+                settings.network_config.bitcoin_network
+                or network
+                or settings.network_config.network
+            ).value,
             maker_count_min=effective_min,
             maker_count_max=effective_max,
             mincjamount_sats=mincjamount_sats,

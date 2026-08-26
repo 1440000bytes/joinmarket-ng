@@ -119,6 +119,54 @@ def _mark_stale_confirmation_wait(plan: Plan, *, legacy: bool = False) -> TakerC
 
 
 class TestCreatePlan:
+    _REGTEST_DESTINATIONS = [
+        "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080",
+        "bcrt1q4h7w2n6jnvs4fc7rvxa78a75rkcxx4ch44jl8m",
+    ]
+
+    def test_create_plan_validates_active_wallet_network(
+        self, app_with_wallet: TestClient, auth_token: str
+    ) -> None:
+        state = get_daemon_state()
+        state.wallet_service.network = "regtest"
+        response = app_with_wallet.post(
+            f"/api/v1/wallet/{WALLET}/tumbler/plan",
+            json={"destinations": self._REGTEST_DESTINATIONS},
+            headers=_auth(auth_token),
+        )
+        assert response.status_code == 201, response.text
+        assert load_plan(WALLET, state.data_dir).network == "regtest"
+
+    @pytest.mark.parametrize(
+        ("destinations", "error"),
+        [
+            (
+                [
+                    "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080",
+                    "BCRT1QW508D6QEJXTDG4Y5R3ZARVARY0C5XW7KYGT080",
+                ],
+                "duplicate",
+            ),
+            (["bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"], "invalid"),
+            (["INTERNAL"], "invalid"),
+        ],
+    )
+    def test_create_plan_rejects_invalid_or_duplicate_exits(
+        self,
+        app_with_wallet: TestClient,
+        auth_token: str,
+        destinations: list[str],
+        error: str,
+    ) -> None:
+        get_daemon_state().wallet_service.network = "regtest"
+        response = app_with_wallet.post(
+            f"/api/v1/wallet/{WALLET}/tumbler/plan",
+            json={"destinations": destinations},
+            headers=_auth(auth_token),
+        )
+        assert response.status_code == 400
+        assert error in response.json()["message"]
+
     def test_create_fresh_plan_persists_pending(
         self,
         app_with_wallet: TestClient,

@@ -16,6 +16,7 @@ from jmcore.bitcoin import (
     TxInput,
     TxOutput,
     address_to_scriptpubkey,
+    address_to_scriptpubkey_for_network,
     analyze_coinjoin_outputs,
     btc_to_sats,
     calculate_relative_fee,
@@ -1010,6 +1011,55 @@ class TestAddressToScriptpubkey:
         assert spk[0] == 0xA9 and spk[1] == 0x14
         assert spk[-1] == 0x87
         assert len(spk) == 23
+
+
+class TestNetworkAwareAddressToScriptpubkey:
+    @pytest.mark.parametrize(
+        ("network", "address", "expected_scriptpubkey"),
+        [
+            (
+                "mainnet",
+                "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
+                "0014751e76e8199196d454941c45d1b3a323f1433bd6",
+            ),
+            (
+                "testnet",
+                "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx",
+                "0014751e76e8199196d454941c45d1b3a323f1433bd6",
+            ),
+            (
+                "signet",
+                "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx",
+                "0014751e76e8199196d454941c45d1b3a323f1433bd6",
+            ),
+            (
+                "regtest",
+                "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080",
+                "0014751e76e8199196d454941c45d1b3a323f1433bd6",
+            ),
+        ],
+    )
+    def test_valid_addresses(self, network: str, address: str, expected_scriptpubkey: str) -> None:
+        assert address_to_scriptpubkey_for_network(address, network).hex() == expected_scriptpubkey
+
+    def test_accepts_uppercase_bech32(self) -> None:
+        address = "BC1QW508D6QEJXTDG4Y5R3ZARVARY0C5XW7KV8F3T4"
+        assert address_to_scriptpubkey_for_network(address, "mainnet").hex() == (
+            "0014751e76e8199196d454941c45d1b3a323f1433bd6"
+        )
+
+    @pytest.mark.parametrize(
+        ("address", "network"),
+        [
+            ("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4", "regtest"),
+            ("bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt081", "regtest"),
+            ("bcrt1Qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080", "regtest"),
+            ("not-an-address", "mainnet"),
+        ],
+    )
+    def test_rejects_wrong_network_or_invalid_address(self, address: str, network: str) -> None:
+        with pytest.raises(ValueError, match="Invalid Bitcoin address"):
+            address_to_scriptpubkey_for_network(address, network)
 
 
 class TestScriptpubkeyToAddress:

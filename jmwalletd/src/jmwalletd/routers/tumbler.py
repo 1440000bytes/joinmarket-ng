@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends, Response
 from fastapi.responses import JSONResponse
@@ -42,6 +42,7 @@ from tumbler.persistence import (
     save_plan,
 )
 from tumbler.plan import (
+    BitcoinNetwork,
     MakerSessionPhase,
     Plan,
     PlanStatus,
@@ -327,9 +328,16 @@ async def create_plan(
 
     extra = _normalize_legacy_tumbler_parameters(body.parameters)
     try:
+        raw_wallet_network = getattr(ws, "network", None)
+        wallet_network_value = getattr(raw_wallet_network, "value", raw_wallet_network)
+        wallet_network = cast(
+            BitcoinNetwork | None,
+            wallet_network_value if isinstance(wallet_network_value, str) else None,
+        )
         params = TumbleParameters(
             destinations=list(body.destinations),
             mixdepth_balances=balances,
+            network=wallet_network,
             **extra,  # type: ignore[arg-type]
         )
     except (TypeError, ValueError) as exc:

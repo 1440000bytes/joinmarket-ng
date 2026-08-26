@@ -26,7 +26,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from jmcore.settings import get_settings
 from jmwallet.wallet.service import WalletService
@@ -34,7 +34,16 @@ from loguru import logger
 from taker.orderbook import maker_nick_selection_key
 
 from tumbler.persistence import save_plan
-from tumbler.plan import MakerSessionPhase, Phase, PhaseStatus, Plan, PlanStatus, TakerCoinjoinPhase
+from tumbler.plan import (
+    BitcoinNetwork,
+    MakerSessionPhase,
+    Phase,
+    PhaseStatus,
+    Plan,
+    PlanStatus,
+    TakerCoinjoinPhase,
+    validate_tumbler_destinations,
+)
 
 _LOW_CONFIRMATION_HINTS = (
     "No eligible UTXOs in mixdepth",
@@ -130,15 +139,35 @@ class TumbleRunner:
     def __init__(self, plan: Plan, ctx: RunnerContext):
         self.plan = plan
         self.ctx = ctx
+        raw_wallet_network = getattr(ctx.wallet_service, "network", None)
+        wallet_network_value = getattr(raw_wallet_network, "value", raw_wallet_network)
+        wallet_network = cast(
+            BitcoinNetwork | None,
+            wallet_network_value if isinstance(wallet_network_value, str) else None,
+        )
+        if (
+            plan.network is not None
+            and wallet_network is not None
+            and plan.network != wallet_network
+        ):
+            raise ValueError(
+                f"tumbler plan network {plan.network!r} does not match "
+                f"active wallet network {wallet_network!r}"
+            )
+        effective_network = wallet_network or plan.network
+        if effective_network is not None:
+            validate_tumbler_destinations(plan.destinations, effective_network)
+            if plan.network is None:
+                plan.network = effective_network
         self._stop_requested = asyncio.Event()
         self._active_taker: Any | None = None
         self._active_maker: Any | None = None
         # Public nickname and fidelity-bond identities in the previous
         # successful taker phase. The next phase probabilistically penalizes
-        # them by 0.8 per avoidable overlap. One-phase RAM-only state improves
-        # counterparty diversity without creating a deterministic blacklist or
-        # changing the canonical fidelity-bond values.
-        self._previous_phase_maker_keys: set[str] = set()
+        # them by 0.8 per avoidable overlap. Persisting only the preceding
+        # phase's identities preserves that behavior across a restart without
+        # creating a deterministic blacklist or changing fidelity-bond values.
+        self._previous_phase_maker_keys = set(plan.previous_phase_maker_keys)
 
     # -------------------------------------------------------------- lifecycle
 
@@ -374,7 +403,7 @@ class TumbleRunner:
             if phase.status != PhaseStatus.AWAITING_CONFIRMATION:
                 phase.finished_at = datetime.now(UTC)
 
-    # ---------------------------------------------- retry / tweak (taker) ---
+    # -------------------------------------------------------- retry (taker) ---
 
     async def _try_tweak_for_retry(self, phase: Phase) -> bool:
         """Rearm a failed taker phase for retry.
@@ -384,9 +413,9 @@ class TumbleRunner:
         while runner-side lowering was actively wrong for unrelated failures
         like insufficient confirmations on the source mixdepth.
 
-        The only retained schedule tweak is swapping an external destination
-        to ``INTERNAL`` before retrying, mirroring the reference tumbler's
-        preference to only keep external destinations on successful sweeps.
+        Retries preserve every sampled phase attribute, including its external
+        destination, so a failed attempt cannot silently remove a requested
+        exit from the persisted schedule.
         """
         if not isinstance(phase, TakerCoinjoinPhase):
             return False
@@ -404,31 +433,6 @@ class TumbleRunner:
             return False
 
         phase.attempt_count += 1
-
-        # If the destination is an externally-supplied address, swap it
-        # to the INTERNAL sentinel for the retry. The operator can still
-        # retarget a later phase to that address once the coins have
-        # progressed through the mixdepth chain. Never swap when no later
-        # taker phase spends from the mixdepth INTERNAL would deposit into:
-        # the diverted funds would be stranded in the wallet and the external
-        # destination would never be paid (e.g. the plan's final sweep).
-        if phase.destination != "INTERNAL":
-            if self._later_phase_spends_internal_deposit(phase):
-                logger.info(
-                    "tumbler phase {} retry {}: swapping destination {!r} -> 'INTERNAL'",
-                    phase.index,
-                    phase.attempt_count,
-                    phase.destination,
-                )
-                phase.destination = "INTERNAL"
-            else:
-                logger.info(
-                    "tumbler phase {} retry {}: keeping external destination {!r} "
-                    "(no later phase would spend internally diverted funds)",
-                    phase.index,
-                    phase.attempt_count,
-                    phase.destination,
-                )
 
         # Rearm the phase: clear terminal state so ``_run_one_phase``
         # can run it again cleanly.
@@ -457,19 +461,6 @@ class TumbleRunner:
                 )
             await self._wait_interruptibly(wait_seconds)
         return True
-
-    def _later_phase_spends_internal_deposit(self, phase: TakerCoinjoinPhase) -> bool:
-        """Return True when a later pending taker phase spends from the
-        mixdepth that an ``INTERNAL`` destination for ``phase`` would deposit
-        into, so funds diverted there are picked up again by the plan."""
-        next_mixdepth = (phase.mixdepth + 1) % self.ctx.wallet_service.mixdepth_count
-        return any(
-            isinstance(p, TakerCoinjoinPhase)
-            and p.index > phase.index
-            and p.status == PhaseStatus.PENDING
-            and p.mixdepth == next_mixdepth
-            for p in self.plan.phases
-        )
 
     # ------------------------------------------- skip unfunded (taker) ------
 
@@ -579,18 +570,23 @@ class TumbleRunner:
             # identities.
             used_keys = getattr(taker, "last_used_maker_keys", None)
             if isinstance(used_keys, set) and used_keys:
-                self._previous_phase_maker_keys = set(used_keys)
+                self._set_previous_phase_maker_keys(used_keys)
             else:
                 used_nicks = getattr(taker, "last_used_nicks", None)
                 if isinstance(used_nicks, set) and used_nicks:
-                    self._previous_phase_maker_keys = {
+                    self._set_previous_phase_maker_keys(
                         maker_nick_selection_key(nick) for nick in used_nicks
-                    }
+                    )
                 else:
                     # Successful phase but no identity info: clear stale state.
-                    self._previous_phase_maker_keys = set()
+                    self._set_previous_phase_maker_keys(())
         finally:
             await self._teardown_taker()
+
+    def _set_previous_phase_maker_keys(self, keys: Any) -> None:
+        """Keep the in-memory selection penalty and persisted resume state aligned."""
+        self._previous_phase_maker_keys = {key for key in keys if isinstance(key, str)}
+        self.plan.previous_phase_maker_keys = sorted(self._previous_phase_maker_keys)
 
     async def _resolve_amount(self, phase: TakerCoinjoinPhase, taker: Any | None = None) -> int:
         """Resolve phase amount in satoshis.
