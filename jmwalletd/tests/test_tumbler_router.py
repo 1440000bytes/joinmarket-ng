@@ -586,7 +586,7 @@ class TestStartPlan:
             (True, "directory.internal:5222"),
         ],
     )
-    def test_start_maker_factory_forwards_clearnet_development_override(
+    def test_start_maker_factory_forwards_runtime_settings(
         self,
         app_with_wallet: TestClient,
         auth_token: str,
@@ -595,7 +595,7 @@ class TestStartPlan:
         allow_clearnet_connections: bool,
         directory_server: str,
     ) -> None:
-        """Tumbler maker phases preserve the configured clearnet opt-in."""
+        """Tumbler maker phases preserve network and maker policy settings."""
         from jmcore.models import NetworkType
         from jmcore.settings import JoinMarketSettings, NetworkSettings
 
@@ -604,7 +604,8 @@ class TestStartPlan:
                 network=NetworkType.SIGNET,
                 directory_servers=[directory_server],
                 allow_clearnet_connections=allow_clearnet_connections,
-            )
+            ),
+            maker={"mixdepth_selection_policy": "concentrated"},
         )
         captured_config: dict[str, Any] = {}
 
@@ -636,6 +637,7 @@ class TestStartPlan:
         assert response.status_code == 202, response.text
         asyncio.run(CapturingRunner.context.maker_factory(MagicMock()))
         assert captured_config["allow_clearnet_connections"] is allow_clearnet_connections
+        assert captured_config["mixdepth_selection_policy"] == "concentrated"
 
 
 # ----------------------------------------------------------------------------

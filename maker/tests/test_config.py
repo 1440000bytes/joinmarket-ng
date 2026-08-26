@@ -9,6 +9,7 @@ from jmcore.models import OfferType
 from pydantic import ValidationError
 
 from maker.config import MakerConfig, MergeAlgorithm, OfferConfig, TorControlConfig
+from maker.mixdepth_selection import MixdepthSelectionPolicy
 
 # Test mnemonic (BIP39 test vector)
 TEST_MNEMONIC = (
@@ -292,6 +293,26 @@ class TestMergeAlgorithm:
             )
 
 
+class TestMixdepthSelectionPolicy:
+    def test_default_is_balanced(self) -> None:
+        config = MakerConfig(mnemonic=TEST_MNEMONIC)
+        assert config.mixdepth_selection_policy is MixdepthSelectionPolicy.BALANCED
+
+    def test_concentrated_from_string(self) -> None:
+        config = MakerConfig(
+            mnemonic=TEST_MNEMONIC,
+            mixdepth_selection_policy="concentrated",  # type: ignore[arg-type]
+        )
+        assert config.mixdepth_selection_policy is MixdepthSelectionPolicy.CONCENTRATED
+
+    def test_invalid_policy_is_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            MakerConfig(
+                mnemonic=TEST_MNEMONIC,
+                mixdepth_selection_policy="lowest",  # type: ignore[arg-type]
+            )
+
+
 class TestCjFeeRelativeNormalization:
     """Tests for cj_fee_relative scientific notation normalization."""
 
@@ -393,6 +414,34 @@ class TestCjFeeRelativeNormalization:
 
 class TestBuildMakerConfig:
     """Tests for build_maker_config function."""
+
+    def test_mixdepth_selection_cli_override(self) -> None:
+        from jmcore.settings import JoinMarketSettings
+
+        from maker.cli import build_maker_config
+
+        settings = JoinMarketSettings()
+        config = build_maker_config(
+            settings=settings,
+            mnemonic=TEST_MNEMONIC,
+            passphrase="",
+            mixdepth_selection="concentrated",
+        )
+
+        assert config.mixdepth_selection_policy is MixdepthSelectionPolicy.CONCENTRATED
+
+    def test_invalid_mixdepth_selection_cli_override(self) -> None:
+        from jmcore.settings import JoinMarketSettings
+
+        from maker.cli import build_maker_config
+
+        with pytest.raises(ValueError, match="Invalid mixdepth selection policy"):
+            build_maker_config(
+                settings=JoinMarketSettings(),
+                mnemonic=TEST_MNEMONIC,
+                passphrase="",
+                mixdepth_selection="lowest",
+            )
 
     def test_absolute_fee_cli_sets_offer_type(self) -> None:
         """Test that --cj-fee-absolute on CLI sets offer_type to absolute."""
@@ -923,6 +972,17 @@ class TestCreateWalletService:
 
 
 class TestNewSettingsWiring:
+    def test_mixdepth_selection_passed_from_settings(self) -> None:
+        from jmcore.settings import JoinMarketSettings
+
+        from maker.cli import build_maker_config
+
+        settings = JoinMarketSettings()
+        settings.maker.mixdepth_selection_policy = "concentrated"
+        config = build_maker_config(settings, TEST_MNEMONIC, "")
+
+        assert config.mixdepth_selection_policy is MixdepthSelectionPolicy.CONCENTRATED
+
     def test_identity_generation_settings_passed_from_settings(self) -> None:
         from jmcore.settings import JoinMarketSettings
 

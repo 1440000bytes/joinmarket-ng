@@ -418,6 +418,14 @@
 # UTXO merge algorithm: "default", "gradual", "greedy", "random"
 # merge_algorithm = "default"
 
+# Source mixdepth selection policy:
+#   "balanced"     - spend from the largest eligible balance so all configured
+#                    mixdepths remain meaningfully active (default)
+#   "concentrated" - use the legacy yg-privacyenhanced cyclic-gap heuristic to
+#                    preserve larger single-mixdepth offers at the cost of weaker
+#                    effective separation between CoinJoin outputs and change
+# mixdepth_selection_policy = "balanced"
+
 # Mixdepth 0 privacy restriction.
 # By default, deposits and other unproven md0 UTXOs are restricted to one input
 # per CoinJoin. Exact protocol CoinJoin outputs and CoinJoin change recursively

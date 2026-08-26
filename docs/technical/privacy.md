@@ -11,6 +11,23 @@ An `INTERNAL` destination uses the next mixdepth and wraps from the final
 mixdepth to mixdepth 0. Explicit destinations are used as provided and may be in
 another wallet.
 
+Makers can choose how to select a source when several mixdepths can fill the
+same request. The default `balanced` policy spends from the largest eligible
+balance. This keeps all configured compartments meaningfully active, but tends
+to reduce the largest balance, and therefore the maker's maximum offer, over
+time. The optional `concentrated` policy ports the reference
+`yg-privacyenhanced` cyclic-gap heuristic. It keeps eligible funds in a compact
+run around the mixdepth cycle, generally preserving larger offers after the
+final mixdepth wraps to mixdepth 0.
+
+`concentrated` is a liquidity policy, not a privacy enhancement. Concentrating
+funds in fewer active mixdepths reduces the opportunity to obscure relationships
+between equal CoinJoin outputs and the change left in prior rounds. Both policies
+are deterministic and may be classified by an authenticated probing taker over
+repeated requests. This does not create a pre-authentication mixdepth oracle: the
+source is selected only after PoDLE authentication, and every policy must reveal
+the selected inputs and output addresses in `!ioauth`.
+
 The maker keeps that cyclic routing without treating every mixdepth 0 coin as
 interchangeable. Its default md0 merge pool contains exact protocol CoinJoin
 outputs and CoinJoin change only when authoritative local history proves,

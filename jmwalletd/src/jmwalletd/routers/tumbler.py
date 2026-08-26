@@ -469,6 +469,7 @@ async def start_plan(
             socks_host=jm_settings.tor.socks_host,
             socks_port=jm_settings.tor.socks_port,
             stream_isolation=jm_settings.tor.stream_isolation,
+            mixdepth_selection_policy=jm_settings.maker.mixdepth_selection_policy,
             # Log maker history into the daemon's data dir (#531).
             data_dir=state.data_dir,
         )

@@ -64,6 +64,17 @@ CoinJoin-only change without disabling the md0 safeguard. Missing or ambiguous
 history fails closed; an older or recovered wallet may need a taker sweep from
 md0 to restore liquidity that cannot be proven automatically.
 
+The maker also defaults to `mixdepth_selection_policy = "balanced"`: when
+several mixdepths can fill a request, it spends from the largest eligible
+balance so the configured privacy compartments remain meaningfully active. To
+favor larger long-term offers instead, set
+`mixdepth_selection_policy = "concentrated"` under `[maker]`, or start with
+`--mixdepth-selection concentrated`. This ports the reference
+`yg-privacyenhanced` cyclic-gap heuristic. It concentrates liquidity into fewer
+active mixdepths, which weakens effective separation between equal outputs and
+maker change. See [Technical Privacy Notes](technical/privacy.md#mixdepths) for
+the tradeoff and probing model.
+
 ### 4) Optional: tune fees
 
 ```bash
@@ -140,7 +151,9 @@ same fee models, same fidelity bonds. The main differences:
   `neutrino` (light client). See [Installation](install.md#configure-backend).
 - **Yield generators:** the legacy `yg-privacyenhanced.py` script is
   replaced by `jm-maker start` with the same fee flags
-  (`--cj-fee-relative`, `--cj-fee-absolute`, `--min-size`).
+  (`--cj-fee-relative`, `--cj-fee-absolute`, `--min-size`). NG defaults to
+  balanced source selection; use `--mixdepth-selection concentrated` to port
+  the reference script's cyclic-gap liquidity behavior.
 
 Typical migration flow:
 
@@ -548,6 +561,14 @@ jm-maker start --help
 │                                                       MERGE_ALGORITHM]       │
 │ --min-size                      INTEGER               Minimum CoinJoin size  │
 │                                                       in sats                │
+│ --mixdepth-selection            TEXT                  Source mixdepth        │
+│                                                       policy: balanced       │
+│                                                       (privacy compartments) │
+│                                                       or concentrated        │
+│                                                       (legacy liquidity      │
+│                                                       heuristic)             │
+│                                                       [env var:              │
+│                                                       MIXDEPTH_SELECTION]    │
 │ --mnemonic-file         -f      PATH                  Path to mnemonic file  │
 │ --network                       [mainnet|testnet|sig  Protocol network       │
 │                                 net|regtest]          (mainnet, testnet,     │

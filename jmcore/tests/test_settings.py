@@ -230,6 +230,7 @@ class TestSettingsDefaults:
         assert settings.maker.cj_fee_relative == "0.0001"
         assert settings.maker.cj_fee_absolute == 500
         assert settings.maker.merge_algorithm == "default"
+        assert settings.maker.mixdepth_selection_policy == "balanced"
         assert settings.maker.cjfee_factor == 0.0
         assert settings.maker.txfee_contribution_factor == 0.3
         assert settings.maker.size_factor == 0.1
@@ -349,12 +350,14 @@ class TestSettingsFromEnv:
         monkeypatch.setenv("MAKER__MIN_SIZE", "50000")
         monkeypatch.setenv("MAKER__CJ_FEE_RELATIVE", "0.002")
         monkeypatch.setenv("MAKER__MERGE_ALGORITHM", "greedy")
+        monkeypatch.setenv("MAKER__MIXDEPTH_SELECTION_POLICY", "concentrated")
 
         settings = JoinMarketSettings()
 
         assert settings.maker.min_size == 50000
         assert settings.maker.cj_fee_relative == "0.002"
         assert settings.maker.merge_algorithm == "greedy"
+        assert settings.maker.mixdepth_selection_policy == "concentrated"
 
     def test_env_override_maker_offer_type(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test that environment variables can set maker offer_type."""

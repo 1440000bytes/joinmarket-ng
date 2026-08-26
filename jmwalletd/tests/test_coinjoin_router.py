@@ -621,7 +621,7 @@ class TestStartMaker:
     @patch("maker.bot.MakerBot")
     @patch("maker.config.MakerConfig")
     @patch("jmwalletd.routers.coinjoin.get_settings")
-    def test_start_maker_uses_directory_servers_from_settings(
+    def test_start_maker_uses_runtime_settings(
         self,
         mock_get_settings: Mock,
         mock_config: Mock,
@@ -629,7 +629,7 @@ class TestStartMaker:
         mock_backend: AsyncMock,
         authed_client: tuple[TestClient, str],
     ) -> None:
-        """MakerConfig must receive directory servers and Tor config from JoinMarketSettings."""
+        """MakerConfig receives network, Tor, and maker policy settings."""
         client, token = authed_client
         state = get_daemon_state()
         mock_maker = AsyncMock()
@@ -649,6 +649,7 @@ class TestStartMaker:
         mock_settings.tor.socks_host = "127.0.0.1"
         mock_settings.tor.socks_port = 9050
         mock_settings.tor.stream_isolation = False
+        mock_settings.maker.mixdepth_selection_policy = "concentrated"
         mock_get_settings.return_value = mock_settings
 
         resp = client.post(
@@ -673,6 +674,7 @@ class TestStartMaker:
         assert kwargs["socks_host"] == "127.0.0.1"
         assert kwargs["socks_port"] == 9050
         assert kwargs["stream_isolation"] is False
+        assert kwargs["mixdepth_selection_policy"] == "concentrated"
 
     @patch("jmwalletd.routers.coinjoin.remove_nick_state")
     @patch("jmwalletd.routers.coinjoin.write_nick_state")

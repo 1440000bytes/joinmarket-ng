@@ -764,6 +764,73 @@ async def test_select_our_utxos_falls_back_after_lock_conflict():
 
 
 @pytest.mark.asyncio
+async def test_select_our_utxos_concentrated_falls_back_by_cyclic_gap_policy():
+    """Reservation conflicts retry the concentrated policy's recomputed order."""
+    from unittest.mock import AsyncMock, MagicMock, call
+
+    from jmcore.models import Offer, OfferType
+    from jmwallet.wallet.models import UTXOInfo
+
+    from maker.coinjoin import CoinJoinSession
+    from maker.mixdepth_selection import MixdepthSelectionPolicy
+
+    wallet = MagicMock()
+    wallet.mixdepth_count = 5
+    wallet.get_balance_for_offers = AsyncMock(side_effect=[10_000_000, 0, 0, 9_000_000, 0])
+    wallet.get_maker_rotation_lineage_outpoints = AsyncMock(return_value=set())
+    wallet.get_locked_input_outpoints.return_value = set()
+    wallet.reserve_coinjoin_inputs.side_effect = [False, True]
+    wallet.get_new_internal_address.side_effect = ["bcrt1qcjout", "bcrt1qchange"]
+    first = UTXOInfo(
+        txid="ab" * 32,
+        vout=0,
+        value=5_000_000,
+        address="bcrt1qfirst",
+        confirmations=2,
+        scriptpubkey="0014" + "ab" * 20,
+        path="m/84'/0'/3'/0/0",
+        mixdepth=3,
+    )
+    second = UTXOInfo(
+        txid="cd" * 32,
+        vout=0,
+        value=5_000_000,
+        address="bcrt1qsecond",
+        confirmations=2,
+        scriptpubkey="0014" + "cd" * 20,
+        path="m/84'/0'/0'/0/0",
+        mixdepth=0,
+    )
+    wallet.select_utxos_with_merge.side_effect = [[first], [second]]
+
+    offer = Offer(
+        counterparty="J5ConcentratedMaker",
+        ordertype=OfferType.SW0_RELATIVE,
+        oid=0,
+        minsize=10_000,
+        maxsize=100_000_000,
+        txfee=1000,
+        cjfee="0.0003",
+    )
+    session = CoinJoinSession(
+        taker_nick="J5SomeTaker",
+        offer=offer,
+        wallet=wallet,
+        backend=MagicMock(),
+        mixdepth_selection_policy=MixdepthSelectionPolicy.CONCENTRATED,
+    )
+    session.amount = 1_000_000
+
+    utxos, cj_address, change_address, mixdepth = await session._select_our_utxos()
+
+    assert mixdepth == 0
+    assert set(utxos) == {(second.txid, second.vout)}
+    assert [call.args[0] for call in wallet.select_utxos_with_merge.call_args_list] == [3, 0]
+    assert (cj_address, change_address) == ("bcrt1qcjout", "bcrt1qchange")
+    assert wallet.get_new_internal_address.call_args_list == [call(1), call(0)]
+
+
+@pytest.mark.asyncio
 async def test_select_our_utxos_one_mixdepth_uses_distinct_internal_addresses():
     """Equal and change outputs must not reuse one address with one mixdepth."""
     from unittest.mock import AsyncMock, MagicMock, call

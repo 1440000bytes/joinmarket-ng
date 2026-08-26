@@ -69,6 +69,7 @@ _jm_maker() {
             '--fidelity-bond=[Specific fidelity bond to use (format\: txid\:vout)]: :' \
             '--no-fidelity-bond[Disable fidelity bond usage. Skips registry lookup and bond proof generation even when bonds exist in the registry.]' \
             '--merge-algorithm=[UTXO selection strategy\: default, gradual, greedy, random]: :' \
+            '--mixdepth-selection=[Source mixdepth policy\: balanced (privacy compartments) or concentrated (legacy liquidity heuristic)]: :' \
             '--dual-offers[Create both relative and absolute fee offers simultaneously. Each offer gets a unique ID (0 for relative, 1 for absolute). Use with --cj-fee-relative and --cj-fee-absolute to set fees for each.]' \
             '--log-level=[Log level]: :' \
             '--help[Show this message and exit]'

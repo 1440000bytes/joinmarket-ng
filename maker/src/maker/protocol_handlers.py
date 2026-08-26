@@ -631,6 +631,7 @@ class ProtocolHandlersMixin:
                 pre_sign_timeout_sec=self.config.pre_sign_timeout_sec,
                 input_lock_ttl_sec=self.config.pending_tx_timeout_min * 60,
                 merge_algorithm=self.config.merge_algorithm.value,
+                mixdepth_selection_policy=self.config.mixdepth_selection_policy,
                 restrict_md0=not self.config.allow_mixdepth_zero_merge,
                 minimum_fee_rate_sat_vb=(
                     minimum_fee_rate if isinstance(minimum_fee_rate, (int, float)) else None

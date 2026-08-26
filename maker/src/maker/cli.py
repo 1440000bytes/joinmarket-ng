@@ -32,6 +32,7 @@ from pydantic import SecretStr
 from maker.bot import MakerBot
 from maker.config import MakerConfig, MergeAlgorithm, OfferConfig
 from maker.fidelity import ExpiredFidelityBondCertificateError
+from maker.mixdepth_selection import MixdepthSelectionPolicy
 
 app = SortedTyper(no_args_is_help=True)
 
@@ -70,6 +71,7 @@ def build_maker_config(
     cj_fee_absolute: int | None = None,
     tx_fee_contribution: int | None = None,
     merge_algorithm: str | None = None,
+    mixdepth_selection: str | None = None,
     fidelity_bond_locktimes: list[int] | None = None,
     fidelity_bond_index: int | None = None,
     no_fidelity_bond: bool = False,
@@ -292,6 +294,19 @@ def build_maker_config(
             "Must be one of: default, gradual, greedy, random"
         )
 
+    effective_mixdepth_selection = (
+        mixdepth_selection
+        if mixdepth_selection is not None
+        else settings.maker.mixdepth_selection_policy
+    )
+    try:
+        parsed_mixdepth_selection = MixdepthSelectionPolicy(effective_mixdepth_selection.lower())
+    except ValueError:
+        raise ValueError(
+            f"Invalid mixdepth selection policy: {effective_mixdepth_selection}. "
+            "Must be one of: balanced, concentrated"
+        )
+
     # Log offer configuration for clarity
     if offer_configs:
         # Dual offers mode
@@ -387,6 +402,7 @@ def build_maker_config(
         fidelity_bond_index=effective_bond_index,
         no_fidelity_bond=no_fidelity_bond,
         merge_algorithm=parsed_merge_algorithm,
+        mixdepth_selection_policy=parsed_mixdepth_selection,
         offer_configs=offer_configs,
         allow_mixdepth_zero_merge=settings.maker.allow_mixdepth_zero_merge,
         directory_reconnect_interval=settings.maker.directory_reconnect_interval,
@@ -632,6 +648,17 @@ def start(
             help="UTXO selection strategy: default, gradual, greedy, random",
         ),
     ] = None,
+    mixdepth_selection: Annotated[
+        str | None,
+        typer.Option(
+            "--mixdepth-selection",
+            envvar="MIXDEPTH_SELECTION",
+            help=(
+                "Source mixdepth policy: balanced (privacy compartments) or "
+                "concentrated (legacy liquidity heuristic)"
+            ),
+        ),
+    ] = None,
     dual_offers: Annotated[
         bool,
         typer.Option(
@@ -706,6 +733,7 @@ def start(
             cj_fee_absolute=cj_fee_absolute,
             tx_fee_contribution=tx_fee_contribution,
             merge_algorithm=merge_algorithm,
+            mixdepth_selection=mixdepth_selection,
             fidelity_bond_locktimes=fidelity_bond_locktimes if fidelity_bond_locktimes else None,
             fidelity_bond_index=fidelity_bond_index,
             no_fidelity_bond=no_fidelity_bond,

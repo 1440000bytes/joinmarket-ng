@@ -213,6 +213,14 @@ you specifically want isolated config and runtime state.
 │                                                       MERGE_ALGORITHM]       │
 │ --min-size                      INTEGER               Minimum CoinJoin size  │
 │                                                       in sats                │
+│ --mixdepth-selection            TEXT                  Source mixdepth        │
+│                                                       policy: balanced       │
+│                                                       (privacy compartments) │
+│                                                       or concentrated        │
+│                                                       (legacy liquidity      │
+│                                                       heuristic)             │
+│                                                       [env var:              │
+│                                                       MIXDEPTH_SELECTION]    │
 │ --mnemonic-file         -f      PATH                  Path to mnemonic file  │
 │ --network                       [mainnet|testnet|sig  Protocol network       │
 │                                 net|regtest]          (mainnet, testnet,     │

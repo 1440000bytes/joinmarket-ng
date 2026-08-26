@@ -775,6 +775,13 @@ class MakerSettings(BaseModel):
         default="default",
         description="UTXO selection: default, gradual, greedy, random",
     )
+    mixdepth_selection_policy: str = Field(
+        default="balanced",
+        description=(
+            "Source mixdepth policy: balanced (largest eligible balance) or "
+            "concentrated (legacy cyclic-gap liquidity heuristic)"
+        ),
+    )
     session_timeout_sec: int = Field(
         default=300,
         ge=60,

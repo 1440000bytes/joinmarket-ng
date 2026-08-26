@@ -12,6 +12,8 @@ from jmcore.models import OfferType
 from jmcore.tor_control import HiddenServiceDoSConfig
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from maker.mixdepth_selection import MixdepthSelectionPolicy
+
 
 def normalize_decimal_string(v: str | float | int) -> str:
     """
@@ -423,6 +425,14 @@ class MakerConfig(WalletConfig):
         description=(
             "UTXO selection strategy: default (minimum), gradual (+1), "
             "greedy (all), random (0-2 extra)"
+        ),
+    )
+
+    mixdepth_selection_policy: MixdepthSelectionPolicy = Field(
+        default=MixdepthSelectionPolicy.BALANCED,
+        description=(
+            "Source mixdepth policy: balanced (largest eligible balance) or "
+            "concentrated (legacy cyclic-gap liquidity heuristic)"
         ),
     )
 

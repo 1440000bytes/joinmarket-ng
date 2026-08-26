@@ -37,6 +37,7 @@ from jmwallet.wallet.signing import (
 )
 from loguru import logger
 
+from maker.mixdepth_selection import MixdepthSelectionPolicy, mixdepth_attempt_order
 from maker.offer_math import required_maker_input
 from maker.tx_verification import find_output_index, verify_unsigned_transaction
 
@@ -77,6 +78,7 @@ class CoinJoinSession:
         merge_algorithm: str = "default",
         restrict_md0: bool = True,
         minimum_fee_rate_sat_vb: float | None = None,
+        mixdepth_selection_policy: MixdepthSelectionPolicy = MixdepthSelectionPolicy.BALANCED,
     ):
         self.taker_nick = taker_nick
         self.offer = offer
@@ -89,6 +91,7 @@ class CoinJoinSession:
         self.merge_algorithm = merge_algorithm  # UTXO selection strategy
         self.restrict_md0 = restrict_md0  # Mixdepth 0 UTXO merge restriction
         self.minimum_fee_rate_sat_vb = minimum_fee_rate_sat_vb
+        self.mixdepth_selection_policy = mixdepth_selection_policy
 
         self.state = CoinJoinState.IDLE
         self.amount = 0
@@ -779,12 +782,13 @@ class CoinJoinSession:
             utxos_dict: dict[tuple[str, int], UTXOInfo] = {}
             max_mixdepth = -1
 
-            # Try eligible mixdepths from largest to smallest. Selection can
-            # still lose a race to another process after the balance snapshot;
-            # atomic reservation closes that race and lets us try another
-            # independent mixdepth instead of double-signing an input.
-            for candidate_mixdepth in sorted(
-                eligible_mixdepths, key=eligible_mixdepths.__getitem__, reverse=True
+            # Selection can still lose a race to another process after the
+            # balance snapshot; atomic reservation closes that race and lets us
+            # try another independent mixdepth instead of double-signing an input.
+            for candidate_mixdepth in mixdepth_attempt_order(
+                eligible_mixdepths,
+                self.wallet.mixdepth_count,
+                self.mixdepth_selection_policy,
             ):
                 try:
                     candidate = self.wallet.select_utxos_with_merge(
