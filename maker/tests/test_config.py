@@ -1000,9 +1000,10 @@ class TestNewSettingsWiring:
             neutrino_compat=False,
         )
 
-        assert pool._build_client_kwargs("directory.example", 5222)[
-            "allow_clearnet_connections"
-        ] is True
+        assert (
+            pool._build_client_kwargs("directory.example", 5222)["allow_clearnet_connections"]
+            is True
+        )
 
     def test_nick_auth_directory_ids_passed_from_settings(self) -> None:
         from jmcore.settings import JoinMarketSettings

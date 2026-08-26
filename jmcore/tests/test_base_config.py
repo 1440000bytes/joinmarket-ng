@@ -218,7 +218,9 @@ class TestWalletConfig:
         assert config.mixdepth_count == 5
         assert config.gap_limit == 20
 
-    @pytest.mark.parametrize("network", [NetworkType.MAINNET, NetworkType.SIGNET, NetworkType.TESTNET])
+    @pytest.mark.parametrize(
+        "network", [NetworkType.MAINNET, NetworkType.SIGNET, NetworkType.TESTNET]
+    )
     def test_production_config_rejects_clearnet_directory(self, network: NetworkType):
         with pytest.raises(ValidationError, match="must use .onion"):
             WalletConfig(
