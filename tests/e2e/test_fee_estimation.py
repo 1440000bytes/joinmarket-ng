@@ -237,6 +237,7 @@ class TestTakerFeeResolution:
             mnemonic=mnemonic,
             network=NetworkType.TESTNET,
             directory_servers=["127.0.0.1:5222"],
+            allow_clearnet_connections=True,
             # No fee_rate or fee_block_target specified - should use default 3-block
         )
 
@@ -275,6 +276,7 @@ class TestTakerFeeResolution:
             mnemonic=mnemonic,
             network=NetworkType.TESTNET,
             directory_servers=["127.0.0.1:5222"],
+            allow_clearnet_connections=True,
             fee_rate=100.0,  # Manual fee rate above the regtest node floor
         )
 
@@ -307,6 +309,7 @@ class TestTakerFeeResolution:
             mnemonic=mnemonic,
             network=NetworkType.TESTNET,
             directory_servers=["127.0.0.1:5222"],
+            allow_clearnet_connections=True,
             fee_block_target=6,  # Custom block target
         )
 
@@ -340,6 +343,7 @@ class TestTakerFeeResolution:
             mnemonic=mnemonic,
             network=NetworkType.TESTNET,
             directory_servers=["127.0.0.1:5222"],
+            allow_clearnet_connections=True,
             fee_rate=0.5,  # Sub-1 sat/vB
         )
 
@@ -406,6 +410,7 @@ class TestNeutrinoTakerFeeResolution:
             mnemonic=mnemonic,
             network=NetworkType.TESTNET,
             directory_servers=["127.0.0.1:5222"],
+            allow_clearnet_connections=True,
             fee_block_target=3,  # This should cause an error with neutrino
         )
 
@@ -440,6 +445,7 @@ class TestNeutrinoTakerFeeResolution:
             mnemonic=mnemonic,
             network=NetworkType.TESTNET,
             directory_servers=["127.0.0.1:5222"],
+            allow_clearnet_connections=True,
             fee_rate=2.0,  # Manual rate - should work with neutrino
         )
 
@@ -474,6 +480,7 @@ class TestNeutrinoTakerFeeResolution:
             mnemonic=mnemonic,
             network=NetworkType.TESTNET,
             directory_servers=["127.0.0.1:5222"],
+            allow_clearnet_connections=True,
             # No fee_rate or fee_block_target - should use fallback
         )
 

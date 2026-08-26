@@ -432,6 +432,7 @@ class TestNeutrinoCoinJoin:
             mnemonic=TAKER_MNEMONIC,
             network=NetworkType.TESTNET,  # Protocol network for directory server
             directory_servers=[_directory_server_addr()],
+            allow_clearnet_connections=True,
             coinjoin_amount=50_000_000,  # 0.5 BTC
             counterparty_count=1,  # Only need 1 maker for this test
             minimum_makers=1,  # Allow single maker CoinJoin
@@ -795,6 +796,7 @@ class TestNeutrinoCoinJoin:
             mnemonic=TAKER_MNEMONIC,
             network=NetworkType.TESTNET,  # Protocol network for directory server
             directory_servers=[_directory_server_addr()],
+            allow_clearnet_connections=True,
             coinjoin_amount=50_000_000,  # 0.5 BTC
             counterparty_count=1,  # Only need 1 maker for this test
             minimum_makers=1,  # Allow single maker CoinJoin
