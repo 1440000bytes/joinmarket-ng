@@ -39,9 +39,7 @@ def _utxo(
 
 
 def _select(utxos: list[UTXOInfo], amount: int, *, mixdepth: int = 1, fee_rate: float = 1.0):
-    return select_direct_send_utxos(
-        utxos, amount, DESTINATION, fee_rate, mixdepth=mixdepth
-    )
+    return select_direct_send_utxos(utxos, amount, DESTINATION, fee_rate, mixdepth=mixdepth)
 
 
 def test_selects_smallest_sufficient_singleton() -> None:
