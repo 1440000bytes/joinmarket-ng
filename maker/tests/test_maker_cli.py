@@ -96,6 +96,7 @@ def test_start_expired_certificate_exits_and_cleans_up(
     config = MakerConfig(
         mnemonic="test " * 12,
         directory_servers=["localhost:5222"],
+        network="regtest",
         data_dir=tmp_path,
     )
     wallet = MagicMock()
