@@ -41,6 +41,9 @@ TXID_PATTERN = re.compile(
 MIXDEPTH_BALANCE_PATTERN = re.compile(
     r"Mixdepth\s+(\d+):\s+([\d,]+)\s+sats", re.IGNORECASE
 )
+BONDED_OFFER_PATTERN = re.compile(
+    r"\bcreated offer \d+:.*\bbond_value=(\d+)\b", re.IGNORECASE
+)
 
 
 @dataclass(frozen=True)
@@ -354,27 +357,49 @@ def _parse_mixdepth_balances(output: str) -> dict[int, int]:
     }
 
 
+def _migration_maker_is_ready(logs: str) -> bool:
+    """Require a bonded offer plus a live announcement and listener."""
+    lowered = logs.lower()
+    has_bonded_offer = any(
+        int(value) > 0 for value in BONDED_OFFER_PATTERN.findall(logs)
+    )
+    has_announcement = "announcing offers" in lowered
+    has_listener = "maker bot started. listening for takers" in lowered
+    return has_bonded_offer and has_announcement and has_listener
+
+
 def _wait_for_migration_maker() -> str:
-    """Wait for the migrated maker's bond, offers, announcements, and listener."""
+    """Wait for the migrated maker to offer its bond and serve takers."""
     deadline = time.monotonic() + MAKER_STARTUP_TIMEOUT_SECONDS
     latest_logs = ""
     while time.monotonic() < deadline:
         logs = _run_compose(["logs", "--tail=300", "migration-maker"])
         _assert_ok(logs, "read migration-maker logs")
         latest_logs = logs.output
-        lowered = latest_logs.lower()
-        has_bond = "fidelity bond found:" in lowered
-        has_offers = bool(
-            re.search(r"created\s+[1-9]\d*\s+offer\(s\) to announce", lowered)
-        )
-        has_announcement = "announcing offers" in lowered
-        has_listener = "maker bot started. listening for takers" in lowered
-        if has_bond and has_offers and has_announcement and has_listener:
+        if _migration_maker_is_ready(latest_logs):
             return latest_logs
         time.sleep(2)
     raise AssertionError(
-        "migration-maker did not find its bond, create and announce offers, and listen "
+        "migration-maker did not create and announce a bonded offer and listen "
         f"within {MAKER_STARTUP_TIMEOUT_SECONDS}s:\n{latest_logs[-6000:]}"
+    )
+
+
+def test_migration_maker_readiness_requires_bonded_operational_offer() -> None:
+    ready_logs = (
+        "Created offer 0: type=sw0absoffer size=1000000-2000000 "
+        "(max_available=2000000), cjfee=0.0003, txfee=1000, bond_value=50000000\n"
+        "Announcing offers...\n"
+        "Maker bot started. Listening for takers...\n"
+    )
+
+    assert _migration_maker_is_ready(ready_logs)
+    assert not _migration_maker_is_ready(
+        ready_logs.replace("bond_value=50000000", "bond_value=0")
+    )
+    assert not _migration_maker_is_ready(ready_logs.replace("Announcing offers...", ""))
+    assert not _migration_maker_is_ready(
+        ready_logs.replace("Maker bot started. Listening for takers...", "")
     )
 
 

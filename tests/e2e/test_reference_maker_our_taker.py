@@ -656,7 +656,10 @@ pytestmark = [
 _TAKER_FUNDING_ADDRESS = "bcrt1q6rz28mcfaxtmd6v789l9rrlrusdprr9pz3cppk"
 _NG_REPLACEMENT_FUNDING_ADDRESS = "bcrt1qe4hmtjq53u7l5vr9uw6sjr9c75ulmklg8jgsj0"
 
-_TXID_PATTERN = re.compile(r"\btxid\s*[:=]\s*([0-9a-f]{64})\b", re.IGNORECASE)
+_TXID_PATTERN = re.compile(
+    r"\b(?:txid\s*[:=]|coinjoin successful\s*:\s*)([0-9a-f]{64})\b",
+    re.IGNORECASE,
+)
 
 
 async def _prepare_taker_environment(
