@@ -7,13 +7,15 @@ import { AddressInfo } from "net";
 /**
  * Frontend tests for the fee quantization bands chart (issue #508).
  *
- * Serves the real static frontend (orderbook_watcher/static) plus a
- * deterministic orderbook.json fixture from an in-process HTTP server, so the
- * suite needs no Docker stack and exercises exactly the files shipped in the
- * orderbook watcher image.
+ * Serves the packaged frontend from orderbook_watcher/src/orderbook_watcher/static
+ * with a deterministic orderbook.json fixture from an in-process HTTP server.
+ * The suite needs no Docker stack and exercises the files shipped in the image.
  */
 
-const STATIC_DIR = path.resolve(__dirname, "../../../orderbook_watcher/static");
+const STATIC_DIR = path.resolve(
+  __dirname,
+  "../../../orderbook_watcher/src/orderbook_watcher/static",
+);
 
 const FEE_QUANTIZATION = {
   rel_grid: [

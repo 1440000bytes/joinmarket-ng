@@ -9,12 +9,15 @@ serves a stale frontend forever.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from jmcore.models import OrderBook
 from jmcore.settings import OrderbookWatcherSettings
 
+import orderbook_watcher.server as server_module
 from orderbook_watcher.aggregator import OrderbookAggregator
 from orderbook_watcher.server import OrderbookServer
 
@@ -35,10 +38,27 @@ def _make_server() -> OrderbookServer:
 async def test_ui_and_static_responses_are_not_cached() -> None:
     server = _make_server()
     async with TestClient(TestServer(server.app)) as client:
-        for path in ("/", "/static/app.js", "/static/style.css"):
+        for path in ("/", "/static/app.js", "/static/style.css", "/static/favicon.ico"):
             resp = await client.get(path)
             assert resp.status == 200, path
             assert resp.headers.get("Cache-Control") == "no-store", path
+            assert await resp.read(), path
+
+        index_resp = await client.get("/")
+        assert "<title>JoinMarket NG Orderbook Watcher</title>" in await index_resp.text()
+
+
+def test_server_fails_fast_when_frontend_asset_is_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    for asset in server_module._REQUIRED_STATIC_ASSETS:
+        if asset != "favicon.ico":
+            (tmp_path / asset).write_text("test", encoding="utf-8")
+
+    monkeypatch.setattr(server_module, "_STATIC_DIR", tmp_path)
+
+    with pytest.raises(RuntimeError, match=r"frontend assets are missing \(favicon\.ico\)"):
+        _make_server()
 
 
 async def test_non_ui_responses_are_not_marked_no_store() -> None:

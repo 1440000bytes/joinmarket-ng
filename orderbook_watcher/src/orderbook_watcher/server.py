@@ -19,6 +19,9 @@ from loguru import logger
 
 from orderbook_watcher.aggregator import OrderbookAggregator
 
+_STATIC_DIR = Path(__file__).parent / "static"
+_REQUIRED_STATIC_ASSETS = ("index.html", "app.js", "style.css", "favicon.ico")
+
 
 @web.middleware
 async def _no_store_ui_middleware(request: web.Request, handler: Handler) -> web.StreamResponse:
@@ -52,20 +55,24 @@ class OrderbookServer:
         self._setup_routes()
 
     def _setup_routes(self) -> None:
+        missing_assets = [
+            asset for asset in _REQUIRED_STATIC_ASSETS if not (_STATIC_DIR / asset).is_file()
+        ]
+        if missing_assets:
+            missing = ", ".join(missing_assets)
+            raise RuntimeError(
+                f"Orderbook Watcher frontend assets are missing ({missing}). "
+                "Reinstall joinmarket-orderbook-watcher."
+            )
+
         self.app.router.add_get("/", self._handle_index)
         self.app.router.add_get("/orderbook.json", self._handle_orderbook_json)
         self.app.router.add_get("/health", self._handle_health)
 
-        static_dir = Path(__file__).parent.parent.parent / "static"
-        if static_dir.exists():
-            self.app.router.add_static("/static/", path=static_dir, name="static")
+        self.app.router.add_static("/static/", path=_STATIC_DIR, name="static")
 
-    async def _handle_index(self, _request: web.Request) -> web.Response | web.FileResponse:
-        static_dir = Path(__file__).parent.parent.parent / "static"
-        index_file = static_dir / "index.html"
-        if index_file.exists():
-            return web.FileResponse(index_file)
-        return web.Response(text="Orderbook Watcher", status=200)
+    async def _handle_index(self, _request: web.Request) -> web.FileResponse:
+        return web.FileResponse(_STATIC_DIR / "index.html")
 
     async def _handle_orderbook_json(self, _request: web.Request) -> web.Response:
         async with self._cache_lock:

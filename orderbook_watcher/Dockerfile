@@ -77,18 +77,17 @@ RUN --mount=type=cache,target=/root/.cache/pip,id=jmng-pip-${HATCHLING_VERSION} 
         /build/jmcore \
         /build/jmwallet
 
-# Copy source and static files, normalize permissions and timestamps for reproducibility
+# Copy source and packaged static files, normalize permissions and timestamps for reproducibility
 # This runs as root in builder, ensuring consistent 644/755 permissions regardless of source
 # Timestamps are normalized to SOURCE_DATE_EPOCH because:
 # - BuildKit's rewrite-timestamp only modifies the OCI tar output, not layer content hashes
 # - Layer digests are computed BEFORE rewriting, so files must have identical timestamps
 # - Without this, local files (old mtime) differ from CI (fresh git clone mtime)
 COPY orderbook_watcher/src /build/orderbook_watcher/src
-COPY orderbook_watcher/static /build/orderbook_watcher/static
-RUN find /build/orderbook_watcher/src /build/orderbook_watcher/static -type f -exec chmod 644 {} + && \
-    find /build/orderbook_watcher/src /build/orderbook_watcher/static -type d -exec chmod 755 {} + && \
+RUN find /build/orderbook_watcher/src -type f -exec chmod 644 {} + && \
+    find /build/orderbook_watcher/src -type d -exec chmod 755 {} + && \
     if [ -n "$SOURCE_DATE_EPOCH" ]; then \
-        find /build/orderbook_watcher/src /build/orderbook_watcher/static -exec touch -d @${SOURCE_DATE_EPOCH} {} +; \
+        find /build/orderbook_watcher/src -exec touch -d @${SOURCE_DATE_EPOCH} {} +; \
     fi
 
 # Normalize installed Python environment mtimes for reproducible COPY layer digests
@@ -134,9 +133,8 @@ USER jm
 # Make sure scripts are in PATH
 ENV PATH=/app/bin:$PATH
 
-# Copy application source and static files from builder (with normalized permissions)
+# Copy application source and packaged static files from builder (with normalized permissions)
 COPY --from=builder --chown=jm:jm /build/orderbook_watcher/src /app/orderbook_watcher/src
-COPY --from=builder --chown=jm:jm /build/orderbook_watcher/static /app/orderbook_watcher/static
 
 # Make sure both site-packages (jmcore, jmwallet, third-party deps) and the
 # orderbook_watcher source tree are importable. orderbook_watcher is shipped as
