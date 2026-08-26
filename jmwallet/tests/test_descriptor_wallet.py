@@ -944,6 +944,31 @@ class TestDescriptorWalletBackendUnit:
         assert len(utxos) == 3
 
     @pytest.mark.asyncio
+    async def test_get_utxo_omits_empty_address_filter(
+        self, mock_backend: DescriptorWalletBackend
+    ) -> None:
+        """An empty address filter makes Core return no wallet UTXOs."""
+        txid = "ab" * 32
+        mock_backend._rpc_call = AsyncMock(
+            return_value=[
+                {
+                    "txid": txid,
+                    "vout": 1,
+                    "amount": 0.01,
+                    "address": "bc1qtest1",
+                    "confirmations": 2,
+                    "scriptPubKey": "0014...",
+                }
+            ]
+        )
+
+        utxo = await mock_backend.get_utxo(txid, 1)
+
+        assert utxo is not None
+        assert utxo.txid == txid
+        mock_backend._rpc_call.assert_awaited_once_with("listunspent", [0, 9999999])
+
+    @pytest.mark.asyncio
     async def test_get_wallet_balance(self, mock_backend: DescriptorWalletBackend):
         """Test getting wallet balance."""
         backend = mock_backend
@@ -1299,6 +1324,65 @@ async def test_descriptor_wallet_with_funds():
         assert balance["total"] > 0
 
     finally:
+        try:
+            await backend.unload_wallet()
+        except Exception:
+            pass
+        await backend.close()
+
+
+@pytest.mark.docker
+@pytest.mark.asyncio
+async def test_get_utxo_is_wallet_scoped_with_multiple_loaded_wallets() -> None:
+    """Regression test for Core RPC error -19 during wallet UTXO lookup."""
+    import uuid
+
+    wallet_name = f"jm_utxo_{uuid.uuid4().hex[:8]}"
+    other_wallet_name = f"jm_other_{uuid.uuid4().hex[:8]}"
+    backend = DescriptorWalletBackend(
+        rpc_url=TEST_RPC_URL,
+        rpc_user=TEST_RPC_USER,
+        rpc_password=TEST_RPC_PASSWORD,
+        wallet_name=wallet_name,
+    )
+
+    try:
+        await backend._rpc_call(
+            "createwallet",
+            [wallet_name, False, False, "", False, True],
+            use_wallet=False,
+        )
+        backend._wallet_loaded = True
+        await backend._rpc_call(
+            "createwallet",
+            [other_wallet_name, False, False, "", False, True],
+            use_wallet=False,
+        )
+
+        address = await backend.get_new_address("bech32")
+        block_hash = (
+            await backend._rpc_call("generatetoaddress", [101, address], use_wallet=False)
+        )[0]
+        block = await backend._rpc_call("getblock", [block_hash], use_wallet=False)
+        txid = block["tx"][0]
+
+        with pytest.raises(ValueError, match=r"RPC error -19: Multiple wallets are loaded"):
+            await backend._rpc_call("listunspent", use_wallet=False)
+
+        utxo = await backend.get_utxo(txid, 0)
+
+        assert utxo is not None
+        assert utxo.txid == txid
+        assert utxo.vout == 0
+        assert utxo.address == address
+        # The wallet listunspent path leaves height unset. A non-None height
+        # would show that error -19 was swallowed and gettxout handled the lookup.
+        assert utxo.height is None
+    finally:
+        try:
+            await backend._rpc_call("unloadwallet", [other_wallet_name], use_wallet=False)
+        except Exception:
+            pass
         try:
             await backend.unload_wallet()
         except Exception:

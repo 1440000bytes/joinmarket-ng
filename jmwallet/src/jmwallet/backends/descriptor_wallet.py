@@ -2081,7 +2081,7 @@ class DescriptorWalletBackend(BlockchainBackend):
         try:
             utxos = await self._rpc_call(
                 "listunspent",
-                [0, 9999999, [], True, {"minimumAmount": 0}],
+                [0, 9999999],
             )
             for utxo_data in utxos:
                 if utxo_data["txid"] == txid and utxo_data["vout"] == vout:
