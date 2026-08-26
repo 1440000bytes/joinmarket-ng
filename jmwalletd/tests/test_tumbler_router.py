@@ -24,6 +24,7 @@ covered separately in ``test_tumbler_reconcile``.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -577,6 +578,64 @@ class TestStartPlan:
         assert isinstance(captured_phase, TakerCoinjoinPhase)
         assert captured_phase.status == PhaseStatus.AWAITING_CONFIRMATION
         assert captured_phase.txid == phase.txid
+
+    @pytest.mark.parametrize(
+        ("allow_clearnet_connections", "directory_server"),
+        [
+            (False, "directoryexample.onion:5222"),
+            (True, "directory.internal:5222"),
+        ],
+    )
+    def test_start_maker_factory_forwards_clearnet_development_override(
+        self,
+        app_with_wallet: TestClient,
+        auth_token: str,
+        plan_on_disk: Plan,
+        monkeypatch: pytest.MonkeyPatch,
+        allow_clearnet_connections: bool,
+        directory_server: str,
+    ) -> None:
+        """Tumbler maker phases preserve the configured clearnet opt-in."""
+        from jmcore.models import NetworkType
+        from jmcore.settings import JoinMarketSettings, NetworkSettings
+
+        settings = JoinMarketSettings(
+            network_config=NetworkSettings(
+                network=NetworkType.SIGNET,
+                directory_servers=[directory_server],
+                allow_clearnet_connections=allow_clearnet_connections,
+            )
+        )
+        captured_config: dict[str, Any] = {}
+
+        class CapturingRunner:
+            context: Any
+
+            def __init__(self, plan: Plan, context: Any) -> None:
+                self.plan = plan
+                type(self).context = context
+
+            async def run(self) -> Plan:
+                return self.plan
+
+        def capture_maker_config(**kwargs: Any) -> MagicMock:
+            captured_config.update(kwargs)
+            return MagicMock()
+
+        monkeypatch.setattr("jmwalletd.routers.tumbler.get_settings", lambda: settings)
+        monkeypatch.setattr("jmwalletd.routers.tumbler.TumbleRunner", CapturingRunner)
+        monkeypatch.setattr("jmwalletd._backend.get_backend", AsyncMock())
+        monkeypatch.setattr("maker.bot.MakerBot", MagicMock())
+        monkeypatch.setattr("maker.config.MakerConfig", capture_maker_config)
+
+        response = app_with_wallet.post(
+            f"/api/v1/wallet/{WALLET}/tumbler/start",
+            headers=_auth(auth_token),
+        )
+
+        assert response.status_code == 202, response.text
+        asyncio.run(CapturingRunner.context.maker_factory(MagicMock()))
+        assert captured_config["allow_clearnet_connections"] is allow_clearnet_connections
 
 
 # ----------------------------------------------------------------------------
