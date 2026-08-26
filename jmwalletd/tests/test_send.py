@@ -294,38 +294,36 @@ async def test_direct_send_uses_local_txid_when_backend_omits_it(
 @patch("jmwalletd.send.create_send_history_entry")
 @patch("jmwalletd.send.prepare_direct_send", new_callable=AsyncMock)
 @patch("jmwalletd._backend.get_backend", new_callable=AsyncMock)
-async def test_direct_send_skips_finalization_when_history_append_fails(
+async def test_direct_send_aborts_before_broadcast_when_history_append_fails(
     mock_get_backend: AsyncMock,
     mock_prepare_direct_send: AsyncMock,
     mock_create_entry: MagicMock,
     mock_append_entry: MagicMock,
     mock_update_entry: MagicMock,
 ) -> None:
+    from jmwallet.history import HistoryWriteError
+
     wallet = MagicMock(data_dir=None, network="regtest", wallet_fingerprint="aabbccdd")
     wallet.sync_with_registered_bonds = AsyncMock()
     prepared = _make_prepared_tx()
     mock_prepare_direct_send.return_value = prepared
     mock_create_entry.return_value = MagicMock()
-    mock_append_entry.side_effect = OSError("disk full")
+    mock_append_entry.side_effect = HistoryWriteError("disk full")
 
     backend = MagicMock()
     backend.broadcast_transaction = AsyncMock(return_value=prepared.txid)
     mock_get_backend.return_value = backend
 
-    with patch("jmwalletd.send.logger.warning") as mock_warning:
-        result = await do_direct_send(
+    with pytest.raises(HistoryWriteError, match="disk full"):
+        await do_direct_send(
             wallet_service=wallet,
             mixdepth=0,
             amount_sats=50_000,
             destination="bcrt1qdestination",
         )
 
-    assert result.txid == prepared.txid
-    backend.broadcast_transaction.assert_awaited_once_with(prepared.tx_hex)
+    backend.broadcast_transaction.assert_not_awaited()
     mock_update_entry.assert_not_called()
-    mock_warning.assert_called_once_with(
-        "Failed to persist pre-broadcast send history entry: {}", mock_append_entry.side_effect
-    )
 
 
 @pytest.mark.asyncio

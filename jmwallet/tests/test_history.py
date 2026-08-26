@@ -5,10 +5,13 @@ Tests for transaction history tracking.
 from __future__ import annotations
 
 import csv
+import stat
 import struct
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import fields
 from datetime import datetime, timedelta
 from pathlib import Path
+from threading import Event
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -256,9 +259,87 @@ class TestAppendAndReadHistory:
             cj_amount=1_000_000,
         )
 
-        with patch("jmwallet.history.open", side_effect=OSError("simulated write error")):
+        with patch(
+            "jmwallet.history._open_owner_only_regular",
+            side_effect=HistoryWriteError("simulated write error"),
+        ):
             with pytest.raises(HistoryWriteError, match="simulated write error"):
                 append_history_entry(entry, temp_data_dir)
+
+    def test_append_hardens_files_and_fsyncs(self, tmp_path: Path) -> None:
+        data_dir = tmp_path / "new-history-dir"
+        entry = TransactionHistoryEntry(timestamp="2024-01-01T00:00:00", txid="durable")
+
+        with patch("jmwallet.history.os.fsync") as mock_fsync:
+            append_history_entry(entry, data_dir)
+
+        assert stat.S_IMODE(data_dir.stat().st_mode) == 0o700
+        assert stat.S_IMODE((data_dir / "history.csv").stat().st_mode) == 0o600
+        assert stat.S_IMODE((data_dir / "history.csv.lock").stat().st_mode) == 0o600
+        mock_fsync.assert_called_once()
+
+    def test_atomic_rewrite_hardens_existing_history_and_syncs_parent(
+        self, temp_data_dir: Path
+    ) -> None:
+        entry = _make_pending_maker_entry(txid="rewrite")
+        append_history_entry(entry, temp_data_dir)
+        history_path = temp_data_dir / "history.csv"
+        history_path.chmod(0o644)
+
+        with patch("jmwallet.history.os.fsync") as mock_fsync:
+            assert update_transaction_confirmation("rewrite", 1, temp_data_dir)
+
+        assert stat.S_IMODE(history_path.stat().st_mode) == 0o600
+        assert mock_fsync.call_count == 2
+
+    def test_concurrent_confirmation_updates_preserve_unrelated_rows(
+        self, temp_data_dir: Path
+    ) -> None:
+        append_history_entry(_make_pending_maker_entry(txid="first"), temp_data_dir)
+        append_history_entry(
+            _make_pending_maker_entry(cj_address="bc1qsecond", txid="second"), temp_data_dir
+        )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(
+                executor.map(
+                    lambda txid: update_transaction_confirmation(txid, 1, temp_data_dir),
+                    ["first", "second"],
+                )
+            )
+
+        assert results == [True, True]
+        assert {entry.txid for entry in read_history(temp_data_dir)} == {"first", "second"}
+        assert all(entry.success for entry in read_history(temp_data_dir))
+
+    def test_concurrent_append_and_update_preserve_both_rows(self, temp_data_dir: Path) -> None:
+        append_history_entry(_make_pending_maker_entry(txid="existing"), temp_data_dir)
+        concurrent = _make_pending_maker_entry(cj_address="bc1qnew", txid="new")
+        rewrite_ready = Event()
+        append_started = Event()
+
+        from jmwallet.history import _write_history_entries_atomic
+
+        def wait_for_append(entries: list[TransactionHistoryEntry], history_path: Path) -> bool:
+            rewrite_ready.set()
+            assert append_started.wait(timeout=2)
+            return _write_history_entries_atomic(entries, history_path)
+
+        def append_concurrently() -> None:
+            assert rewrite_ready.wait(timeout=2)
+            append_started.set()
+            append_history_entry(concurrent, temp_data_dir)
+
+        with patch("jmwallet.history._write_history_entries_atomic", side_effect=wait_for_append):
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                update = executor.submit(
+                    update_transaction_confirmation, "existing", 1, temp_data_dir
+                )
+                appended = executor.submit(append_concurrently)
+                assert update.result(timeout=5)
+                appended.result(timeout=5)
+
+        assert {entry.txid for entry in read_history(temp_data_dir)} == {"existing", "new"}
 
     def test_read_with_role_filter(self, temp_data_dir: Path) -> None:
         """Test reading with role filter."""

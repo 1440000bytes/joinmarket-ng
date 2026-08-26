@@ -11,10 +11,13 @@ Stores a simple CSV log of all CoinJoin transactions with key metadata:
 from __future__ import annotations
 
 import csv
+import errno
 import os
+import stat
 import tempfile
 from collections import defaultdict, deque
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import fields
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -23,6 +26,16 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from jmcore.paths import get_default_data_dir
 from loguru import logger
 from pydantic.dataclasses import dataclass
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - non-POSIX platforms
+    fcntl = None  # type: ignore[assignment]
+
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover - POSIX platforms
+    msvcrt = None  # type: ignore[assignment]
 
 if TYPE_CHECKING:
     from jmcore.bitcoin import CoinjoinAnalysis
@@ -166,6 +179,7 @@ class TransactionHistoryEntry:
 
 HISTORY_FILENAME = "history.csv"
 LEGACY_HISTORY_FILENAME = "coinjoin_history.csv"
+HISTORY_LOCK_SUFFIX = ".lock"
 
 # A normal CoinJoin has no more than two outputs per participant (CoinJoin and
 # change). New rows retain the exact vout; this cap bounds compatibility scans
@@ -209,42 +223,112 @@ def _get_history_path(data_dir: Path | None = None) -> Path:
 
     The canonical filename is ``history.csv`` (covers CoinJoin maker/taker
     rounds and plain wallet sends; see ``TransactionHistoryEntry.role``).
-    For backwards compatibility, an older ``coinjoin_history.csv`` in the
-    same directory is renamed in place the first time this function runs
-    against it. The rename is silent unless either file is missing or
-    something else holds the old name (in which case we leave both alone
-    and let the caller observe the legacy file).
+    Legacy filename migration happens while holding the history lock in
+    ``_resolve_history_path_unlocked``.
 
     Args:
         data_dir: Optional data directory (defaults to
             ``get_default_data_dir()``).
 
     Returns:
-        Path to ``history.csv`` in the data directory (which may have
-        been freshly migrated from the legacy name).
+        Path to ``history.csv`` in the data directory.
     """
     if data_dir is None:
         data_dir = get_default_data_dir()
-    data_dir.mkdir(parents=True, exist_ok=True)
-    new_path = data_dir / HISTORY_FILENAME
-    legacy_path = data_dir / LEGACY_HISTORY_FILENAME
+    if not data_dir.exists():
+        data_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+        os.chmod(data_dir, 0o700)
+    return data_dir / HISTORY_FILENAME
 
-    # One-shot in-place rename of the legacy filename. Only safe when the
-    # new filename does not already exist; if both exist, the legacy file
-    # is from a previous JM install and should be merged manually rather
-    # than silently overwriting whatever the user has at ``history.csv``.
-    if legacy_path.exists() and not new_path.exists():
+
+def _open_owner_only_regular(path: Path, flags: int) -> int:
+    """Open a regular history-related file without following symlinks."""
+    secure_flags = (
+        flags
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    try:
+        fd = os.open(path, secure_flags, 0o600)
+    except OSError as exc:
+        raise HistoryWriteError(f"Could not securely open {path}: {exc}") from exc
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise HistoryWriteError(f"History file {path} is not a regular file")
+        os.fchmod(fd, 0o600)
+        return fd
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def _ensure_regular_owner_only(path: Path) -> None:
+    """Validate and harden an existing history-related path."""
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return
+    fd = _open_owner_only_regular(path, os.O_RDONLY)
+    os.close(fd)
+
+
+def _history_lock_path(history_path: Path) -> Path:
+    return history_path.with_name(f"{history_path.name}{HISTORY_LOCK_SUFFIX}")
+
+
+@contextmanager
+def _history_lock(history_path: Path) -> Iterator[None]:
+    """Serialize history mutations through a stable owner-only sidecar lock."""
+    lock_fd = _open_owner_only_regular(_history_lock_path(history_path), os.O_RDWR | os.O_CREAT)
+    locked = False
+    try:
+        if fcntl is not None:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        elif msvcrt is not None:  # pragma: no cover - Windows
+            if os.fstat(lock_fd).st_size == 0:
+                os.write(lock_fd, b"\0")
+            os.lseek(lock_fd, 0, os.SEEK_SET)
+            msvcrt.locking(lock_fd, msvcrt.LK_LOCK, 1)
+        else:  # pragma: no cover - unknown platform
+            raise HistoryWriteError("Advisory file locking is unavailable on this platform")
+        locked = True
+        yield
+    finally:
         try:
-            legacy_path.rename(new_path)
+            if locked and fcntl is not None:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            elif locked and msvcrt is not None:  # pragma: no cover - Windows
+                os.lseek(lock_fd, 0, os.SEEK_SET)
+                msvcrt.locking(lock_fd, msvcrt.LK_UNLCK, 1)
+        finally:
+            os.close(lock_fd)
+
+
+def _resolve_history_path_unlocked(history_path: Path) -> Path:
+    """Perform legacy filename migration while the canonical sidecar is locked."""
+    legacy_path = history_path.with_name(LEGACY_HISTORY_FILENAME)
+    if legacy_path.exists() and not history_path.exists():
+        _ensure_regular_owner_only(legacy_path)
+        try:
+            legacy_path.rename(history_path)
             logger.info(f"Migrated history file: {LEGACY_HISTORY_FILENAME} -> {HISTORY_FILENAME}")
-        except OSError as e:
+        except OSError as exc:
             logger.warning(
-                f"Could not rename {legacy_path} to {new_path}: {e}; "
+                f"Could not rename {legacy_path} to {history_path}: {exc}; "
                 "continuing to read from the legacy filename"
             )
             return legacy_path
+    _ensure_regular_owner_only(history_path)
+    return history_path
 
-    return new_path
+
+@contextmanager
+def _locked_history_path(data_dir: Path | None = None) -> Iterator[Path]:
+    """Yield the active history path while holding the exclusive advisory lock."""
+    canonical_path = _get_history_path(data_dir)
+    with _history_lock(canonical_path):
+        yield _resolve_history_path_unlocked(canonical_path)
 
 
 def _get_fieldnames() -> list[str]:
@@ -257,13 +341,14 @@ def _read_csv_header(history_path: Path) -> list[str] | None:
     if not history_path.exists():
         return None
     try:
-        with open(history_path, newline="", encoding="utf-8") as f:
+        fd = _open_owner_only_regular(history_path, os.O_RDONLY)
+        with os.fdopen(fd, newline="", encoding="utf-8") as f:
             reader = csv.reader(f)
             try:
                 return next(reader)
             except StopIteration:
                 return None
-    except OSError as e:
+    except (HistoryWriteError, OSError) as e:
         logger.warning(f"Could not read history header for migration check: {e}")
         return None
 
@@ -331,7 +416,8 @@ def _rewrite_reordered_history(history_path: Path, actual: list[str], expected: 
     """
     raw_rows: list[list[str]] = []
     try:
-        with open(history_path, newline="", encoding="utf-8") as f:
+        fd = _open_owner_only_regular(history_path, os.O_RDONLY)
+        with os.fdopen(fd, newline="", encoding="utf-8") as f:
             reader = csv.reader(f)
             try:
                 next(reader)  # skip stale header
@@ -340,7 +426,7 @@ def _rewrite_reordered_history(history_path: Path, actual: list[str], expected: 
             for cells in reader:
                 if cells:
                     raw_rows.append(cells)
-    except OSError as e:
+    except (HistoryWriteError, OSError) as e:
         raise HistoryWriteError(f"Failed to read {history_path} for reorder migration: {e}") from e
 
     entries: list[TransactionHistoryEntry] = []
@@ -423,7 +509,8 @@ def _ensure_history_header_current(history_path: Path) -> None:
     # by a 0.28.x writer against a 0.27.x header) are recovered.
     raw_rows: list[dict[str, str]] = []
     try:
-        with open(history_path, newline="", encoding="utf-8") as f:
+        fd = _open_owner_only_regular(history_path, os.O_RDONLY)
+        with os.fdopen(fd, newline="", encoding="utf-8") as f:
             reader = csv.reader(f)
             try:
                 next(reader)  # skip stale header
@@ -445,7 +532,7 @@ def _ensure_history_header_current(history_path: Path) -> None:
                         if offset < len(missing):
                             row[missing[offset]] = cell
                 raw_rows.append(row)
-    except OSError as e:
+    except (HistoryWriteError, OSError) as e:
         raise HistoryWriteError(f"Failed to read {history_path} for migration: {e}") from e
 
     entries: list[TransactionHistoryEntry] = [
@@ -537,25 +624,22 @@ def append_history_entry(
     Raises:
         HistoryWriteError: If the entry cannot be written to disk.
     """
-    history_path = _get_history_path(data_dir)
     fieldnames = _get_fieldnames()
-
-    # Migrate legacy headers so new columns are not appended past the
-    # on-disk header (which would otherwise silently lose data on read).
-    _ensure_history_header_current(history_path)
-
-    # Check if file exists to determine if we need to write header
-    write_header = not history_path.exists()
-
     try:
-        with open(history_path, "a", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            if write_header:
-                writer.writeheader()
+        with _locked_history_path(data_dir) as history_path:
+            # Migrate legacy headers so new columns are not appended past the
+            # on-disk header (which would otherwise silently lose data on read).
+            _ensure_history_header_current(history_path)
+            fd = _open_owner_only_regular(history_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND)
+            with os.fdopen(fd, "a", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                if os.fstat(f.fileno()).st_size == 0:
+                    writer.writeheader()
 
-            # Convert entry to dict
-            row = {f.name: getattr(entry, f.name) for f in fields(entry)}
-            writer.writerow(row)
+                row = {f.name: getattr(entry, f.name) for f in fields(entry)}
+                writer.writerow(row)
+                f.flush()
+                os.fsync(f.fileno())
 
         logger.debug(f"Appended history entry: txid={entry.txid[:16]}... role={entry.role}")
     except Exception as e:
@@ -579,6 +663,7 @@ def _write_history_entries_atomic(
     sorted_entries = sorted(entries, key=lambda e: e.timestamp)
 
     try:
+        _ensure_regular_owner_only(history_path)
         with tempfile.NamedTemporaryFile(
             mode="w",
             newline="",
@@ -589,6 +674,7 @@ def _write_history_entries_atomic(
             delete=False,
         ) as temp_file:
             temp_path = Path(temp_file.name)
+            os.fchmod(temp_file.fileno(), 0o600)
             writer = csv.DictWriter(temp_file, fieldnames=fieldnames)
             writer.writeheader()
             for entry in sorted_entries:
@@ -598,6 +684,7 @@ def _write_history_entries_atomic(
             os.fsync(temp_file.fileno())
 
         os.replace(temp_path, history_path)
+        _fsync_parent_directory(history_path.parent)
         return True
     except Exception as e:
         logger.error(f"Failed to update history: {e}")
@@ -608,6 +695,27 @@ def _write_history_entries_atomic(
                 temp_path.unlink()
             except OSError:
                 pass
+
+
+def _fsync_parent_directory(parent: Path) -> None:
+    """Persist a completed rename when the platform supports directory fsync."""
+    if os.name == "nt":  # pragma: no cover - directory descriptors are POSIX-only
+        return
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    try:
+        directory_fd = os.open(parent, directory_flags)
+    except OSError as exc:
+        if exc.errno in {errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP}:
+            return
+        raise
+    try:
+        try:
+            os.fsync(directory_fd)
+        except OSError as exc:
+            if exc.errno not in {errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP}:
+                raise
+    finally:
+        os.close(directory_fd)
 
 
 def read_history(
@@ -632,53 +740,45 @@ def read_history(
     Returns:
         List of TransactionHistoryEntry objects
     """
-    history_path = _get_history_path(data_dir)
-
-    if not history_path.exists():
-        return []
-
-    # Recover fingerprint cells appended past a stale legacy header so
-    # per-wallet filters and updates work for pre-existing files even
-    # when no new write has occurred yet.
     try:
-        _ensure_history_header_current(history_path)
-    except HistoryWriteError as e:
-        # Migration is best-effort on read; keep going so the user can
-        # still inspect history even if the file is read-only.
-        logger.warning(f"History header migration failed during read: {e}")
-
-    entries: list[TransactionHistoryEntry] = []
-
-    try:
-        with open(history_path, newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                entry = _row_to_entry(row)
-                if entry is None:
-                    continue
-
-                # Apply role filter
-                if role_filter and entry.role != role_filter:
-                    continue
-
-                # Apply wallet filter (issue #473): legacy rows without a
-                # recorded fingerprint do not match any specific wallet
-                # and are therefore hidden from the per-wallet view.
-                if wallet_fingerprint is not None:
-                    if entry.wallet_fingerprint != wallet_fingerprint:
-                        continue
-
-                entries.append(entry)
-
+        with _locked_history_path(data_dir) as history_path:
+            if not history_path.exists():
+                return []
+            try:
+                _ensure_history_header_current(history_path)
+            except HistoryWriteError as exc:
+                logger.warning(f"History header migration failed during read: {exc}")
+            entries = _read_history_entries_unlocked(history_path)
     except Exception as e:
         logger.error(f"Failed to read history: {e}")
         return []
+
+    if role_filter:
+        entries = [entry for entry in entries if entry.role == role_filter]
+    if wallet_fingerprint is not None:
+        entries = [entry for entry in entries if entry.wallet_fingerprint == wallet_fingerprint]
 
     # Sort by timestamp (most recent first) and apply limit
     entries.sort(key=lambda e: e.timestamp, reverse=True)
     if limit:
         entries = entries[:limit]
 
+    return entries
+
+
+def _read_history_entries_unlocked(history_path: Path) -> list[TransactionHistoryEntry]:
+    """Read entries while the caller holds the history lock when needed."""
+    entries: list[TransactionHistoryEntry] = []
+    try:
+        fd = _open_owner_only_regular(history_path, os.O_RDONLY)
+        with os.fdopen(fd, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                entry = _row_to_entry(row)
+                if entry is not None:
+                    entries.append(entry)
+    except Exception as exc:
+        raise HistoryWriteError(f"Failed to read history: {exc}") from exc
     return entries
 
 
@@ -794,26 +894,8 @@ def count_other_wallet_entries(
     """
     if wallet_fingerprint is None:
         return 0
-    history_path = _get_history_path(data_dir)
-    if not history_path.exists():
-        return 0
-
-    hidden = 0
-    try:
-        with open(history_path, newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                entry = _row_to_entry(row)
-                if entry is None:
-                    continue
-                if role_filter and entry.role != role_filter:
-                    continue
-                if entry.wallet_fingerprint != wallet_fingerprint:
-                    hidden += 1
-    except Exception as e:  # pragma: no cover - defensive
-        logger.warning(f"Failed to count other-wallet history entries: {e}")
-        return 0
-    return hidden
+    entries = read_history(data_dir, role_filter=role_filter)
+    return sum(entry.wallet_fingerprint != wallet_fingerprint for entry in entries)
 
 
 def purge_reconstructed_entries(
@@ -833,24 +915,24 @@ def purge_reconstructed_entries(
     Raises:
         HistoryWriteError: If the pruned file cannot be written back.
     """
-    history_path = _get_history_path(data_dir)
-    if not history_path.exists():
-        return 0
-
-    entries = read_history(data_dir)
-    kept = [
-        e
-        for e in entries
-        if not (
-            e.source == "onchain"
-            and (wallet_fingerprint is None or e.wallet_fingerprint == wallet_fingerprint)
-        )
-    ]
-    removed = len(entries) - len(kept)
-    if removed == 0:
-        return 0
-    if not _write_history_entries_atomic(kept, history_path):
-        raise HistoryWriteError(f"Failed to rewrite {history_path} after purging entries")
+    with _locked_history_path(data_dir) as history_path:
+        if not history_path.exists():
+            return 0
+        _ensure_history_header_current(history_path)
+        entries = _read_history_entries_unlocked(history_path)
+        kept = [
+            e
+            for e in entries
+            if not (
+                e.source == "onchain"
+                and (wallet_fingerprint is None or e.wallet_fingerprint == wallet_fingerprint)
+            )
+        ]
+        removed = len(entries) - len(kept)
+        if removed == 0:
+            return 0
+        if not _write_history_entries_atomic(kept, history_path):
+            raise HistoryWriteError(f"Failed to rewrite {history_path} after purging entries")
     logger.info(f"Purged {removed} reconstructed history entries")
     return removed
 
@@ -874,22 +956,9 @@ def list_history_fingerprints(data_dir: Path | None = None) -> list[str]:
         ``history.csv``. Returns an empty list when the file is missing
         or unreadable.
     """
-    history_path = _get_history_path(data_dir)
-    if not history_path.exists():
-        return []
-
-    fingerprints: set[str] = set()
-    try:
-        with open(history_path, newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                fp = (row.get("wallet_fingerprint") or "").strip()
-                if fp:
-                    fingerprints.add(fp)
-    except Exception as e:  # pragma: no cover - defensive
-        logger.warning(f"Failed to scan history for wallet fingerprints: {e}")
-        return []
-    return sorted(fingerprints)
+    return sorted(
+        {entry.wallet_fingerprint for entry in read_history(data_dir) if entry.wallet_fingerprint}
+    )
 
 
 def _parse_utxos(utxos_used: str) -> set[str]:
@@ -1240,28 +1309,26 @@ def update_transaction_confirmation(
     Returns:
         True if transaction was found and updated, False otherwise
     """
-    history_path = _get_history_path(data_dir)
-    if not history_path.exists():
-        return False
+    with _locked_history_path(data_dir) as history_path:
+        if not history_path.exists():
+            return False
+        _ensure_history_header_current(history_path)
+        entries = _read_history_entries_unlocked(history_path)
+        target = _select_entry_for_confirmation_update(entries, txid, wallet_fingerprint)
+        if target is None:
+            return False
 
-    entries = read_history(data_dir)
-    target = _select_entry_for_confirmation_update(entries, txid, wallet_fingerprint)
-    if target is None:
-        return False
+        target.confirmations = confirmations
+        if confirmations > 0 and not target.success:
+            target.success = True
+            target.failure_reason = ""
+            target.confirmed_at = datetime.now().isoformat()
+            target.completed_at = target.confirmed_at
+            logger.info(f"Transaction {txid[:16]}... confirmed with {confirmations} confirmations")
+        elif confirmations > 0:
+            logger.debug(f"Updated confirmations for {txid[:16]}...: {confirmations}")
 
-    target.confirmations = confirmations
-    if confirmations > 0 and not target.success:
-        # Mark as successful on first confirmation
-        target.success = True
-        target.failure_reason = ""
-        target.confirmed_at = datetime.now().isoformat()
-        target.completed_at = target.confirmed_at
-        logger.info(f"Transaction {txid[:16]}... confirmed with {confirmations} confirmations")
-    elif confirmations > 0:
-        # Already marked as successful, just update confirmation count
-        logger.debug(f"Updated confirmations for {txid[:16]}...: {confirmations}")
-
-    return _write_history_entries_atomic(entries, history_path)
+        return _write_history_entries_atomic(entries, history_path)
 
 
 def abandon_transaction(
@@ -1286,20 +1353,20 @@ def abandon_transaction(
     Returns:
         True if transaction was found and updated, False otherwise
     """
-    history_path = _get_history_path(data_dir)
-    if not history_path.exists():
-        return False
+    with _locked_history_path(data_dir) as history_path:
+        if not history_path.exists():
+            return False
+        _ensure_history_header_current(history_path)
+        entries = _read_history_entries_unlocked(history_path)
+        target = _select_entry_for_confirmation_update(entries, txid, wallet_fingerprint)
+        if target is None:
+            return False
 
-    entries = read_history(data_dir)
-    target = _select_entry_for_confirmation_update(entries, txid, wallet_fingerprint)
-    if target is None:
-        return False
-
-    now = datetime.now().isoformat()
-    target.completed_at = now
-    target.failure_reason = reason
-    logger.warning(f"Transaction {txid[:16]}... abandoned: {reason}")
-    return _write_history_entries_atomic(entries, history_path)
+        now = datetime.now().isoformat()
+        target.completed_at = now
+        target.failure_reason = reason
+        logger.warning(f"Transaction {txid[:16]}... abandoned: {reason}")
+        return _write_history_entries_atomic(entries, history_path)
 
 
 async def update_transaction_confirmation_with_detection(
@@ -1327,10 +1394,6 @@ async def update_transaction_confirmation_with_detection(
     Returns:
         True if transaction was found and updated, False otherwise
     """
-    history_path = _get_history_path(data_dir)
-    if not history_path.exists():
-        return False
-
     initial_entries = read_history(data_dir)
     initial_target = _select_entry_for_confirmation_update(
         initial_entries, txid, wallet_fingerprint
@@ -1352,29 +1415,30 @@ async def update_transaction_confirmation_with_detection(
     # Peer detection performs network I/O. Reload after that await so a maker
     # session that appended a pre-reveal row in the meantime is not erased by
     # rewriting the stale snapshot read above.
-    entries = read_history(data_dir)
-    target = _select_entry_for_confirmation_update(entries, txid, wallet_fingerprint)
-    if target is None:
-        return False
+    with _locked_history_path(data_dir) as history_path:
+        if not history_path.exists():
+            return False
+        _ensure_history_header_current(history_path)
+        entries = _read_history_entries_unlocked(history_path)
+        target = _select_entry_for_confirmation_update(entries, txid, wallet_fingerprint)
+        if target is None:
+            return False
 
-    target.confirmations = confirmations
-    if confirmations > 0 and not target.success:
-        # Mark as successful on first confirmation
-        target.success = True
-        target.failure_reason = ""
-        target.confirmed_at = datetime.now().isoformat()
-        target.completed_at = target.confirmed_at
-        logger.info(f"Transaction {txid[:16]}... confirmed with {confirmations} confirmations")
+        target.confirmations = confirmations
+        if confirmations > 0 and not target.success:
+            target.success = True
+            target.failure_reason = ""
+            target.confirmed_at = datetime.now().isoformat()
+            target.completed_at = target.confirmed_at
+            logger.info(f"Transaction {txid[:16]}... confirmed with {confirmations} confirmations")
+        elif confirmations > 0:
+            logger.debug(f"Updated confirmations for {txid[:16]}...: {confirmations}")
 
-    elif confirmations > 0:
-        # Already marked as successful, just update confirmation count
-        logger.debug(f"Updated confirmations for {txid[:16]}...: {confirmations}")
+        if detected_count is not None and target.role == "maker" and target.peer_count is None:
+            target.peer_count = detected_count
+            logger.info(f"Detected {detected_count} participants in CoinJoin {txid[:16]}...")
 
-    if detected_count is not None and target.role == "maker" and target.peer_count is None:
-        target.peer_count = detected_count
-        logger.info(f"Detected {detected_count} participants in CoinJoin {txid[:16]}...")
-
-    return _write_history_entries_atomic(entries, history_path)
+        return _write_history_entries_atomic(entries, history_path)
 
 
 def update_pending_transaction_txid(
@@ -1399,30 +1463,25 @@ def update_pending_transaction_txid(
     Returns:
         True if a matching entry was found and updated, False otherwise
     """
-    history_path = _get_history_path(data_dir)
-    if not history_path.exists():
+    with _locked_history_path(data_dir) as history_path:
+        if not history_path.exists():
+            return False
+        _ensure_history_header_current(history_path)
+        entries = _read_history_entries_unlocked(history_path)
+        for entry in entries:
+            if entry.destination_address == destination_address and not entry.txid:
+                if (
+                    wallet_fingerprint is not None
+                    and entry.wallet_fingerprint != wallet_fingerprint
+                ):
+                    continue
+                entry.txid = txid
+                logger.info(
+                    f"Updated pending transaction for {destination_address[:20]}... "
+                    f"with txid {txid[:16]}..."
+                )
+                return _write_history_entries_atomic(entries, history_path)
         return False
-
-    entries = read_history(data_dir)
-    updated = False
-
-    for entry in entries:
-        # Match by destination address and empty txid (pending without txid)
-        if entry.destination_address == destination_address and not entry.txid:
-            if wallet_fingerprint is not None and entry.wallet_fingerprint != wallet_fingerprint:
-                continue
-            entry.txid = txid
-            logger.info(
-                f"Updated pending transaction for {destination_address[:20]}... "
-                f"with txid {txid[:16]}..."
-            )
-            updated = True
-            break
-
-    if not updated:
-        return False
-
-    return _write_history_entries_atomic(entries, history_path)
 
 
 def update_awaiting_transaction_signed(
@@ -1454,39 +1513,34 @@ def update_awaiting_transaction_signed(
     Returns:
         True if a matching entry was found and updated, False otherwise
     """
-    history_path = _get_history_path(data_dir)
-    if not history_path.exists():
+    with _locked_history_path(data_dir) as history_path:
+        if not history_path.exists():
+            return False
+        _ensure_history_header_current(history_path)
+        entries = _read_history_entries_unlocked(history_path)
+        for entry in entries:
+            if (
+                entry.destination_address == destination_address
+                and entry.failure_reason == "Awaiting transaction"
+                and not entry.txid
+            ):
+                if (
+                    wallet_fingerprint is not None
+                    and entry.wallet_fingerprint != wallet_fingerprint
+                ):
+                    continue
+                entry.txid = txid
+                entry.fee_received = fee_received
+                entry.txfee_contribution = txfee_contribution
+                entry.net_fee = fee_received - txfee_contribution
+                entry.destination_vout = destination_vout
+                entry.failure_reason = "Pending confirmation"
+                logger.info(
+                    f"Updated awaiting transaction for {destination_address[:20]}... "
+                    f"with txid {txid[:16]}..., fee={fee_received} sats"
+                )
+                return _write_history_entries_atomic(entries, history_path)
         return False
-
-    entries = read_history(data_dir)
-    updated = False
-
-    for entry in entries:
-        # Match by destination address and "Awaiting transaction" status
-        if (
-            entry.destination_address == destination_address
-            and entry.failure_reason == "Awaiting transaction"
-            and not entry.txid  # Should not have txid yet
-        ):
-            if wallet_fingerprint is not None and entry.wallet_fingerprint != wallet_fingerprint:
-                continue
-            entry.txid = txid
-            entry.fee_received = fee_received
-            entry.txfee_contribution = txfee_contribution
-            entry.net_fee = fee_received - txfee_contribution
-            entry.destination_vout = destination_vout
-            entry.failure_reason = "Pending confirmation"  # Now awaiting confirmation
-            logger.info(
-                f"Updated awaiting transaction for {destination_address[:20]}... "
-                f"with txid {txid[:16]}..., fee={fee_received} sats"
-            )
-            updated = True
-            break
-
-    if not updated:
-        return False
-
-    return _write_history_entries_atomic(entries, history_path)
 
 
 def update_taker_awaiting_transaction_broadcast(
@@ -1516,39 +1570,33 @@ def update_taker_awaiting_transaction_broadcast(
     Returns:
         True if a matching entry was found and updated, False otherwise
     """
-    history_path = _get_history_path(data_dir)
-    if not history_path.exists():
+    with _locked_history_path(data_dir) as history_path:
+        if not history_path.exists():
+            return False
+        _ensure_history_header_current(history_path)
+        entries = _read_history_entries_unlocked(history_path)
+        for entry in entries:
+            if (
+                entry.destination_address == destination_address
+                and entry.change_address == change_address
+                and entry.failure_reason == "Awaiting transaction"
+                and not entry.txid
+            ):
+                if (
+                    wallet_fingerprint is not None
+                    and entry.wallet_fingerprint != wallet_fingerprint
+                ):
+                    continue
+                entry.txid = txid
+                entry.mining_fee_paid = mining_fee
+                entry.net_fee = -(entry.total_maker_fees_paid + mining_fee)
+                entry.failure_reason = "Pending confirmation"
+                logger.info(
+                    f"Updated awaiting transaction for {destination_address[:20]}... "
+                    f"with txid {txid[:16]}..., mining_fee={mining_fee} sats"
+                )
+                return _write_history_entries_atomic(entries, history_path)
         return False
-
-    entries = read_history(data_dir)
-    updated = False
-
-    for entry in entries:
-        # Match by destination + change address and "Awaiting transaction" status
-        # Both addresses must match exactly (including empty string for no change)
-        if (
-            entry.destination_address == destination_address
-            and entry.change_address == change_address
-            and entry.failure_reason == "Awaiting transaction"
-            and not entry.txid  # Should not have txid yet
-        ):
-            if wallet_fingerprint is not None and entry.wallet_fingerprint != wallet_fingerprint:
-                continue
-            entry.txid = txid
-            entry.mining_fee_paid = mining_fee
-            entry.net_fee = -(entry.total_maker_fees_paid + mining_fee)
-            entry.failure_reason = "Pending confirmation"  # Now awaiting confirmation
-            logger.info(
-                f"Updated awaiting transaction for {destination_address[:20]}... "
-                f"with txid {txid[:16]}..., mining_fee={mining_fee} sats"
-            )
-            updated = True
-            break
-
-    if not updated:
-        return False
-
-    return _write_history_entries_atomic(entries, history_path)
 
 
 def update_send_awaiting_broadcast(
@@ -1577,34 +1625,28 @@ def update_send_awaiting_broadcast(
     Returns:
         True if a matching row was found and rewritten, False otherwise.
     """
-    history_path = _get_history_path(data_dir)
-    if not history_path.exists():
+    with _locked_history_path(data_dir) as history_path:
+        if not history_path.exists():
+            return False
+        _ensure_history_header_current(history_path)
+        entries = _read_history_entries_unlocked(history_path)
+        for entry in entries:
+            if (
+                entry.role == "send"
+                and entry.wallet_fingerprint == pending_entry.wallet_fingerprint
+                and entry.timestamp == pending_entry.timestamp
+                and entry.destination_address == pending_entry.destination_address
+                and entry.change_address == pending_entry.change_address
+                and entry.utxos_used == pending_entry.utxos_used
+                and entry.failure_reason == "awaiting broadcast"
+                and not entry.txid
+            ):
+                entry.txid = txid
+                entry.success = success
+                entry.failure_reason = failure_reason
+                entry.completed_at = entry.timestamp
+                return _write_history_entries_atomic(entries, history_path)
         return False
-
-    entries = read_history(data_dir)
-    updated = False
-    for entry in entries:
-        if (
-            entry.role == "send"
-            and entry.wallet_fingerprint == pending_entry.wallet_fingerprint
-            and entry.timestamp == pending_entry.timestamp
-            and entry.destination_address == pending_entry.destination_address
-            and entry.change_address == pending_entry.change_address
-            and entry.utxos_used == pending_entry.utxos_used
-            and entry.failure_reason == "awaiting broadcast"
-            and not entry.txid
-        ):
-            entry.txid = txid
-            entry.success = success
-            entry.failure_reason = failure_reason
-            entry.completed_at = entry.timestamp
-            updated = True
-            break
-
-    if not updated:
-        return False
-
-    return _write_history_entries_atomic(entries, history_path)
 
 
 def mark_pending_transaction_failed(
@@ -1633,45 +1675,36 @@ def mark_pending_transaction_failed(
     Returns:
         True if a matching entry was found and updated, False otherwise
     """
-    history_path = _get_history_path(data_dir)
-    if not history_path.exists():
+    with _locked_history_path(data_dir) as history_path:
+        if not history_path.exists():
+            return False
+        _ensure_history_header_current(history_path)
+        entries = _read_history_entries_unlocked(history_path)
+        for entry in entries:
+            if (
+                entry.destination_address == destination_address
+                and not entry.success
+                and entry.confirmations == 0
+                and not entry.completed_at
+            ):
+                if txid is not None and entry.txid != txid:
+                    continue
+                if (
+                    wallet_fingerprint is not None
+                    and entry.wallet_fingerprint != wallet_fingerprint
+                ):
+                    continue
+
+                entry.success = False
+                entry.failure_reason = failure_reason
+                entry.completed_at = datetime.now().isoformat()
+                txid_str = f" (txid: {entry.txid[:16]}...)" if entry.txid else ""
+                logger.info(
+                    f"Marked pending transaction for {destination_address[:20]}...{txid_str} "
+                    f"as failed: {failure_reason}"
+                )
+                return _write_history_entries_atomic(entries, history_path)
         return False
-
-    entries = read_history(data_dir)
-    updated = False
-
-    for entry in entries:
-        # Match by destination address and pending status
-        # (success=False, confirmations=0, no completed_at)
-        if (
-            entry.destination_address == destination_address
-            and not entry.success
-            and entry.confirmations == 0
-            and not entry.completed_at
-        ):
-            # If txid is provided, also match by txid
-            if txid is not None and entry.txid != txid:
-                continue
-
-            if wallet_fingerprint is not None and entry.wallet_fingerprint != wallet_fingerprint:
-                continue
-
-            entry.success = False
-            entry.failure_reason = failure_reason
-            entry.completed_at = datetime.now().isoformat()
-            # Keep confirmations at 0 to distinguish from confirmed then reorged
-            txid_str = f" (txid: {entry.txid[:16]}...)" if entry.txid else ""
-            logger.info(
-                f"Marked pending transaction for {destination_address[:20]}...{txid_str} "
-                f"as failed: {failure_reason}"
-            )
-            updated = True
-            break
-
-    if not updated:
-        return False
-
-    return _write_history_entries_atomic(entries, history_path)
 
 
 def cleanup_stale_pending_transactions(
@@ -1695,47 +1728,44 @@ def cleanup_stale_pending_transactions(
     Returns:
         Number of entries marked as failed
     """
-    history_path = _get_history_path(data_dir)
-    if not history_path.exists():
-        return 0
+    with _locked_history_path(data_dir) as history_path:
+        if not history_path.exists():
+            return 0
+        _ensure_history_header_current(history_path)
+        entries = _read_history_entries_unlocked(history_path)
+        count = 0
+        now = datetime.now()
 
-    # Read full history (no wallet filter) so the rewrite preserves all entries
-    entries = read_history(data_dir)
-    count = 0
-    now = datetime.now()
+        for entry in entries:
+            if not entry.success and entry.confirmations == 0 and not entry.completed_at:
+                if (
+                    wallet_fingerprint is not None
+                    and entry.wallet_fingerprint != wallet_fingerprint
+                ):
+                    continue
+                try:
+                    timestamp = datetime.fromisoformat(entry.timestamp)
+                    age_minutes = (now - timestamp).total_seconds() / 60
 
-    for entry in entries:
-        # Only process pending entries (success=False, confirmations=0, no completed_at)
-        if not entry.success and entry.confirmations == 0 and not entry.completed_at:
-            # Skip entries that don't belong to the active wallet when a
-            # filter is set so we don't mutate other wallets' pending state.
-            if wallet_fingerprint is not None and entry.wallet_fingerprint != wallet_fingerprint:
-                continue
-            try:
-                timestamp = datetime.fromisoformat(entry.timestamp)
-                age_minutes = (now - timestamp).total_seconds() / 60
+                    if age_minutes >= max_age_minutes:
+                        entry.completed_at = now.isoformat()
+                        entry.failure_reason = (
+                            "Cleaned up: pending for "
+                            f"{int(age_minutes)} minutes without confirmation"
+                        )
+                        txid_str = f" (txid: {entry.txid[:16]}...)" if entry.txid else ""
+                        logger.info(
+                            f"Marked stale pending entry{txid_str} as failed "
+                            f"(age: {int(age_minutes)} minutes)"
+                        )
+                        count += 1
+                except (ValueError, TypeError) as exc:
+                    logger.debug(f"Error parsing timestamp for entry: {exc}")
+                    continue
 
-                if age_minutes >= max_age_minutes:
-                    entry.completed_at = now.isoformat()
-                    entry.failure_reason = (
-                        f"Cleaned up: pending for {int(age_minutes)} minutes without confirmation"
-                    )
-                    txid_str = f" (txid: {entry.txid[:16]}...)" if entry.txid else ""
-                    logger.info(
-                        f"Marked stale pending entry{txid_str} as failed "
-                        f"(age: {int(age_minutes)} minutes)"
-                    )
-                    count += 1
-            except (ValueError, TypeError) as e:
-                logger.debug(f"Error parsing timestamp for entry: {e}")
-                continue
-
-    if count == 0:
-        return 0
-
-    if _write_history_entries_atomic(entries, history_path):
-        return count
-    return 0
+        if count == 0:
+            return 0
+        return count if _write_history_entries_atomic(entries, history_path) else 0
 
 
 def create_taker_history_entry(
@@ -2495,24 +2525,17 @@ def update_transaction_peer_count(
     Returns:
         True if transaction was found and updated, False otherwise
     """
-    history_path = _get_history_path(data_dir)
-    if not history_path.exists():
+    with _locked_history_path(data_dir) as history_path:
+        if not history_path.exists():
+            return False
+        _ensure_history_header_current(history_path)
+        entries = _read_history_entries_unlocked(history_path)
+        for entry in entries:
+            if entry.txid == txid and entry.peer_count is None:
+                entry.peer_count = peer_count
+                logger.info(f"Updated peer count for tx {txid[:16]}... to {peer_count}")
+                return _write_history_entries_atomic(entries, history_path)
         return False
-
-    entries = read_history(data_dir)
-    updated = False
-
-    for entry in entries:
-        if entry.txid == txid and entry.peer_count is None:
-            entry.peer_count = peer_count
-            logger.info(f"Updated peer count for tx {txid[:16]}... to {peer_count}")
-            updated = True
-            break
-
-    if not updated:
-        return False
-
-    return _write_history_entries_atomic(entries, history_path)
 
 
 async def update_all_pending_transactions(

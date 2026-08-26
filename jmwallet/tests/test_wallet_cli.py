@@ -904,21 +904,17 @@ async def test_send_finalizes_with_resolved_txid(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_send_broadcasts_after_history_append_failure(tmp_path: Path) -> None:
+async def test_send_aborts_before_broadcast_when_history_append_fails(tmp_path: Path) -> None:
+    from jmwallet.history import HistoryWriteError
+
     with _mock_send_execution(tmp_path) as (backend_settings, mocks):
-        mocks.append_history.side_effect = OSError("history unavailable")
+        mocks.append_history.side_effect = HistoryWriteError("history unavailable")
 
-        await _run_mock_send(backend_settings)
+        with pytest.raises(HistoryWriteError, match="history unavailable"):
+            await _run_mock_send(backend_settings)
 
-    mocks.backend.broadcast_transaction.assert_awaited_once()
-    mocks.finalize_history.assert_called_once_with(
-        mocks.send_entry,
-        txid="resolved_txid",
-        success=True,
-        failure_reason="",
-        data_dir=tmp_path,
-        history_persisted=False,
-    )
+    mocks.backend.broadcast_transaction.assert_not_awaited()
+    mocks.finalize_history.assert_not_called()
 
 
 @pytest.mark.asyncio

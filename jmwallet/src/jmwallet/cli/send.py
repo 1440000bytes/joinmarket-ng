@@ -805,14 +805,8 @@ async def _send_transaction(
             wallet_fingerprint=wallet.wallet_fingerprint,
             source_addresses=selected_input_addresses,
         )
-        history_persisted = False
-        try:
-            append_history_entry(send_entry, data_dir=backend_settings.data_dir)
-            history_persisted = True
-        except Exception as e:
-            # Persistence failure should not block the user from broadcasting;
-            # surface a warning and continue.
-            logger.warning(f"Failed to persist send history entry: {e}")
+        append_history_entry(send_entry, data_dir=backend_settings.data_dir)
+        history_persisted = True
 
         if allow_conflicts:
             try:

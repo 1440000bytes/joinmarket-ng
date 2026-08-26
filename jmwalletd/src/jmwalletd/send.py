@@ -59,7 +59,8 @@ async def do_direct_send(
     2. After broadcast resolves (success or failure) the row is patched
        in-place via :func:`~jmwallet.history.update_send_awaiting_broadcast`.
 
-    Persistence failures are logged as warnings and never block the broadcast.
+    A pre-broadcast persistence failure aborts before broadcasting. Finalization
+    failures remain best-effort because the transaction may already be public.
     """
     from jmcore.paths import get_default_data_dir
     from jmwalletd._backend import get_backend
@@ -117,12 +118,8 @@ async def do_direct_send(
         wallet_fingerprint=wallet_fingerprint,
         source_addresses=prepared.source_addresses,
     )
-    history_persisted = False
-    try:
-        append_history_entry(send_entry, data_dir=data_dir)
-        history_persisted = True
-    except Exception as exc:
-        logger.warning("Failed to persist pre-broadcast send history entry: {}", exc)
+    append_history_entry(send_entry, data_dir=data_dir)
+    history_persisted = True
 
     # --- Phase 2: broadcast ---
     txid = ""
