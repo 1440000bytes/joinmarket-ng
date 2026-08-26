@@ -27,10 +27,14 @@ def ws_client(
 
 
 def _wait_for_ws_client(state: DaemonState, *, timeout: float = 5.0) -> None:
-    """Block until the WebSocket endpoint has registered at least one client queue."""
+    """Block until the WebSocket endpoint has authenticated a client."""
     deadline = time.monotonic() + timeout
-    while not state._ws_clients and time.monotonic() < deadline:
+    while (
+        not any(client.generation is not None for client in state._ws_clients)
+        and time.monotonic() < deadline
+    ):
         time.sleep(0.05)
+    assert any(client.generation is not None for client in state._ws_clients)
 
 
 class TestWebSocketAuth:
@@ -59,6 +63,20 @@ class TestWebSocketAuth:
             ws.send_text("invalid_token_here")
             ws.receive_text()
         assert not state._ws_clients
+
+    def test_lock_closes_registered_socket_before_auth(
+        self, ws_client: tuple[TestClient, str]
+    ) -> None:
+        client, token = ws_client
+
+        with client.websocket_connect("/api/v1/ws") as ws:
+            response = client.get(
+                "/api/v1/wallet/test_wallet.jmdat/lock",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert response.status_code == 200
+            with pytest.raises(WebSocketDisconnect):
+                ws.receive_text()
 
 
 class TestWebSocketNotifications:
@@ -89,10 +107,10 @@ class TestWebSocketNotifications:
             data = json.loads(msg)
             assert data["txid"] == "abc123"
 
-    def test_queues_notification_before_auth_is_processed(
+    def test_notification_before_auth_is_not_delivered(
         self, ws_client: tuple[TestClient, str]
     ) -> None:
-        """A notification after handshake completion is retained during auth."""
+        """A pre-auth registration cannot retain wallet notifications."""
         client, token = ws_client
         state = get_daemon_state()
 
@@ -100,8 +118,37 @@ class TestWebSocketNotifications:
             assert len(state._ws_clients) == 1
             state.broadcast_ws({"txid": "during-auth", "txdetails": {"amount": 1}})
             ws.send_text(token)
+            _wait_for_ws_client(state)
+            state.broadcast_ws({"txid": "after-auth", "txdetails": {"amount": 2}})
 
-            assert json.loads(ws.receive_text())["txid"] == "during-auth"
+            assert json.loads(ws.receive_text())["txid"] == "after-auth"
+
+    def test_lock_closes_authenticated_socket_and_next_session_works(
+        self, ws_client: tuple[TestClient, str]
+    ) -> None:
+        client, token = ws_client
+        state = get_daemon_state()
+
+        with client.websocket_connect("/api/v1/ws") as ws:
+            ws.send_text(token)
+            _wait_for_ws_client(state)
+
+            response = client.get(
+                "/api/v1/wallet/test_wallet.jmdat/lock",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert response.status_code == 200
+            with pytest.raises(WebSocketDisconnect):
+                ws.receive_text()
+
+        state.wallet_service = object()
+        state.wallet_name = "next_wallet.jmdat"
+        next_token = state.token_authority.issue("next_wallet.jmdat").token
+        with client.websocket_connect("/api/v1/ws") as next_ws:
+            next_ws.send_text(next_token)
+            _wait_for_ws_client(state)
+            state.broadcast_ws({"txid": "next-session", "txdetails": {}})
+            assert json.loads(next_ws.receive_text())["txid"] == "next-session"
 
 
 class TestWebSocketPaths:

@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import enum
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,28 @@ class CoinjoinState(enum.IntEnum):
     MAKER_RUNNING = 1
     NOT_RUNNING = 2
     TUMBLER_RUNNING = 3
+
+
+class WebSocketControl(enum.Enum):
+    """Control events consumed by a WebSocket writer."""
+
+    CLOSE = enum.auto()
+
+
+@dataclass(frozen=True)
+class WebSocketNotification:
+    """A notification bound to the wallet generation that created it."""
+
+    generation: int
+    text: str
+
+
+@dataclass(eq=False)
+class WebSocketClient:
+    """A registered WebSocket client and its authorization state."""
+
+    queue: asyncio.Queue[WebSocketNotification | WebSocketControl]
+    generation: int | None = None
 
 
 class DaemonState:
@@ -109,7 +132,8 @@ class DaemonState:
         self.data_dir = data_dir or get_default_data_dir()
 
         # WebSocket notification hub
-        self._ws_clients: set[asyncio.Queue[str]] = set()
+        self._wallet_generation = 0
+        self._ws_clients: set[WebSocketClient] = set()
 
     @property
     def wallet_loaded(self) -> bool:
@@ -164,6 +188,12 @@ class DaemonState:
         """
         if not self.wallet_loaded:
             return True  # already locked
+
+        # Invalidate and close clients before stopping wallet activities. This
+        # ensures no state changes generated while locking can reach a session
+        # authenticated against the wallet being discarded.
+        self._invalidate_ws_clients()
+        self.token_authority.reset()
 
         # Stop the maker if running.
         if self._maker_ref is not None:
@@ -243,7 +273,6 @@ class DaemonState:
         self.tumble_task = None
         self.tumble_plan_wallet = None
         self.config_overrides.clear()
-        self.token_authority.reset()
         return False  # was not locked, we just locked it
 
     def activate_coinjoin_state(self, state: CoinjoinState) -> None:
@@ -268,13 +297,17 @@ class DaemonState:
         import json
 
         text = json.dumps(message)
-        dead: set[asyncio.Queue[str]] = set()
-        for q in self._ws_clients:
+        notification = WebSocketNotification(generation=self._wallet_generation, text=text)
+        dead: set[WebSocketClient] = set()
+        for client in self._ws_clients:
+            if client.generation != self._wallet_generation:
+                continue
             try:
-                q.put_nowait(text)
+                client.queue.put_nowait(notification)
             except asyncio.QueueFull:
-                dead.add(q)
-        self._ws_clients -= dead
+                dead.add(client)
+        for client in dead:
+            self._close_ws_client(client)
 
     def mark_tx_broadcast(self, txid: str) -> None:
         """Record that a first-seen WebSocket notification was emitted for ``txid``.
@@ -358,17 +391,50 @@ class DaemonState:
             return False
         return ready.is_set()
 
-    def register_ws_client(self) -> asyncio.Queue[str]:
-        """Register a new WebSocket client and return its message queue."""
-        q: asyncio.Queue[str] = asyncio.Queue(maxsize=256)
-        self._ws_clients.add(q)
+    def register_ws_client(self) -> WebSocketClient:
+        """Register an unauthenticated WebSocket client."""
+        client = WebSocketClient(queue=asyncio.Queue(maxsize=256))
+        self._ws_clients.add(client)
         logger.debug("WebSocket client registered (total: {})", len(self._ws_clients))
-        return q
+        return client
 
-    def unregister_ws_client(self, q: asyncio.Queue[str]) -> None:
+    def authenticate_ws_client(self, client: WebSocketClient) -> bool:
+        """Bind a registered client to the current wallet generation."""
+        if client not in self._ws_clients or not self.wallet_loaded:
+            return False
+        client.generation = self._wallet_generation
+        return True
+
+    def ws_client_is_current(self, client: WebSocketClient, generation: int) -> bool:
+        """Return whether a notification can still be sent to ``client``."""
+        return (
+            client in self._ws_clients
+            and client.generation == generation
+            and generation == self._wallet_generation
+        )
+
+    def unregister_ws_client(self, client: WebSocketClient) -> None:
         """Unregister a WebSocket client."""
-        self._ws_clients.discard(q)
+        self._ws_clients.discard(client)
         logger.debug("WebSocket client unregistered (total: {})", len(self._ws_clients))
+
+    def _invalidate_ws_clients(self) -> None:
+        """Invalidate all clients and tell their writers to close promptly."""
+        self._wallet_generation += 1
+        clients = tuple(self._ws_clients)
+        for client in clients:
+            self._close_ws_client(client)
+
+    def _close_ws_client(self, client: WebSocketClient) -> None:
+        """Remove a client and replace queued notifications with a close event."""
+        self._ws_clients.discard(client)
+        client.generation = None
+        while True:
+            try:
+                client.queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+        client.queue.put_nowait(WebSocketControl.CLOSE)
 
     def reconcile_stale_tumbler_plans(self) -> list[str]:
         """Reconcile stale on-disk tumbler plans after daemon startup.

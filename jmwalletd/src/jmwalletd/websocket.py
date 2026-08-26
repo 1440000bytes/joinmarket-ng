@@ -19,12 +19,14 @@ Notification types:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 
 import jwt as pyjwt
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from loguru import logger
 
 from jmwalletd.deps import get_daemon_state
+from jmwalletd.state import WebSocketControl, WebSocketNotification
 
 router = APIRouter()
 
@@ -36,16 +38,38 @@ _WS_PATH = ""
 async def websocket_endpoint(websocket: WebSocket) -> None:
     """Handle a WebSocket connection with token-based authentication."""
     state = get_daemon_state()
-    # Register before accepting so notifications cannot be lost between the
-    # client completing the handshake and the server processing its token.
-    # The writer is started only after authentication succeeds.
-    queue = state.register_ws_client()
+    # Register before accepting so lock can terminate a socket while it waits
+    # for authentication. The client receives no notifications until the token
+    # is verified and it is bound to the current wallet generation.
+    client = state.register_ws_client()
 
     try:
         await websocket.accept()
 
-        # Wait for the auth token (first message).
-        token_msg = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
+        # Wait for the auth token (first message), but also observe a lock
+        # while this socket is registered but not yet authenticated.
+        auth_task = asyncio.create_task(websocket.receive_text())
+        control_task = asyncio.create_task(client.queue.get())
+        done, pending = await asyncio.wait(
+            [auth_task, control_task], timeout=30.0, return_when=asyncio.FIRST_COMPLETED
+        )
+        if not done:
+            for task in pending:
+                task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.gather(*pending)
+            raise TimeoutError
+        if control_task in done:
+            auth_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await auth_task
+            await websocket.close(code=4001, reason="Wallet session ended")
+            return
+
+        control_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await control_task
+        token_msg = auth_task.result()
 
         # Verify the token.
         try:
@@ -53,6 +77,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         except pyjwt.InvalidTokenError as exc:
             logger.debug("WebSocket auth failed: {}", exc)
             await websocket.close(code=4001, reason="Invalid token")
+            return
+        if not state.authenticate_ws_client(client):
+            await websocket.close(code=4001, reason="Wallet session ended")
             return
 
         # Run two tasks concurrently:
@@ -76,9 +103,16 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         async def _writer() -> None:
             """Send queued notifications to the client."""
             while True:
-                msg = await queue.get()
+                event = await client.queue.get()
+                if event is WebSocketControl.CLOSE:
+                    await websocket.close(code=4001, reason="Wallet session ended")
+                    return
+                assert isinstance(event, WebSocketNotification)
+                if not state.ws_client_is_current(client, event.generation):
+                    await websocket.close(code=4001, reason="Wallet session ended")
+                    return
                 try:
-                    await websocket.send_text(msg)
+                    await websocket.send_text(event.text)
                 except Exception:
                     return
 
@@ -102,4 +136,4 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     except Exception:
         logger.exception("WebSocket error")
     finally:
-        state.unregister_ws_client(queue)
+        state.unregister_ws_client(client)

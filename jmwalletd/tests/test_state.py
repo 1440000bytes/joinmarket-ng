@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from jmwalletd.state import CoinjoinState, DaemonState
+from jmwalletd.state import CoinjoinState, DaemonState, WebSocketControl, WebSocketNotification
 
 
 class TestCoinjoinState:
@@ -130,26 +130,53 @@ class TestDaemonState:
         assert daemon_state.taker_running is False
 
     def test_ws_client_lifecycle(self, daemon_state: DaemonState) -> None:
-        queue = daemon_state.register_ws_client()
-        assert queue in daemon_state._ws_clients
-        daemon_state.unregister_ws_client(queue)
-        assert queue not in daemon_state._ws_clients
+        client = daemon_state.register_ws_client()
+        assert client in daemon_state._ws_clients
+        daemon_state.unregister_ws_client(client)
+        assert client not in daemon_state._ws_clients
 
     def test_broadcast_ws(self, daemon_state: DaemonState) -> None:
-        queue = daemon_state.register_ws_client()
+        daemon_state.wallet_service = MagicMock()
+        client = daemon_state.register_ws_client()
+        assert daemon_state.authenticate_ws_client(client)
         daemon_state.broadcast_ws({"coinjoin_state": 2})
-        msg = queue.get_nowait()
-        assert '"coinjoin_state": 2' in msg
+        notification = client.queue.get_nowait()
+        assert isinstance(notification, WebSocketNotification)
+        assert '"coinjoin_state": 2' in notification.text
 
     def test_broadcast_ws_full_queue_removed(self, daemon_state: DaemonState) -> None:
         """If a WS client's queue is full, it should be removed."""
-        queue: asyncio.Queue[str] = asyncio.Queue(maxsize=1)
-        daemon_state._ws_clients.add(queue)
-        # Fill the queue
-        queue.put_nowait("first")
+        daemon_state.wallet_service = MagicMock()
+        client = daemon_state.register_ws_client()
+        client.queue = asyncio.Queue(maxsize=1)
+        assert daemon_state.authenticate_ws_client(client)
+        daemon_state.broadcast_ws({"first": True})
         # Broadcasting should not raise; the full queue is silently dropped
         daemon_state.broadcast_ws({"test": True})
-        assert queue not in daemon_state._ws_clients
+        assert client not in daemon_state._ws_clients
+        assert client.queue.get_nowait() is WebSocketControl.CLOSE
+
+    def test_unauthenticated_ws_client_does_not_receive_broadcast(
+        self, daemon_state: DaemonState
+    ) -> None:
+        client = daemon_state.register_ws_client()
+        daemon_state.broadcast_ws({"txid": "private"})
+        assert client.queue.empty()
+
+    @pytest.mark.asyncio
+    async def test_lock_wallet_invalidates_ws_clients(
+        self, daemon_state: DaemonState, mock_wallet_service: MagicMock
+    ) -> None:
+        daemon_state.wallet_service = mock_wallet_service
+        client = daemon_state.register_ws_client()
+        assert daemon_state.authenticate_ws_client(client)
+        daemon_state.broadcast_ws({"txid": "before-lock"})
+
+        await daemon_state.lock_wallet()
+
+        assert client not in daemon_state._ws_clients
+        assert client.generation is None
+        assert client.queue.get_nowait() is WebSocketControl.CLOSE
 
     @pytest.mark.asyncio
     async def test_lock_wallet_stops_running_taker(
