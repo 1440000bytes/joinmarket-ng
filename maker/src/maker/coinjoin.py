@@ -183,7 +183,7 @@ class CoinJoinSession:
         if self.comm_channel != source_type:
             # Legitimate opportunistic channel switch (e.g. directory -> direct).
             # Log at debug level and follow the taker to its new channel.
-            logger.debug(
+            logger.bind(sensitive=True).debug(
                 f"Channel switch for {self.taker_nick}: "
                 f"session started on '{self.comm_channel}', "
                 f"now receiving on '{source_type}' (accepted)"
@@ -225,7 +225,7 @@ class CoinJoinSession:
             self.taker_nacl_pk = taker_pk  # Store for btc_sig in handle_auth
             self.state = CoinJoinState.FILL_RECEIVED
 
-            logger.debug(
+            logger.bind(sensitive=True).debug(
                 f"Received !fill from {self.taker_nick}: "
                 f"amount={amount}, commitment={commitment[:16]}..., taker_pk={taker_pk[:16]}..."
             )
@@ -235,7 +235,8 @@ class CoinJoinSession:
                 self.crypto.setup_encryption(taker_pk)
                 logger.debug(f"Set up encryption box with taker {self.taker_nick}")
             except Exception as e:
-                logger.error(f"Failed to set up encryption with taker: {e}")
+                logger.error("Failed to set up encryption with taker")
+                logger.bind(sensitive=True).error(f"Failed to set up encryption with taker: {e}")
                 return False, {"error": f"Invalid taker pubkey: {e}"}
 
             # Return our NaCl pubkey and features for E2E encryption setup
@@ -253,7 +254,8 @@ class CoinJoinSession:
             return True, {"nacl_pubkey": nacl_pubkey, "features": features}
 
         except Exception as e:
-            logger.error(f"Failed to handle !fill: {e}")
+            logger.error("Failed to handle !fill")
+            logger.bind(sensitive=True).error(f"Failed to handle !fill: {e}")
             self.state = CoinJoinState.FAILED
             return False, {"error": str(e)}
 
@@ -294,7 +296,7 @@ class CoinJoinSession:
 
             commitment_bytes = bytes.fromhex(commitment)
             if commitment_bytes != self.commitment:
-                logger.debug(
+                logger.bind(sensitive=True).debug(
                     f"Commitment mismatch: received={commitment[:16]}..., "
                     f"expected={self.commitment.hex()[:16]}..."
                 )
@@ -302,11 +304,11 @@ class CoinJoinSession:
 
             parsed_rev = parse_podle_revelation(revelation)
             if not parsed_rev:
-                logger.debug(f"Failed to parse PoDLE revelation: {revelation}")
+                logger.bind(sensitive=True).debug(f"Failed to parse PoDLE revelation: {revelation}")
                 return False, {"error": "Invalid PoDLE revelation format"}
 
             # Log PoDLE verification inputs at TRACE level
-            logger.trace(
+            logger.bind(sensitive=True).trace(
                 f"PoDLE verification inputs: P={parsed_rev['P'].hex()[:32]}..., "
                 f"P2={parsed_rev['P2'].hex()[:32]}..., sig={parsed_rev['sig'].hex()[:32]}..., "
                 f"e={parsed_rev['e'].hex()[:16]}..., commitment={commitment[:16]}..."
@@ -323,14 +325,15 @@ class CoinJoinSession:
 
             if not is_valid:
                 utxo_str = f"{parsed_rev['txid'][:16]}...:{parsed_rev['vout']}"
-                logger.warning(
+                logger.warning("PoDLE verification failed")
+                logger.bind(sensitive=True).warning(
                     f"PoDLE verification failed for {self.taker_nick}: {error} "
                     f"(commitment={commitment[:16]}..., utxo={utxo_str})"
                 )
                 return False, {"error": f"PoDLE verification failed: {error}"}
 
             logger.debug("PoDLE proof verified ✓")
-            logger.debug(
+            logger.bind(sensitive=True).debug(
                 f"PoDLE details: taker={self.taker_nick}, "
                 f"utxo={parsed_rev['txid']}:{parsed_rev['vout']}, "
                 f"commitment={commitment}"
@@ -358,7 +361,8 @@ class CoinJoinSession:
                     # Neutrino backend cannot verify UTXOs without extended metadata.
                     # This happens when a legacy taker (e.g. reference implementation)
                     # picks this maker -- they don't send scriptpubkey/blockheight.
-                    logger.warning(
+                    logger.warning("Neutrino backend cannot verify the taker UTXO")
+                    logger.bind(sensitive=True).warning(
                         f"Neutrino backend cannot verify taker UTXO "
                         f"{utxo_txid[:16]}...:{utxo_vout} - "
                         f"taker did not send extended metadata (neutrino_compat). "
@@ -387,7 +391,9 @@ class CoinJoinSession:
                 # verify_utxo_with_metadata confirmed this scriptpubkey matches
                 # the on-chain output, so it is authoritative for binding.
                 verified_scriptpubkey: str | None = taker_scriptpubkey
-                logger.debug(f"Neutrino-verified taker's UTXO: {utxo_txid}:{utxo_vout}")
+                logger.bind(sensitive=True).debug(
+                    f"Neutrino-verified taker's UTXO: {utxo_txid}:{utxo_vout}"
+                )
             else:
                 # Full node: direct UTXO lookup
                 taker_utxo = await self.backend.get_utxo(utxo_txid, utxo_vout)
@@ -409,21 +415,23 @@ class CoinJoinSession:
             if verified_scriptpubkey:
                 bound, bind_err = verify_podle_binding(parsed_rev["P"], verified_scriptpubkey)
                 if not bound:
-                    logger.warning(
+                    logger.warning("PoDLE binding failed")
+                    logger.bind(sensitive=True).warning(
                         f"PoDLE binding failed for {self.taker_nick}: {bind_err} "
                         f"(utxo={utxo_txid[:16]}...:{utxo_vout})"
                     )
                     return False, {"error": f"PoDLE binding failed: {bind_err}"}
                 logger.debug("PoDLE bound to UTXO scriptpubkey ✓")
             else:
-                logger.warning(
+                logger.warning("Could not verify PoDLE binding to UTXO")
+                logger.bind(sensitive=True).warning(
                     f"No scriptpubkey available to bind PoDLE for "
                     f"{utxo_txid[:16]}...:{utxo_vout}; rejecting"
                 )
                 return False, {"error": "Could not verify PoDLE binding to UTXO"}
 
             if taker_utxo_confirmations < self.taker_utxo_age:
-                logger.debug(
+                logger.bind(sensitive=True).debug(
                     f"Taker UTXO too young: {utxo_txid}:{utxo_vout} has "
                     f"{taker_utxo_confirmations} confirmations, need {self.taker_utxo_age}"
                 )
@@ -434,7 +442,7 @@ class CoinJoinSession:
 
             required_amount = int(self.amount * self.taker_utxo_amtpercent / 100)
             if taker_utxo_value < required_amount:
-                logger.debug(
+                logger.bind(sensitive=True).debug(
                     f"Taker UTXO too small: {utxo_txid}:{utxo_vout} has "
                     f"{taker_utxo_value} sats, need {required_amount} sats "
                     f"({self.taker_utxo_amtpercent}% of {self.amount})"
@@ -444,14 +452,15 @@ class CoinJoinSession:
                 }
 
             logger.debug("Taker's UTXO validated ✓")
-            logger.debug(
+            logger.bind(sensitive=True).debug(
                 f"Taker UTXO details: {utxo_txid}:{utxo_vout}, "
                 f"value={taker_utxo_value} sats, confirmations={taker_utxo_confirmations}"
             )
             self.commitment_authenticated = True
 
             if podle_admission is not None and not podle_admission((utxo_txid, utxo_vout)):
-                logger.warning(
+                logger.warning("Rejecting concurrent PoDLE authorization UTXO")
+                logger.bind(sensitive=True).warning(
                     f"Rejecting concurrent PoDLE outpoint from {self.taker_nick}: "
                     f"{utxo_txid[:16]}...:{utxo_vout}"
                 )
@@ -533,7 +542,8 @@ class CoinJoinSession:
             return True, response
 
         except Exception as e:
-            logger.error(f"Failed to handle !auth: {e}")
+            logger.error("Failed to handle !auth")
+            logger.bind(sensitive=True).error(f"Failed to handle !auth: {e}")
             self.state = CoinJoinState.FAILED
             return False, {"error": str(e)}
 
@@ -562,7 +572,7 @@ class CoinJoinSession:
                 return False, {"error": "Session not in correct state for !tx"}
 
             logger.debug(f"Received !tx from {self.taker_nick}, verifying...")
-            logger.debug(f"Transaction hex to verify and sign: {tx_hex}")
+            logger.bind(sensitive=True).debug(f"Transaction hex to verify and sign: {tx_hex}")
 
             # Convert network string to NetworkType enum
             network = NetworkType(self.wallet.network)
@@ -580,7 +590,8 @@ class CoinJoinSession:
             )
 
             if not is_valid:
-                logger.error(f"Transaction verification FAILED: {error}")
+                logger.error("Transaction verification failed")
+                logger.bind(sensitive=True).error(f"Transaction verification FAILED: {error}")
                 self.state = CoinJoinState.FAILED
                 return False, {"error": f"Transaction verification failed: {error}"}
 
@@ -590,7 +601,8 @@ class CoinJoinSession:
             ):
                 fee_policy_error = await self._verify_minimum_miner_fee(tx_hex, active_check)
                 if fee_policy_error is not None:
-                    logger.warning(
+                    logger.warning("Rejecting low-fee CoinJoin")
+                    logger.bind(sensitive=True).warning(
                         f"Rejecting low-fee CoinJoin from {self.taker_nick}: {fee_policy_error}"
                     )
                     self.state = CoinJoinState.FAILED
@@ -643,12 +655,15 @@ class CoinJoinSession:
                 "destination_vout": destination_vout,
             }
 
-            logger.info(f"Sent !sig with {len(signatures)} signatures (txid: {txid[:16]}...)")
+            logger.bind(sensitive=True).info(
+                f"Sent !sig with {len(signatures)} signatures (txid: {txid[:16]}...)"
+            )
 
             return True, response
 
         except Exception as e:
-            logger.error(f"Failed to handle !tx: {e}")
+            logger.error("Failed to handle !tx")
+            logger.bind(sensitive=True).error(f"Failed to handle !tx: {e}")
             if self.state != CoinJoinState.SIG_SENT:
                 self.state = CoinJoinState.FAILED
             return False, {"error": str(e)}
@@ -754,7 +769,10 @@ class CoinJoinSession:
             eligible_mixdepths = {md: bal for md, bal in balances.items() if bal >= required_amount}
 
             if not eligible_mixdepths:
-                logger.error(f"No mixdepth with sufficient balance: need {required_amount}")
+                logger.error("No mixdepth with sufficient balance")
+                logger.bind(sensitive=True).error(
+                    f"No mixdepth with sufficient balance: need {required_amount}"
+                )
                 return {}, "", "", -1
 
             selected: list[UTXOInfo] = []
@@ -779,7 +797,7 @@ class CoinJoinSession:
                         exclude=exclude,
                     )
                 except ValueError as e:
-                    logger.debug(
+                    logger.bind(sensitive=True).debug(
                         f"Mixdepth {candidate_mixdepth} became unavailable during selection: {e}"
                     )
                     continue
@@ -812,7 +830,8 @@ class CoinJoinSession:
                 break
 
             if max_mixdepth < 0:
-                logger.error(
+                logger.error("No mixdepth remained selectable after input reservations")
+                logger.bind(sensitive=True).error(
                     f"No mixdepth remained selectable after input reservations: "
                     f"need {required_amount}"
                 )
@@ -822,20 +841,22 @@ class CoinJoinSession:
             cj_address = self.wallet.get_new_internal_address(cj_output_mixdepth)
             change_address = self.wallet.get_new_internal_address(max_mixdepth)
 
-            logger.info(
+            logger.info("Selected maker inputs for CoinJoin")
+            logger.bind(sensitive=True).info(
                 f"Selected {len(selected)} UTXOs from mixdepth {max_mixdepth} "
                 f"(merge_algorithm={self.merge_algorithm}), "
                 f"total value: {sum(u.value for u in selected)} sats"
             )
             for utxo in selected:
-                logger.debug(
+                logger.bind(sensitive=True).debug(
                     f"  UTXO {utxo.txid}:{utxo.vout} value={utxo.value} sats address={utxo.address}"
                 )
 
             return utxos_dict, cj_address, change_address, max_mixdepth
 
         except Exception as e:
-            logger.error(f"Failed to select UTXOs: {e}")
+            logger.error("Failed to select UTXOs")
+            logger.bind(sensitive=True).error(f"Failed to select UTXOs: {e}")
             if reserved_outpoints:
                 self.wallet.release_coinjoin_inputs(reserved_outpoints, owner=self.input_lock_owner)
             return {}, "", "", -1
@@ -872,7 +893,10 @@ class CoinJoinSession:
                 # Find the input index in the transaction
                 utxo_key = (txid, vout)
                 if utxo_key not in input_index_map:
-                    logger.error(f"Our UTXO {txid}:{vout} not found in transaction inputs")
+                    logger.error("A maker UTXO was not found in transaction inputs")
+                    logger.bind(sensitive=True).error(
+                        f"Our UTXO {txid}:{vout} not found in transaction inputs"
+                    )
                     continue
 
                 input_index = input_index_map[utxo_key]
@@ -890,7 +914,7 @@ class CoinJoinSession:
                 signature = signed.signature
                 pubkey_bytes = signed.pubkey
 
-                logger.debug(
+                logger.bind(sensitive=True).debug(
                     f"Signing UTXO {txid}:{vout} at input_index={input_index}, "
                     f"value={utxo_info.value}, address={utxo_info.address}, "
                     f"pubkey={pubkey_bytes.hex()[:16]}..."
@@ -908,13 +932,17 @@ class CoinJoinSession:
                 sig_b64 = base64.b64encode(sigmsg).decode("ascii")
                 signatures.append(sig_b64)
 
-                logger.debug(f"Signed input {input_index} for UTXO {txid}:{vout}")
+                logger.bind(sensitive=True).debug(
+                    f"Signed input {input_index} for UTXO {txid}:{vout}"
+                )
 
             return signatures
 
         except TransactionSigningError as e:
-            logger.error(f"Signing error: {e}")
+            logger.error("Signing error")
+            logger.bind(sensitive=True).error(f"Signing error: {e}")
             return []
         except Exception as e:
-            logger.error(f"Failed to sign transaction: {e}")
+            logger.error("Failed to sign transaction")
+            logger.bind(sensitive=True).error(f"Failed to sign transaction: {e}")
             return []

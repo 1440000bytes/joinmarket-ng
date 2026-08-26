@@ -41,14 +41,18 @@ import sys
 from collections.abc import Callable, Generator, Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn
 
 from loguru import logger
 from pydantic import SecretStr, ValidationError
 
 from jmcore.crypto import validate_bip39_checksum
+from jmcore.log_filter import sensitive_log_filter
 from jmcore.models import NetworkType
 from jmcore.settings import JoinMarketSettings, get_config_path, get_settings, reset_settings
+
+if TYPE_CHECKING:
+    from loguru import Record
 
 # =============================================================================
 # Resolved Settings Dataclasses
@@ -172,7 +176,7 @@ class SortedHelpFormatter(argparse.HelpFormatter):
 # =============================================================================
 
 
-def _format_log_record(record: dict[str, Any]) -> str:
+def _format_log_record(record: Record) -> str:
     """Render the optional task-local CoinJoin correlation ID."""
     cj_id = record["extra"].get("cj_id")
     correlation = f" | <magenta>cj={cj_id}</magenta>" if cj_id else ""
@@ -185,12 +189,13 @@ def _format_log_record(record: dict[str, Any]) -> str:
     )
 
 
-def setup_logging(level: str = "INFO") -> None:
+def setup_logging(level: str = "INFO", sensitive: bool = False) -> None:
     """
     Configure loguru logging with consistent format.
 
     Args:
         level: Log level (TRACE, DEBUG, INFO, WARNING, ERROR)
+        sensitive: Whether to emit records bound with ``sensitive=True``
     """
     logger.remove()
     logger.add(
@@ -198,7 +203,21 @@ def setup_logging(level: str = "INFO") -> None:
         format=_format_log_record,
         level=level.upper(),
         colorize=True,
+        filter=sensitive_log_filter(sensitive),
     )
+
+
+def _parse_sensitive_logging_env(value: str | None) -> bool | None:
+    """Return a cleanly parsed ``LOGGING__SENSITIVE`` value, if present."""
+    if value is None:
+        return None
+
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return None
 
 
 def setup_cli(
@@ -252,8 +271,11 @@ def setup_cli(
     # informational messages emitted while parsing config.toml (e.g.
     # "Loaded config from ...") honor the caller's intended log level.
     # Priority for this early pass: CLI arg > LOGGING__LEVEL env > INFO default.
+    # Sensitive records stay hidden before parsing config, except when the
+    # dedicated environment variable is cleanly parseable.
     early_level = log_level or os.environ.get("LOGGING__LEVEL") or "INFO"
-    setup_logging(early_level)
+    early_sensitive = _parse_sensitive_logging_env(os.environ.get("LOGGING__SENSITIVE"))
+    setup_logging(early_level, sensitive=early_sensitive is True)
 
     reset_settings()
     try:
@@ -263,7 +285,7 @@ def setup_cli(
 
     # Resolve log level: CLI > settings > default
     effective_log_level = log_level if log_level is not None else settings.logging.level
-    setup_logging(effective_log_level)
+    setup_logging(effective_log_level, sensitive=settings.logging.sensitive)
 
     return settings
 
@@ -1103,19 +1125,24 @@ def log_resolved_settings(
     logger.info(f"Backend: {backend.backend_type}")
 
     if backend.backend_type == "neutrino":
-        logger.info(f"Neutrino URL: {backend.neutrino_url}")
+        logger.info("Neutrino backend endpoint configured")
+        logger.bind(sensitive=True).info(f"Neutrino URL: {backend.neutrino_url}")
     else:
-        logger.info(f"RPC URL: {backend.rpc_url}")
+        logger.info("Bitcoin Core RPC endpoint configured")
+        logger.bind(sensitive=True).info(f"RPC URL: {backend.rpc_url}")
         if backend.rpc_user:
-            logger.info(f"RPC user: {backend.rpc_user}")
+            logger.bind(sensitive=True).info(f"RPC user: {backend.rpc_user}")
 
     if tor:
-        logger.info(f"Tor SOCKS: {tor.socks_host}:{tor.socks_port}")
+        logger.info("Tor SOCKS proxy configured")
+        logger.bind(sensitive=True).info(f"Tor SOCKS: {tor.socks_host}:{tor.socks_port}")
         if tor.control_enabled:
-            logger.info(f"Tor control: {tor.control_host}:{tor.control_port}")
+            logger.info("Tor control endpoint configured")
+            logger.bind(sensitive=True).info(f"Tor control: {tor.control_host}:{tor.control_port}")
 
     if directory_servers:
         logger.info(f"Directory servers: {len(directory_servers)} configured")
 
     if mnemonic_source:
-        logger.info(f"Mnemonic loaded from: {mnemonic_source}")
+        logger.info("Mnemonic loaded")
+        logger.bind(sensitive=True).info(f"Mnemonic loaded from: {mnemonic_source}")

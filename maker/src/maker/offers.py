@@ -103,11 +103,15 @@ class OfferManager:
                 logger.warning("No mixdepth with positive balance")
                 return []
 
-            logger.debug(f"Mixdepth balances (excluding fidelity bonds): {balances}")
+            logger.bind(sensitive=True).debug(
+                f"Mixdepth balances (excluding fidelity bonds): {balances}"
+            )
 
             max_mixdepth = max(available_mixdepths, key=lambda md: available_mixdepths[md])
             max_balance = available_mixdepths[max_mixdepth]
-            logger.info(f"Selected mixdepth {max_mixdepth} with balance {max_balance} sats")
+            logger.bind(sensitive=True).info(
+                f"Selected mixdepth {max_mixdepth} with balance {max_balance} sats"
+            )
 
             # Get effective offer configurations
             offer_configs = self.config.get_effective_offer_configs()
@@ -142,7 +146,7 @@ class OfferManager:
             bond = await get_best_fidelity_bond(self.wallet)
             if bond:
                 fidelity_bond_value = bond.bond_value
-                logger.info(
+                logger.bind(sensitive=True).info(
                     f"Fidelity bond found: {bond.txid}:{bond.vout} "
                     f"value={bond.value} sats, bond_value={bond.bond_value}"
                 )
@@ -181,7 +185,8 @@ class OfferManager:
             return offers
 
         except Exception as e:
-            logger.error(f"Failed to create offers: {e}")
+            logger.error("Failed to create offers")
+            logger.bind(sensitive=True).error(f"Failed to create offers: {e}")
             raise
 
     def _randomize_offer_fees(
@@ -344,7 +349,7 @@ class OfferManager:
         if intersection >= rel_max_ceiling:
             # The absolute offer is cheaper across the entire usable range;
             # the relative offer would never beat it.  Drop the rel offer.
-            logger.info(
+            logger.bind(sensitive=True).info(
                 f"Dual-offer auto-split: intersection ({intersection} sats) "
                 f"is at or above the usable balance ({rel_max_ceiling} sats, "
                 f"gross={max_balance}); rel offer suppressed, abs offer covers "
@@ -435,7 +440,8 @@ class OfferManager:
             )
             max_available = max_fillable_cj_amount(terms, max_balance)
             if max_available is None:
-                logger.warning(
+                logger.warning(f"Offer {offer_id}: insufficient fillable liquidity")
+                logger.bind(sensitive=True).warning(
                     f"Offer {offer_id}: Insufficient balance for mandatory maker change "
                     f"(max_balance={max_balance})"
                 )
@@ -449,7 +455,8 @@ class OfferManager:
                 effective_min_size = max(effective_min_size, min_size_override)
 
             if max_available <= effective_min_size:
-                logger.warning(
+                logger.warning(f"Offer {offer_id}: insufficient fillable liquidity")
+                logger.bind(sensitive=True).warning(
                     f"Offer {offer_id}: Insufficient balance: "
                     f"max_available={max_available} <= min_size={effective_min_size} "
                     f"(max_balance={max_balance})"
@@ -512,7 +519,8 @@ class OfferManager:
             return offer
 
         except Exception as e:
-            logger.error(f"Failed to create offer {offer_id}: {e}")
+            logger.error(f"Failed to create offer {offer_id}")
+            logger.bind(sensitive=True).error(f"Failed to create offer {offer_id}: {e}")
             return None
 
     def validate_offer_fill(self, offer: Offer, amount: int) -> tuple[bool, str]:

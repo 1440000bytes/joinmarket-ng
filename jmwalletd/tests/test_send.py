@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
+from loguru import logger
 
 from jmwallet.wallet.spend import SignedDirectTx
 from jmwalletd.send import do_direct_send
@@ -108,6 +109,55 @@ async def test_direct_send_refreshes_registered_bonds_and_writes_history(
         failure_reason="",
         data_dir=ANY,
     )
+
+
+@pytest.mark.asyncio
+@patch("jmwalletd.send.update_send_awaiting_broadcast")
+@patch("jmwalletd.send.append_history_entry")
+@patch("jmwalletd.send.create_send_history_entry")
+@patch("jmwalletd.send.prepare_direct_send", new_callable=AsyncMock)
+@patch("jmwalletd._backend.get_backend", new_callable=AsyncMock)
+async def test_direct_send_detail_logs_are_sensitive(
+    mock_get_backend: AsyncMock,
+    mock_prepare_direct_send: AsyncMock,
+    mock_create_entry: MagicMock,
+    mock_append_entry: MagicMock,
+    mock_update_entry: MagicMock,
+) -> None:
+    """Amounts, destinations, and transaction identifiers use sensitive records."""
+    wallet = MagicMock(data_dir=None, network="regtest", wallet_fingerprint="aabbccdd")
+    wallet.sync_with_registered_bonds = AsyncMock()
+    prepared = _make_prepared_tx()
+    mock_prepare_direct_send.return_value = prepared
+    mock_create_entry.return_value = MagicMock()
+    mock_update_entry.return_value = True
+    backend = MagicMock()
+    backend.broadcast_transaction = AsyncMock(return_value=prepared.txid)
+    mock_get_backend.return_value = backend
+
+    records: list[tuple[str, dict[str, object]]] = []
+    handler_id = logger.add(
+        lambda message: records.append((message.record["message"], dict(message.record["extra"])))
+    )
+    try:
+        await do_direct_send(
+            wallet_service=wallet,
+            mixdepth=0,
+            amount_sats=50_000,
+            destination="bcrt1qdestination",
+        )
+    finally:
+        logger.remove(handler_id)
+
+    private_records = [
+        record
+        for record in records
+        if record[0].startswith("Direct send:")
+        or record[0].startswith("Broadcasting direct-send transaction")
+        or record[0].startswith("Broadcast OK:")
+    ]
+    assert len(private_records) == 3
+    assert all(extra.get("sensitive") is True for _, extra in private_records)
 
 
 @pytest.mark.asyncio

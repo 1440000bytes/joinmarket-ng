@@ -51,7 +51,8 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         state.reconcile_stale_tumbler_plans()
     except Exception:
-        logger.exception("Failed to reconcile tumbler plans on startup")
+        logger.error("Failed to reconcile tumbler plans on startup")
+        logger.bind(sensitive=True).exception("Failed to reconcile tumbler plans on startup")
     yield
 
 
@@ -102,7 +103,8 @@ def create_app(*, data_dir: Path | None = None) -> FastAPI:
     # ------------------------------------------------------------------
     # In-memory log ring buffer so jam's Logs page can fetch recent output.
     # ------------------------------------------------------------------
-    install_log_sink(level=get_settings().logging.level)
+    logging_settings = get_settings().logging
+    install_log_sink(level=logging_settings.level, sensitive=logging_settings.sensitive)
 
     # ------------------------------------------------------------------
     # Cache-busting response headers (matching reference).
@@ -245,5 +247,6 @@ def create_app(*, data_dir: Path | None = None) -> FastAPI:
             Route("/{full_path:path}", endpoint=serve_spa, methods=["GET", "HEAD"])
         )
 
-    logger.info("jmwalletd app created (data_dir={})", state.data_dir)
+    logger.info("jmwalletd app created")
+    logger.bind(sensitive=True).info("jmwalletd app data directory: {}", state.data_dir)
     return app

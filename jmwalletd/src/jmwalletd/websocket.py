@@ -134,6 +134,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     except WebSocketDisconnect:
         pass
     except Exception:
-        logger.exception("WebSocket error")
+        logger.error("WebSocket error")
+        logger.bind(sensitive=True).exception("WebSocket error")
     finally:
         state.unregister_ws_client(client)

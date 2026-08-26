@@ -387,7 +387,8 @@ async def reconstruct_history_from_chain(
             try:
                 tx = await backend.get_transaction(txid)
             except Exception as exc:  # pragma: no cover - backend dependent
-                logger.debug(f"Could not fetch tx {txid[:16]}...: {exc}")
+                logger.debug("Could not fetch transaction during history reconstruction")
+                logger.bind(sensitive=True).debug(f"Could not fetch tx {txid[:16]}...: {exc}")
                 tx = None
             if tx is not None:
                 raw = tx.raw
@@ -398,7 +399,8 @@ async def reconstruct_history_from_chain(
             try:
                 parsed = parse_transaction(raw)
             except Exception as exc:  # pragma: no cover - defensive
-                logger.debug(f"Could not parse tx {txid[:16]}...: {exc}")
+                logger.debug("Could not parse transaction during history reconstruction")
+                logger.bind(sensitive=True).debug(f"Could not parse tx {txid[:16]}...: {exc}")
         if parsed is None:
             cursor_safe = False
         parsed_cache[txid] = parsed

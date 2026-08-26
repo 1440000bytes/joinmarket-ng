@@ -189,7 +189,10 @@ async def _mixdepth_balances(
                 )
             )
         except Exception:
-            logger.exception("failed to read balance for mixdepth {}", mixdepth)
+            logger.error("Failed to read wallet balance")
+            logger.bind(sensitive=True).exception(
+                "Failed to read balance for mixdepth {}", mixdepth
+            )
             balances[mixdepth] = 0
     return balances
 
@@ -503,7 +506,10 @@ async def start_plan(
         try:
             backend = await get_backend(state.data_dir, wallet_service=ws)
         except Exception:
-            logger.exception("get_confirmations(%s) backend resolution failed", txid)
+            logger.error("Confirmation backend resolution failed")
+            logger.bind(sensitive=True).exception(
+                "get_confirmations({}) backend resolution failed", txid
+            )
             return None
         return await resolve_confirmations(txid, backend, state.data_dir)
 
@@ -529,7 +535,8 @@ async def start_plan(
         try:
             return await runner.run()
         except Exception:
-            logger.exception("tumbler runner crashed")
+            logger.error("Tumbler runner crashed")
+            logger.bind(sensitive=True).exception("Tumbler runner crashed")
             raise
         finally:
             state.activate_coinjoin_state(CoinjoinState.NOT_RUNNING)
@@ -567,7 +574,8 @@ async def stop_plan(
         try:
             await runner.stop_and_wait(task)
         except Exception:
-            logger.exception("error while stopping tumbler runner")
+            logger.error("Error while stopping tumbler runner")
+            logger.bind(sensitive=True).exception("Error while stopping tumbler runner")
             if not task.done():
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):

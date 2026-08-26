@@ -12,10 +12,12 @@ from dataclasses import fields
 from datetime import datetime, timedelta
 from pathlib import Path
 from threading import Event
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from jmcore.bitcoin import analyze_coinjoin_outputs
+from loguru import logger as loguru_logger
 
 from jmwallet.backends.base import Transaction
 from jmwallet.history import (
@@ -59,6 +61,32 @@ from jmwallet.history import (
     update_transaction_peer_count,
 )
 from jmwallet.wallet.models import UTXOInfo
+
+
+def test_pending_transaction_update_log_is_sensitive(tmp_path: Path) -> None:
+    entry = create_maker_history_entry(
+        taker_nick="J5taker",
+        cj_amount=100_000,
+        fee_received=100,
+        txfee_contribution=10,
+        cj_address="bcrt1qsensitivehistoryaddress",
+        change_address="bcrt1qsensitivechangeaddress",
+        our_utxos=[("a" * 64, 0)],
+    )
+    append_history_entry(entry, tmp_path)
+    records: list[Any] = []
+    sink_id = loguru_logger.add(lambda message: records.append(message.record), level="INFO")
+    try:
+        assert update_pending_transaction_txid(
+            entry.destination_address, "b" * 64, data_dir=tmp_path
+        )
+    finally:
+        loguru_logger.remove(sink_id)
+
+    updated = next(
+        record for record in records if "Updated pending transaction" in str(record["message"])
+    )
+    assert updated["extra"]["sensitive"] is True
 
 
 def _make_pending_maker_entry(

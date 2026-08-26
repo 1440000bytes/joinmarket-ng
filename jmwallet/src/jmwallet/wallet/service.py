@@ -105,7 +105,7 @@ class WalletService(
         # This is the same 8-char hex used by the descriptor wallet name and
         # by the CoinJoin history CSV to scope entries to a specific wallet.
         self.wallet_fingerprint = fingerprint
-        logger.info(
+        logger.bind(sensitive=True).info(
             f"Initialized wallet: fingerprint={fingerprint}, "
             f"mixdepths={mixdepth_count}, network={network}, "
             f"passphrase={'(set)' if passphrase else '(none)'}"
@@ -261,7 +261,9 @@ class WalletService(
                 try:
                     self._find_address_path(reserved_addr, max_scan=self.scan_range)
                 except Exception as exc:  # pragma: no cover - defensive
-                    logger.debug(f"Could not resolve reserved address {reserved_addr}: {exc}")
+                    logger.bind(sensitive=True).debug(
+                        f"Could not resolve reserved address {reserved_addr}: {exc}"
+                    )
 
     def _migrate_legacy_address_history(self, data_dir: Path | None) -> None:
         """Fold a legacy ``address_history_<fingerprint>.jsonl`` file into the
@@ -520,7 +522,9 @@ class WalletService(
         # Also store the locktime in a separate cache for fidelity bonds
         self.fidelity_bond_locktime_cache[address] = locktime
 
-        logger.trace(f"Created fidelity bond address {address} with locktime {locktime}")
+        logger.bind(sensitive=True).trace(
+            f"Created fidelity bond address {address} with locktime {locktime}"
+        )
         return address
 
     def get_fidelity_bond_script(self, index: int, locktime: int) -> bytes:
@@ -871,7 +875,7 @@ class WalletService(
             addresses: Set of addresses to reserve (typically cj_address + change_address)
         """
         self.reserved_addresses.update(addresses)
-        logger.debug(f"Reserved {len(addresses)} addresses: {addresses}")
+        logger.bind(sensitive=True).debug(f"Reserved {len(addresses)} addresses: {addresses}")
 
     def get_new_internal_address(self, mixdepth: int) -> str:
         """Allocate a durably reserved internal address for an owned output."""
@@ -1104,7 +1108,7 @@ class WalletService(
                 self.metadata_store.freeze(outpoint, label=AUTO_FREEZE_REUSE_LABEL)
                 utxo.frozen = True
                 frozen_now += 1
-                logger.warning(
+                logger.bind(sensitive=True).warning(
                     "Auto-froze UTXO to prevent forced address reuse: "
                     f"{outpoint} ({utxo.value} sats at {utxo.address[:16]}...). "
                     "Unfreeze with 'jm-wallet unfreeze' if intentional."

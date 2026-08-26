@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from loguru import logger as loguru_logger
 
 from jmwallet.wallet.coin_selection import DirectSendSearchLimitError, select_direct_send_utxos
 from jmwallet.wallet.models import UTXOInfo
+from jmwallet.wallet.spend import SignedDirectTx, direct_send
 
 DESTINATION = "bcrt1qq6hag67dl53wl99vzg42z8eyzfz2xlkvwk6f7m"
 
@@ -134,6 +138,39 @@ def test_md0_does_not_prefer_coinjoin_provenance_among_single_clusters() -> None
     selection = _select([coinjoin, regular], 100_000, mixdepth=0)
 
     assert selection.utxos == [regular]
+
+
+@pytest.mark.asyncio
+async def test_direct_send_broadcast_detail_is_sensitive() -> None:
+    records: list[Any] = []
+    sink_id = loguru_logger.add(lambda message: records.append(message.record), level="INFO")
+    prepared = SignedDirectTx(
+        txid="a" * 64,
+        tx_hex="00",
+        fee=100,
+        fee_rate=1.0,
+        send_amount=10_000,
+        change_amount=0,
+        num_inputs=1,
+        num_outputs=1,
+        destination=DESTINATION,
+    )
+    backend = MagicMock()
+    backend.broadcast_transaction = AsyncMock(return_value="b" * 64)
+    try:
+        with patch("jmwallet.wallet.spend.prepare_direct_send", AsyncMock(return_value=prepared)):
+            await direct_send(
+                wallet=MagicMock(),
+                backend=backend,
+                mixdepth=0,
+                amount_sats=10_000,
+                destination=DESTINATION,
+            )
+    finally:
+        loguru_logger.remove(sink_id)
+
+    broadcast = next(record for record in records if "Broadcast OK" in str(record["message"]))
+    assert broadcast["extra"]["sensitive"] is True
 
 
 @pytest.mark.parametrize(

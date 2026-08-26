@@ -261,14 +261,14 @@ def filter_offers(
 
         # Filter by amount range
         if cj_amount < offer.minsize:
-            logger.trace(
+            logger.bind(sensitive=True).trace(
                 f"Ignoring offer from {offer.counterparty}: "
                 f"amount {cj_amount} < minsize {offer.minsize}"
             )
             continue
 
         if cj_amount > offer.maxsize:
-            logger.debug(
+            logger.bind(sensitive=True).debug(
                 f"Ignoring offer from {offer.counterparty}: "
                 f"amount {cj_amount} > maxsize {offer.maxsize}"
             )
@@ -280,7 +280,9 @@ def filter_offers(
             fee = (
                 calculate_cj_fee(offer, cj_amount, round_up_cj_fees) if policy is not None else None
             )
-            logger.trace(f"Ignoring offer from {offer.counterparty}: fee {fee} exceeds limits")
+            logger.bind(sensitive=True).trace(
+                f"Ignoring offer from {offer.counterparty}: fee {fee} exceeds limits"
+            )
             continue
 
         eligible.append(offer)
@@ -924,7 +926,9 @@ def choose_sweep_orders(
     result = {offer.counterparty: offer for offer in selected}
     total_fee = sum(calculate_cj_fee(offer, cj_amount, round_up_cj_fees) for offer in selected)
 
-    logger.info(f"Sweep: selected {len(result)} makers, cj_amount={cj_amount}, fee={total_fee}")
+    logger.bind(sensitive=True).info(
+        f"Sweep: selected {len(result)} makers, cj_amount={cj_amount}, fee={total_fee}"
+    )
 
     return result, cj_amount, total_fee
 
@@ -956,7 +960,10 @@ class OrderbookManager:
         # This is populated from state files and protects against self-CoinJoins
         self.own_wallet_nicks: set[str] = own_wallet_nicks or set()
         if self.own_wallet_nicks:
-            logger.info(f"Excluding own wallet nicks from peer selection: {self.own_wallet_nicks}")
+            logger.info("Excluding own wallet identities from peer selection")
+            logger.bind(sensitive=True).info(
+                f"Excluding own wallet nicks from peer selection: {self.own_wallet_nicks}"
+            )
 
         # Persistence for ignored makers
         self.ignored_makers_path = get_ignored_makers_path(data_dir)
@@ -965,7 +972,10 @@ class OrderbookManager:
     def _load_ignored_makers(self) -> None:
         """Load ignored makers from disk."""
         if not self.ignored_makers_path.exists():
-            logger.debug(f"No existing ignored makers file at {self.ignored_makers_path}")
+            logger.debug("No existing ignored makers file")
+            logger.bind(sensitive=True).debug(
+                f"No existing ignored makers file at {self.ignored_makers_path}"
+            )
             return
 
         try:
@@ -975,12 +985,16 @@ class OrderbookManager:
                     if maker:
                         self.ignored_makers.add(maker)
             if self.ignored_makers:
-                logger.info(
+                logger.info(f"Loaded {len(self.ignored_makers)} ignored makers")
+                logger.bind(sensitive=True).info(
                     f"Loaded {len(self.ignored_makers)} ignored makers from "
                     f"{self.ignored_makers_path}"
                 )
         except Exception as e:
-            logger.error(f"Failed to load ignored makers from {self.ignored_makers_path}: {e}")
+            logger.error("Failed to load ignored makers")
+            logger.bind(sensitive=True).error(
+                f"Failed to load ignored makers from {self.ignored_makers_path}: {e}"
+            )
 
     def _save_ignored_makers(self) -> None:
         """Save ignored makers to disk."""
@@ -992,11 +1006,15 @@ class OrderbookManager:
                 for maker in sorted(self.ignored_makers):
                     f.write(maker + "\n")
                 f.flush()
-            logger.debug(
+            logger.debug(f"Saved {len(self.ignored_makers)} ignored makers")
+            logger.bind(sensitive=True).debug(
                 f"Saved {len(self.ignored_makers)} ignored makers to {self.ignored_makers_path}"
             )
         except Exception as e:
-            logger.error(f"Failed to save ignored makers to {self.ignored_makers_path}: {e}")
+            logger.error("Failed to save ignored makers")
+            logger.bind(sensitive=True).error(
+                f"Failed to save ignored makers to {self.ignored_makers_path}: {e}"
+            )
 
     def update_offers(self, offers: list[Offer]) -> None:
         """Update orderbook with new offers."""
@@ -1019,9 +1037,11 @@ class OrderbookManager:
         try:
             if self.ignored_makers_path.exists():
                 self.ignored_makers_path.unlink()
-                logger.debug(f"Deleted {self.ignored_makers_path}")
+                logger.debug("Deleted ignored makers file")
+                logger.bind(sensitive=True).debug(f"Deleted {self.ignored_makers_path}")
         except Exception as e:
-            logger.error(f"Failed to delete {self.ignored_makers_path}: {e}")
+            logger.error("Failed to delete ignored makers file")
+            logger.bind(sensitive=True).error(f"Failed to delete {self.ignored_makers_path}: {e}")
 
     def add_honest_maker(self, maker: str) -> None:
         """Mark a maker as honest (completed a CoinJoin successfully)."""

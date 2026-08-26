@@ -138,9 +138,11 @@ async def _background_wallet_sync(state: DaemonState, walletname: str) -> None:
 
     try:
         await ws.sync()
-        logger.info("Background wallet sync completed for {}", walletname)
+        logger.info("Background wallet sync completed")
+        logger.bind(sensitive=True).info("Background wallet sync completed for {}", walletname)
     except Exception:
-        logger.exception("Background wallet sync failed for {}", walletname)
+        logger.error("Background wallet sync failed")
+        logger.bind(sensitive=True).exception("Background wallet sync failed for {}", walletname)
         raise
     finally:
         state.rescanning = False
@@ -348,7 +350,10 @@ async def wallet_recover(
         try:
             wallet_path.unlink(missing_ok=True)
         except OSError:
-            logger.exception("Failed to roll back wallet recovery for {}", body.walletname)
+            logger.error("Failed to roll back wallet recovery")
+            logger.bind(sensitive=True).exception(
+                "Failed to roll back wallet recovery for {}", body.walletname
+            )
         raise
 
     tokens = state.token_authority.issue(body.walletname)

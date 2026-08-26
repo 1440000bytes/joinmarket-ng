@@ -194,7 +194,7 @@ class DirectoryServer:
         peer_addr = writer.get_extra_info("peername")
         remote_id = f"{peer_addr[0]}:{peer_addr[1]}"
         conn_id = uuid4().hex
-        logger.trace(f"New connection {conn_id} from {remote_id}")
+        logger.bind(sensitive=True).trace(f"New connection {conn_id} from {remote_id}")
 
         transport = writer.transport
         # Set reasonable write buffer limits (64KB high, 16KB low)
@@ -218,33 +218,36 @@ class DirectoryServer:
             await self._handle_peer_messages(connection, conn_id, peer_key)
 
         except Exception as e:
-            logger.error(f"Error handling client {conn_id}: {e}")
+            logger.error("Error handling client connection")
+            logger.bind(sensitive=True).error(f"Error handling client {conn_id}: {e}")
         finally:
             await self._cleanup_peer(connection, conn_id, peer_key)
 
     async def _perform_handshake(self, connection: TCPConnection, conn_id: str) -> str | None:
         try:
-            logger.trace(f"[{conn_id}] Waiting for handshake message...")
+            logger.bind(sensitive=True).trace(f"[{conn_id}] Waiting for handshake message...")
             data = await asyncio.wait_for(connection.receive(), timeout=30.0)
-            logger.trace(f"[{conn_id}] Received {len(data)} handshake bytes")
+            logger.bind(sensitive=True).trace(f"[{conn_id}] Received {len(data)} handshake bytes")
 
             envelope = MessageEnvelope.from_bytes(
                 data,
                 max_line_length=self.settings.max_line_length,
                 max_json_nesting_depth=self.settings.max_json_nesting_depth,
             )
-            logger.trace(
+            logger.bind(sensitive=True).trace(
                 f"[{conn_id}] Parsed envelope: type={envelope.message_type}, payload_len={len(envelope.payload)}"
             )
 
             if envelope.message_type != MessageType.HANDSHAKE:
-                logger.warning(f"[{conn_id}] Expected handshake, got {envelope.message_type}")
+                logger.bind(sensitive=True).warning(
+                    f"[{conn_id}] Expected handshake, got {envelope.message_type}"
+                )
                 return None
 
             peer_info, response = self.handshake_handler.process_handshake(
                 envelope.payload, conn_id
             )
-            logger.trace(
+            logger.bind(sensitive=True).trace(
                 f"[{conn_id}] Handshake processed: peer_nick={peer_info.nick}, location={peer_info.location_string}"
             )
 
@@ -252,7 +255,9 @@ class DirectoryServer:
                 message_type=MessageType.DN_HANDSHAKE, payload=json.dumps(response)
             )
             response_bytes = response_envelope.to_bytes()
-            logger.trace(f"[{conn_id}] Sending handshake response: {len(response_bytes)} bytes")
+            logger.bind(sensitive=True).trace(
+                f"[{conn_id}] Sending handshake response: {len(response_bytes)} bytes"
+            )
 
             if response.get("accepted") is not True:
                 await connection.send(response_bytes)
@@ -276,7 +281,7 @@ class DirectoryServer:
                     )
                 except (PeerOwnershipConflictError, ValueError):
                     await self._send_nick_auth_result(connection, "policy", safe=True)
-                    logger.info(
+                    logger.bind(sensitive=True).info(
                         f"[{conn_id}] Rejected verified ownership collision for {peer_info.nick}"
                     )
                     return None
@@ -308,22 +313,29 @@ class DirectoryServer:
                     payload=json.dumps(self.handshake_handler.create_rejection_response(str(e))),
                 )
                 await connection.send(rejection.to_bytes())
-                logger.info(f"[{conn_id}] Rejected duplicate peer ownership for {peer_info.nick}")
+                logger.bind(sensitive=True).info(
+                    f"[{conn_id}] Rejected duplicate peer ownership for {peer_info.nick}"
+                )
                 return None
 
             peer_key = registration.peer_key
-            logger.trace(f"[{conn_id}] Peer registered in registry")
+            logger.bind(sensitive=True).trace(f"[{conn_id}] Peer registered in registry")
 
             try:
                 async with self._owner_lock(peer_key):
                     if not self.peer_registry.is_current_owner(peer_key, conn_id):
                         return None
                     await connection.send(response_bytes)
-                logger.trace(f"[{conn_id}] Handshake response sent successfully")
+                logger.bind(sensitive=True).trace(
+                    f"[{conn_id}] Handshake response sent successfully"
+                )
                 # Small delay to let client process the handshake response
                 await asyncio.sleep(0.05)
             except Exception as e:
-                logger.error(f"[{conn_id}] Failed to send handshake response: {e}")
+                logger.error("Failed to send handshake response")
+                logger.bind(sensitive=True).error(
+                    f"[{conn_id}] Failed to send handshake response: {e}"
+                )
                 await self._rollback_registration(peer_key, conn_id)
                 raise
 
@@ -332,20 +344,24 @@ class DirectoryServer:
                     peer_key, PeerStatus.HANDSHAKED, expected_connection_id=conn_id
                 ):
                     return None
-            logger.trace(f"[{conn_id}] Peer key mapped: {peer_key}")
+            logger.bind(sensitive=True).trace(f"[{conn_id}] Peer key mapped: {peer_key}")
 
-            logger.trace(f"[{conn_id}] Handshake complete for {peer_key} (nick={peer_info.nick})")
+            logger.bind(sensitive=True).trace(
+                f"[{conn_id}] Handshake complete for {peer_key} (nick={peer_info.nick})"
+            )
 
             return peer_key
 
         except HandshakeError as e:
-            logger.warning(f"[{conn_id}] Handshake failed: {e}")
+            logger.warning("Peer handshake failed")
+            logger.bind(sensitive=True).warning(f"[{conn_id}] Handshake failed: {e}")
             return None
         except TimeoutError:
-            logger.warning(f"[{conn_id}] Handshake timeout (30s)")
+            logger.bind(sensitive=True).warning(f"[{conn_id}] Handshake timeout (30s)")
             return None
         except Exception as e:
-            logger.error(f"[{conn_id}] Handshake error: {e}", exc_info=True)
+            logger.error("Peer handshake error")
+            logger.bind(sensitive=True).error(f"[{conn_id}] Handshake error: {e}", exc_info=True)
             return None
 
     async def _perform_nick_auth(
@@ -380,7 +396,7 @@ class DirectoryServer:
                 timeout=self.nick_auth_timeout,
             )
         except TimeoutError:
-            logger.info(f"[{conn_id}] Nick authentication timed out")
+            logger.bind(sensitive=True).info(f"[{conn_id}] Nick authentication timed out")
             await self._send_nick_auth_result(connection, "expired", safe=True)
             return None
 
@@ -395,7 +411,9 @@ class DirectoryServer:
                 raise ValueError("unexpected nick authentication message type")
             proof = NickAuthProof.parse(proof_envelope.payload)
         except Exception:
-            logger.info(f"[{conn_id}] Nick authentication payload was malformed")
+            logger.bind(sensitive=True).info(
+                f"[{conn_id}] Nick authentication payload was malformed"
+            )
             await self._send_nick_auth_result(connection, "malformed", safe=True)
             return None
 
@@ -407,7 +425,7 @@ class DirectoryServer:
             nick=peer_info.nick,
             protocol_version=peer_info.protocol_version,
         ):
-            logger.info(f"[{conn_id}] Nick authentication proof was invalid")
+            logger.bind(sensitive=True).info(f"[{conn_id}] Nick authentication proof was invalid")
             await self._send_nick_auth_result(connection, "invalid", safe=True)
             return None
 
@@ -527,7 +545,9 @@ class DirectoryServer:
                     connection_id,
                 )
             except Exception as exc:
-                logger.debug(f"Failed to broadcast disconnect for {peer_key}: {exc}")
+                logger.bind(sensitive=True).debug(
+                    f"Failed to broadcast disconnect for {peer_key}: {exc}"
+                )
         return peer
 
     async def _close_connection_generation(self, connection_id: str) -> None:
@@ -546,7 +566,9 @@ class DirectoryServer:
         if not peer_info:
             return
 
-        logger.info(f"Peer {peer_info.nick} connected from {peer_info.location_string}")
+        logger.bind(sensitive=True).info(
+            f"Peer {peer_info.nick} connected from {peer_info.location_string}"
+        )
 
         # Fire-and-forget notification for peer connect
         total_peers = self.peer_registry.count()
@@ -577,7 +599,7 @@ class DirectoryServer:
                     MessageType.NICK_AUTH_PROOF,
                     MessageType.NICK_AUTH_RESULT,
                 }:
-                    logger.warning(
+                    logger.bind(sensitive=True).warning(
                         f"Out-of-order nick authentication message from {peer_info.nick}"
                     )
                     break
@@ -590,7 +612,7 @@ class DirectoryServer:
 
                 if action == RateLimitAction.DISCONNECT:
                     violations = self.rate_limiter.get_violation_count(conn_id)
-                    logger.warning(
+                    logger.bind(sensitive=True).warning(
                         f"Rate limit exceeded for {peer_info.nick} ({conn_id}): "
                         f"{violations} violations, disconnecting"
                     )
@@ -606,7 +628,7 @@ class DirectoryServer:
                 elif action == RateLimitAction.DELAY:
                     violations = self.rate_limiter.get_violation_count(conn_id)
                     if violations % 50 == 1:  # Log every 50th violation to avoid spam
-                        logger.debug(
+                        logger.bind(sensitive=True).debug(
                             f"Rate limiting {peer_info.nick} ({conn_id}): "
                             f"{violations} violations, delay={delay:.2f}s"
                         )
@@ -618,7 +640,10 @@ class DirectoryServer:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"Error processing message from {peer_info.nick}: {e}")
+                logger.error("Error processing peer message")
+                logger.bind(sensitive=True).error(
+                    f"Error processing message from {peer_info.nick}: {e}"
+                )
                 break
 
     async def _cleanup_peer(
@@ -638,7 +663,7 @@ class DirectoryServer:
             if peer_key:
                 peer_info = await self._remove_owned_peer_state(peer_key, conn_id)
                 if peer_info:
-                    logger.info(f"Peer {peer_info.nick} disconnected")
+                    logger.bind(sensitive=True).info(f"Peer {peer_info.nick} disconnected")
                     total_peers = self.peer_registry.count()
                     spawn_task(get_notifier().notify_peer_disconnected(peer_info.nick, total_peers))
 
@@ -649,7 +674,7 @@ class DirectoryServer:
             try:
                 await connection.close()
             except Exception as e:
-                logger.trace(f"Error closing connection: {e}")
+                logger.bind(sensitive=True).trace(f"Error closing connection: {e}")
 
     async def _send_to_peer(
         self,
@@ -706,7 +731,7 @@ class DirectoryServer:
         )
         if peer_info is None:
             return
-        logger.debug(f"Unregistered failed peer: {peer_key}")
+        logger.bind(sensitive=True).debug(f"Unregistered failed peer: {peer_key}")
         spawn_task(
             get_notifier().notify_peer_disconnected(peer_info.nick, self.peer_registry.count())
         )
@@ -734,7 +759,7 @@ class DirectoryServer:
         ):
             return
 
-        logger.info(f"Evicting peer {peer_info.nick} ({peer_key}): {reason}")
+        logger.bind(sensitive=True).info(f"Evicting peer {peer_info.nick} ({peer_key}): {reason}")
         removed_peer = await self._remove_owned_peer_state(peer_key, expected_connection_id)
         if removed_peer is None:
             return
@@ -802,15 +827,21 @@ class DirectoryServer:
         logger.info(f"Uptime: {stats['uptime_seconds']:.0f}s")
         logger.info(f"Status: {stats['server_status']}")
         logger.info(f"Connected peers: {stats['connected_peers']['total']}/{stats['max_peers']}")
-        logger.info(f"  Nicks: {', '.join(stats['connected_peers']['nicks'][:10])}")
+        logger.bind(sensitive=True).info(
+            f"  Nicks: {', '.join(stats['connected_peers']['nicks'][:10])}"
+        )
         if len(stats["connected_peers"]["nicks"]) > 10:
             logger.info(f"  ... and {len(stats['connected_peers']['nicks']) - 10} more")
         logger.info(f"Passive peers (orderbook watchers): {stats['passive_peers']['total']}")
-        logger.info(f"  Nicks: {', '.join(stats['passive_peers']['nicks'][:10])}")
+        logger.bind(sensitive=True).info(
+            f"  Nicks: {', '.join(stats['passive_peers']['nicks'][:10])}"
+        )
         if len(stats["passive_peers"]["nicks"]) > 10:
             logger.info(f"  ... and {len(stats['passive_peers']['nicks']) - 10} more")
         logger.info(f"Active peers (makers): {stats['active_peers']['total']}")
-        logger.info(f"  Nicks: {', '.join(stats['active_peers']['nicks'][:10])}")
+        logger.bind(sensitive=True).info(
+            f"  Nicks: {', '.join(stats['active_peers']['nicks'][:10])}"
+        )
         if len(stats["active_peers"]["nicks"]) > 10:
             logger.info(f"  ... and {len(stats['active_peers']['nicks']) - 10} more")
         logger.info(f"Active connections: {stats['active_connections']}")

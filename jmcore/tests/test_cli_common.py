@@ -64,6 +64,22 @@ class TestSetupLogging:
         setup_logging("TRACE")
         setup_logging("Trace")
 
+    @pytest.mark.parametrize("sensitive", [False, True])
+    def test_setup_logging_filters_sensitive_records(
+        self, monkeypatch: pytest.MonkeyPatch, sensitive: bool
+    ) -> None:
+        """Sensitive records require an explicit opt-in at the standard sink."""
+        output = io.StringIO()
+        monkeypatch.setattr("jmcore.cli_common.sys.stderr", output)
+        setup_logging("INFO", sensitive=sensitive)
+
+        logger.info("ordinary-record")
+        logger.bind(sensitive=True).info("sensitive-record")
+
+        rendered = output.getvalue()
+        assert "ordinary-record" in rendered
+        assert ("sensitive-record" in rendered) is sensitive
+
     def test_setup_logging_renders_optional_coinjoin_context(self) -> None:
         """Ordinary and exception records render without a missing context field."""
         output = io.StringIO()
@@ -128,6 +144,33 @@ class TestSetupCli:
 
             assert mock_add.call_count >= 1
             assert mock_add.call_args_list[-1][1]["level"] == "INFO"
+
+    def test_setup_cli_final_logging_uses_sensitive_setting(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The final CLI sink applies the resolved sensitive logging setting."""
+        config_file = tmp_path / "config.toml"
+        config_file.write_text("[logging]\nsensitive = true\n")
+        monkeypatch.delenv("LOGGING__SENSITIVE", raising=False)
+
+        with patch("jmcore.cli_common.setup_logging") as mock_setup_logging:
+            setup_cli(config_file=config_file)
+
+        assert mock_setup_logging.call_args_list == [
+            (("INFO",), {"sensitive": False}),
+            (("INFO",), {"sensitive": True}),
+        ]
+
+    def test_setup_cli_early_logging_honors_clean_sensitive_env(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Only a clean sensitive environment value affects early configuration."""
+        monkeypatch.setenv("LOGGING__SENSITIVE", "true")
+
+        with patch("jmcore.cli_common.setup_logging") as mock_setup_logging:
+            setup_cli()
+
+        assert mock_setup_logging.call_args_list[0] == (("INFO",), {"sensitive": True})
 
     def test_setup_cli_early_logging_honors_env_level(
         self, monkeypatch: pytest.MonkeyPatch

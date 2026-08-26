@@ -99,7 +99,7 @@ class TCPConnection(Connection):
                 raise ConnectionError("Connection closed by peer") from e
             except (builtins.ConnectionError, OSError) as e:
                 self._connected = False
-                logger.trace(f"TCPConnection.receive: connection error: {e}")
+                logger.bind(sensitive=True).trace(f"TCPConnection.receive: connection error: {e}")
                 raise ConnectionError(f"Connection lost: {e}") from e
 
     async def close(self) -> None:
@@ -148,15 +148,16 @@ async def connect_direct(
 ) -> TCPConnection:
     """Connect directly via TCP without Tor (for local development/testing)."""
     try:
-        logger.debug(f"Connecting directly to {host}:{port}")
+        logger.bind(sensitive=True).debug(f"Connecting directly to {host}:{port}")
         reader, writer = await asyncio.wait_for(
             asyncio.open_connection(host, port, limit=max_message_size),
             timeout=timeout,
         )
-        logger.debug(f"Connected to {host}:{port}")
+        logger.bind(sensitive=True).debug(f"Connected to {host}:{port}")
         return TCPConnection(reader, writer, max_message_size)
     except Exception as e:
-        logger.error(f"Failed to connect to {host}:{port}: {e}")
+        logger.error("Direct connection failed")
+        logger.bind(sensitive=True).error(f"Failed to connect to {host}:{port}: {e}")
         raise ConnectionError(f"Direct connection failed: {e}") from e
 
 
@@ -212,18 +213,23 @@ async def connect_via_tor(
         # pool, aggregator) log the meaningful connection events at INFO, and
         # bulk users like the orderbook watcher's maker health checker would
         # otherwise flood INFO with hundreds of dial lines per sweep.
-        logger.debug(f"Connecting to {onion_address}:{port} via Tor ({socks_host}:{socks_port})")
+        logger.bind(sensitive=True).debug(
+            f"Connecting to {onion_address}:{port} via Tor ({socks_host}:{socks_port})"
+        )
         sock = await proxy.connect(dest_host=onion_address, dest_port=port, timeout=timeout)
 
         reader, writer = await asyncio.open_connection(sock=sock, limit=max_message_size)
 
-        logger.debug(f"Connected to {onion_address}:{port}")
+        logger.bind(sensitive=True).debug(f"Connected to {onion_address}:{port}")
         return TCPConnection(reader, writer, max_message_size)
 
     except asyncio.CancelledError:
         raise
     except Exception as e:
-        logger.error(f"Failed to connect to {onion_address}:{port} via Tor: {e}")
+        logger.error("Tor connection failed")
+        logger.bind(sensitive=True).error(
+            f"Failed to connect to {onion_address}:{port} via Tor: {e}"
+        )
         raise ConnectionError(f"Tor connection failed: {e}") from e
 
 
@@ -286,7 +292,9 @@ class HiddenServiceListener:
         else:
             self._bound_port = self.port
 
-        logger.info(f"Hidden service listener started on {self.host}:{self._bound_port}")
+        logger.bind(sensitive=True).info(
+            f"Hidden service listener started on {self.host}:{self._bound_port}"
+        )
         return self._bound_port
 
     async def _handle_connection(
@@ -295,7 +303,7 @@ class HiddenServiceListener:
         """Handle incoming connection."""
         peer_addr = writer.get_extra_info("peername")
         peer_str = f"{peer_addr[0]}:{peer_addr[1]}" if peer_addr else "unknown"
-        logger.debug(f"Accepted connection from {peer_str}")
+        logger.bind(sensitive=True).debug(f"Accepted connection from {peer_str}")
 
         connection = TCPConnection(reader, writer, self.max_message_size)
 
@@ -303,7 +311,8 @@ class HiddenServiceListener:
             try:
                 await self.on_connection(connection, peer_str)
             except Exception as e:
-                logger.error(f"Error handling connection from {peer_str}: {e}")
+                logger.error("Error handling incoming connection")
+                logger.bind(sensitive=True).error(f"Error handling connection from {peer_str}: {e}")
                 await connection.close()
 
     async def stop(self) -> None:
@@ -449,7 +458,8 @@ class OnionPeer:
             self._hostname = host
             self._port = int(port_str)
         except (ValueError, AttributeError) as e:
-            logger.warning(f"Invalid peer location: {self.location}: {e}")
+            logger.warning("Invalid peer location")
+            logger.bind(sensitive=True).warning(f"Invalid peer location: {self.location}: {e}")
             self._hostname = None
             self._port = None
 
@@ -517,7 +527,9 @@ class OnionPeer:
         """
         async with self._lock:
             if not self.can_connect():
-                logger.debug(f"Cannot connect to peer {self.nick}: status={self._status}")
+                logger.bind(sensitive=True).debug(
+                    f"Cannot connect to peer {self.nick}: status={self._status}"
+                )
                 return False
 
             self._status = PeerStatus.CONNECTING
@@ -525,7 +537,7 @@ class OnionPeer:
             self._last_connect_attempt = asyncio.get_event_loop().time()
 
         try:
-            logger.debug(f"Connecting to peer {self.nick} at {self.location}")
+            logger.bind(sensitive=True).debug(f"Connecting to peer {self.nick} at {self.location}")
 
             # Connect via Tor
             if self._hostname and self._hostname.lower().endswith(".onion"):
@@ -546,7 +558,7 @@ class OnionPeer:
                         f"{self.location}. Peer locations must be .onion outside regtest unless "
                         "allow_clearnet_connections is explicitly enabled for development."
                     )
-                logger.warning(
+                logger.bind(sensitive=True).warning(
                     f"Using direct TCP for non-onion peer {self.location}; "
                     "this is allowed only for regtest or explicit development configuration"
                 )
@@ -567,7 +579,7 @@ class OnionPeer:
                 self._status = PeerStatus.HANDSHAKED
                 self._connect_attempts = 0  # Reset on success
 
-            logger.debug(f"Connected and handshaked with peer {self.nick}")
+            logger.bind(sensitive=True).debug(f"Connected and handshaked with peer {self.nick}")
 
             # Start receive loop
             self._receive_task = asyncio.create_task(self._receive_loop())
@@ -578,7 +590,8 @@ class OnionPeer:
             return True
 
         except Exception as e:
-            logger.warning(f"Failed to connect to peer {self.nick}: {e}")
+            logger.warning("Peer connection failed")
+            logger.bind(sensitive=True).warning(f"Failed to connect to peer {self.nick}: {e}")
             async with self._lock:
                 self._status = PeerStatus.DISCONNECTED
             if self._connection:
@@ -662,7 +675,7 @@ class OnionPeer:
         else:
             self.peer_features = {}
 
-        logger.debug(f"Handshake with peer {self.nick} successful")
+        logger.bind(sensitive=True).debug(f"Handshake with peer {self.nick} successful")
 
     async def _receive_loop(self) -> None:
         """Background task to receive messages from peer."""
@@ -685,14 +698,19 @@ class OnionPeer:
                         isinstance(message, dict)
                         and message.get("type") == MessageType.HANDSHAKE.value
                     ):
-                        logger.debug(f"Ignoring late handshake from peer {self.nick}")
+                        logger.bind(sensitive=True).debug(
+                            f"Ignoring late handshake from peer {self.nick}"
+                        )
                         continue
                     if self.on_message:
                         await self.on_message(self.nick, data)
                 except ConnectionError:
                     break
                 except Exception as e:
-                    logger.warning(f"Error receiving from peer {self.nick}: {e}")
+                    logger.warning("Error receiving from peer")
+                    logger.bind(sensitive=True).warning(
+                        f"Error receiving from peer {self.nick}: {e}"
+                    )
                     break
         finally:
             await self._handle_disconnect()
@@ -704,7 +722,7 @@ class OnionPeer:
                 return
             self._status = PeerStatus.DISCONNECTED
 
-        logger.debug(f"Peer {self.nick} disconnected")
+        logger.bind(sensitive=True).debug(f"Peer {self.nick} disconnected")
 
         if self._connection:
             await self._connection.close()
@@ -730,7 +748,8 @@ class OnionPeer:
             await self._connection.send(data)
             return True
         except Exception as e:
-            logger.warning(f"Failed to send to peer {self.nick}: {e}")
+            logger.warning("Failed to send to peer")
+            logger.bind(sensitive=True).warning(f"Failed to send to peer {self.nick}: {e}")
             await self._handle_disconnect()
             return False
 
@@ -809,7 +828,7 @@ class OnionPeer:
         if self._connect_attempts > 0:
             backoff = self._base_backoff * (2 ** min(self._connect_attempts - 1, 5))
             if now - self._last_connect_attempt < backoff:
-                logger.debug(
+                logger.bind(sensitive=True).debug(
                     f"Skipping connect to {self.nick}: backoff {backoff:.1f}s "
                     f"(attempt {self._connect_attempts})"
                 )
@@ -817,7 +836,9 @@ class OnionPeer:
 
         # Check max attempts
         if self._connect_attempts >= self._max_connect_attempts:
-            logger.debug(f"Giving up on peer {self.nick} after {self._connect_attempts} attempts")
+            logger.bind(sensitive=True).debug(
+                f"Giving up on peer {self.nick} after {self._connect_attempts} attempts"
+            )
             return None
 
         return asyncio.create_task(

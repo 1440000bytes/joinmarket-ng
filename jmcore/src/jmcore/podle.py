@@ -355,7 +355,7 @@ def generate_podle(
     if s_bytes is None:
         raise PoDLEError("PoDLE nonce candidates exhausted")
 
-    logger.debug(
+    logger.bind(sensitive=True).debug(
         f"Generated PoDLE for {utxo_str} using NUMS index {index}, "
         f"commitment={commitment.hex()[:16]}..."
     )
@@ -521,13 +521,16 @@ def verify_podle(
                     return True, ""
 
             except Exception as ex:
-                logger.debug(f"PoDLE verification failed at index {index}: {ex}")
+                logger.bind(sensitive=True).debug(
+                    f"PoDLE verification failed at index {index}: {ex}"
+                )
                 continue
 
         return False, f"PoDLE verification failed for all indices in {index_range}"
 
     except Exception as ex:
-        logger.error(f"PoDLE verification error: {ex}")
+        logger.error("PoDLE verification error")
+        logger.bind(sensitive=True).error(f"PoDLE verification error: {ex}")
         return False, f"Verification error: {ex}"
 
 
@@ -571,9 +574,14 @@ def parse_podle_revelation(revelation: dict[str, Any]) -> dict[str, Any] | None:
             scriptpubkey = utxo.scriptpubkey
             blockheight = utxo.blockheight
             if scriptpubkey:
-                logger.debug(f"Parsed extended UTXO format: {txid}:{vout} with metadata")
+                logger.bind(sensitive=True).debug(
+                    f"Parsed extended UTXO format: {txid}:{vout} with metadata"
+                )
         except (ValueError, ValidationError):
-            logger.warning(f"Invalid UTXO format in PoDLE revelation: {revelation['utxo']}")
+            logger.warning("Invalid UTXO format in PoDLE revelation")
+            logger.bind(sensitive=True).warning(
+                f"Invalid UTXO format in PoDLE revelation: {revelation['utxo']}"
+            )
             return None
 
         result: dict[str, Any] = {
@@ -594,7 +602,8 @@ def parse_podle_revelation(revelation: dict[str, Any]) -> dict[str, Any] | None:
         return result
 
     except Exception as e:
-        logger.error(f"Failed to parse PoDLE revelation: {e}")
+        logger.error("Failed to parse PoDLE revelation")
+        logger.bind(sensitive=True).error(f"Failed to parse PoDLE revelation: {e}")
         return None
 
 
@@ -619,7 +628,8 @@ def deserialize_revelation(revelation_str: str) -> dict[str, Any] | None:
         }
 
     except Exception as e:
-        logger.error(f"Failed to deserialize PoDLE revelation: {e}")
+        logger.error("Failed to deserialize PoDLE revelation")
+        logger.bind(sensitive=True).error(f"Failed to deserialize PoDLE revelation: {e}")
         return None
 
 

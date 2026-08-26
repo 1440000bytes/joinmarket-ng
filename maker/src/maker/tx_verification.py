@@ -103,9 +103,11 @@ def verify_unsigned_transaction(
                 f"(cjfee={real_cjfee}, txfee={txfee})",
             )
 
-        logger.debug(f"Potentially earned: {potentially_earned} sats")
-        logger.debug(f"Expected change value: {expected_change_value} sats")
-        logger.debug(f"CJ address: {cj_address}, Change address: {change_address}")
+        logger.bind(sensitive=True).debug(f"Potentially earned: {potentially_earned} sats")
+        logger.bind(sensitive=True).debug(f"Expected change value: {expected_change_value} sats")
+        logger.bind(sensitive=True).debug(
+            f"CJ address: {cj_address}, Change address: {change_address}"
+        )
 
         times_seen_cj_addr = 0
         times_seen_change_addr = 0
@@ -146,7 +148,8 @@ def verify_unsigned_transaction(
         return True, ""
 
     except Exception as e:
-        logger.error(f"Transaction verification exception: {e}")
+        logger.error("Transaction verification failed")
+        logger.bind(sensitive=True).error(f"Transaction verification exception: {e}")
         return False, f"Verification error: {e}"
 
 
@@ -192,7 +195,8 @@ def parse_transaction(
         return {"inputs": inputs, "outputs": outputs}
 
     except Exception as e:
-        logger.error(f"Failed to parse transaction: {e}")
+        logger.error("Failed to parse transaction")
+        logger.bind(sensitive=True).error(f"Failed to parse transaction: {e}")
         return None
 
 

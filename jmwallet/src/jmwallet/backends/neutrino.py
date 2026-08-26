@@ -584,7 +584,8 @@ class NeutrinoBackend(BlockchainBackend):
                 "GET", "v1/transactions", params={"since_height": since_height}
             )
         except Exception as exc:
-            logger.debug(f"Neutrino /v1/transactions failed: {exc}")
+            logger.debug("Neutrino transaction enumeration failed")
+            logger.bind(sensitive=True).debug("Neutrino /v1/transactions failure detail: {}", exc)
             return [], cursor
 
         if not isinstance(result, dict):
@@ -643,8 +644,9 @@ class NeutrinoBackend(BlockchainBackend):
         try:
             await self.ensure_addresses_scanned([address])
         except Exception as exc:
-            logger.warning(
-                f"Could not establish Neutrino history coverage for {address[:12]}...: {exc}"
+            logger.warning("Could not establish Neutrino history coverage for an address")
+            logger.bind(sensitive=True).warning(
+                "Could not establish Neutrino history coverage for {}: {}", address, exc
             )
             return None
         return await super().address_has_history(address)
@@ -664,7 +666,10 @@ class NeutrinoBackend(BlockchainBackend):
             try:
                 result = await self._api_call("GET", "v1/transactions", params={"since_height": 0})
             except Exception as exc:
-                logger.warning(f"Could not enumerate Neutrino address history: {exc}")
+                logger.warning("Could not enumerate Neutrino address history")
+                logger.bind(sensitive=True).warning(
+                    "Neutrino address history enumeration detail: {}", exc
+                )
                 return None
             if not isinstance(result, dict):
                 return None
@@ -729,10 +734,16 @@ class NeutrinoBackend(BlockchainBackend):
             if status_code == 404 or status_code in expected:
                 logger.debug(f"Neutrino API returned {status_code}: {endpoint}")
             else:
-                logger.error(f"Neutrino API call failed: {endpoint} - {type(e).__name__}: {e}")
+                logger.error("Neutrino API call failed")
+                logger.bind(sensitive=True).error(
+                    f"Neutrino API call failed: {endpoint} - {type(e).__name__}: {e}"
+                )
             raise
         except httpx.HTTPError as e:
-            logger.error(f"Neutrino API call failed: {endpoint} - {type(e).__name__}: {e}")
+            logger.error("Neutrino API call failed")
+            logger.bind(sensitive=True).error(
+                f"Neutrino API call failed: {endpoint} - {type(e).__name__}: {e}"
+            )
             raise
 
     async def _wait_for_rescan(
@@ -906,7 +917,7 @@ class NeutrinoBackend(BlockchainBackend):
             raise ValueError(f"Watch list limit ({self._max_watched_addresses}) exceeded")
 
         self._watched_addresses.add(address)
-        logger.trace(f"Watching address: {address}")
+        logger.bind(sensitive=True).trace(f"Watching address: {address}")
 
     def get_history_state_id(self) -> str:
         """Scope durable history state to this Neutrino API instance."""
@@ -928,7 +939,7 @@ class NeutrinoBackend(BlockchainBackend):
             return
 
         self._watched_outpoints.add(outpoint)
-        logger.debug(f"Watching outpoint: {txid}:{vout}")
+        logger.bind(sensitive=True).debug(f"Watching outpoint: {txid}:{vout}")
 
     async def _get_rescan_coverage(self) -> tuple[int, int]:
         """Query neutrino-api for persisted rescan coverage.
@@ -1099,7 +1110,10 @@ class NeutrinoBackend(BlockchainBackend):
                         )
                     except Exception as e:
                         self._initial_rescan_started = False
-                        logger.warning(f"Initial rescan failed (will retry on next sync): {e}")
+                        logger.warning("Initial rescan failed, will retry on next sync")
+                        logger.bind(sensitive=True).warning(
+                            f"Initial rescan failed (will retry on next sync): {e}"
+                        )
                 else:
                     completed = await self._wait_for_rescan(
                         require_started=False,
@@ -1259,10 +1273,13 @@ class NeutrinoBackend(BlockchainBackend):
                 )
                 utxos.append(utxo)
 
-            logger.debug(f"Found {len(utxos)} UTXOs for {len(addresses)} addresses")
+            logger.bind(sensitive=True).debug(
+                f"Found {len(utxos)} UTXOs for {len(addresses)} addresses"
+            )
 
         except Exception as e:
-            logger.error(f"Failed to fetch UTXOs: {e}")
+            logger.error("Failed to fetch UTXOs")
+            logger.bind(sensitive=True).error(f"Failed to fetch UTXOs: {e}")
             raise
 
         return utxos
@@ -1271,7 +1288,7 @@ class NeutrinoBackend(BlockchainBackend):
         """Get balance for an address in satoshis."""
         utxos = await self.get_utxos([address])
         balance = sum(utxo.value for utxo in utxos)
-        logger.debug(f"Balance for {address}: {balance} sats")
+        logger.bind(sensitive=True).debug(f"Balance for {address}: {balance} sats")
         return balance
 
     async def broadcast_transaction(self, tx_hex: str) -> str:
@@ -1288,11 +1305,12 @@ class NeutrinoBackend(BlockchainBackend):
                 data={"tx_hex": tx_hex},
             )
             txid = result.get("txid", "")
-            logger.info(f"Broadcast transaction: {txid}")
+            logger.bind(sensitive=True).info(f"Broadcast transaction: {txid}")
             return txid
 
         except Exception as e:
-            logger.error(f"Failed to broadcast transaction: {e}")
+            logger.error("Failed to broadcast transaction")
+            logger.bind(sensitive=True).error(f"Failed to broadcast transaction: {e}")
             raise ValueError(f"Broadcast failed: {e}") from e
 
     async def get_transaction(self, txid: str) -> Transaction | None:
@@ -1325,12 +1343,16 @@ class NeutrinoBackend(BlockchainBackend):
             # 404 (unknown txid) and 501 (txid not a watched mempool tx)
             # both indicate "we don't have this tx"; treat as miss.
             if e.response.status_code in (404, 501):
-                logger.debug(f"Mempool tx {txid} not found: HTTP {e.response.status_code}")
+                logger.bind(sensitive=True).debug(
+                    f"Mempool tx {txid} not found: HTTP {e.response.status_code}"
+                )
                 return None
-            logger.warning(f"Failed to fetch mempool tx {txid}: {e}")
+            logger.warning("Failed to fetch mempool transaction")
+            logger.bind(sensitive=True).warning(f"Failed to fetch mempool tx {txid}: {e}")
             return None
         except Exception as e:
-            logger.warning(f"Failed to fetch mempool tx {txid}: {e}")
+            logger.warning("Failed to fetch mempool transaction")
+            logger.bind(sensitive=True).warning(f"Failed to fetch mempool tx {txid}: {e}")
             return None
 
         if not isinstance(result, dict):
@@ -1402,12 +1424,14 @@ class NeutrinoBackend(BlockchainBackend):
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
                 # Output not found
-                logger.debug(f"Tx output {txid}:{vout} not found")
+                logger.bind(sensitive=True).debug(f"Tx output {txid}:{vout} not found")
                 return False
-            logger.warning(f"Error verifying tx output {txid}:{vout}: {e}")
+            logger.warning("Error verifying transaction output")
+            logger.bind(sensitive=True).warning(f"Error verifying tx output {txid}:{vout}: {e}")
             return False
         except Exception as e:
-            logger.warning(f"Error verifying tx output {txid}:{vout}: {e}")
+            logger.warning("Error verifying transaction output")
+            logger.bind(sensitive=True).warning(f"Error verifying tx output {txid}:{vout}: {e}")
             return False
 
     def _resolve_fee_estimate_urls(self, fee_estimate_url: str | None) -> list[str]:
@@ -1886,7 +1910,7 @@ class NeutrinoBackend(BlockchainBackend):
                 error=f"Could not derive address from scriptPubKey: {scriptpubkey[:40]}...",
             )
 
-        logger.debug(f"Derived address {address} from scriptPubKey")
+        logger.bind(sensitive=True).debug(f"Derived address {address} from scriptPubKey")
 
         try:
             # Step 2: Query the specific UTXO using the v0.4 API
@@ -2097,7 +2121,8 @@ class NeutrinoBackend(BlockchainBackend):
             with ChainParams(chain):
                 return str(_CCoinAddress.from_scriptPubKey(CScript(bytes.fromhex(scriptpubkey))))
         except (CCoinAddressError, ValueError) as e:
-            logger.warning(f"Failed to convert scriptPubKey to address: {e}")
+            logger.warning("Failed to convert scriptPubKey to address")
+            logger.bind(sensitive=True).warning("scriptPubKey conversion failure detail: {}", e)
             return None
 
     async def get_filter_header(self, block_height: int) -> str:
@@ -2261,7 +2286,8 @@ class NeutrinoBackend(BlockchainBackend):
             # Let callers retry on the same backend instance. The server-side
             # watch operation is idempotent, so re-registering is harmless.
             self._watched_addresses.difference_update(newly_registered)
-            logger.error(f"Failed to rescan newly watched addresses: {e}")
+            logger.error("Failed to rescan newly watched addresses")
+            logger.bind(sensitive=True).error("Address rescan failure detail: {}", e)
             raise
 
     async def rescan_from_height(
@@ -2338,7 +2364,8 @@ class NeutrinoBackend(BlockchainBackend):
             logger.info(f"Started rescan from height {start_height} for {len(addresses)} addresses")
 
         except Exception as e:
-            logger.error(f"Failed to start rescan: {e}")
+            logger.error("Failed to start rescan")
+            logger.bind(sensitive=True).error("Rescan failure detail: {}", e)
             raise
 
     async def close(self) -> None:

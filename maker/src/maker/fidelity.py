@@ -138,7 +138,8 @@ async def find_fidelity_bonds(
             )
             logger.debug(f"Loaded bond registry with {len(registry.bonds)} bonds")
     except Exception as e:
-        logger.debug(f"Could not load bond registry: {e}")
+        logger.debug("Could not load bond registry")
+        logger.bind(sensitive=True).debug(f"Could not load bond registry: {e}")
 
     utxos = wallet.utxo_cache.get(mixdepth, [])
     if not utxos:
@@ -182,15 +183,16 @@ async def find_fidelity_bonds(
             if registry_bond:
                 try:
                     pubkey = bytes.fromhex(registry_bond.pubkey)
-                    logger.debug(
+                    logger.bind(sensitive=True).debug(
                         f"External bond {utxo_info.address[:20]}... using pubkey from registry"
                     )
                 except Exception as e:
-                    logger.warning(
+                    logger.warning("Failed to get pubkey for external bond")
+                    logger.bind(sensitive=True).warning(
                         f"Failed to get pubkey for external bond {utxo_info.address}: {e}"
                     )
             if pubkey is None:
-                logger.warning(
+                logger.bind(sensitive=True).warning(
                     f"External bond {utxo_info.address[:20]}... not found in registry, skipping"
                 )
                 continue
@@ -208,12 +210,15 @@ async def find_fidelity_bonds(
                     if derived_address.lower() == utxo_info.address.lower():
                         key = wallet.get_fidelity_bond_key(0, locktime)
                 except Exception as e:
-                    logger.debug(f"Could not derive bond key for locktime {locktime}: {e}")
+                    logger.debug("Could not derive bond key")
+                    logger.bind(sensitive=True).debug(
+                        f"Could not derive bond key for locktime {locktime}: {e}"
+                    )
             if key is None:
                 # Without the key no valid proof can ever be produced;
                 # emitting the bond anyway would make every proof attempt
                 # fail later with "Bond missing pubkey".
-                logger.warning(
+                logger.bind(sensitive=True).warning(
                     f"Skipping fidelity bond {utxo_info.address[:20]}...: "
                     "could not derive its key from this wallet"
                 )
@@ -224,7 +229,9 @@ async def find_fidelity_bonds(
         # Get confirmation_time (Unix timestamp) from block height
         # For unconfirmed UTXOs (height=None), we can't calculate bond value yet
         if utxo_info.height is None:
-            logger.warning(f"Skipping unconfirmed bond UTXO {utxo_info.txid}:{utxo_info.vout}")
+            logger.bind(sensitive=True).warning(
+                f"Skipping unconfirmed bond UTXO {utxo_info.txid}:{utxo_info.vout}"
+            )
             continue
 
         confirmation_time = await wallet.backend.get_block_time(utxo_info.height)
@@ -249,12 +256,15 @@ async def find_fidelity_bonds(
                 )
                 cert_signature = bytes.fromhex(registry_bond.cert_signature)  # type: ignore
                 cert_expiry = registry_bond.cert_expiry
-                logger.debug(
+                logger.bind(sensitive=True).debug(
                     f"Found certificate for bond {utxo_info.address[:20]}... "
                     f"(expiry: {cert_expiry} periods)"
                 )
             except Exception as e:
-                logger.warning(f"Failed to parse certificate for {utxo_info.address}: {e}")
+                logger.warning("Failed to parse fidelity bond certificate")
+                logger.bind(sensitive=True).warning(
+                    f"Failed to parse certificate for {utxo_info.address}: {e}"
+                )
 
         bonds.append(
             FidelityBondInfo(
@@ -457,7 +467,8 @@ def create_fidelity_bond_proof(
         return base64.b64encode(proof_data).decode("ascii")
 
     except Exception as e:
-        logger.error(f"Failed to create bond proof: {e}")
+        logger.error("Failed to create bond proof")
+        logger.bind(sensitive=True).error(f"Failed to create bond proof: {e}")
         return None
 
 
@@ -486,7 +497,7 @@ async def get_best_fidelity_bond(
                 ensure_fidelity_bond_certificate_valid(bond, current_block_height)
             except ExpiredFidelityBondCertificateError as exc:
                 expiry_error = exc
-                logger.warning(
+                logger.bind(sensitive=True).warning(
                     f"Skipping expired fidelity bond certificate for {bond.txid}:{bond.vout}"
                 )
                 continue

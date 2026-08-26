@@ -157,7 +157,7 @@ class DirectoryClientPool:
         try:
             host, port = parse_directory_address(dir_server)
         except Exception as e:
-            logger.debug(f"Cannot parse directory address {dir_server!r}: {e}")
+            logger.bind(sensitive=True).debug(f"Cannot parse directory address {dir_server!r}: {e}")
             return None
 
         node_id = f"{host}:{port}"
@@ -168,7 +168,7 @@ class DirectoryClientPool:
             await client.connect()
             return (node_id, client)
         except Exception as e:
-            logger.debug(f"Failed to connect to {dir_server}: {e}")
+            logger.bind(sensitive=True).debug(f"Failed to connect to {dir_server}: {e}")
             return None
 
     # -- Bulk connect / reconnect ---------------------------------------
@@ -246,14 +246,14 @@ class DirectoryClientPool:
 
                 result = await self.connect_to_directory(dir_server)
                 if result is None:
-                    logger.warning(
+                    logger.bind(sensitive=True).warning(
                         f"Could not connect to {dir_server} (attempt {attempt}), "
                         "Tor may still be bootstrapping"
                     )
                     continue
                 connected_id, client = result
                 self.clients[connected_id] = client
-                logger.info(f"Connected to directory: {dir_server}")
+                logger.bind(sensitive=True).info(f"Connected to directory: {dir_server}")
                 await self._on_directory_connected(connected_id, client)
 
             if self.clients:
@@ -287,7 +287,7 @@ class DirectoryClientPool:
             try:
                 host, port = parse_directory_address(server)
             except Exception as e:
-                logger.debug(f"Skipping unparseable directory {server!r}: {e}")
+                logger.bind(sensitive=True).debug(f"Skipping unparseable directory {server!r}: {e}")
                 continue
             node_id = f"{host}:{port}"
             if node_id not in connected:
@@ -310,7 +310,7 @@ class DirectoryClientPool:
                 continue
             node_id, client = result
             self.clients[node_id] = client
-            logger.info(f"Reconnected to directory: {dir_server}")
+            logger.bind(sensitive=True).info(f"Reconnected to directory: {dir_server}")
             await self._on_directory_connected(node_id, client)
             newly_connected.append((node_id, client))
         return newly_connected
@@ -329,9 +329,11 @@ class DirectoryClientPool:
             try:
                 await client.close()
             except Exception as e:
-                logger.warning(f"Error closing connection to {node_id}: {e}")
+                logger.warning("Error closing directory connection")
+                logger.bind(sensitive=True).warning(f"Error closing connection to {node_id}: {e}")
             try:
                 await self._on_directory_disconnected(node_id)
             except Exception as e:
-                logger.warning(f"Error in disconnect hook for {node_id}: {e}")
+                logger.warning("Directory disconnect hook failed")
+                logger.bind(sensitive=True).warning(f"Error in disconnect hook for {node_id}: {e}")
         self.clients.clear()

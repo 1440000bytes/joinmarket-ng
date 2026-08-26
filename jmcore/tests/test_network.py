@@ -6,6 +6,7 @@ import asyncio
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from loguru import logger
 
 from jmcore.crypto import NickIdentity
 from jmcore.network import (
@@ -219,6 +220,28 @@ class TestOnionPeerBasic:
         assert peer.hostname is None
         assert peer.port is None
         assert not peer.can_connect()
+
+    def test_invalid_peer_location_log_is_sensitive(self) -> None:
+        records: list[tuple[str, bool]] = []
+        handler = logger.add(
+            lambda message: records.append(
+                (
+                    str(message.record["message"]),
+                    bool(message.record["extra"].get("sensitive", False)),
+                )
+            )
+        )
+        try:
+            OnionPeer(nick="J5peer", location="private-endpoint.onion:not-a-port")
+        finally:
+            logger.remove(handler)
+
+        assert {
+            sensitive for message, sensitive in records if "private-endpoint.onion" in message
+        } == {True}
+        assert {
+            sensitive for message, sensitive in records if message == "Invalid peer location"
+        } == {False}
 
     def test_peer_status_transitions(self):
         """Test that peer status is tracked correctly."""

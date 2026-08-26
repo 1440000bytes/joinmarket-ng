@@ -154,8 +154,14 @@ def test_log_status(server):
         assert "Connected peers: 2/10000" in log_output
         assert "Passive peers (orderbook watchers): 1" in log_output
         assert "Active peers (makers): 1" in log_output
-        assert "taker1" in log_output
-        assert "maker1" in log_output
+        assert "taker1" not in log_output
+        assert "maker1" not in log_output
+
+        mock_logger.bind.assert_called_with(sensitive=True)
+        sensitive_calls = [call[0][0] for call in mock_logger.bind.return_value.info.call_args_list]
+        sensitive_output = " ".join(sensitive_calls)
+        assert "taker1" in sensitive_output
+        assert "maker1" in sensitive_output
 
 
 @pytest.mark.asyncio

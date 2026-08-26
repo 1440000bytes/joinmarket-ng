@@ -7,6 +7,7 @@ import asyncio
 import pytest
 from jmcore.models import MessageEnvelope, NetworkType, PeerInfo, PeerStatus
 from jmcore.protocol import MessageType
+from loguru import logger
 
 from directory_server.message_router import MessageRouter
 from directory_server.peer_registry import PeerRegistry
@@ -310,6 +311,40 @@ class TestMessageRouterPrivateMessageFailedSend:
 
         # The target peer should have been marked as failed
         assert to_peer.nick in failed_peers
+
+    @pytest.mark.anyio
+    async def test_private_message_content_log_is_sensitive(self, registry, sample_peers):
+        records: list[tuple[str, bool]] = []
+        handler = logger.add(
+            lambda message: records.append(
+                (
+                    str(message.record["message"]),
+                    bool(message.record["extra"].get("sensitive", False)),
+                )
+            )
+        )
+        from_peer = sample_peers[0]
+        to_peer = sample_peers[1]
+
+        async def send(peer_key: str, data: bytes, connection_id: str | None) -> None:
+            return None
+
+        router = MessageRouter(peer_registry=registry, send_callback=send)
+        payload = f"{from_peer.nick}!{to_peer.nick}!private-content-unique"
+        try:
+            await router._handle_private_message(
+                MessageEnvelope(message_type=MessageType.PRIVMSG, payload=payload),
+                from_peer.nick,
+            )
+        finally:
+            logger.remove(handler)
+
+        assert {
+            sensitive for message, sensitive in records if "private-content-unique" in message
+        } == {True}
+        assert {
+            sensitive for message, sensitive in records if message == "Routing private message"
+        } == {False}
 
     @pytest.mark.anyio
     async def test_private_send_failure_reports_failed_generation(self, registry):

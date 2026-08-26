@@ -260,18 +260,18 @@ class OrderbookAggregator:
         node_id = f"{onion_address}:{port}"
         self._retry_tasks = [task for task in self._retry_tasks if not task.done()]
         if any(task.get_name() == f"retry:{node_id}" for task in self._retry_tasks):
-            logger.debug(f"Retry already scheduled for {node_id}")
+            logger.bind(sensitive=True).debug(f"Retry already scheduled for {node_id}")
             return
         retry_task = asyncio.create_task(self._retry_failed_connection(onion_address, port))
         retry_task.set_name(f"retry:{node_id}")
         self._retry_tasks.append(retry_task)
-        logger.info(f"Scheduled retry task for {node_id}")
+        logger.bind(sensitive=True).info(f"Scheduled retry task for {node_id}")
 
     async def fetch_from_directory(
         self, onion_address: str, port: int
     ) -> tuple[list[Offer], list[FidelityBond], str]:
         node_id = f"{onion_address}:{port}"
-        logger.info(f"Fetching orderbook from directory: {node_id}")
+        logger.bind(sensitive=True).info(f"Fetching orderbook from directory: {node_id}")
         client = DirectoryClient(
             onion_address,
             port,
@@ -298,7 +298,8 @@ class OrderbookAggregator:
 
             return offers, bonds, node_id
         except Exception as e:
-            logger.error(f"Failed to fetch from directory {node_id}: {e}")
+            logger.error("Failed to fetch orderbook from directory")
+            logger.bind(sensitive=True).error(f"Failed to fetch from directory {node_id}: {e}")
             return [], [], node_id
         finally:
             await client.close()
@@ -315,7 +316,8 @@ class OrderbookAggregator:
 
         for result in results:
             if isinstance(result, BaseException):
-                logger.error(f"Directory fetch failed: {result}")
+                logger.error("Directory fetch failed")
+                logger.bind(sensitive=True).error(f"Directory fetch failed: {result}")
                 continue
 
             offers, bonds, node_id = result
@@ -349,7 +351,8 @@ class OrderbookAggregator:
                 self._link_bonds_to_offers(orderbook)
                 logger.debug("Background bond calculation completed")
             except Exception as e:
-                logger.error(f"Error in background bond calculator: {e}")
+                logger.error("Error in background bond calculator")
+                logger.bind(sensitive=True).error(f"Error in background bond calculator: {e}")
 
     async def _periodic_directory_connection_status(self) -> None:
         """Background task to periodically log directory connection status.
@@ -378,11 +381,14 @@ class OrderbookAggregator:
 
                 connected_count = len(connected_nodes)
 
+                logger.info(
+                    f"Directory connection status: {connected_count}/{total_servers} connected"
+                )
                 if disconnected_nodes:
                     disconnected_str = ", ".join(disconnected_nodes[:5])
                     if len(disconnected_nodes) > 5:
                         disconnected_str += f", ... and {len(disconnected_nodes) - 5} more"
-                    logger.warning(
+                    logger.bind(sensitive=True).warning(
                         f"Directory connection status: {connected_count}/{total_servers} connected. "
                         f"Disconnected: [{disconnected_str}]"
                     )
@@ -390,7 +396,7 @@ class OrderbookAggregator:
                     connected_str = ", ".join(connected_nodes[:5])
                     if len(connected_nodes) > 5:
                         connected_str += f", ... and {len(connected_nodes) - 5} more"
-                    logger.info(
+                    logger.bind(sensitive=True).info(
                         f"Directory connection status: {connected_count}/{total_servers} connected "
                         f"[{connected_str}]"
                     )
@@ -402,7 +408,8 @@ class OrderbookAggregator:
                 logger.info("Directory connection status task cancelled")
                 break
             except Exception as e:
-                logger.error(f"Error in directory connection status task: {e}")
+                logger.error("Directory connection status task failed")
+                logger.bind(sensitive=True).error(f"Error in directory connection status task: {e}")
                 await asyncio.sleep(600)
 
         logger.info("Directory connection status task stopped")
@@ -451,7 +458,9 @@ class OrderbookAggregator:
                         refresh_ok = True
                         refreshed += 1
                     except Exception as e:
-                        logger.debug(f"Failed to refresh peerlist from {node_id}: {e}")
+                        logger.bind(sensitive=True).debug(
+                            f"Failed to refresh peerlist from {node_id}: {e}"
+                        )
                         refresh_failures += 1
 
                     if refresh_ok and client._peerlist_supported:
@@ -462,7 +471,7 @@ class OrderbookAggregator:
                         stale_nicks = client_nicks - active_nicks
                         for nick in stale_nicks:
                             total_removed += client.remove_offers_for_nick(nick)
-                        logger.debug(
+                        logger.bind(sensitive=True).debug(
                             f"Directory {node_id}: {len(active_nicks)} active nicks, "
                             f"removed offers for {len(stale_nicks)} disconnected nicks"
                         )
@@ -471,7 +480,7 @@ class OrderbookAggregator:
                         removed = client.cleanup_stale_offers(max_age_seconds=stale_offer_max_age)
                         if removed:
                             fallback_cleanups += removed
-                            logger.debug(
+                            logger.bind(sensitive=True).debug(
                                 f"Directory {node_id}: fallback removed {removed} stale offers "
                                 f"(no GETPEERLIST support)"
                             )
@@ -489,7 +498,9 @@ class OrderbookAggregator:
                 try:
                     await self._check_makers_without_features()
                 except Exception as e:
-                    logger.debug(f"Error checking makers without features: {e}")
+                    logger.bind(sensitive=True).debug(
+                        f"Error checking makers without features: {e}"
+                    )
 
                 await asyncio.sleep(refresh_interval)
 
@@ -497,7 +508,8 @@ class OrderbookAggregator:
                 logger.info("Peerlist refresh task cancelled")
                 break
             except Exception as e:
-                logger.error(f"Error in peerlist refresh task: {e}")
+                logger.error("Peerlist refresh task failed")
+                logger.bind(sensitive=True).error(f"Error in peerlist refresh task: {e}")
                 await asyncio.sleep(refresh_interval)
 
         logger.info("Peerlist refresh task stopped")
@@ -655,7 +667,8 @@ class OrderbookAggregator:
                 logger.info("Maker feature-discovery task cancelled")
                 break
             except Exception as e:
-                logger.error(f"Error in maker feature-discovery task: {e}")
+                logger.error("Maker feature-discovery task failed")
+                logger.bind(sensitive=True).error(f"Error in maker feature-discovery task: {e}")
                 await asyncio.sleep(check_interval)
 
         logger.info("Maker feature-discovery task stopped")
@@ -665,10 +678,10 @@ class OrderbookAggregator:
         status = self.node_statuses[node_id]
         status.connection_attempts += 1
 
-        logger.info(f"Connecting to directory: {node_id}")
+        logger.bind(sensitive=True).info(f"Connecting to directory: {node_id}")
 
         def on_disconnect() -> None:
-            logger.info(f"Directory node {node_id} disconnected")
+            logger.bind(sensitive=True).info(f"Directory node {node_id} disconnected")
             status.mark_disconnected()
             self._handle_client_disconnect(onion_address, port)
 
@@ -692,11 +705,14 @@ class OrderbookAggregator:
         try:
             await client.connect()
             status.mark_connected()
-            logger.info(f"Successfully connected to directory: {node_id} (our nick: {client.nick})")
+            logger.bind(sensitive=True).info(
+                f"Successfully connected to directory: {node_id} (our nick: {client.nick})"
+            )
             return client
 
         except Exception as e:
-            logger.warning(f"Connection to directory {node_id} failed: {e}")
+            logger.warning("Connection to directory failed")
+            logger.bind(sensitive=True).warning(f"Connection to directory {node_id} failed: {e}")
             await client.close()
             status.mark_disconnected()
             self._schedule_reconnect(onion_address, port)
@@ -710,21 +726,27 @@ class OrderbookAggregator:
         while True:
             # Get next retry delay with exponential backoff
             retry_delay = status.get_next_retry_delay()
-            logger.info(f"Waiting {retry_delay:.1f}s before retrying connection to {node_id}")
+            logger.bind(sensitive=True).info(
+                f"Waiting {retry_delay:.1f}s before retrying connection to {node_id}"
+            )
             await asyncio.sleep(retry_delay)
 
             if node_id in self.clients:
-                logger.debug(f"Node {node_id} already connected, stopping retry")
+                logger.bind(sensitive=True).debug(
+                    f"Node {node_id} already connected, stopping retry"
+                )
                 return
 
-            logger.info(f"Retrying connection to directory {node_id}...")
+            logger.bind(sensitive=True).info(f"Retrying connection to directory {node_id}...")
             client = await self._connect_to_node(onion_address, port)
 
             if client:
                 self.clients[node_id] = client
                 task = asyncio.create_task(client.listen_continuously())
                 self.listener_tasks.append(task)
-                logger.info(f"Successfully reconnected to directory: {node_id}")
+                logger.bind(sensitive=True).info(
+                    f"Successfully reconnected to directory: {node_id}"
+                )
                 return
 
     async def start_continuous_listening(self) -> None:
@@ -757,19 +779,22 @@ class OrderbookAggregator:
             node_id = f"{onion_address}:{port}"
 
             if isinstance(result, BaseException):
-                logger.error(f"Connection to {node_id} raised exception: {result}")
+                logger.error("Directory connection raised an exception")
+                logger.bind(sensitive=True).error(
+                    f"Connection to {node_id} raised exception: {result}"
+                )
                 retry_task = asyncio.create_task(self._retry_failed_connection(onion_address, port))
                 self._retry_tasks.append(retry_task)
-                logger.info(f"Scheduled retry task for {node_id}")
+                logger.bind(sensitive=True).info(f"Scheduled retry task for {node_id}")
             elif result is not None:
                 self.clients[node_id] = result
                 task = asyncio.create_task(result.listen_continuously())
                 self.listener_tasks.append(task)
-                logger.info(f"Started listener task for {node_id}")
+                logger.bind(sensitive=True).info(f"Started listener task for {node_id}")
             else:
                 retry_task = asyncio.create_task(self._retry_failed_connection(onion_address, port))
                 self._retry_tasks.append(retry_task)
-                logger.info(f"Scheduled retry task for {node_id}")
+                logger.bind(sensitive=True).info(f"Scheduled retry task for {node_id}")
 
         # Start early feature discovery task - runs once after initial connections settle
         early_feature_task = asyncio.create_task(self._early_feature_discovery())
@@ -789,7 +814,7 @@ class OrderbookAggregator:
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            logger.debug(f"Early feature discovery error: {e}")
+            logger.bind(sensitive=True).debug(f"Early feature discovery error: {e}")
 
     async def stop_listening(self) -> None:
         logger.info("Stopping all directory listeners")
@@ -866,7 +891,7 @@ class OrderbookAggregator:
             offers_with_bonds_count = sum(
                 1 for offer_ts in offers_with_ts if offer_ts.bond_utxo_key
             )
-            logger.debug(
+            logger.bind(sensitive=True).debug(
                 f"Directory {node_id}: {len(offers_with_ts)} offers "
                 f"({offers_with_bonds_count} with bonds), {len(bonds)} bonds"
             )
@@ -905,7 +930,7 @@ class OrderbookAggregator:
         for offer, timestamp, bond_utxo_key, _node_id in all_offers_with_timestamps:
             if not bond_utxo_key:
                 offers_without_bonds += 1
-                logger.debug(
+                logger.bind(sensitive=True).debug(
                     f"Offer without bond from {offer.counterparty} (oid={offer.oid}, "
                     f"ordertype={offer.ordertype.value})"
                 )
@@ -923,7 +948,7 @@ class OrderbookAggregator:
             existing = bond_oid_to_best_offer.get(dedup_key)
             if existing is None:
                 directory_nodes = [offer.directory_node] if offer.directory_node else []
-                logger.debug(
+                logger.bind(sensitive=True).debug(
                     f"Bond deduplication: First offer for bond {bond_utxo_key[:20]}... "
                     f"from {offer.counterparty} (oid={offer.oid})"
                 )
@@ -957,7 +982,7 @@ class OrderbookAggregator:
                     new_directory_nodes,
                     offer.counterparty,
                 )
-                logger.debug(
+                logger.bind(sensitive=True).debug(
                     f"Bond deduplication: Replaced certificate expiring at {old_expiry} "
                     f"with renewed certificate expiring at {new_expiry} for "
                     f"bond {bond_utxo_key[:20]}..."
@@ -972,7 +997,7 @@ class OrderbookAggregator:
                         directory_nodes,
                         offer.counterparty,
                     )
-                logger.debug(
+                logger.bind(sensitive=True).debug(
                     f"Bond deduplication: Same maker {offer.counterparty} (oid={offer.oid}) "
                     f"seen on {len(directory_nodes)} directories for bond {bond_utxo_key[:20]}..."
                 )
@@ -984,7 +1009,7 @@ class OrderbookAggregator:
                 # within the skew window keeps the existing offer. This recurs
                 # on every aggregation cycle for as long as both nicks are
                 # announced, so it is diagnostic detail, not a warning.
-                logger.debug(
+                logger.bind(sensitive=True).debug(
                     f"Bond deduplication: Ignoring potential duplicate from {offer.counterparty} "
                     f"(oid={offer.oid}) - same bond as {old_offer.counterparty} "
                     f"(oid={old_offer.oid}) with only {abs(time_diff):.1f}s difference "
@@ -995,7 +1020,7 @@ class OrderbookAggregator:
                 continue
 
             bond_replacements += 1
-            logger.debug(
+            logger.bind(sensitive=True).debug(
                 f"Bond deduplication: Replacing offer from {old_offer.counterparty} "
                 f"(oid={old_offer.oid}) with {offer.counterparty} (oid={offer.oid}) "
                 f"[same bond UTXO: {bond_utxo_key[:20]}..., age_diff={time_diff:.1f}s]"
@@ -1163,7 +1188,7 @@ class OrderbookAggregator:
             if bond.fidelity_bond_data and bond.bond_value is not None:
                 offer.fidelity_bond_data = bond.fidelity_bond_data
                 offer.fidelity_bond_value = bond.bond_value
-            logger.debug(
+            logger.bind(sensitive=True).debug(
                 f"Linked standalone bond from {bond.counterparty} "
                 f"(txid={bond.utxo_txid[:16]}...) to offer oid={offer.oid}"
             )
@@ -1213,22 +1238,28 @@ class OrderbookAggregator:
         bond_data = bond.fidelity_bond_data or {}
         utxo_pub_hex = bond_data.get("utxo_pub") or bond.script
         if not utxo_pub_hex:
-            logger.debug(f"Bond {bond.utxo_txid}:{bond.utxo_vout} missing utxo_pub, skipping")
+            logger.bind(sensitive=True).debug(
+                f"Bond {bond.utxo_txid}:{bond.utxo_vout} missing utxo_pub, skipping"
+            )
             return False
         try:
             bond_address = derive_bond_address(
                 bytes.fromhex(utxo_pub_hex), bond.locktime, self.network
             )
         except (ValueError, TypeError) as e:
-            logger.debug(f"Failed to derive bond script for {bond.utxo_txid}:{bond.utxo_vout}: {e}")
+            logger.bind(sensitive=True).debug(
+                f"Failed to derive bond script for {bond.utxo_txid}:{bond.utxo_vout}: {e}"
+            )
             return False
         if utxo.scriptpubkey != bond_address.scriptpubkey.hex():
-            logger.debug(f"Bond {bond.utxo_txid}:{bond.utxo_vout} scriptPubKey mismatch")
+            logger.bind(sensitive=True).debug(
+                f"Bond {bond.utxo_txid}:{bond.utxo_vout} scriptPubKey mismatch"
+            )
             return False
 
         outspend = await self.mempool_api.get_outspend(bond.utxo_txid, bond.utxo_vout)
         if outspend.spent:
-            logger.debug(f"Bond {bond.utxo_txid}:{bond.utxo_vout} is spent")
+            logger.bind(sensitive=True).debug(f"Bond {bond.utxo_txid}:{bond.utxo_vout} is spent")
             return False
         return True
 
@@ -1245,14 +1276,16 @@ class OrderbookAggregator:
             try:
                 tx_data = await self.mempool_api.get_transaction(bond.utxo_txid)
                 if not tx_data or not tx_data.status.confirmed:
-                    logger.debug(f"Bond {bond.utxo_txid}:{bond.utxo_vout} not confirmed")
+                    logger.bind(sensitive=True).debug(
+                        f"Bond {bond.utxo_txid}:{bond.utxo_vout} not confirmed"
+                    )
                     bond.bond_value = None
                     bond.verification_valid = False
                     bond.verification_stale = False
                     return bond
 
                 if bond.utxo_vout >= len(tx_data.vout):
-                    logger.warning(
+                    logger.bind(sensitive=True).warning(
                         f"Invalid vout {bond.utxo_vout} for tx {bond.utxo_txid} "
                         f"(only {len(tx_data.vout)} outputs)"
                     )
@@ -1282,15 +1315,18 @@ class OrderbookAggregator:
                 bond.verification_stale = False
                 self._bond_claims_reverified.add(self._bond_claim_key(bond))
 
-                logger.debug(
+                logger.bind(sensitive=True).debug(
                     f"Bond {bond.counterparty}: value={bond_value}, "
                     f"amount={amount}, locktime={datetime.fromtimestamp(bond.locktime, UTC)}, "
                     f"confirmed={datetime.fromtimestamp(confirmation_time, UTC)}"
                 )
 
             except Exception as e:
-                logger.error(f"Failed to calculate bond value for {bond.utxo_txid}: {e}")
-                logger.debug(
+                logger.error("Failed to calculate bond value")
+                logger.bind(sensitive=True).error(
+                    f"Failed to calculate bond value for {bond.utxo_txid}: {e}"
+                )
+                logger.bind(sensitive=True).debug(
                     f"Bond data: txid={bond.utxo_txid}, vout={bond.utxo_vout}, amount={bond.amount}"
                 )
 
@@ -1317,7 +1353,7 @@ class OrderbookAggregator:
                 logger.debug("Cannot verify bond certificate expiry: no height source configured")
                 return None
         except Exception as e:
-            logger.warning(f"Cannot verify bond certificate expiry: {e}")
+            logger.bind(sensitive=True).warning(f"Cannot verify bond certificate expiry: {e}")
             return None
 
         if type(current_block_height) is not int or current_block_height < 0:
@@ -1356,14 +1392,16 @@ class OrderbookAggregator:
                 utxo_pub_hex = bond.script
 
             if not utxo_pub_hex:
-                logger.debug(f"Bond {bond.utxo_txid}:{bond.utxo_vout} missing utxo_pub, skipping")
+                logger.bind(sensitive=True).debug(
+                    f"Bond {bond.utxo_txid}:{bond.utxo_vout} missing utxo_pub, skipping"
+                )
                 continue
 
             try:
                 utxo_pub_bytes = bytes.fromhex(utxo_pub_hex)
                 bond_addr = derive_bond_address(utxo_pub_bytes, locktime, self.network)
             except Exception as e:
-                logger.debug(
+                logger.bind(sensitive=True).debug(
                     f"Failed to derive bond address for {bond.utxo_txid}:{bond.utxo_vout}: {e}"
                 )
                 continue
@@ -1389,10 +1427,11 @@ class OrderbookAggregator:
                 [req for _, req in bonds_to_verify]
             )
         except Exception as e:
-            logger.error(f"Backend bond verification failed: {e}")
+            logger.error("Backend bond verification failed")
+            logger.bind(sensitive=True).error(f"Backend bond verification failed: {e}")
             return
         if len(results) != len(bonds_to_verify):
-            logger.error(
+            logger.bind(sensitive=True).error(
                 f"Backend returned {len(results)} bond results for {len(bonds_to_verify)} requests"
             )
             return
@@ -1400,13 +1439,15 @@ class OrderbookAggregator:
         # Update bond objects with results
         for (bond, request), result in zip(bonds_to_verify, results, strict=True):
             if (result.txid, result.vout) != (request.txid, request.vout):
-                logger.error(
+                logger.bind(sensitive=True).error(
                     f"Bond verification result mismatch: requested "
                     f"{request.txid}:{request.vout}, received {result.txid}:{result.vout}"
                 )
                 continue
             if not result.valid:
-                logger.debug(f"Bond {bond.utxo_txid}:{bond.utxo_vout} invalid: {result.error}")
+                logger.bind(sensitive=True).debug(
+                    f"Bond {bond.utxo_txid}:{bond.utxo_vout} invalid: {result.error}"
+                )
                 bond.bond_value = None
                 bond.amount = 0
                 bond.utxo_confirmation_timestamp = 0
@@ -1427,7 +1468,7 @@ class OrderbookAggregator:
             bond.verification_stale = False
             self._bond_claims_reverified.add(self._bond_claim_key(bond))
 
-            logger.debug(
+            logger.bind(sensitive=True).debug(
                 f"Bond {bond.counterparty}: value={bond_value}, "
                 f"amount={result.value}, locktime={datetime.fromtimestamp(bond.locktime, UTC)}, "
                 f"confirmed={datetime.fromtimestamp(result.block_time, UTC)}"
@@ -1464,5 +1505,6 @@ class OrderbookAggregator:
                     "Mempool API connection test failed - bond value calculation may not work"
                 )
         except Exception as e:
-            logger.error(f"Mempool API connection test error: {e}")
+            logger.error("Mempool API connection test error")
+            logger.bind(sensitive=True).error(f"Mempool API connection test error: {e}")
             logger.warning("Bond value calculation may not work without mempool API access")

@@ -65,12 +65,14 @@ async def confirmations_from_history(
     try:
         from jmwallet.history import read_history
     except Exception:
-        logger.debug("jmwallet.history unavailable; cannot resolve {} via addresses", txid)
+        logger.debug("jmwallet.history unavailable; cannot resolve transaction via addresses")
+        logger.bind(sensitive=True).debug("Cannot resolve {} via addresses", txid)
         return None
     try:
         entries = read_history(data_dir)
     except Exception:
-        logger.debug("history read failed while resolving txid {}", txid)
+        logger.debug("History read failed while resolving transaction")
+        logger.bind(sensitive=True).debug("History read failed while resolving txid {}", txid)
         return None
     addresses: list[str] = []
     seen: set[str] = set()
@@ -89,7 +91,8 @@ async def confirmations_from_history(
     try:
         utxos = await backend.get_utxos(addresses)
     except Exception:
-        logger.debug("get_utxos failed while resolving txid {}", txid)
+        logger.debug("Watched-address lookup failed while resolving transaction")
+        logger.bind(sensitive=True).debug("get_utxos failed while resolving txid {}", txid)
         return None
     for utxo in utxos or []:
         if getattr(utxo, "txid", None) == txid:
@@ -122,12 +125,16 @@ async def resolve_confirmations(
     try:
         tx = await backend.get_transaction(txid)
     except Exception:
-        logger.exception("get_confirmations({}) backend error", txid)
+        logger.error("Confirmation lookup backend error")
+        logger.bind(sensitive=True).exception("get_confirmations({}) backend error", txid)
         return None
     if tx is not None:
         return int(getattr(tx, "confirmations", 0) or 0)
     try:
         return await confirmations_from_history(txid, backend, data_dir)
     except Exception:
-        logger.exception("get_confirmations({}) address-lookup fallback error", txid)
+        logger.error("Confirmation address-lookup fallback error")
+        logger.bind(sensitive=True).exception(
+            "get_confirmations({}) address-lookup fallback error", txid
+        )
         return None

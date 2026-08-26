@@ -12,7 +12,7 @@ from jmcore.models import NetworkType
 from jmcore.nick_auth import NickAuthMode
 from typer.testing import CliRunner
 
-from taker.cli import app, build_taker_config, create_backend
+from taker.cli import _run_coinjoin, app, build_taker_config, create_backend
 
 runner = CliRunner()
 
@@ -105,6 +105,111 @@ def test_coinjoin_forwards_repeated_explicit_inputs() -> None:
     assert result.exit_code == 0, result.output
     assert mock_run.await_args is not None
     assert mock_run.await_args.kwargs["input_utxos"] == [first, second]
+
+
+def test_unexpected_coinjoin_traceback_is_sensitive() -> None:
+    from loguru import logger
+
+    marker = "private-coinjoin-marker"
+    settings = MagicMock()
+    config = MagicMock()
+    config.network.value = "regtest"
+    config.backend_type = "descriptor_wallet"
+    config.socks_host = "127.0.0.1"
+    config.socks_port = 9050
+    config.counterparty_count = 3
+    resolved = MagicMock(mnemonic="test mnemonic", bip39_passphrase="", creation_height=None)
+    records: list[tuple[str, bool, str]] = []
+    handler_id = logger.add(
+        lambda message: records.append(
+            (
+                message.record["message"],
+                bool(message.record["extra"].get("sensitive", False)),
+                str(message.record["exception"]),
+            )
+        )
+    )
+    try:
+        with (
+            patch("taker.cli.setup_cli", return_value=settings),
+            patch("taker.cli.ensure_config_file"),
+            patch("taker.cli.resolve_mnemonic", return_value=resolved),
+            patch("taker.cli.build_taker_config", return_value=config),
+            patch(
+                "taker.cli._run_coinjoin", new_callable=AsyncMock, side_effect=ValueError(marker)
+            ),
+        ):
+            result = runner.invoke(app, ["coinjoin", "--amount", "100000"])
+    finally:
+        logger.remove(handler_id)
+
+    assert result.exit_code == 1
+    assert any(
+        message == "Unexpected CoinJoin error" and not sensitive
+        for message, sensitive, _ in records
+    )
+    assert any(sensitive and marker in exception for _, sensitive, exception in records)
+    assert not any(not sensitive and marker in exception for _, sensitive, exception in records)
+
+
+@pytest.mark.asyncio
+async def test_coinjoin_success_prints_txid_and_tags_log_details(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from loguru import logger
+
+    txid = "a" * 64
+    settings = MagicMock()
+    config = MagicMock()
+    config.network.value = "regtest"
+    config.bitcoin_network = None
+    config.data_dir = MagicMock()
+    config.mnemonic.get_secret_value.return_value = "test mnemonic"
+    config.passphrase.get_secret_value.return_value = ""
+    backend = MagicMock()
+    backend.get_block_height = AsyncMock()
+    taker = MagicMock()
+    taker.nick = "J5test"
+    taker.sync_wallet = AsyncMock()
+    taker.check_utxo_eligibility = AsyncMock(return_value=None)
+    taker.connect = AsyncMock()
+    taker.do_coinjoin = AsyncMock(return_value=txid)
+    taker.stop = AsyncMock()
+    taker.last_broadcast_method = "self"
+    taker.last_broadcast_fallback_reason = ""
+    notifier = MagicMock()
+    notifier.notify_startup = AsyncMock()
+    records: list[tuple[str, dict[str, object]]] = []
+    handler_id = logger.add(
+        lambda message: records.append((message.record["message"], dict(message.record["extra"])))
+    )
+    try:
+        with (
+            patch("taker.cli.create_backend", return_value=backend),
+            patch("taker.cli.WalletService"),
+            patch("taker.cli.get_notifier", return_value=notifier),
+            patch("taker.cli.write_nick_state"),
+            patch("taker.cli.remove_nick_state"),
+            patch("taker.taker.Taker", return_value=taker),
+        ):
+            await _run_coinjoin(
+                settings=settings,
+                config=config,
+                amount=100_000,
+                destination="bcrt1qdestination",
+                mixdepth=0,
+                counterparties=3,
+                skip_confirmation=True,
+            )
+    finally:
+        logger.remove(handler_id)
+
+    assert txid in capsys.readouterr().out
+    completion_records = [
+        record for record in records if record[0].startswith("CoinJoin successful")
+    ]
+    assert ("CoinJoin successful", {}) in completion_records
+    assert (f"CoinJoin successful: txid={txid}", {"sensitive": True}) in completion_records
 
 
 class TestBuildTakerConfig:

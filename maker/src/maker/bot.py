@@ -430,7 +430,8 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
         6. Listen for taker requests
         """
         try:
-            logger.info(f"Starting maker bot (nick: {self.nick})")
+            logger.info("Starting maker bot")
+            logger.bind(sensitive=True).info(f"Starting maker bot (nick: {self.nick})")
 
             await self._initialize_minimum_fee_policy()
 
@@ -443,7 +444,8 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
             from jmwallet.backends.descriptor_wallet import DescriptorWalletBackend
 
             if isinstance(self.backend, DescriptorWalletBackend):
-                logger.info(f"Using wallet: {self.backend.wallet_name}")
+                logger.info("Using descriptor wallet backend")
+                logger.bind(sensitive=True).info(f"Using wallet: {self.backend.wallet_name}")
 
             # Initialize commitment blacklist with configured data directory
             set_blacklist_path(data_dir=self.config.data_dir)
@@ -479,7 +481,7 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
                     timenumber = timestamp_to_timenumber(locktime)
                     address = self.wallet.get_fidelity_bond_address(timenumber, locktime)
                     fidelity_bond_addresses.append((address, locktime, timenumber))
-                    logger.info(
+                    logger.bind(sensitive=True).info(
                         f"Generated fidelity bond address for locktime {locktime}: {address}"
                     )
             # Option 2: Load from registry (default)
@@ -572,7 +574,7 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
                         bond.vout = bond_utxo.vout
                         bond.value = bond_utxo.value
                         bond.confirmations = bond_utxo.confirmations
-                        logger.debug(
+                        logger.bind(sensitive=True).debug(
                             f"Updated bond {bond.address[:20]}... with UTXO "
                             f"{bond_utxo.txid[:16]}...:{bond_utxo.vout}, value={bond_utxo.value}"
                         )
@@ -585,7 +587,9 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
             logger.debug(f"Current block height: {self.current_block_height}")
 
             total_balance = await self.wallet.get_total_balance()
-            logger.info(f"Wallet synced. Total balance: {total_balance:,} sats")
+            logger.bind(sensitive=True).info(
+                f"Wallet synced. Total balance: {total_balance:,} sats"
+            )
 
             # Find fidelity bond for proof generation
             # If a specific bond is selected in config, use it; otherwise use the best one
@@ -600,13 +604,16 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
                     (b for b in bonds if b.txid == sel_txid and b.vout == sel_vout), None
                 )
                 if self.fidelity_bond:
-                    logger.info(
+                    logger.bind(sensitive=True).info(
                         f"Using selected fidelity bond: {sel_txid[:16]}...:{sel_vout}, "
                         f"value={self.fidelity_bond.value:,} sats, "
                         f"bond_value={self.fidelity_bond.bond_value:,}"
                     )
                 else:
                     logger.warning(
+                        "Selected fidelity bond not found, falling back to best available"
+                    )
+                    logger.bind(sensitive=True).warning(
                         f"Selected fidelity bond {sel_txid[:16]}...:{sel_vout} not found, "
                         "falling back to best available"
                     )
@@ -623,7 +630,7 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
                     self.fidelity_bond,
                     self.current_block_height,
                 )
-                logger.info(
+                logger.bind(sensitive=True).info(
                     f"Fidelity bond found: {self.fidelity_bond.txid[:16]}..., "
                     f"value={self.fidelity_bond.value:,} sats, "
                     f"bond_value={self.fidelity_bond.bond_value:,}"
@@ -635,6 +642,9 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
                 if md0_utxos:
                     total_md0 = sum(u.value for u in md0_utxos)
                     logger.warning(
+                        "PRIVACY RISK: regular mixdepth 0 UTXOs can be linked to your fidelity bond"
+                    )
+                    logger.bind(sensitive=True).warning(
                         f"PRIVACY RISK: You have a fidelity bond AND "
                         f"{len(md0_utxos)} regular UTXO(s) ({total_md0:,} sats) "
                         f"in mixdepth 0.\n"
@@ -669,7 +679,9 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
                     await self.wallet.sync_all()
                 await self.wallet.reconstruct_imported_state_safe()
                 total_balance = await self.wallet.get_total_balance()
-                logger.info(f"Wallet re-synced. Total balance: {total_balance:,} sats")
+                logger.bind(sensitive=True).info(
+                    f"Wallet re-synced. Total balance: {total_balance:,} sats"
+                )
 
                 self.current_offers = await self.offer_manager.create_offers()
 
@@ -700,7 +712,10 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
             if ephemeral_onion:
                 # Override onion_host with the dynamically created one
                 object.__setattr__(self.config, "onion_host", ephemeral_onion)
-                logger.info(f"Using ephemeral onion address: {ephemeral_onion}")
+                logger.info("Using an ephemeral onion service")
+                logger.bind(sensitive=True).info(
+                    f"Using ephemeral onion address: {ephemeral_onion}"
+                )
 
             # Determine the onion address to advertise
             onion_host = self.config.onion_host
@@ -710,7 +725,8 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
 
             # Start hidden service listener if we have an onion address (static or ephemeral)
             if onion_host:
-                logger.info(
+                logger.info("Starting hidden service listener")
+                logger.bind(sensitive=True).info(
                     f"Starting hidden service listener on "
                     f"{self.config.onion_serving_host}:{self.config.onion_serving_port}..."
                 )
@@ -720,7 +736,10 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
                     on_connection=self._on_direct_connection,
                 )
                 await self.hidden_service_listener.start()
-                logger.info(f"Hidden service listener started (onion: {onion_host})")
+                logger.info("Hidden service listener started")
+                logger.bind(sensitive=True).info(
+                    f"Hidden service listener started (onion: {onion_host})"
+                )
 
             logger.info("Announcing offers...")
             await self._announce_offers()
@@ -776,7 +795,8 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
         except ExpiredFidelityBondCertificateError:
             raise
         except Exception as e:
-            logger.error(f"Failed to start maker bot: {e}")
+            logger.error("Failed to start maker bot")
+            logger.bind(sensitive=True).error(f"Failed to start maker bot: {e}")
             raise
 
     async def stop(self) -> None:
@@ -1012,14 +1032,17 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
         # no-op (every `rescan_interval_sec`, default 10 min) and is logged
         # at DEBUG to avoid flooding logs of long-running makers.
         if old_max_balance != new_max_balance:
-            logger.info(f"Wallet re-synced. Total balance: {total_balance:,} sats")
-            logger.info(
+            logger.info("Wallet balance changed, updating offers")
+            logger.bind(sensitive=True).info(
+                f"Wallet re-synced. Total balance: {total_balance:,} sats"
+            )
+            logger.bind(sensitive=True).info(
                 f"Max balance changed: {old_max_balance:,} -> {new_max_balance:,} sats. "
                 "Updating offers..."
             )
             await self._update_offers()
         else:
-            logger.debug(
+            logger.bind(sensitive=True).debug(
                 f"Wallet re-synced (no change). Total balance: {total_balance:,} sats, "
                 f"max offer balance: {new_max_balance:,} sats"
             )
@@ -1068,7 +1091,8 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
             else:
                 logger.warning("Withdrew all offers because no fillable liquidity remains")
         except Exception as e:
-            logger.error(f"Failed to update offers: {e}")
+            logger.error("Failed to update offers")
+            logger.bind(sensitive=True).error(f"Failed to update offers: {e}")
 
     async def _cancel_offers(self, offer_ids: set[int]) -> None:
         """Withdraw OIDs using the reference-compatible public cancel command."""

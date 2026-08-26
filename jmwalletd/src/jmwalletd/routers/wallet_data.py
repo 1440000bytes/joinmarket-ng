@@ -648,7 +648,8 @@ async def _run_rescan(state: DaemonState, blockheight: int) -> None:
             await backend.rescan_blockchain(blockheight)
     except Exception as exc:
         state.rescan_error = str(exc)
-        logger.exception("Rescan failed")
+        logger.error("Rescan failed")
+        logger.bind(sensitive=True).exception("Rescan failed")
     finally:
         state.rescanning = False
         state.rescan_progress = 0.0

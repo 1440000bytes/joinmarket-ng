@@ -289,13 +289,15 @@ class Taker(TakerMonitoringMixin):
         Returns:
             Total wallet balance in satoshis.
         """
-        logger.info(f"Starting taker (nick: {self.nick})")
+        logger.info("Starting taker")
+        logger.bind(sensitive=True).info(f"Starting taker (nick: {self.nick})")
 
         # Log wallet name if using descriptor wallet backend
         from jmwallet.backends.descriptor_wallet import DescriptorWalletBackend
 
         if isinstance(self.backend, DescriptorWalletBackend):
-            logger.info(f"Using wallet: {self.backend.wallet_name}")
+            logger.info("Using descriptor wallet backend")
+            logger.bind(sensitive=True).info(f"Using wallet: {self.backend.wallet_name}")
 
         # Initialize commitment blacklist with configured data directory
         set_blacklist_path(data_dir=self.config.data_dir)
@@ -318,7 +320,7 @@ class Taker(TakerMonitoringMixin):
         await self.wallet.reconstruct_imported_state_safe()
 
         total_balance = await self.wallet.get_total_balance()
-        logger.info(f"Wallet synced. Total balance: {total_balance:,} sats")
+        logger.bind(sensitive=True).info("Wallet synced. Total balance: {:,} sats", total_balance)
 
         return total_balance
 
@@ -378,7 +380,7 @@ class Taker(TakerMonitoringMixin):
                     owner=self._session.input_lock_owner,
                 )
             except Exception as e:  # pragma: no cover - best-effort cleanup
-                logger.debug(f"Failed to release taker input locks: {e}")
+                logger.bind(sensitive=True).debug("Failed to release taker input locks: {}", e)
             self._session.reserved_inputs = set()
 
     @property
@@ -689,7 +691,8 @@ class Taker(TakerMonitoringMixin):
         try:
             current_block_height = await self.backend.get_block_height()
         except Exception as e:
-            logger.warning(f"Cannot verify fidelity bond certificate expiry: {e}")
+            logger.warning("Cannot verify fidelity bond certificate expiry")
+            logger.bind(sensitive=True).warning("Fidelity bond expiry detail: {}", e)
             return
         if type(current_block_height) is not int or current_block_height < 0:
             logger.warning(
@@ -712,7 +715,9 @@ class Taker(TakerMonitoringMixin):
             cert_expiry_height = bond_data.get("cert_expiry")
 
             if not isinstance(cert_expiry_height, int):
-                logger.debug(f"Bond {txid}:{vout} missing certificate expiry, skipping")
+                logger.bind(sensitive=True).debug(
+                    "Bond {}:{} missing certificate expiry, skipping", txid, vout
+                )
                 continue
             if current_block_height > cert_expiry_height:
                 logger.debug(
@@ -725,14 +730,19 @@ class Taker(TakerMonitoringMixin):
             utxo_pub = bond_data.get("utxo_pub")
 
             if not utxo_pub:
-                logger.debug(f"Bond {txid}:{vout} missing utxo_pub, skipping")
+                logger.bind(sensitive=True).debug(
+                    "Bond {}:{} missing utxo_pub, skipping", txid, vout
+                )
                 continue
 
             try:
                 utxo_pub_bytes = bytes.fromhex(utxo_pub) if isinstance(utxo_pub, str) else utxo_pub
                 bond_addr = derive_bond_address(utxo_pub_bytes, locktime, self.config.network)
             except Exception as e:
-                logger.debug(f"Failed to derive bond address for {txid}:{vout}: {e}")
+                logger.debug("Failed to derive bond address")
+                logger.bind(sensitive=True).debug(
+                    "Bond address derivation detail for {}:{}: {}", txid, vout, e
+                )
                 continue
 
             request = BondVerificationRequest(
@@ -761,7 +771,8 @@ class Taker(TakerMonitoringMixin):
             requests = list(claim_to_request.values())
             results = await self.backend.verify_bonds(requests)
         except Exception as e:
-            logger.warning(f"Bond verification failed: {e}")
+            logger.warning("Bond verification failed")
+            logger.bind(sensitive=True).warning("Bond verification detail: {}", e)
             return
         if len(results) != len(requests):
             logger.warning(
@@ -780,7 +791,9 @@ class Taker(TakerMonitoringMixin):
                 )
                 continue
             if not result.valid:
-                logger.debug(f"Bond {result.txid}:{result.vout} invalid: {result.error}")
+                logger.bind(sensitive=True).debug(
+                    "Bond {}:{} invalid: {}", result.txid, result.vout, result.error
+                )
                 continue
 
             bond_value = calculate_timelocked_fidelity_bond_value(
@@ -884,7 +897,7 @@ class Taker(TakerMonitoringMixin):
             current_maker_nick = read_nick_state(self.config.data_dir, "maker")
             if current_maker_nick:
                 if current_maker_nick not in self.orderbook_manager.own_wallet_nicks:
-                    logger.info(
+                    logger.bind(sensitive=True).info(
                         f"Self-CoinJoin protection: adding maker nick {current_maker_nick} "
                         "to exclusion set (detected after taker init)"
                     )
@@ -917,7 +930,7 @@ class Taker(TakerMonitoringMixin):
                 # This matches the reference implementation behavior where all JM-generated
                 # addresses (CJ outputs and change) use the internal branch
                 destination = self.wallet.get_new_internal_address(dest_mixdepth)
-                logger.info(f"Using internal address: {destination}")
+                logger.bind(sensitive=True).info("Using internal address: {}", destination)
             else:
                 # Warn when the user-supplied destination does not match the
                 # wallet's native script type (#113).
@@ -927,7 +940,8 @@ class Taker(TakerMonitoringMixin):
             try:
                 await self._session._resolve_fee_rate()
             except ValueError as e:
-                logger.error(str(e))
+                logger.error("Unable to resolve CoinJoin fee rate")
+                logger.bind(sensitive=True).error("CoinJoin fee rate error: {}", e)
                 self._session.last_failure_reason = str(e)
                 self.state = TakerState.FAILED
                 return None
@@ -979,7 +993,7 @@ class Taker(TakerMonitoringMixin):
                     and not o.neutrino_compat
                 )
                 unknown = len(offers) - known_compatible - known_incompatible
-                logger.info(
+                logger.bind(sensitive=True).info(
                     f"Neutrino compatibility pre-check: {known_compatible} compatible, "
                     f"{known_incompatible} incompatible, {unknown} unknown "
                     f"(from {len(offers)} total offers)"
@@ -1036,13 +1050,13 @@ class Taker(TakerMonitoringMixin):
                 # otherwise get all eligible UTXOs from the mixdepth.
                 if explicitly_selected_utxos is not None:
                     self._session.preselected_utxos = explicitly_selected_utxos
-                    logger.info(
+                    logger.bind(sensitive=True).info(
                         f"Sweep using exactly {len(explicitly_selected_utxos)} explicit "
                         "input UTXO(s)"
                     )
                 elif manually_selected_utxos:
                     self._session.preselected_utxos = manually_selected_utxos
-                    logger.info(
+                    logger.bind(sensitive=True).info(
                         f"Sweep using {len(manually_selected_utxos)} manually selected UTXOs "
                         f"(--select-utxos was used)"
                     )
@@ -1067,7 +1081,7 @@ class Taker(TakerMonitoringMixin):
                     return None
 
                 total_input_value = sum(u.value for u in self._session.preselected_utxos)
-                logger.info(
+                logger.bind(sensitive=True).info(
                     f"Sweep: {len(self._session.preselected_utxos)} UTXOs, "
                     f"total value: {total_input_value:,} sats"
                 )
@@ -1109,13 +1123,15 @@ class Taker(TakerMonitoringMixin):
                     self.state = TakerState.FAILED
                     return None
 
-                logger.info(
+                logger.bind(sensitive=True).info(
                     f"Sweep: cj_amount={self._session.cj_amount:,} sats calculated for zero change"
                 )
             else:
                 # NORMAL MODE: Select minimum UTXOs needed
                 self._session.cj_amount = amount
-                logger.info(f"Selecting {n_makers} makers for {self._session.cj_amount:,} sats...")
+                logger.bind(sensitive=True).info(
+                    "Selecting {} makers for {:,} sats...", n_makers, self._session.cj_amount
+                )
 
                 selected_offers, total_fee = self.orderbook_manager.select_makers(
                     cj_amount=self._session.cj_amount,
@@ -1139,13 +1155,13 @@ class Taker(TakerMonitoringMixin):
                 # Use explicitly or manually selected UTXOs if available.
                 if explicitly_selected_utxos is not None:
                     self._session.preselected_utxos = explicitly_selected_utxos
-                    logger.info(
+                    logger.bind(sensitive=True).info(
                         f"Using exactly {len(explicitly_selected_utxos)} explicit input UTXO(s) "
                         f"(total: {sum(u.value for u in explicitly_selected_utxos):,} sats)"
                     )
                 elif manually_selected_utxos:
                     self._session.preselected_utxos = manually_selected_utxos
-                    logger.info(
+                    logger.bind(sensitive=True).info(
                         f"Using {len(manually_selected_utxos)} manually selected UTXOs "
                         f"(total: {sum(u.value for u in manually_selected_utxos):,} sats)"
                     )
@@ -1171,13 +1187,16 @@ class Taker(TakerMonitoringMixin):
                             exclude=locked_inputs,
                         )
                         preselected = self._session.preselected_utxos
-                        logger.info(
+                        logger.bind(sensitive=True).info(
                             f"Pre-selected {len(preselected)} UTXOs for CoinJoin "
                             f"(total: {sum(u.value for u in preselected):,} sats)"
                         )
                     except ValueError as e:
                         reason = _append_confirmation_hint(str(e), self.config.taker_utxo_age)
-                        logger.error(reason)
+                        logger.error("Unable to pre-select CoinJoin inputs")
+                        logger.bind(sensitive=True).error(
+                            "CoinJoin input selection detail: {}", reason
+                        )
                         self._session.last_failure_reason = reason
                         self.state = TakerState.FAILED
                         return None
@@ -1210,7 +1229,7 @@ class Taker(TakerMonitoringMixin):
                 for nick, offer in selected_offers.items()
             }
 
-            logger.info(
+            logger.bind(sensitive=True).info(
                 f"Selected {len(self._session.maker_sessions)} makers, "
                 f"total fee: {total_fee:,} sats"
             )
@@ -1228,7 +1247,7 @@ class Taker(TakerMonitoringMixin):
                 len(self._session.preselected_utxos),
                 n_makers,
             )
-            logger.info(
+            logger.bind(sensitive=True).info(
                 f"Estimated transaction (mining) fee: {estimated_tx_fee:,} sats "
                 f"(~{estimated_fee_rate:.2f} sat/vB for ~{estimated_inputs} inputs, "
                 f"{estimated_outputs} outputs)"
@@ -1275,7 +1294,8 @@ class Taker(TakerMonitoringMixin):
                         self.state = TakerState.CANCELLED
                         return None
                 except Exception as e:
-                    logger.error(f"Confirmation failed: {e}")
+                    logger.error("CoinJoin confirmation failed")
+                    logger.bind(sensitive=True).error("CoinJoin confirmation error detail: {}", e)
                     self.state = TakerState.FAILED
                     return None
 
@@ -1352,7 +1372,8 @@ class Taker(TakerMonitoringMixin):
             return await self._finalize_and_broadcast(destination)
 
         except Exception as e:
-            logger.error(f"CoinJoin failed: {e}")
+            logger.error("CoinJoin failed")
+            logger.bind(sensitive=True).error("CoinJoin failure detail: {}", e)
             # Fire-and-forget notification for failed CoinJoin
             phase = self.state.value if hasattr(self, "state") else ""
             amount = self._session.cj_amount
@@ -1431,7 +1452,7 @@ class Taker(TakerMonitoringMixin):
                 if utxo.label is None and not utxo.is_fidelity_bond:
                     utxo.label = self.wallet.get_utxo_label_from_wallet(utxo.address)
 
-            logger.info(
+            logger.bind(sensitive=True).info(
                 f"Launching interactive UTXO selector ({len(available_utxos)} available, "
                 f"target amount: {amount} sats, sweep: {amount == 0})..."
             )
@@ -1449,21 +1470,24 @@ class Taker(TakerMonitoringMixin):
                 return None
 
             total_selected = sum(u.value for u in manually_selected_utxos)
-            logger.info(
+            logger.bind(sensitive=True).info(
                 f"Manually selected {len(manually_selected_utxos)} UTXOs "
                 f"(total: {total_selected:,} sats)"
             )
 
             # Validate selected UTXOs have sufficient funds (for non-sweep)
             if amount > 0 and total_selected < amount:
-                logger.error(
-                    f"Insufficient funds in selected UTXOs: "
-                    f"have {total_selected:,} sats, need at least {amount:,} sats"
+                logger.error("Selected UTXOs have insufficient funds")
+                logger.bind(sensitive=True).error(
+                    "Selected UTXO funding detail: have {:,} sats, need at least {:,} sats",
+                    total_selected,
+                    amount,
                 )
                 self.state = TakerState.FAILED
                 return None
         except RuntimeError as e:
-            logger.error(f"Interactive UTXO selection failed: {e}")
+            logger.error("Interactive UTXO selection failed")
+            logger.bind(sensitive=True).error("Interactive UTXO selection detail: {}", e)
             self.state = TakerState.FAILED
             return None
 
@@ -1677,7 +1701,10 @@ class Taker(TakerMonitoringMixin):
                     if ready:
                         logger.debug(f"Replacement maker {nick} ready")
                 except Exception as e:
-                    logger.warning(f"Failed to process {nick}: {e}")
+                    logger.warning("Failed to process maker response")
+                    logger.bind(sensitive=True).warning(
+                        "Failed to process {} response: {}", nick, e
+                    )
             else:
                 logger.warning(f"Replacement maker {nick} didn't respond to !fill")
             if not ready:
@@ -1951,36 +1978,39 @@ class Taker(TakerMonitoringMixin):
                 if minimum_fee_rate is not None
                 else "Final CoinJoin miner fee rate could not be verified"
             )
-            logger.error(reason)
+            logger.error("Final CoinJoin miner fee rate is below the required minimum")
+            logger.bind(sensitive=True).error("Final CoinJoin miner fee detail: {}", reason)
             self._session.last_failure_reason = reason
             self.state = TakerState.FAILED
             return None
 
-        logger.info("=" * 70)
-        logger.info("FINAL TRANSACTION SUMMARY - Ready to broadcast")
-        logger.info("=" * 70)
-        logger.info(f"CoinJoin amount:      {self._session.cj_amount:,} sats")
-        logger.info(f"Makers participating: {len(self._session.maker_sessions)}")
-        logger.info(
+        logger.info("Final transaction ready to broadcast")
+        sensitive_logger = logger.bind(sensitive=True)
+        sensitive_logger.info("=" * 70)
+        sensitive_logger.info("FINAL TRANSACTION SUMMARY - Ready to broadcast")
+        sensitive_logger.info("=" * 70)
+        sensitive_logger.info(f"CoinJoin amount:      {self._session.cj_amount:,} sats")
+        sensitive_logger.info(f"Makers participating: {len(self._session.maker_sessions)}")
+        sensitive_logger.info(
             f"  Makers: {', '.join(nick[:10] + '...' for nick in self._session.maker_sessions)}"
         )
-        logger.info(
+        sensitive_logger.info(
             f"Transaction inputs:   {total_inputs} ({num_taker_inputs} yours, "
             f"{num_maker_inputs} makers)"
         )
-        logger.info(f"Transaction outputs:  {total_outputs}")
-        logger.info(f"Maker fees:           {total_maker_fees:,} sats")
-        logger.info(
+        sensitive_logger.info(f"Transaction outputs:  {total_outputs}")
+        sensitive_logger.info(f"Maker fees:           {total_maker_fees:,} sats")
+        sensitive_logger.info(
             f"Mining fee:           {actual_mining_fee:,} sats ({actual_fee_rate:.2f} sat/vB)"
         )
-        logger.info(f"Total cost:           {total_cost:,} sats")
-        logger.info(
+        sensitive_logger.info(f"Total cost:           {total_cost:,} sats")
+        sensitive_logger.info(
             f"Transaction size:     {actual_vsize} vbytes ({len(self._session.final_tx)} bytes)"
         )
-        logger.info("-" * 70)
-        logger.debug("Transaction hex (for manual verification/broadcast):")
-        logger.debug(self._session.final_tx.hex())
-        logger.info("=" * 70)
+        sensitive_logger.info("-" * 70)
+        sensitive_logger.debug("Transaction hex (for manual verification/broadcast):")
+        sensitive_logger.debug(self._session.final_tx.hex())
+        sensitive_logger.info("=" * 70)
 
         if hasattr(self, "confirmation_callback") and self.confirmation_callback:
             try:
@@ -2023,7 +2053,8 @@ class Taker(TakerMonitoringMixin):
                     self.state = TakerState.FAILED
                     return None
             except Exception as e:
-                logger.error(f"Final confirmation callback failed: {e}")
+                logger.error("Final CoinJoin confirmation failed")
+                logger.bind(sensitive=True).error("Final confirmation error detail: {}", e)
                 self.state = TakerState.FAILED
                 return None
 
@@ -2044,11 +2075,8 @@ class Taker(TakerMonitoringMixin):
         }
 
         self.state = TakerState.COMPLETE
-        logger.info(
-            "CoinJoin COMPLETE! txid: {}, broadcast method: {}",
-            self._session.txid,
-            self._session.broadcast_method,
-        )
+        logger.info("CoinJoin complete, broadcast method: {}", self._session.broadcast_method)
+        logger.bind(sensitive=True).info("CoinJoin complete: txid={}", self._session.txid)
 
         try:
             updated = update_taker_awaiting_transaction_broadcast(
@@ -2063,14 +2091,15 @@ class Taker(TakerMonitoringMixin):
                 wallet_fingerprint=self.wallet.wallet_fingerprint,
             )
             if updated:
-                logger.debug(
+                logger.bind(sensitive=True).debug(
                     f"Updated history entry for CJ txid {self._session.txid[:16]}..., "
                     f"mining_fee={actual_mining_fee} sats"
                 )
             else:
-                logger.warning(
-                    f"No matching 'Awaiting transaction' entry found for "
-                    f"{self._session.cj_destination[:20]}... - history may be inconsistent"
+                logger.warning("CoinJoin history may be inconsistent")
+                logger.bind(sensitive=True).warning(
+                    "No matching awaiting history entry for destination {}",
+                    self._session.cj_destination,
                 )
 
             destination_vout = self._session._get_taker_cj_output_index()
@@ -2081,7 +2110,8 @@ class Taker(TakerMonitoringMixin):
                 len(self._session.maker_sessions),
             )
         except Exception as e:
-            logger.warning(f"Failed to update CoinJoin history: {e}")
+            logger.warning("Failed to update CoinJoin history")
+            logger.bind(sensitive=True).warning("CoinJoin history update detail: {}", e)
 
         total_fees = total_maker_fees + actual_mining_fee
         spawn_task(

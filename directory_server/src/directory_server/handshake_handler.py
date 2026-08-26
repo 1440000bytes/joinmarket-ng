@@ -63,7 +63,9 @@ class HandshakeHandler:
             features = hs.get("features", {})
             # Debug: Log received features for troubleshooting feature propagation
             if features:
-                logger.debug(f"Handshake features from {hs.get('nick', 'unknown')}: {features}")
+                logger.bind(sensitive=True).debug(
+                    f"Handshake features from {hs.get('nick', 'unknown')}: {features}"
+                )
             location_string = hs.get("location-string")
             nick = hs.get("nick")
             network_str = hs.get("network")
@@ -128,18 +130,21 @@ class HandshakeHandler:
             )
 
             if accepted:
-                logger.info(
+                logger.bind(sensitive=True).info(
                     f"Handshake accepted: {nick} from {peer_network.value} "
                     f"at {peer_info.location_string} "
                     f"(v{negotiated_version}, neutrino={peer_neutrino_compat})"
                 )
             else:
-                logger.info(f"Handshake rejected by nick authentication policy: {nick}")
+                logger.bind(sensitive=True).info(
+                    f"Handshake rejected by nick authentication policy: {nick}"
+                )
 
             return (peer_info, response)
 
         except (json.JSONDecodeError, KeyError, ValueError) as e:
-            logger.warning(f"Invalid handshake: {e}")
+            logger.warning("Invalid handshake")
+            logger.bind(sensitive=True).warning(f"Invalid handshake: {e}")
             raise HandshakeError(f"Invalid handshake format: {e}") from e
 
     def _parse_network(self, network_str: str) -> NetworkType:
@@ -154,7 +159,10 @@ class HandshakeHandler:
 
         try:
             if not location or ":" not in location:
-                logger.warning(f"Incomplete location string: {location}, defaulting to not serving")
+                logger.warning("Incomplete peer location, defaulting to not serving")
+                logger.bind(sensitive=True).warning(
+                    f"Incomplete location string: {location}, defaulting to not serving"
+                )
                 return (NOT_SERVING_ONION_HOSTNAME, -1)
 
             host, port_str = location.split(":")
@@ -163,7 +171,10 @@ class HandshakeHandler:
                 raise ValueError("Invalid port")
             return (host, port)
         except (ValueError, AttributeError) as e:
-            logger.warning(f"Invalid location string: {location}, defaulting to not serving: {e}")
+            logger.warning("Invalid peer location, defaulting to not serving")
+            logger.bind(sensitive=True).warning(
+                f"Invalid location string: {location}, defaulting to not serving: {e}"
+            )
             return (NOT_SERVING_ONION_HOSTNAME, -1)
 
     def create_rejection_response(self, reason: str) -> dict:

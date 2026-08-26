@@ -124,6 +124,152 @@ def test_address_new_execution_still_requires_a_mnemonic(
     assert "No mnemonic provided" in result.stderr
 
 
+_CONFIGURED_MIXDEPTH_MNEMONIC = "abandon " * 11 + "about"
+
+
+def _write_mixdepth_config(tmp_path: Path) -> Path:
+    config_file = tmp_path / "config.toml"
+    config_file.write_text('[wallet]\nmixdepth_count = 3\n\n[network]\nnetwork = "regtest"\n')
+    return config_file
+
+
+@pytest.mark.parametrize(
+    ("command", "helper_path"),
+    [
+        (
+            [
+                "send",
+                "bcrt1qq6hag67dl53wl99vzg42z8eyzfz2xlkvwk6f7m",
+                "--amount",
+                "1",
+                "--fee-rate",
+                "1",
+            ],
+            "jmwallet.cli.send._send_transaction",
+        ),
+        (["info"], "jmwallet.cli.wallet._show_wallet_info"),
+        (["rescan", "--scan-depth", "100"], "jmwallet.cli.wallet._run_rescan"),
+        (["sync-bonds"], "jmwallet.cli.bonds._sync_bonds_async"),
+        (["recover-bonds"], "jmwallet.cli.bonds._recover_bonds_async"),
+        (["freeze"], "jmwallet.cli.freeze._freeze_utxos"),
+    ],
+)
+def test_cli_passes_configured_mixdepth_count_to_runtime_helper(
+    tmp_path: Path, command: list[str], helper_path: str
+) -> None:
+    """CLI settings must reach every WalletService-owning command helper."""
+    from jmcore.settings import reset_settings
+
+    config_file = _write_mixdepth_config(tmp_path)
+
+    reset_settings()
+    previous_config_file = os.environ.get("JOINMARKET_CONFIG_FILE")
+    try:
+        with patch(helper_path, new=AsyncMock()) as helper:
+            result = runner.invoke(
+                app,
+                [*command, "--config-file", str(config_file), "--data-dir", str(tmp_path)],
+                env={"MNEMONIC": _CONFIGURED_MIXDEPTH_MNEMONIC},
+            )
+    finally:
+        if previous_config_file is None:
+            os.environ.pop("JOINMARKET_CONFIG_FILE", None)
+        else:
+            os.environ["JOINMARKET_CONFIG_FILE"] = previous_config_file
+        reset_settings()
+
+    assert result.exit_code == 0, result.output
+    assert helper.await_args is not None
+    assert helper.await_args.kwargs["mixdepth_count"] == 3
+
+
+@pytest.mark.parametrize(
+    ("command", "handler_path"),
+    [
+        (["address", "new", "0"], "jmwallet.cli.address._address_new"),
+        (["address", "label", "bcrt1qexample", "label"], "jmwallet.cli.address._address_label"),
+        (["address", "release", "bcrt1qexample"], "jmwallet.cli.address._address_release"),
+        (["address", "list"], "jmwallet.cli.address._address_list"),
+    ],
+)
+def test_address_cli_passes_configured_mixdepth_count_to_runtime_context(
+    tmp_path: Path, command: list[str], handler_path: str
+) -> None:
+    """Every address subcommand resolves the configured count before building a wallet."""
+    from jmcore.settings import reset_settings
+
+    config_file = _write_mixdepth_config(tmp_path)
+
+    reset_settings()
+    previous_config_file = os.environ.get("JOINMARKET_CONFIG_FILE")
+    try:
+        with patch(handler_path, new=AsyncMock()) as handler:
+            result = runner.invoke(
+                app,
+                [
+                    command[0],
+                    "--config-file",
+                    str(config_file),
+                    "--data-dir",
+                    str(tmp_path),
+                    *command[1:],
+                ],
+                env={"MNEMONIC": _CONFIGURED_MIXDEPTH_MNEMONIC},
+            )
+    finally:
+        if previous_config_file is None:
+            os.environ.pop("JOINMARKET_CONFIG_FILE", None)
+        else:
+            os.environ["JOINMARKET_CONFIG_FILE"] = previous_config_file
+        reset_settings()
+
+    assert result.exit_code == 0, result.output
+    assert handler.await_args is not None
+    context = handler.await_args.args[0]
+    assert context.mixdepth_count == 3
+
+
+@pytest.mark.asyncio
+async def test_address_wallet_construction_uses_context_mixdepth_count(tmp_path: Path) -> None:
+    """The address runtime forwards its resolved count to WalletService."""
+    from jmwallet.cli.address import _AddressContext, _build_wallet
+
+    backend_settings = ResolvedBackendSettings(
+        network="regtest",
+        bitcoin_network="regtest",
+        backend_type="descriptor_wallet",
+        rpc_url="http://127.0.0.1:18443",
+        rpc_user="user",
+        rpc_password="pass",
+        neutrino_url="",
+        neutrino_add_peers=[],
+        data_dir=tmp_path,
+    )
+    context = _AddressContext(
+        mnemonic=_CONFIGURED_MIXDEPTH_MNEMONIC,
+        bip39_passphrase="",
+        backend_settings=backend_settings,
+        creation_height=None,
+        mixdepth_count=3,
+        max_sats_freeze_reuse=-1,
+        reconstruct_history=True,
+    )
+
+    with (
+        patch("jmwallet.backends.descriptor_wallet.DescriptorWalletBackend"),
+        patch("jmwallet.backends.descriptor_wallet.generate_wallet_name", return_value="wallet"),
+        patch(
+            "jmwallet.backends.descriptor_wallet.get_mnemonic_fingerprint",
+            return_value="deadbeef",
+        ),
+        patch("jmwallet.wallet.service.WalletService") as wallet_service,
+    ):
+        await _build_wallet(context)
+
+    assert wallet_service.call_args is not None
+    assert wallet_service.call_args.kwargs["mixdepth_count"] == 3
+
+
 def test_address_new_help_does_not_unlock_a_configured_wallet(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

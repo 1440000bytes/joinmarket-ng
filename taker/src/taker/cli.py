@@ -328,7 +328,8 @@ def coinjoin(
     # Log configuration source
     logger.info(f"Using network: {config.network.value}")
     logger.info(f"Using backend: {config.backend_type}")
-    logger.info(f"Tor SOCKS: {config.socks_host}:{config.socks_port}")
+    logger.info("Tor SOCKS proxy configured")
+    logger.bind(sensitive=True).info(f"Tor SOCKS: {config.socks_host}:{config.socks_port}")
 
     try:
         asyncio.run(
@@ -345,14 +346,15 @@ def coinjoin(
         )
     except RuntimeError as e:
         # Clean error for expected failures (e.g., connection failures)
-        logger.error(f"CoinJoin failed: {e}")
+        logger.error("CoinJoin failed")
+        logger.bind(sensitive=True).error("CoinJoin failure detail: {}", e)
         raise typer.Exit(1)
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
         raise typer.Exit(130)
-    except Exception as e:
-        # Unexpected errors - show full traceback
-        logger.exception(f"Unexpected error: {e}")
+    except Exception:
+        logger.error("Unexpected CoinJoin error")
+        logger.bind(sensitive=True).exception("Unexpected CoinJoin error")
         raise typer.Exit(1)
 
 
@@ -384,7 +386,8 @@ async def _run_coinjoin(
                 raise typer.Exit(1)
             logger.info("Neutrino connection verified")
         except Exception as e:
-            logger.error(f"Failed to connect to Neutrino backend: {e}")
+            logger.error("Failed to connect to Neutrino backend")
+            logger.bind(sensitive=True).error("Neutrino backend error detail: {}", e)
             raise typer.Exit(1)
     else:
         logger.info("Verifying Bitcoin Core RPC connection...")
@@ -392,7 +395,8 @@ async def _run_coinjoin(
             await backend.get_block_height()
             logger.info("Bitcoin Core RPC connection verified")
         except Exception as e:
-            logger.error(f"Failed to connect to Bitcoin Core RPC: {e}")
+            logger.error("Failed to connect to Bitcoin Core RPC")
+            logger.bind(sensitive=True).error("Bitcoin Core RPC error detail: {}", e)
             raise typer.Exit(1)
 
     # Create wallet
@@ -454,7 +458,8 @@ async def _run_coinjoin(
         nick = taker.nick
         data_dir = config.data_dir
         write_nick_state(data_dir, "taker", nick)
-        logger.info(f"Nick state written to {data_dir}/state/taker.nick")
+        logger.info("Taker nick state written")
+        logger.bind(sensitive=True).info(f"Nick state written to {data_dir}/state/taker.nick")
 
         # Send startup notification (including nick)
         notifier = get_notifier(settings, component_name="Taker")
@@ -485,7 +490,7 @@ async def _run_coinjoin(
         await taker.connect()
 
         amount_display = "ALL (sweep)" if amount == 0 else f"{amount:,} sats"
-        logger.info(f"Starting CoinJoin: {amount_display} -> {destination}")
+        logger.bind(sensitive=True).info("Starting CoinJoin: {} -> {}", amount_display, destination)
         txid = await taker.do_coinjoin(
             amount=amount,
             destination=destination,
@@ -495,7 +500,9 @@ async def _run_coinjoin(
         )
 
         if txid:
-            logger.info(f"CoinJoin successful! txid: {txid}")
+            typer.echo(f"CoinJoin successful: {txid}")
+            logger.info("CoinJoin successful")
+            logger.bind(sensitive=True).info("CoinJoin successful: txid={}", txid)
             logger.info(f"Broadcast method: {taker.last_broadcast_method}")
             if taker.last_broadcast_fallback_reason:
                 logger.warning(

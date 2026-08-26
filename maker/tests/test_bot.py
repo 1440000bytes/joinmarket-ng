@@ -1953,6 +1953,51 @@ class TestPendingConfirmationNotifications:
         notifier.notify_mempool.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_pending_transaction_log_is_sensitive(self, mock_wallet, config, tmp_path):
+        """Pending transaction identifiers must not reach standard log sinks."""
+        from jmwallet.history import append_history_entry, create_maker_history_entry
+        from loguru import logger
+
+        txid = "ab" * 32
+        entry = create_maker_history_entry(
+            taker_nick="J5TakerNick",
+            cj_amount=91_554,
+            fee_received=0,
+            txfee_contribution=0,
+            cj_address="bcrt1qsensitivepending",
+            change_address="bcrt1qchange",
+            our_utxos=[("cd" * 32, 0)],
+            txid=txid,
+            network="regtest",
+            wallet_fingerprint="deadbeef",
+        )
+        append_history_entry(entry, data_dir=tmp_path)
+        backend = self._make_backend(confirmations=1)
+        bot = MakerBot(wallet=mock_wallet, backend=backend, config=config)
+        notifier = MagicMock()
+        notifier.notify_mempool = AsyncMock()
+        notifier.notify_confirmed = AsyncMock()
+        records: list[tuple[str, dict[str, object]]] = []
+        handler_id = logger.add(
+            lambda message: records.append(
+                (message.record["message"], dict(message.record["extra"]))
+            )
+        )
+        try:
+            with patch("maker.background_tasks.get_notifier", return_value=notifier):
+                await bot._update_pending_history()
+        finally:
+            logger.remove(handler_id)
+
+        pending_records = [
+            record
+            for record in records
+            if record[0] == f"Transaction {txid[:16]}... confirmed (1 confirmation(s))"
+        ]
+        assert len(pending_records) == 1
+        assert pending_records[0][1]["sensitive"] is True
+
+    @pytest.mark.asyncio
     async def test_notify_mempool_once_while_unconfirmed(self, mock_wallet, config, tmp_path):
         from unittest.mock import AsyncMock, patch
 

@@ -115,7 +115,7 @@ class MakerHealthChecker:
         if not force and location in self.health_status:
             last_check = self.health_status[location].last_check_time
             if current_time - last_check < self.check_interval:
-                logger.debug(
+                logger.bind(sensitive=True).debug(
                     f"Skipping health check for {nick} at {location} "
                     f"(checked {current_time - last_check:.0f}s ago)"
                 )
@@ -148,7 +148,8 @@ class MakerHealthChecker:
             host, port_str = location.split(":")
             port = int(port_str)
         except (ValueError, AttributeError) as e:
-            logger.warning(f"Invalid location format: {location}: {e}")
+            logger.warning("Invalid maker location format")
+            logger.bind(sensitive=True).warning(f"Invalid location format: {location}: {e}")
             status = MakerHealthStatus(
                 location=location,
                 nick=nick,
@@ -175,7 +176,7 @@ class MakerHealthChecker:
             return status
 
         # Try to connect and perform handshake
-        logger.debug(f"Health check: connecting to {nick} at {location}")
+        logger.bind(sensitive=True).debug(f"Health check: connecting to {nick} at {location}")
         connection = None
         try:
             # Connect via Tor
@@ -243,7 +244,7 @@ class MakerHealthChecker:
             self.health_status[location] = status
             # DEBUG: with hundreds of makers this fires constantly; the
             # interesting transitions are failures (logged at WARNING below).
-            logger.debug(
+            logger.bind(sensitive=True).debug(
                 f"Health check: {nick} at {location} is REACHABLE "
                 f"(features: {features.to_comma_string() or 'none'})"
             )
@@ -251,10 +252,10 @@ class MakerHealthChecker:
 
         except TimeoutError:
             error = "Connection timeout"
-            logger.debug(f"Health check: {nick} at {location} timed out")
+            logger.bind(sensitive=True).debug(f"Health check: {nick} at {location} timed out")
         except Exception as e:
             error = str(e)
-            logger.debug(f"Health check: {nick} at {location} failed: {e}")
+            logger.bind(sensitive=True).debug(f"Health check: {nick} at {location} failed: {e}")
 
         finally:
             if connection:
@@ -279,7 +280,7 @@ class MakerHealthChecker:
         self.health_status[location] = status
 
         if consecutive_failures >= 3:
-            logger.warning(
+            logger.bind(sensitive=True).warning(
                 f"Health check: {nick} at {location} is UNREACHABLE "
                 f"({consecutive_failures} consecutive failures, error: {error})"
             )
@@ -316,7 +317,7 @@ class MakerHealthChecker:
 
             for (nick, location), result in zip(chunk, results, strict=True):
                 if isinstance(result, BaseException):
-                    logger.error(
+                    logger.bind(sensitive=True).error(
                         f"Health check for {nick} at {location} raised exception: {result}"
                     )
                     status_map[location] = MakerHealthStatus(

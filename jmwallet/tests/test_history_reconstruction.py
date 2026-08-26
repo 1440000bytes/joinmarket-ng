@@ -9,6 +9,7 @@ rebuilds best-effort maker/taker/send/deposit rows from chain data (tagged
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -21,6 +22,7 @@ from jmcore.bitcoin import (
     scriptpubkey_to_address,
     serialize_transaction,
 )
+from loguru import logger as loguru_logger
 
 from jmwallet.backends.base import Transaction, WalletTxEntry
 from jmwallet.backends.descriptor_wallet import DescriptorWalletBackend
@@ -560,6 +562,26 @@ class TestReconstructHistoryFromChain:
             )
             is None
         )
+
+    @pytest.mark.asyncio
+    async def test_transaction_fetch_detail_log_is_sensitive(self, tmp_path: Path) -> None:
+        backend, txids = _scenario()
+        del backend.raw_by_txid[txids["fund"]]
+
+        async def failing_get_transaction(txid: str) -> Transaction | None:
+            raise RuntimeError(f"backend rejected transaction {txid}")
+
+        backend.get_transaction = failing_get_transaction  # type: ignore[method-assign]
+        records: list[dict[str, Any]] = []
+        sink_id = loguru_logger.add(lambda message: records.append(message.record), level="DEBUG")
+        try:
+            await _run(backend, tmp_path)
+        finally:
+            loguru_logger.remove(sink_id)
+
+        txid_records = [record for record in records if txids["fund"][:16] in record["message"]]
+        assert txid_records
+        assert all(record["extra"].get("sensitive") is True for record in txid_records)
 
     @pytest.mark.asyncio
     async def test_completed_baseline_cursor_can_be_cleared(self, tmp_path: Path) -> None:

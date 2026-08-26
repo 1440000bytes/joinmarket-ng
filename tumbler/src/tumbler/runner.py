@@ -199,6 +199,10 @@ class TumbleRunner:
                         # failed maker session is not retried; mark it SKIPPED
                         # (keeping the error text for operators) and proceed.
                         logger.warning(
+                            "tumbler phase {}: maker session failed; continuing",
+                            phase.index,
+                        )
+                        logger.bind(sensitive=True).warning(
                             "tumbler phase {}: maker session failed ({}); "
                             "continuing with the next phase",
                             phase.index,
@@ -386,11 +390,13 @@ class TumbleRunner:
         except TakerPhaseError as exc:
             # Known, already-explained failure (e.g. not enough makers).
             # The taker itself has logged the cause; no traceback needed.
-            logger.error("tumbler phase {} failed: {}", phase.index, exc)
+            logger.error("tumbler phase {} failed", phase.index)
+            logger.bind(sensitive=True).error("tumbler phase {} failed: {}", phase.index, exc)
             phase.status = PhaseStatus.FAILED
             phase.error = str(exc)
         except Exception as exc:
-            logger.exception("tumbler phase %s failed", phase.index)
+            logger.error("tumbler phase {} failed", phase.index)
+            logger.bind(sensitive=True).exception("tumbler phase {} failed", phase.index)
             phase.status = PhaseStatus.FAILED
             phase.error = f"{type(exc).__name__}: {exc}"
         else:
@@ -487,7 +493,8 @@ class TumbleRunner:
         balance = await self._spendable_balance(phase.mixdepth)
         if balance is None or balance > 0:
             return False
-        logger.warning(
+        logger.warning("tumbler phase {} has no spendable funds; skipping phase", phase.index)
+        logger.bind(sensitive=True).warning(
             "tumbler phase {}: mixdepth {} has no spendable funds; skipping phase ({})",
             phase.index,
             phase.mixdepth,
@@ -511,10 +518,16 @@ class TumbleRunner:
             try:
                 return int(await get_balance(mixdepth))
             except Exception:
-                logger.exception("spendable balance check failed for mixdepth {}", mixdepth)
+                logger.error("spendable balance check failed")
+                logger.bind(sensitive=True).exception(
+                    "spendable balance check failed for mixdepth {}", mixdepth
+                )
                 return None
         except Exception:
-            logger.exception("spendable balance check failed for mixdepth {}", mixdepth)
+            logger.error("spendable balance check failed")
+            logger.bind(sensitive=True).exception(
+                "spendable balance check failed for mixdepth {}", mixdepth
+            )
             return None
 
     # -------------------------------------- taker (single CJ) ---------------
@@ -659,7 +672,8 @@ class TumbleRunner:
                 # the ``wallet.close()`` call.
                 await self._manual_taker_teardown(taker)
         except Exception:  # pragma: no cover - teardown best effort
-            logger.exception("taker teardown error")
+            logger.error("taker teardown error")
+            logger.bind(sensitive=True).exception("taker teardown error")
 
     async def _manual_taker_teardown(self, taker: Any) -> None:
         taker.running = False
@@ -727,7 +741,8 @@ class TumbleRunner:
         try:
             await maker.stop()
         except Exception:
-            logger.exception("maker teardown error")
+            logger.error("maker teardown error")
+            logger.bind(sensitive=True).exception("maker teardown error")
         if not start_task.done():
             start_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -744,7 +759,8 @@ class TumbleRunner:
             try:
                 await self._active_maker.stop()
             except Exception:  # pragma: no cover
-                logger.exception("stray maker teardown failed")
+                logger.error("stray maker teardown failed")
+                logger.bind(sensitive=True).exception("stray maker teardown failed")
             self._active_maker = None
 
     async def _wait_interruptibly(self, seconds: float) -> None:
@@ -805,7 +821,7 @@ class TumbleRunner:
         progress_interval = self.ctx.confirmation_progress_log_interval
         unknown_timeout = self.ctx.confirmation_unknown_timeout
         for txid in txids:
-            logger.info(
+            logger.bind(sensitive=True).info(
                 "tumbler: waiting for txid {} to reach {} confirmations (polling every {:.0f}s)",
                 txid,
                 min_conf,
@@ -822,13 +838,16 @@ class TumbleRunner:
                 try:
                     confirmations = await get_confirmations(txid)
                 except Exception:  # pragma: no cover - transient backend errors
-                    logger.exception("get_confirmations({}) failed; retrying", txid)
+                    logger.error("Confirmation lookup failed; retrying")
+                    logger.bind(sensitive=True).exception(
+                        "get_confirmations({}) failed; retrying", txid
+                    )
                     confirmations = None
                 poll_count += 1
                 if confirmations is not None:
                     ever_resolved = True
                     if confirmations >= min_conf:
-                        logger.info(
+                        logger.bind(sensitive=True).info(
                             "tumbler: txid {} reached {} confirmations after {:.0f}s",
                             txid,
                             confirmations,
@@ -842,7 +861,7 @@ class TumbleRunner:
                 since_last_log = (now - last_progress_log).total_seconds()
                 if progress_interval <= 0 or since_last_log >= progress_interval:
                     if confirmations is None:
-                        logger.info(
+                        logger.bind(sensitive=True).info(
                             "tumbler: txid {} still unresolved by backend "
                             "after {:.0f}s ({} polls); will keep polling",
                             txid,
@@ -850,7 +869,7 @@ class TumbleRunner:
                             poll_count,
                         )
                     else:
-                        logger.info(
+                        logger.bind(sensitive=True).info(
                             "tumbler: txid {} at {}/{} confirmations after {:.0f}s",
                             txid,
                             confirmations,
@@ -864,6 +883,10 @@ class TumbleRunner:
                 if not ever_resolved and unknown_timeout > 0 and elapsed >= unknown_timeout:
                     if not unknown_warned:
                         logger.warning(
+                            "tumbler: backend cannot resolve the confirmation gate; continuing "
+                            "to the inter-phase wait"
+                        )
+                        logger.bind(sensitive=True).warning(
                             "tumbler: backend cannot resolve txid {} after "
                             "{:.0f}s ({} polls). The broadcast was already "
                             "logged so the transaction is on the network; "
@@ -894,7 +917,8 @@ class TumbleRunner:
             try:
                 self.ctx.on_state_changed(self.plan)
             except Exception:  # pragma: no cover
-                logger.exception("on_state_changed callback failed")
+                logger.error("on_state_changed callback failed")
+                logger.bind(sensitive=True).exception("on_state_changed callback failed")
 
 
 # -- Small standalone helpers, exposed for test access -----------------------

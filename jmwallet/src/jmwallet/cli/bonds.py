@@ -707,6 +707,7 @@ def sync_bonds(
             backend_settings,
             resolved_bip39_passphrase,
             creation_height=resolved_creation_height,
+            mixdepth_count=settings.wallet.mixdepth_count,
             max_sats_freeze_reuse=settings.wallet.max_sats_freeze_reuse,
             reconstruct_history=settings.wallet.reconstruct_history,
         )
@@ -719,6 +720,7 @@ async def _sync_bonds_async(
     bip39_passphrase: str = "",
     *,
     creation_height: int | None = None,
+    mixdepth_count: int = 5,
     max_sats_freeze_reuse: int = -1,
     reconstruct_history: bool = True,
 ) -> None:
@@ -777,7 +779,7 @@ async def _sync_bonds_async(
         mnemonic=mnemonic,
         backend=backend,
         network=network,
-        mixdepth_count=5,
+        mixdepth_count=mixdepth_count,
         passphrase=bip39_passphrase,
         data_dir=data_dir,
         max_sats_freeze_reuse=max_sats_freeze_reuse,
@@ -940,6 +942,7 @@ def recover_bonds(
             backend_settings,
             resolved_bip39_passphrase,
             creation_height=resolved_creation_height,
+            mixdepth_count=settings.wallet.mixdepth_count,
             max_sats_freeze_reuse=settings.wallet.max_sats_freeze_reuse,
             reconstruct_history=settings.wallet.reconstruct_history,
         )
@@ -952,6 +955,7 @@ async def _recover_bonds_async(
     bip39_passphrase: str = "",
     *,
     creation_height: int | None = None,
+    mixdepth_count: int = 5,
     max_sats_freeze_reuse: int = -1,
     reconstruct_history: bool = True,
 ) -> None:
@@ -1010,7 +1014,7 @@ async def _recover_bonds_async(
         mnemonic=mnemonic,
         backend=backend,
         network=backend_settings.network,
-        mixdepth_count=5,
+        mixdepth_count=mixdepth_count,
         passphrase=bip39_passphrase,
         data_dir=backend_settings.data_dir,
         max_sats_freeze_reuse=max_sats_freeze_reuse,

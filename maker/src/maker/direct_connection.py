@@ -180,7 +180,8 @@ class DirectConnectionMixin:
             line = message.get("line", "")
             handshake_data = json.loads(line) if isinstance(line, str) else line
         except json.JSONDecodeError:
-            logger.warning(f"Invalid handshake JSON from {peer_str}")
+            logger.warning("Invalid direct-connection handshake JSON")
+            logger.bind(sensitive=True).warning(f"Invalid handshake JSON from {peer_str}")
             return True  # Was a handshake message, just malformed
 
         peer_nick = handshake_data.get("nick", "unknown")
@@ -209,7 +210,8 @@ class DirectConnectionMixin:
             peer_features = FeatureSet.from_comma_string(peer_features_raw)
         peer_version = handshake_data.get("version", handshake_data.get("proto-ver", "unknown"))
 
-        logger.debug(f"Received handshake from {peer_nick} at {peer_str}")
+        logger.debug("Received direct-connection handshake")
+        logger.bind(sensitive=True).debug(f"Received handshake from {peer_nick} at {peer_str}")
         logger.debug(
             f"Peer {peer_nick} handshake details: version={peer_version}, "
             f"network={peer_network or 'unspecified'}, "
@@ -267,7 +269,8 @@ class DirectConnectionMixin:
                 f"Sent handshake to {peer_nick} (features: {features.to_comma_string() or 'none'})"
             )
         except Exception as e:
-            logger.warning(f"Failed to send handshake to {peer_str}: {e}")
+            logger.warning("Failed to send direct-connection handshake")
+            logger.bind(sensitive=True).warning(f"Failed to send handshake to {peer_str}: {e}")
 
         return True
 
@@ -298,11 +301,15 @@ class DirectConnectionMixin:
         - Attackers connecting directly to the onion bypass directory-level protections
         - Connection-based limiting is stricter: faster bans, longer intervals
         """
-        logger.debug(f"Handling direct connection from {peer_str}")
+        logger.debug("Handling direct connection")
+        logger.bind(sensitive=True).debug(f"Handling direct connection from {peer_str}")
 
         # Check if this connection is already banned
         if self._direct_connection_rate_limiter.is_banned(peer_str):
-            logger.debug(f"Rejecting direct connection from banned address {peer_str}")
+            logger.debug("Rejecting banned direct connection")
+            logger.bind(sensitive=True).debug(
+                f"Rejecting direct connection from banned address {peer_str}"
+            )
             await connection.close()
             return
 
@@ -315,13 +322,18 @@ class DirectConnectionMixin:
                     # Receive message with timeout
                     data = await asyncio.wait_for(connection.receive(), timeout=60.0)
                     if not data:
-                        logger.debug(f"Direct connection from {peer_str} closed")
+                        logger.bind(sensitive=True).debug(
+                            f"Direct connection from {peer_str} closed"
+                        )
                         break
 
                     # Apply connection-based message rate limiting FIRST
                     # This catches general floods before any processing
                     if not self._direct_connection_rate_limiter.check_message(peer_str):
-                        logger.debug(f"Rate limiting message from {peer_str} (message flood)")
+                        logger.debug("Rate limiting direct-connection message flood")
+                        logger.bind(sensitive=True).debug(
+                            f"Rate limiting message from {peer_str} (message flood)"
+                        )
                         continue
 
                     # Check for handshake request first (health check / feature discovery)
@@ -333,7 +345,10 @@ class DirectConnectionMixin:
 
                     state = self._direct_connection_states.get(connection)
                     if state is None or state.nick is None:
-                        logger.warning(f"Dropping message before direct handshake from {peer_str}")
+                        logger.warning("Dropping message before direct handshake")
+                        logger.bind(sensitive=True).warning(
+                            f"Dropping message before direct handshake from {peer_str}"
+                        )
                         continue
 
                     # Parse the message (supports both formats)
@@ -347,7 +362,10 @@ class DirectConnectionMixin:
                             else str(data)
                         )
                         # Full message at DEBUG level for troubleshooting
-                        logger.debug(f"Unparseable direct message from {peer_str}: {data_str!r}")
+                        logger.debug("Received unparseable direct message")
+                        logger.bind(sensitive=True).debug(
+                            f"Unparseable direct message from {peer_str}: {data_str!r}"
+                        )
                         # Rate-limited WARNING with truncated preview
                         msg_preview = data_str[:100] + "..." if len(data_str) > 100 else data_str
                         self._log_rate_limited(
@@ -452,15 +470,23 @@ class DirectConnectionMixin:
                     # discovery probes, which connect, read the handshake
                     # response, and disconnect. Log at INFO so real problems
                     # (parse errors, unexpected exceptions) still surface.
-                    logger.debug(f"Direct connection from {peer_str} closed by peer: {e}")
+                    logger.bind(sensitive=True).debug(
+                        f"Direct connection from {peer_str} closed by peer: {e}"
+                    )
                     break
                 except Exception as e:
-                    logger.error(f"Error processing direct message from {peer_str}: {e}")
+                    logger.error("Error processing direct message")
+                    logger.bind(sensitive=True).error(
+                        f"Error processing direct message from {peer_str}: {e}"
+                    )
                     break
 
         except Exception as e:
-            logger.error(f"Error in direct connection handler for {peer_str}: {e}")
+            logger.error("Error in direct connection handler")
+            logger.bind(sensitive=True).error(
+                f"Error in direct connection handler for {peer_str}: {e}"
+            )
         finally:
             await connection.close()
             self._remove_direct_connection(connection)
-            logger.debug(f"Direct connection from {peer_str} closed")
+            logger.bind(sensitive=True).debug(f"Direct connection from {peer_str} closed")

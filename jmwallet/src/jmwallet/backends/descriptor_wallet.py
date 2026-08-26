@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import os
 import time
 from collections.abc import Callable, Sequence
 from typing import Any
@@ -111,9 +110,6 @@ DEFAULT_SCAN_LOOKBACK_BLOCKS = 52_560
 # (defined here so the backend module has no dependency on the wallet package).
 MAX_DESCRIPTOR_RANGE = 1_000_000
 
-# Environment variable to enable sensitive logging (descriptors, addresses, etc.)
-SENSITIVE_LOGGING = os.environ.get("SENSITIVE_LOGGING", "").lower() in ("1", "true", "yes")
-
 
 def clamp_descriptor_range(low: int, high: int) -> tuple[int, int]:
     """Clamp a descriptor ``[low, high]`` range to Bitcoin Core's limit.
@@ -189,7 +185,9 @@ class DescriptorWalletBackend(BlockchainBackend):
         self._scan_start_height = scan_start_height
         self._scan_lookback_blocks = scan_lookback_blocks
 
-        logger.info(f"Initialized DescriptorWalletBackend with wallet: {wallet_name}")
+        logger.bind(sensitive=True).info(
+            f"Initialized DescriptorWalletBackend with wallet: {wallet_name}"
+        )
 
         # Client for regular RPC calls
         self.client = httpx.AsyncClient(timeout=DEFAULT_RPC_TIMEOUT, auth=(rpc_user, rpc_password))
@@ -955,24 +953,23 @@ class DescriptorWalletBackend(BlockchainBackend):
                     request["internal"] = desc["internal"]
                 import_requests.append(request)
 
-        if SENSITIVE_LOGGING:
-            logger.debug(f"Importing {len(import_requests)} descriptor(s): {import_requests}")
-        else:
-            if timestamp == 0:
-                rescan_info = "from genesis (timestamp=0)"
-            elif timestamp == "now":
-                rescan_info = "no rescan (timestamp='now')"
-            elif smart_scan and background_rescan_needed:
-                scan_origin = "wallet creation height" if used_creation_height else "~1 year ago"
-                rescan_info = (
-                    f"smart scan from {scan_origin} (timestamp={timestamp}), "
-                    "full rescan in background"
-                )
-            else:
-                rescan_info = f"timestamp={timestamp}"
-            logger.info(
-                f"Importing {len(import_requests)} descriptor(s) into wallet ({rescan_info})..."
+        logger.bind(sensitive=True).debug(
+            f"Importing {len(import_requests)} descriptor(s): {import_requests}"
+        )
+        if timestamp == 0:
+            rescan_info = "from genesis (timestamp=0)"
+        elif timestamp == "now":
+            rescan_info = "no rescan (timestamp='now')"
+        elif smart_scan and background_rescan_needed:
+            scan_origin = "wallet creation height" if used_creation_height else "~1 year ago"
+            rescan_info = (
+                f"smart scan from {scan_origin} (timestamp={timestamp}), full rescan in background"
             )
+        else:
+            rescan_info = f"timestamp={timestamp}"
+        logger.info(
+            f"Importing {len(import_requests)} descriptor(s) into wallet ({rescan_info})..."
+        )
 
         # Bitcoin Core runs the rescan implied by ``timestamp`` synchronously
         # inside the importdescriptors RPC: the HTTP call blocks until the
@@ -1076,11 +1073,14 @@ class DescriptorWalletBackend(BlockchainBackend):
                     for r in result
                     if not r.get("success", False)
                 ]
-                logger.warning(f"Import completed with {error_count} error(s): {errors}")
+                logger.warning(f"Import completed with {error_count} error(s)")
+                logger.bind(sensitive=True).warning(
+                    f"Import completed with {error_count} error(s): {errors}"
+                )
                 # Log full results for debugging
                 for i, r in enumerate(result):
                     if not r.get("success", False):
-                        logger.debug(f"  Descriptor {i} failed: {r}")
+                        logger.bind(sensitive=True).debug(f"  Descriptor {i} failed: {r}")
             else:
                 logger.info(f"Successfully imported {success_count} descriptor(s)")
 
@@ -1095,7 +1095,8 @@ class DescriptorWalletBackend(BlockchainBackend):
                         f"0 descriptors! This may indicate a Bitcoin Core bug or wallet issue."
                     )
             except Exception as e:
-                logger.warning(f"Could not verify descriptor import: {e}")
+                logger.warning("Could not verify descriptor import")
+                logger.bind(sensitive=True).warning(f"Could not verify descriptor import: {e}")
 
             self._descriptors_imported = error_count == 0 and success_count > 0
             if not self._descriptors_imported:
@@ -1120,7 +1121,8 @@ class DescriptorWalletBackend(BlockchainBackend):
             }
 
         except Exception as e:
-            logger.error(f"Failed to import descriptors: {e}")
+            logger.error("Failed to import descriptors")
+            logger.bind(sensitive=True).error(f"Failed to import descriptors: {e}")
             raise
         finally:
             if progress_task is not None:
@@ -1900,10 +1902,11 @@ class DescriptorWalletBackend(BlockchainBackend):
         """Broadcast transaction, returns txid."""
         try:
             txid = await self._rpc_call("sendrawtransaction", [tx_hex], use_wallet=False)
-            logger.info(f"Broadcast transaction: {txid}")
+            logger.bind(sensitive=True).info(f"Broadcast transaction: {txid}")
             return txid
         except Exception as e:
-            logger.error(f"Failed to broadcast transaction: {e}")
+            logger.error("Failed to broadcast transaction")
+            logger.bind(sensitive=True).error(f"Failed to broadcast transaction: {e}")
             raise ValueError(f"Broadcast failed: {e}") from e
 
     async def get_transaction(self, txid: str) -> Transaction | None:
@@ -1940,7 +1943,7 @@ class DescriptorWalletBackend(BlockchainBackend):
                 block_time=block_time,
             )
         except Exception as e:
-            logger.debug(f"Failed to get transaction {txid}: {e}")
+            logger.bind(sensitive=True).debug(f"Failed to get transaction {txid}: {e}")
             return None
 
     async def get_wallet_transaction(self, txid: str) -> Transaction | None:
@@ -1955,7 +1958,7 @@ class DescriptorWalletBackend(BlockchainBackend):
                 block_time=tx_data.get("blocktime"),
             )
         except Exception as exc:
-            logger.debug(f"Failed to get wallet transaction {txid}: {exc}")
+            logger.bind(sensitive=True).debug(f"Failed to get wallet transaction {txid}: {exc}")
             return None
 
     async def get_mempool_spender(self, txid: str, vout: int) -> MempoolSpenderLookupResult:
@@ -2115,7 +2118,8 @@ class DescriptorWalletBackend(BlockchainBackend):
                 height=height,
             )
         except Exception as e:
-            logger.error(f"Failed to get UTXO {txid}:{vout}: {e}")
+            logger.error("Failed to get UTXO")
+            logger.bind(sensitive=True).error(f"Failed to get UTXO {txid}:{vout}: {e}")
             return None
 
     async def rescan_blockchain(self, start_height: int = 0) -> dict[str, Any]:
@@ -2226,7 +2230,10 @@ class DescriptorWalletBackend(BlockchainBackend):
             # Surface the failure: callers (sync layer, scan_status_only
             # diagnostic) must distinguish "no addresses" from "RPC
             # failed" and refuse to downgrade persisted state.
-            logger.exception("listsinceblock failed; cannot enumerate address history")
+            logger.error("listsinceblock failed; cannot enumerate address history")
+            logger.bind(sensitive=True).exception(
+                "listsinceblock failed; cannot enumerate address history"
+            )
             raise
 
         transactions = result.get("transactions", []) if isinstance(result, dict) else []
@@ -2271,7 +2278,10 @@ class DescriptorWalletBackend(BlockchainBackend):
                 [cursor or "", 1, True, True, True],
             )
         except Exception:
-            logger.exception("listsinceblock failed; cannot enumerate wallet transactions")
+            logger.error("listsinceblock failed; cannot enumerate wallet transactions")
+            logger.bind(sensitive=True).exception(
+                "listsinceblock failed; cannot enumerate wallet transactions"
+            )
             raise
 
         if not isinstance(result, dict):
@@ -2343,9 +2353,10 @@ class DescriptorWalletBackend(BlockchainBackend):
         try:
             received = await self._rpc_call("getreceivedbyaddress", [address, 0])
         except Exception as exc:
-            logger.warning(
+            logger.warning("Could not verify whether an address has on-chain history")
+            logger.bind(sensitive=True).warning(
                 f"getreceivedbyaddress({address[:12]}...) failed: {exc}; "
-                f"cannot verify whether address has on-chain history"
+                "cannot verify whether address has on-chain history"
             )
             return None
         # Core returns a BTC float; any non-zero value means the address
@@ -2370,7 +2381,7 @@ class DescriptorWalletBackend(BlockchainBackend):
         try:
             return await self._rpc_call("getaddressinfo", [address])
         except Exception as e:
-            logger.debug(f"getaddressinfo failed for {address[:20]}...: {e}")
+            logger.bind(sensitive=True).debug(f"getaddressinfo failed for {address[:20]}...: {e}")
             return None
 
     async def batch_get_address_info(self, addresses: Sequence[str]) -> list[dict[str, Any] | None]:
@@ -2404,7 +2415,9 @@ class DescriptorWalletBackend(BlockchainBackend):
         out: list[dict[str, Any] | None] = []
         for i, value in enumerate(raw):
             if isinstance(value, Exception):
-                logger.debug(f"batch getaddressinfo failed for {addresses[i][:20]}...: {value}")
+                logger.bind(sensitive=True).debug(
+                    f"batch getaddressinfo failed for {addresses[i][:20]}...: {value}"
+                )
                 out.append(None)
             else:
                 out.append(value)

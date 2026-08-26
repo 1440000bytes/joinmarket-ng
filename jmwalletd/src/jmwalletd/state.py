@@ -203,7 +203,8 @@ class DaemonState:
             try:
                 await self._maker_ref.stop()
             except Exception:
-                logger.exception("Error stopping maker during wallet lock")
+                logger.error("Error stopping maker during wallet lock")
+                logger.bind(sensitive=True).exception("Error stopping maker during wallet lock")
         if self._maker_task is not None and not self._maker_task.done():
             self._maker_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -216,7 +217,8 @@ class DaemonState:
             try:
                 await self.tumble_runner.stop_and_wait(self.tumble_task)
             except Exception:
-                logger.exception("Error stopping tumbler during wallet lock")
+                logger.error("Error stopping tumbler during wallet lock")
+                logger.bind(sensitive=True).exception("Error stopping tumbler during wallet lock")
                 if not self.tumble_task.done():
                     raise
 
@@ -225,7 +227,8 @@ class DaemonState:
             try:
                 await self._taker_ref.stop()
             except Exception:
-                logger.exception("Error stopping taker during wallet lock")
+                logger.error("Error stopping taker during wallet lock")
+                logger.bind(sensitive=True).exception("Error stopping taker during wallet lock")
         if self._taker_task is not None and not self._taker_task.done():
             self._taker_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):

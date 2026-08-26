@@ -7,6 +7,7 @@ import signal
 import sys
 
 from jmcore.crypto import generate_jm_nick
+from jmcore.log_filter import sensitive_log_filter
 from jmcore.notifications import get_notifier
 from jmcore.paths import remove_nick_state, write_nick_state
 from jmcore.settings import get_settings
@@ -16,7 +17,7 @@ from loguru import logger
 from directory_server.server import DirectoryServer
 
 
-def setup_logging(level: str) -> None:
+def setup_logging(level: str, sensitive: bool = False) -> None:
     logger.remove()
 
     logger.add(
@@ -24,12 +25,13 @@ def setup_logging(level: str) -> None:
         format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
         level=level,
         colorize=True,
+        filter=sensitive_log_filter(sensitive),
     )
 
 
 async def run_server() -> None:
     settings = get_settings()
-    setup_logging(settings.logging.level)
+    setup_logging(settings.logging.level, settings.logging.sensitive)
 
     # Initialize notifier with settings before creating server
     # This ensures DirectoryServer can use get_notifier() with config file settings
@@ -43,14 +45,14 @@ async def run_server() -> None:
     logger.info("=" * 80)
     logger.info("Starting JoinMarket NG Directory Server")
     logger.info(f"Network: {network.value}")
-    logger.info(f"Server nick: {server_nick}")
+    logger.bind(sensitive=True).info(f"Server nick: {server_nick}")
     logger.info(f"Port: {settings.directory_server.port}")
     logger.info(f"Max peers: {settings.directory_server.max_peers}")
     logger.info("=" * 80)
 
     # Write nick state file for external tracking
     write_nick_state(data_dir, "directory", server_nick)
-    logger.info(f"Nick state written to {data_dir}/state/directory.nick")
+    logger.bind(sensitive=True).info(f"Nick state written to {data_dir}/state/directory.nick")
 
     server = DirectoryServer(settings.directory_server, network, server_nick)
 
@@ -78,7 +80,8 @@ async def run_server() -> None:
         )
         await server.start()
     except Exception as e:
-        logger.error(f"Server error: {e}")
+        logger.error("Directory server stopped with an error")
+        logger.bind(sensitive=True).error(f"Directory server error: {e}")
         raise
     finally:
         # Clean up nick state file on shutdown
@@ -92,7 +95,8 @@ def main() -> None:
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
     except Exception as e:
-        logger.exception(f"Fatal error: {e}")
+        logger.error("Directory server terminated with a fatal error")
+        logger.bind(sensitive=True).exception(f"Directory server fatal error: {e}")
         sys.exit(1)
 
 

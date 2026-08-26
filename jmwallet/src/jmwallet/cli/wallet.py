@@ -18,7 +18,6 @@ from jmcore.cli_common import (
     resolve_backend_settings,
     resolve_mnemonic,
     setup_cli,
-    setup_logging,
 )
 from jmcore.paths import get_default_data_dir
 from loguru import logger
@@ -117,9 +116,7 @@ def import_mnemonic(
         MNEMONIC="word1 word2 ..." jm-wallet import  # Via env var
         jm-wallet import -o my-wallet.mnemonic    # Custom output file
     """
-    if data_dir is not None:
-        os.environ["JOINMARKET_DATA_DIR"] = str(data_dir)
-    setup_logging()
+    setup_cli(data_dir=data_dir)
 
     if word_count not in (12, 15, 18, 21, 24):
         logger.error(f"Invalid word count: {word_count}. Must be 12, 15, 18, 21, or 24.")
@@ -164,7 +161,8 @@ def import_mnemonic(
 
     # Check if file exists
     if output_file.exists() and not force:
-        logger.warning(f"Wallet file already exists: {output_file}")
+        logger.warning("Wallet file already exists")
+        logger.bind(sensitive=True).warning(f"Wallet file already exists: {output_file}")
         if not typer.confirm("Overwrite existing wallet file?", default=False):
             typer.echo("Import cancelled")
             raise typer.Exit(1)
@@ -314,9 +312,7 @@ def generate(
     order of precedence). Use --no-save to only display the mnemonic without
     saving.
     """
-    if data_dir is not None:
-        os.environ["JOINMARKET_DATA_DIR"] = str(data_dir)
-    setup_logging()
+    setup_cli(data_dir=data_dir)
 
     try:
         # Auto-enable save if output_file is specified (even if --no-save was used)
@@ -328,7 +324,8 @@ def generate(
 
             # Check if file already exists BEFORE generating the seed
             if output_file.exists() and not force:
-                logger.warning(f"Wallet file already exists: {output_file}")
+                logger.warning("Wallet file already exists")
+                logger.bind(sensitive=True).warning(f"Wallet file already exists: {output_file}")
                 overwrite = typer.confirm("Overwrite existing wallet file?", default=False)
                 if not overwrite:
                     typer.echo("Wallet generation cancelled")
@@ -511,6 +508,7 @@ def info(
             display_gap=gap,
             gap_limit=settings.wallet.gap_limit,
             scan_range=settings.wallet.scan_range,
+            mixdepth_count=settings.wallet.mixdepth_count,
             max_sats_freeze_reuse=settings.wallet.max_sats_freeze_reuse,
             reconstruct_history=settings.wallet.reconstruct_history,
             show_empty=show_empty,
@@ -528,6 +526,7 @@ async def _show_wallet_info(
     display_gap: int = 6,
     gap_limit: int = 20,
     scan_range: int = 1000,
+    mixdepth_count: int = 5,
     max_sats_freeze_reuse: int = -1,
     reconstruct_history: bool = True,
     show_empty: bool = False,
@@ -656,7 +655,7 @@ async def _show_wallet_info(
         mnemonic=mnemonic,
         backend=backend,
         network=network,
-        mixdepth_count=5,
+        mixdepth_count=mixdepth_count,
         gap_limit=gap_limit,
         scan_range=scan_range,
         passphrase=bip39_passphrase,
@@ -1078,7 +1077,7 @@ def _show_extended_wallet_info(
         # Get account zpub (BIP84 format for native segwit)
         zpub = wallet.get_account_zpub(md)
 
-        print()  # Visual separator before mixdepths 0-4
+        print()  # Visual separator before mixdepth output
 
         print(f"{_colorize(f'Mixdepth {md}', _ANSI_BOLD_CYAN)}\t{zpub}")
 
@@ -1570,6 +1569,7 @@ def rescan(
             creation_height=resolved.creation_height,
             scan_depth=scan_depth,
             gap_limit=settings.wallet.gap_limit,
+            mixdepth_count=settings.wallet.mixdepth_count,
             max_sats_freeze_reuse=settings.wallet.max_sats_freeze_reuse,
             reconstruct_history=settings.wallet.reconstruct_history,
         )
@@ -1584,6 +1584,7 @@ async def _run_rescan(
     creation_height: int | None,
     scan_depth: int | None = None,
     gap_limit: int = 20,
+    mixdepth_count: int = 5,
     max_sats_freeze_reuse: int = -1,
     reconstruct_history: bool = True,
 ) -> None:
@@ -1677,7 +1678,7 @@ async def _run_rescan(
                 mnemonic=mnemonic,
                 backend=backend,
                 network=backend_settings.network,
-                mixdepth_count=5,
+                mixdepth_count=mixdepth_count,
                 gap_limit=gap_limit,
                 scan_range=scan_depth,
                 passphrase=bip39_passphrase,

@@ -73,7 +73,7 @@ async def do_direct_send(
     # expired-bond sweep.
     await wallet_service.sync_with_registered_bonds()
 
-    logger.info(
+    logger.bind(sensitive=True).info(
         "Direct send: {} sats from mixdepth {} to {} (max fee rate {:.2f} sat/vB)",
         amount_sats or "sweep",
         mixdepth,
@@ -125,15 +125,16 @@ async def do_direct_send(
     txid = ""
     broadcast_exc: Exception | None = None
     try:
-        logger.info(
+        logger.bind(sensitive=True).info(
             "Broadcasting direct-send transaction ({} bytes)",
             len(bytes.fromhex(prepared.tx_hex)),
         )
         txid = (await backend.broadcast_transaction(prepared.tx_hex)) or prepared.txid
-        logger.info("Broadcast OK: {}", txid)
+        logger.bind(sensitive=True).info("Broadcast OK: {}", txid)
     except Exception as exc:
         broadcast_exc = exc
-        logger.error("Broadcast failed: {}", exc)
+        logger.error("Broadcast failed")
+        logger.bind(sensitive=True).error("Broadcast failed: {}", exc)
 
     # --- Phase 3: finalize history row (success or failure) ---
     if history_persisted:
@@ -150,7 +151,8 @@ async def do_direct_send(
             if not updated:
                 logger.warning("Could not find pre-broadcast send history entry to finalize")
         except Exception as exc:
-            logger.warning("Failed to finalize send history entry: {}", exc)
+            logger.warning("Failed to finalize send history entry")
+            logger.bind(sensitive=True).warning("Failed to finalize send history entry: {}", exc)
 
     if broadcast_exc is not None:
         raise broadcast_exc

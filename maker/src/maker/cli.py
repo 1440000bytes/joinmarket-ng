@@ -720,7 +720,8 @@ def start(
     # Log configuration source
     logger.info(f"Using network: {config.network.value}")
     logger.info(f"Using backend: {config.backend_type}")
-    logger.info(f"Tor SOCKS: {config.socks_host}:{config.socks_port}")
+    logger.info("Tor SOCKS proxy configured")
+    logger.bind(sensitive=True).info(f"Tor SOCKS: {config.socks_host}:{config.socks_port}")
     logger.info(f"Directory servers: {len(config.directory_servers)} configured")
 
     wallet = create_wallet_service(config)
@@ -737,9 +738,12 @@ def start(
             if len(parts) != 2:
                 raise ValueError("Invalid format")
             config.selected_fidelity_bond = (parts[0], int(parts[1]))
-            logger.info(f"Using specified fidelity bond: {fidelity_bond}")
+            logger.bind(sensitive=True).info(f"Using specified fidelity bond: {fidelity_bond}")
         except (ValueError, IndexError):
-            logger.error(f"Invalid fidelity bond format: {fidelity_bond}. Use txid:vout")
+            logger.error("Invalid fidelity bond format. Use txid:vout")
+            logger.bind(sensitive=True).error(
+                f"Invalid fidelity bond format: {fidelity_bond}. Use txid:vout"
+            )
             raise typer.Exit(1)
 
     async def run_bot() -> None:
@@ -748,7 +752,8 @@ def start(
             nick = bot.nick
             data_dir = config.data_dir
             write_nick_state(data_dir, "maker", nick)
-            logger.info(f"Nick state written to {data_dir}/state/maker.nick")
+            logger.info("Maker nick state written")
+            logger.bind(sensitive=True).info(f"Nick state written to {data_dir}/state/maker.nick")
 
             # Send startup notification immediately (including nick)
             notifier = get_notifier(settings, component_name="Maker")
@@ -770,7 +775,8 @@ def start(
     try:
         run_async(run_bot())
     except ExpiredFidelityBondCertificateError as e:
-        logger.error(str(e))
+        logger.error("Fidelity bond certificate expired")
+        logger.bind(sensitive=True).error(str(e))
         raise typer.Exit(1)
     except KeyboardInterrupt:
         logger.info("Shutting down maker bot...")

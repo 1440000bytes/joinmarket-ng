@@ -13,6 +13,7 @@ import base64
 
 import pytest
 from jmcore.encryption import CryptoSession
+from loguru import logger
 
 from maker.fidelity import FidelityBondInfo, create_fidelity_bond_proof
 
@@ -1506,6 +1507,45 @@ async def test_on_tx_failure_after_signing_retains_input_locks():
     assert taker_nick not in bot.active_sessions
     inner.wallet.release_coinjoin_inputs.assert_not_called()
     inner.wallet.renew_coinjoin_inputs.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_decoded_transaction_log_is_sensitive():
+    """Raw transaction data must not reach standard log sinks."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from maker.coinjoin import CoinJoinState
+    from maker.maker_session import MakerSession
+
+    raw_transaction = b"raw transaction bytes"
+    raw_transaction_hex = raw_transaction.hex()
+    taker_nick = "J5SensitiveLogTaker"
+    inner = MagicMock()
+    inner.taker_nick = taker_nick
+    inner.state = CoinJoinState.IOAUTH_SENT
+    inner.crypto.is_encrypted = True
+    inner.crypto.decrypt.return_value = base64.b64encode(raw_transaction).decode("ascii")
+    inner.handle_tx = AsyncMock(return_value=(False, {"error": "invalid transaction"}))
+    session = MakerSession(inner)
+    bot = MagicMock()
+    bot.active_sessions = {taker_nick: session}
+
+    records: list[tuple[str, dict[str, object]]] = []
+    handler_id = logger.add(
+        lambda message: records.append((message.record["message"], dict(message.record["extra"])))
+    )
+    try:
+        with (
+            patch("maker.maker_session.get_notifier", return_value=MagicMock()),
+            patch("maker.maker_session.spawn_task"),
+        ):
+            await session.on_tx(bot, "tx ciphertext", "dir:test")
+    finally:
+        logger.remove(handler_id)
+
+    raw_transaction_records = [record for record in records if raw_transaction_hex in record[0]]
+    assert len(raw_transaction_records) == 1
+    assert raw_transaction_records[0][1]["sensitive"] is True
 
 
 if __name__ == "__main__":

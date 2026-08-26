@@ -1357,7 +1357,10 @@ class LoggingSettings(BaseModel):
     )
     sensitive: bool = Field(
         default=False,
-        description="Enable sensitive logging (mnemonics, keys)",
+        description=(
+            "Enable logs containing wallet addresses, amounts, balances, txids, transaction "
+            "data, descriptors, and secrets"
+        ),
     )
 
 

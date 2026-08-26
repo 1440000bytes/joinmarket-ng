@@ -647,6 +647,51 @@ class TestTakerBroadcast:
         assert create_entry.call_args.kwargs["broadcast_method"] == ""
         assert create_entry.call_args.kwargs["broadcast_policy"] == "not-self"
 
+    def test_manual_csv_details_are_sensitive_bound(self, taker) -> None:
+        from loguru import logger
+
+        taker.wallet.wallet_fingerprint = "deadbeef"
+        records: list[tuple[str, dict[str, object]]] = []
+        handler_id = logger.add(
+            lambda message: records.append(
+                (message.record["message"], dict(message.record["extra"]))
+            )
+        )
+        try:
+            taker._session._log_manual_csv_entry(500, 250, "bcrt1qdestination")
+        finally:
+            logger.remove(handler_id)
+
+        assert ("Manual broadcast history entry generated", {}) in records
+        csv_records = [record for record in records if record[0].startswith("CSV line:")]
+        assert len(csv_records) == 1
+        assert csv_records[0][1]["sensitive"] is True
+
+    @pytest.mark.asyncio
+    async def test_self_broadcast_fallback_keeps_txid_sensitive(self, taker) -> None:
+        from loguru import logger
+
+        expected_txid = CoinJoinTxBuilder(taker.config.network).get_txid(taker._session.final_tx)
+        records: list[tuple[str, dict[str, object]]] = []
+        handler_id = logger.add(
+            lambda message: records.append(
+                (message.record["message"], dict(message.record["extra"]))
+            )
+        )
+        try:
+            txid = await taker._session._broadcast_self(fallback_reason="no_makers_available")
+        finally:
+            logger.remove(handler_id)
+
+        assert txid == expected_txid
+        privacy_warning = next(record for record in records if "PRIVACY WARNING" in record[0])
+        assert expected_txid not in privacy_warning[0]
+        assert "sensitive" not in privacy_warning[1]
+        assert (
+            f"Self-broadcast fallback transaction: {expected_txid}",
+            {"sensitive": True},
+        ) in records
+
     @pytest.mark.asyncio
     async def test_successful_broadcast_records_final_maker_identities(self, taker) -> None:
         from jmcore.models import Offer, OfferType

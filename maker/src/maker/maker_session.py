@@ -166,7 +166,10 @@ class MakerSession:
                 set(self.our_utxos.keys()), owner=self.inner.input_lock_owner
             )
         except Exception as e:  # pragma: no cover - best-effort cleanup
-            logger.debug(f"Failed to release input locks for {self.taker_nick}: {e}")
+            logger.debug("Failed to release input locks")
+            logger.bind(sensitive=True).debug(
+                f"Failed to release input locks for {self.taker_nick}: {e}"
+            )
 
     def retain_input_locks(self) -> None:
         """Best-effort renewal once maker signatures may exist."""
@@ -177,7 +180,10 @@ class MakerSession:
                 ttl=self.inner.pending_broadcast_ttl_sec,
             )
         except Exception as exc:  # pragma: no cover - best-effort retention
-            logger.error(f"Failed to retain signed input locks for {self.taker_nick}: {exc}")
+            logger.error("Failed to retain signed input locks")
+            logger.bind(sensitive=True).error(
+                f"Failed to retain signed input locks for {self.taker_nick}: {exc}"
+            )
             return
         if not renewed:
             logger.error(f"Signed input lock ownership was lost for {self.taker_nick}")
@@ -335,17 +341,20 @@ class MakerSession:
                 utxo_str, p_hex, p2_hex, sig_hex, e_hex = revelation_parts
 
                 if ":" not in utxo_str:
-                    logger.error(f"Invalid utxo format: {utxo_str}")
+                    logger.error("Invalid UTXO format")
+                    logger.bind(sensitive=True).error(f"Invalid UTXO format: {utxo_str}")
                     return
 
                 if not utxo_str.rsplit(":", 1)[1].isdigit():
-                    logger.error(f"Invalid vout in utxo: {utxo_str}")
+                    logger.error("Invalid vout in UTXO")
+                    logger.bind(sensitive=True).error(f"Invalid vout in UTXO: {utxo_str}")
                     return
 
                 try:
                     UTXOMetadata.from_str(utxo_str)
                 except (ValueError, ValidationError) as e:
-                    logger.error(f"Invalid UTXO in PoDLE revelation: {e}")
+                    logger.error("Invalid UTXO in PoDLE revelation")
+                    logger.bind(sensitive=True).error(f"Invalid UTXO in PoDLE revelation: {e}")
                     return
 
                 revelation: dict[str, Any] = {
@@ -355,9 +364,12 @@ class MakerSession:
                     "sig": sig_hex,
                     "e": e_hex,
                 }
-                logger.debug(f"Parsed revelation: utxo={utxo_str}, P={p_hex[:16]}...")
+                logger.bind(sensitive=True).debug(
+                    f"Parsed revelation: utxo={utxo_str}, P={p_hex[:16]}..."
+                )
             except Exception as e:
-                logger.error(f"Failed to parse revelation: {e}")
+                logger.error("Failed to parse revelation")
+                logger.bind(sensitive=True).error(f"Failed to parse revelation: {e}")
                 return
 
             commitment = self.commitment.hex()
@@ -401,13 +413,14 @@ class MakerSession:
                     )
                     history_entry.failure_reason = "Awaiting transaction"
                     append_history_entry(history_entry, data_dir=bot.config.data_dir)
-                    logger.debug(
+                    logger.bind(sensitive=True).debug(
                         f"Recorded revealed addresses for {taker_nick} in history "
                         f"(cj={self.cj_address[:12]}..., "
                         f"change={self.change_address[:12]}...)"
                     )
                 except Exception as e:
-                    logger.error(
+                    logger.error("Refusing to reveal addresses because history persistence failed")
+                    logger.bind(sensitive=True).error(
                         f"Refusing to reveal addresses because history persistence failed: {e}"
                     )
                     if bot.active_sessions.get(taker_nick) is self:
@@ -443,16 +456,20 @@ class MakerSession:
             else:
                 error_msg = response.get("error", "unknown error")
                 error_code = response.get("error_code", "")
-                logger.error(f"Auth failed: {error_msg}")
+                logger.error("Authentication failed")
+                logger.bind(sensitive=True).error(f"Authentication failed: {error_msg}")
 
                 try:
                     for client in bot.directory_clients.values():
                         await client.send_private_message(taker_nick, "error", error_msg)
                         if not self.is_active(bot):
                             return
-                    logger.debug(f"Sent !error to {taker_nick}: {error_msg}")
+                    logger.bind(sensitive=True).debug(f"Sent !error to {taker_nick}: {error_msg}")
                 except Exception as e:
-                    logger.warning(f"Failed to send !error to {taker_nick}: {e}")
+                    logger.warning("Failed to send !error")
+                    logger.bind(sensitive=True).warning(
+                        f"Failed to send !error to {taker_nick}: {e}"
+                    )
 
                 # Release protocol resources before best-effort notification
                 # work so notifier failures cannot extend the reservation.
@@ -472,7 +489,8 @@ class MakerSession:
                 )
 
         except Exception as e:
-            logger.error(f"Failed to handle !auth: {e}")
+            logger.error("Failed to handle !auth")
+            logger.bind(sensitive=True).error(f"Failed to handle !auth: {e}")
 
     async def on_tx(self, bot: MakerBotProtocol, msg: str, source: str) -> None:
         """Process a decrypted !tx message and emit !sig signatures.
@@ -518,9 +536,12 @@ class MakerSession:
             try:
                 tx_bytes = base64.b64decode(decrypted)
                 tx_hex = tx_bytes.hex()
-                logger.debug(f"Decoded transaction hex ({len(tx_bytes)} bytes): {tx_hex}")
+                logger.bind(sensitive=True).debug(
+                    f"Decoded transaction hex ({len(tx_bytes)} bytes): {tx_hex}"
+                )
             except Exception as e:
-                logger.error(f"Failed to decode transaction: {e}")
+                logger.error("Failed to decode transaction")
+                logger.bind(sensitive=True).error(f"Failed to decode transaction: {e}")
                 return
 
             success, response = await self.handle_tx(
@@ -567,7 +588,9 @@ class MakerSession:
                     )
                     net = fee_received - txfee_contribution
                     if updated:
-                        logger.debug(f"Updated CoinJoin history with txid: net fee {net} sats")
+                        logger.bind(sensitive=True).debug(
+                            f"Updated CoinJoin history with txid: net fee {net} sats"
+                        )
                     else:
                         logger.warning(
                             "No 'Awaiting transaction' entry found, creating new history entry"
@@ -591,9 +614,12 @@ class MakerSession:
                             destination_vout=destination_vout,
                         )
                         append_history_entry(history_entry, data_dir=bot.config.data_dir)
-                        logger.debug(f"Created new CoinJoin history: net fee {net} sats")
+                        logger.bind(sensitive=True).debug(
+                            f"Created new CoinJoin history: net fee {net} sats"
+                        )
                 except Exception as e:
-                    logger.warning(f"Failed to update CoinJoin history: {e}")
+                    logger.warning("Failed to update CoinJoin history")
+                    logger.bind(sensitive=True).warning(f"Failed to update CoinJoin history: {e}")
 
                 spawn_task(
                     get_notifier().notify_tx_signed(
@@ -613,7 +639,10 @@ class MakerSession:
                 # Schedule wallet re-sync in background to avoid blocking !push handling
                 spawn_task(bot._deferred_wallet_resync())
             else:
-                logger.error(f"TX verification failed: {response.get('error')}")
+                logger.error("Transaction verification failed")
+                logger.bind(sensitive=True).error(
+                    f"Transaction verification failed: {response.get('error')}"
+                )
                 # Before signing starts, a failed transaction cannot conflict
                 # with a later use of these inputs. Once signing starts, retain
                 # the persisted locks through their TTL.
@@ -634,7 +663,8 @@ class MakerSession:
                 )
 
         except Exception as e:
-            logger.error(f"Failed to handle !tx: {e}")
+            logger.error("Failed to handle !tx")
+            logger.bind(sensitive=True).error(f"Failed to handle !tx: {e}")
 
     async def send_response(
         self, bot: MakerBotProtocol, command: str, data: dict[str, Any]
@@ -693,5 +723,6 @@ class MakerSession:
             return True
 
         except Exception as e:
-            logger.error(f"Failed to send response: {e}")
+            logger.error("Failed to send response")
+            logger.bind(sensitive=True).error(f"Failed to send response: {e}")
             return False

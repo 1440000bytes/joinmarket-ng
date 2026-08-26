@@ -422,7 +422,8 @@ class MultiDirectoryClient(DirectoryClientPool):
             # Queue for processing by wait_for_responses
             await self._direct_message_queue.put(msg)
         except Exception as e:
-            logger.warning(f"Error processing peer message from {nick}: {e}")
+            logger.warning("Error processing direct peer message")
+            logger.bind(sensitive=True).warning(f"Error processing peer message from {nick}: {e}")
 
     async def _on_peer_disconnect(self, nick: str) -> None:
         """Handle peer disconnection."""
@@ -477,7 +478,10 @@ class MultiDirectoryClient(DirectoryClientPool):
         )
         if task:
             self._pending_connect_tasks[nick] = task
-            logger.debug(f"Started background connection to {nick} at {location}")
+            logger.debug("Started background peer connection")
+            logger.bind(sensitive=True).debug(
+                f"Started background connection to {nick} at {location}"
+            )
 
     async def _cleanup_peer_connections(self) -> None:
         """Clean up all peer connections (called on close)."""
@@ -492,7 +496,8 @@ class MultiDirectoryClient(DirectoryClientPool):
             try:
                 await peer.disconnect()
             except Exception as e:
-                logger.debug(f"Error disconnecting from peer {nick}: {e}")
+                logger.debug("Error disconnecting from peer")
+                logger.bind(sensitive=True).debug(f"Error disconnecting from peer {nick}: {e}")
         self._peer_connections.clear()
 
     async def connect_all(self) -> int:
@@ -802,7 +807,8 @@ class MultiDirectoryClient(DirectoryClientPool):
                     return
                 responses[from_nick] = {"error": True, "data": _data or "Unknown error"}
                 remaining_nicks.discard(from_nick)
-                logger.warning(f"Received error from {from_nick}: {_data}")
+                logger.warning("Received error from peer")
+                logger.bind(sensitive=True).warning(f"Received error from {from_nick}: {_data}")
                 return
 
             if command != expected_command.lstrip("!"):

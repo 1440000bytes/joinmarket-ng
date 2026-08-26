@@ -193,10 +193,12 @@ def save_mnemonic_file(
     if password:
         encrypted = encrypt_mnemonic(mnemonic, password)
         atomic_write_private(output_file, encrypted)
-        logger.info(f"Encrypted mnemonic saved to {output_file}")
+        logger.info("Encrypted mnemonic saved")
+        logger.bind(sensitive=True).info(f"Encrypted mnemonic saved to {output_file}")
     else:
         atomic_write_private(output_file, mnemonic.encode("utf-8"))
-        logger.warning(f"Mnemonic saved to {output_file} (PLAINTEXT - consider using --password)")
+        logger.warning("Mnemonic saved in plaintext, consider using --password")
+        logger.bind(sensitive=True).warning(f"Mnemonic saved to {output_file} in plaintext")
 
 
 def load_mnemonic_file(
@@ -269,7 +271,7 @@ def _write_mnemonic_meta(mnemonic_file: Path, meta: dict[str, MnemonicMetaValue]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(meta, indent=2) + "\n")
     os.chmod(path, 0o600)
-    logger.debug(f"Saved mnemonic metadata to {path}")
+    logger.bind(sensitive=True).debug(f"Saved mnemonic metadata to {path}")
 
 
 def save_mnemonic_meta(
@@ -330,10 +332,12 @@ def load_mnemonic_meta(mnemonic_file: Path) -> dict[str, MnemonicMetaValue]:
         data = json.loads(path.read_text())
         if isinstance(data, dict):
             return data
-        logger.warning(f"Mnemonic metadata file has unexpected format: {path}")
+        logger.warning("Mnemonic metadata file has unexpected format")
+        logger.bind(sensitive=True).warning(f"Mnemonic metadata file has unexpected format: {path}")
         return {}
     except (json.JSONDecodeError, OSError) as exc:
-        logger.warning(f"Failed to read mnemonic metadata from {path}: {exc}")
+        logger.warning("Failed to read mnemonic metadata")
+        logger.bind(sensitive=True).warning(f"Failed to read mnemonic metadata from {path}: {exc}")
         return {}
 
 
@@ -369,7 +373,10 @@ def update_mnemonic_meta_fingerprint(mnemonic_file: Path, fingerprint: str) -> N
             return
         save_mnemonic_meta(mnemonic_file, fingerprint=fingerprint)
     except OSError as exc:  # pragma: no cover - defensive (read-only datadir)
-        logger.debug(f"Could not persist wallet fingerprint to metadata: {exc}")
+        logger.debug("Could not persist wallet fingerprint to metadata")
+        logger.bind(sensitive=True).debug(
+            f"Could not persist wallet fingerprint to metadata: {exc}"
+        )
 
 
 # ============================================================================

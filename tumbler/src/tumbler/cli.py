@@ -90,10 +90,14 @@ def _load_or_error(wallet_name: str, data_dir: Path) -> Plan:
     try:
         return load_plan(wallet_name, data_dir)
     except PlanNotFoundError:
-        logger.error(f"No tumbler plan found for wallet {wallet_name!r} under {data_dir}")
+        logger.error("No tumbler plan found. Check --wallet-name and --data-dir.")
+        logger.bind(sensitive=True).error(
+            "No tumbler plan found for wallet {!r} under {}", wallet_name, data_dir
+        )
         raise typer.Exit(1)
     except PlanCorruptError as exc:
-        logger.error(f"Tumbler plan is corrupt: {exc}")
+        logger.error("Tumbler plan is corrupt.")
+        logger.bind(sensitive=True).error("Tumbler plan corruption detail: {}", exc)
         raise typer.Exit(1)
 
 
@@ -194,7 +198,8 @@ def _resolve_wallet_name(
             prompt_bip39_passphrase=prompt_bip39_passphrase,
         )
     except (ValueError, FileNotFoundError) as exc:
-        logger.error(str(exc))
+        logger.error("Could not resolve a wallet name; check --mnemonic-file and configuration.")
+        logger.bind(sensitive=True).error("Wallet-name resolution detail: {}", exc)
         raise typer.Exit(1)
     if resolved is None:
         logger.error("Could not resolve a wallet name; pass --wallet-name or configure a mnemonic.")
@@ -224,7 +229,10 @@ async def _collect_balances(
                 )
             )
         except Exception:
-            logger.exception(f"failed to read balance for mixdepth {mixdepth}")
+            logger.error("Failed to read wallet balance")
+            logger.bind(sensitive=True).exception(
+                "Failed to read balance for mixdepth {}", mixdepth
+            )
             balances[mixdepth] = 0
     return balances
 
@@ -353,7 +361,8 @@ def plan_command(
             prompt_bip39_passphrase=prompt_bip39_passphrase,
         )
     except (ValueError, FileNotFoundError) as exc:
-        logger.error(str(exc))
+        logger.error("Could not resolve a mnemonic; check --mnemonic-file and configuration.")
+        logger.bind(sensitive=True).error("Mnemonic resolution detail: {}", exc)
         raise typer.Exit(1)
     if resolved is None:
         logger.error("Could not resolve a mnemonic; supply --mnemonic-file or configure one.")
@@ -369,13 +378,13 @@ def plan_command(
     except PlanNotFoundError:
         existing = None
     except PlanCorruptError as exc:
-        logger.error(f"Tumbler plan is corrupt: {exc}")
+        logger.error("Tumbler plan is corrupt.")
+        logger.bind(sensitive=True).error("Tumbler plan corruption detail: {}", exc)
         raise typer.Exit(1)
 
     if existing is not None and existing.status == PlanStatus.RUNNING:
-        logger.error(
-            f"A plan is already RUNNING for {effective_wallet}; use 'jm-tumbler stop' first."
-        )
+        logger.error("A tumbler plan is already running; use 'jm-tumbler stop' first.")
+        logger.bind(sensitive=True).error("A plan is already RUNNING for {}", effective_wallet)
         raise typer.Exit(1)
     if existing is not None and existing.status == PlanStatus.PENDING and not force:
         logger.error("A pending plan already exists; pass --force to overwrite.")
@@ -394,7 +403,8 @@ def plan_command(
             )
         )
     except RuntimeError as exc:
-        logger.error(str(exc))
+        logger.error("Could not read wallet balance for the tumbler plan.")
+        logger.bind(sensitive=True).error("Wallet balance read detail: {}", exc)
         raise typer.Exit(1)
 
     if not any(v > 0 for v in balances.values()):
@@ -424,7 +434,8 @@ def plan_command(
         )
         plan = PlanBuilder(wallet_name=effective_wallet, params=params).build()
     except ValueError as exc:
-        logger.error(str(exc))
+        logger.error("Could not build tumbler plan.")
+        logger.bind(sensitive=True).error("Tumbler plan build detail: {}", exc)
         raise typer.Exit(1)
 
     path = save_plan(plan, data_dir)
@@ -699,7 +710,8 @@ def run_command(
             prompt_bip39_passphrase=prompt_bip39_passphrase,
         )
     except (ValueError, FileNotFoundError) as exc:
-        logger.error(str(exc))
+        logger.error("Could not resolve a mnemonic; check --mnemonic-file and configuration.")
+        logger.bind(sensitive=True).error("Mnemonic resolution detail: {}", exc)
         raise typer.Exit(1)
     if resolved is None:
         logger.error("Could not resolve a mnemonic.")
@@ -886,7 +898,8 @@ async def _balances_for_mnemonic(
                 if asyncio.iscoroutine(result):
                     await result
             except Exception:  # pragma: no cover - best effort close
-                logger.exception("wallet close failed")
+                logger.error("Wallet close failed")
+                logger.bind(sensitive=True).exception("Wallet close failed")
 
 
 async def _resolve_fee_rate(settings: Any, backend: Any) -> tuple[float | None, str]:
@@ -920,7 +933,10 @@ async def _resolve_fee_rate(settings: Any, backend: Any) -> tuple[float | None, 
         )
         return sat_per_vb, "estimated"
     except Exception:  # pragma: no cover - best effort: fall through to default
-        logger.exception("fee rate estimation failed; falling back to built-in default")
+        logger.error("Fee rate estimation failed; falling back to built-in default")
+        logger.bind(sensitive=True).exception(
+            "Fee rate estimation failed; falling back to built-in default"
+        )
         return None, "fallback"
 
 

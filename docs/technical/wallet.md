@@ -259,6 +259,11 @@ the BIP32 master fingerprint (`wallet_fingerprint`, first 4 bytes of `m/0`),
 so commands like `jm-wallet history` and `jm-wallet info` filter to the
 correct wallet automatically when a mnemonic is supplied.
 
+The history file is plaintext privacy-sensitive metadata. It can contain
+wallet fingerprints, transaction IDs, amounts, fees, destination addresses,
+counterparty counts, and failure details. Protect the data directory and its
+backups accordingly; deleting the wallet seed does not remove this history.
+
 The same fingerprint scopes the fidelity bond registry on disk as
 `fidelity_bonds_<fingerprint>.json` (issue #492). Both `jm-wallet
 list-bonds` and `jm-wallet registry-show` read this per-wallet file.

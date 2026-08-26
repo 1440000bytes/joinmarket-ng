@@ -110,7 +110,10 @@ async def run_tx_monitor(
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # pragma: no cover - defensive
-                logger.debug(f"tx monitor: failed to notify {txid[:16]}...: {exc}")
+                logger.debug("tx monitor: failed to notify transaction")
+                logger.bind(sensitive=True).debug(
+                    f"tx monitor: failed to notify {txid[:16]}...: {exc}"
+                )
                 notification_failed = True
 
         # A confirmed transaction may only appear once for a given backend
@@ -157,5 +160,8 @@ async def _notify(
     if suppress_if_first_seen and txid in state._tx_broadcast_notified:
         return True
     state.broadcast_ws({"txid": txinfo.txid, "txdetails": txinfo.model_dump()})
-    logger.debug(f"tx monitor: notified {txid[:16]}... (confirmations={confirmations})")
+    logger.debug(f"tx monitor: notification sent (confirmations={confirmations})")
+    logger.bind(sensitive=True).debug(
+        f"tx monitor: notified {txid[:16]}... (confirmations={confirmations})"
+    )
     return True

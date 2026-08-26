@@ -623,7 +623,7 @@ class UTXOMetadataStore:
             self.load()
             self._apply_freeze(outpoint, True, label)
             self.save()
-        logger.info(f"Frozen UTXO: {outpoint}")
+        logger.bind(sensitive=True).info(f"Frozen UTXO: {outpoint}")
 
     def unfreeze(self, outpoint: str) -> None:
         """Unfreeze a UTXO (set spendable to True) and persist.
@@ -640,7 +640,7 @@ class UTXOMetadataStore:
                 # Nothing on disk to change; skip the rewrite.
                 return
             self.save()
-        logger.info(f"Unfrozen UTXO: {outpoint}")
+        logger.bind(sensitive=True).info(f"Unfrozen UTXO: {outpoint}")
 
     def set_frozen(self, changes: Iterable[tuple[str, bool]]) -> None:
         """Atomically apply several freeze/unfreeze changes in one write.
@@ -722,7 +722,7 @@ class UTXOMetadataStore:
                     record.spendable = False
                 frozen = True
             self.save()
-        logger.info(f"{'Frozen' if frozen else 'Unfrozen'} UTXO: {outpoint}")
+        logger.bind(sensitive=True).info(f"{'Frozen' if frozen else 'Unfrozen'} UTXO: {outpoint}")
         return frozen
 
     # -- Temporary CoinJoin locks --------------------------------------------

@@ -131,7 +131,8 @@ async def direct_send(
     except ValueError as exc:
         raise InvalidRequestFormat(str(exc)) from exc
     except Exception as exc:
-        logger.exception("Direct send failed")
+        logger.error("Direct send failed")
+        logger.bind(sensitive=True).exception("Direct send failed")
         raise TransactionFailed(str(exc)) from exc
 
     # Build the txinfo response.
@@ -208,7 +209,8 @@ async def do_coinjoin(
                     input_utxos=body.input_utxos,
                 )
             except Exception:
-                logger.exception("Coinjoin failed")
+                logger.error("Coinjoin failed")
+                logger.bind(sensitive=True).exception("Coinjoin failed")
             finally:
                 # Always tear down the taker so its directory-client and
                 # background tasks do not leak. Keep the shared wallet open
@@ -222,7 +224,8 @@ async def do_coinjoin(
                     try:
                         await taker.stop(close_wallet=False)
                     except Exception:
-                        logger.exception("Taker teardown failed")
+                        logger.error("Taker teardown failed")
+                        logger.bind(sensitive=True).exception("Taker teardown failed")
                 state.activate_coinjoin_state(CoinjoinState.NOT_RUNNING)
                 state._taker_ref = None
 
@@ -258,7 +261,8 @@ async def stop_coinjoin(
         try:
             await state._taker_ref.stop()
         except Exception:
-            logger.exception("Error stopping taker")
+            logger.error("Error stopping taker")
+            logger.bind(sensitive=True).exception("Error stopping taker")
 
     if state._taker_task is not None and not state._taker_task.done():
         state._taker_task.cancel()
@@ -349,18 +353,25 @@ async def start_maker(
                 # now reads current_offers directly from the maker ref,
                 # so there is nothing to do here.
             except Exception:
-                logger.exception("Maker failed")
+                logger.error("Maker failed")
+                logger.bind(sensitive=True).exception("Maker failed")
             finally:
                 if maker is not None:
                     try:
                         await maker.stop()
                     except Exception:
-                        logger.exception("Error stopping maker after its run ended")
+                        logger.error("Error stopping maker after its run ended")
+                        logger.bind(sensitive=True).exception(
+                            "Error stopping maker after its run ended"
+                        )
                 if backend is not None:
                     try:
                         await backend.close()
                     except Exception:
-                        logger.exception("Error closing maker blockchain backend")
+                        logger.error("Error closing maker blockchain backend")
+                        logger.bind(sensitive=True).exception(
+                            "Error closing maker blockchain backend"
+                        )
                 state.activate_coinjoin_state(CoinjoinState.NOT_RUNNING)
                 state.offer_list = None
                 state.nickname = None
@@ -398,7 +409,8 @@ async def stop_maker(
         try:
             await state._maker_ref.stop()
         except Exception:
-            logger.exception("Error stopping maker")
+            logger.error("Error stopping maker")
+            logger.bind(sensitive=True).exception("Error stopping maker")
 
     if state._maker_task is not None and not state._maker_task.done():
         state._maker_task.cancel()

@@ -938,7 +938,7 @@ async def direct_send(
     broadcast_txid = await backend.broadcast_transaction(prepared.tx_hex)
     txid = broadcast_txid or prepared.txid
 
-    logger.info("Broadcast OK: {}", txid)
+    logger.bind(sensitive=True).info("Broadcast OK: {}", txid)
     return DirectSendResult(
         txid=txid,
         tx_hex=prepared.tx_hex,

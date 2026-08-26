@@ -443,7 +443,10 @@ class ProtocolHandlersMixin:
 
             parts = msg.split()
             if len(parts) < 5:
-                logger.warning(f"Invalid !fill format (need at least 5 parts): {msg}")
+                logger.warning("Invalid !fill format")
+                logger.bind(sensitive=True).warning(
+                    f"Invalid !fill format (need at least 5 parts): {msg}"
+                )
                 return
 
             offer_id = int(parts[1])
@@ -459,7 +462,8 @@ class ProtocolHandlersMixin:
             # Must be exactly 64 hex characters (32-byte SHA256 hash).
             valid, error = validate_commitment_hex(commitment)
             if not valid:
-                logger.warning(
+                logger.warning("Rejecting !fill with invalid commitment")
+                logger.bind(sensitive=True).warning(
                     f"Rejecting !fill from {taker_nick}: {error} (raw={commitment[:32]!r})"
                 )
                 return
@@ -514,7 +518,10 @@ class ProtocolHandlersMixin:
             if not is_valid:
                 self._release_commitment_reservation(commitment)
                 reservation_owned = False
-                logger.warning(f"Invalid fill request for offer {offer_id}: {error}")
+                logger.warning(f"Invalid fill request for offer {offer_id}")
+                logger.bind(sensitive=True).warning(
+                    f"Invalid fill request for offer {offer_id}: {error}"
+                )
                 return
 
             refresh_fee_policy = getattr(self, "_initialize_minimum_fee_policy", None)
@@ -586,7 +593,10 @@ class ProtocolHandlersMixin:
             else:
                 self._release_commitment_reservation(commitment)
                 reservation_owned = False
-                logger.warning(f"Failed to handle fill: {response.get('error')}")
+                logger.warning("Failed to handle fill")
+                logger.bind(sensitive=True).warning(
+                    f"Failed to handle fill: {response.get('error')}"
+                )
 
         except Exception as e:
             if reservation_owned:
@@ -595,7 +605,8 @@ class ProtocolHandlersMixin:
                 if self.active_sessions.get(taker_nick) is session:
                     self.active_sessions.pop(taker_nick, None)
                     self._release_podle_outpoint(session)
-            logger.error(f"Failed to handle !fill: {e}")
+            logger.error("Failed to handle !fill")
+            logger.bind(sensitive=True).error(f"Failed to handle !fill: {e}")
         finally:
             if log_context is not None:
                 log_context.__exit__(None, None, None)
@@ -809,7 +820,10 @@ class ProtocolHandlersMixin:
                     ttl=record.lock_ttl_sec,
                 )
             except Exception as exc:
-                logger.error(f"Failed to retain pending signed-round locks on shutdown: {exc}")
+                logger.error("Failed to retain pending signed-round locks on shutdown")
+                logger.bind(sensitive=True).error(
+                    f"Failed to retain pending signed-round locks on shutdown: {exc}"
+                )
                 continue
             if not renewed:
                 logger.error(
@@ -854,7 +868,8 @@ class ProtocolHandlersMixin:
                 tx_hex = tx_bytes.hex()
                 txid = get_txid(tx_hex)
             except Exception as e:
-                logger.error(f"Failed to decode !push transaction: {e}")
+                logger.error("Failed to decode !push transaction")
+                logger.bind(sensitive=True).error(f"Failed to decode !push transaction: {e}")
                 return
 
             key = (taker_nick, txid.lower())
@@ -862,7 +877,8 @@ class ProtocolHandlersMixin:
                 self._prune_pending_signed_rounds_locked(time.monotonic())
                 pending = self._pending_signed_rounds.get(key)
                 if pending is None:
-                    logger.warning(
+                    logger.warning("Rejecting unmatched !push")
+                    logger.bind(sensitive=True).warning(
                         f"Rejecting unmatched !push from {taker_nick} for {txid[:16]}..."
                     )
                     return
@@ -873,7 +889,10 @@ class ProtocolHandlersMixin:
                         ttl=pending.lock_ttl_sec,
                     )
                 except Exception as exc:
-                    logger.error(f"Rejecting !push after input-lock renewal failure: {exc}")
+                    logger.error("Rejecting !push after input-lock renewal failure")
+                    logger.bind(sensitive=True).error(
+                        f"Rejecting !push after input-lock renewal failure: {exc}"
+                    )
                     self._pending_signed_rounds.pop(key, None)
                     return
                 if not renewed:
@@ -891,13 +910,15 @@ class ProtocolHandlersMixin:
 
             try:
                 txid = await self.backend.broadcast_transaction(tx_hex)
-                logger.info(f"Broadcast transaction for {taker_nick}: {txid}")
+                logger.bind(sensitive=True).info(f"Broadcast transaction for {taker_nick}: {txid}")
             except Exception as e:
                 # Log but don't fail - the taker may have a fallback
-                logger.warning(f"Failed to broadcast !push transaction: {e}")
+                logger.warning("Failed to broadcast !push transaction")
+                logger.bind(sensitive=True).warning(f"Failed to broadcast !push transaction: {e}")
 
         except Exception as e:
-            logger.error(f"Failed to handle !push: {e}")
+            logger.error("Failed to handle !push")
+            logger.bind(sensitive=True).error(f"Failed to handle !push: {e}")
 
     async def _handle_hp2_pubmsg(self, from_nick: str, msg: str) -> None:
         """Handle !hp2 commitment broadcast seen in public channel.

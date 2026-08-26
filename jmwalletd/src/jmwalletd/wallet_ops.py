@@ -157,7 +157,8 @@ async def create_wallet(
             creation_height=creation_height,
         )
 
-    logger.info("Created wallet: {}", wallet_path.name)
+    logger.info("Created wallet")
+    logger.bind(sensitive=True).info("Created wallet: {}", wallet_path.name)
     return ws, seedphrase
 
 
@@ -277,7 +278,8 @@ async def _recover_reserved_wallet(
         wallet_path.unlink(missing_ok=True)
         raise
 
-    logger.info("Recovered wallet: {}", wallet_path.name)
+    logger.info("Recovered wallet")
+    logger.bind(sensitive=True).info("Recovered wallet: {}", wallet_path.name)
     return ws
 
 
@@ -357,7 +359,8 @@ async def open_wallet_with_mnemonic(
         # imported and surfaced in /utxos and /display.
         await ws.sync_with_registered_bonds()
 
-    logger.info("Opened wallet: {}", wallet_path.name)
+    logger.info("Opened wallet")
+    logger.bind(sensitive=True).info("Opened wallet: {}", wallet_path.name)
     return ws, seedphrase
 
 
@@ -447,7 +450,8 @@ def _save_wallet_file(
     ensure_private_directory(wallet_path.parent)
     atomic_write_private(wallet_path, header + encrypted)
 
-    logger.debug("Saved wallet file (argon2id): {}", wallet_path)
+    logger.debug("Saved wallet file (argon2id)")
+    logger.bind(sensitive=True).debug("Saved wallet file (argon2id): {}", wallet_path)
 
 
 def _load_wallet_file(*, wallet_path: Path, password: str) -> tuple[str, int | None]:

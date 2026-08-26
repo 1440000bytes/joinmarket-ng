@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from coincurve import PrivateKey
+from loguru import logger as loguru_logger
 
 from jmcore.bitcoin import (
     TxInput,
@@ -92,6 +94,26 @@ async def test_new_mempool_tx_is_notified() -> None:
     frame = state.broadcasts[0]
     assert frame["txid"] == txid
     assert frame["txdetails"]["confirmations"] == 0
+
+
+@pytest.mark.asyncio
+async def test_tx_monitor_txid_log_is_sensitive() -> None:
+    txid, raw = _make_tx(40)
+    backend = FakeBackend(
+        polls=[[], [WalletTxEntry(txid=txid, confirmations=0)]],
+        txs={txid: raw},
+    )
+    state = FakeState(backend)
+    records: list[dict[str, Any]] = []
+    sink_id = loguru_logger.add(lambda message: records.append(message.record), level="DEBUG")
+    try:
+        await _drive(state, backend)
+    finally:
+        loguru_logger.remove(sink_id)
+
+    txid_records = [record for record in records if txid[:16] in record["message"]]
+    assert txid_records
+    assert all(record["extra"].get("sensitive") is True for record in txid_records)
 
 
 @pytest.mark.asyncio

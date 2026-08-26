@@ -141,7 +141,9 @@ class BondRegistry(BaseModel):
         address_lower = bond.address.lower()
         for existing in self.bonds:
             if existing.address.lower() == address_lower:
-                logger.warning(f"Bond with address {bond.address} already exists, updating")
+                logger.bind(sensitive=True).warning(
+                    f"Bond with address {bond.address} already exists, updating"
+                )
                 self.bonds.remove(existing)
                 break
         self.bonds.append(bond)
@@ -578,7 +580,7 @@ def migrate_legacy_registry(
         except Exception as e:
             # Failing to verify a single bond must not lose data. Keep it
             # in the legacy file so a future open can try again.
-            logger.warning(
+            logger.bind(sensitive=True).warning(
                 f"Bond {bond.address} verification raised during migration: {e}; "
                 "leaving entry in legacy file"
             )

@@ -660,9 +660,8 @@ class _AppriseLogHandler(logging.Handler):
     errors, connection refusals, HTTP status codes, ...) through the standard
     ``logging`` module, which this project does not configure. Without this
     bridge those records are silently dropped and the operator only sees a
-    generic "Notification failed" line. Warnings and errors surface at the
-    default log level; the underlying exception text (e.g. the SSL error) is
-    logged by Apprise at DEBUG, so run with DEBUG logging to see it.
+    generic "Notification failed" line. Apprise records can contain private
+    endpoint details, so they follow the sensitive logging policy.
     """
 
     def emit(self, record: logging.LogRecord) -> None:
@@ -670,7 +669,9 @@ class _AppriseLogHandler(logging.Handler):
             level: str | int = logger.level(record.levelname).name
         except ValueError:
             level = record.levelno
-        logger.opt(depth=6, exception=record.exc_info).log(level, record.getMessage())
+        logger.bind(sensitive=True).opt(depth=6, exception=record.exc_info).log(
+            level, record.getMessage()
+        )
 
 
 def install_apprise_log_bridge() -> None:

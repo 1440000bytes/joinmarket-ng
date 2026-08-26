@@ -48,12 +48,16 @@ def validate_fingerprint(fingerprint: str) -> str:
     """
     fp = fingerprint.strip().lower()
     if len(fp) != 8:
-        logger.error(f"--wallet-fingerprint must be exactly 8 hex chars, got {len(fp)}: {fp!r}")
+        logger.error("--wallet-fingerprint must be exactly 8 hex chars")
+        logger.bind(sensitive=True).error(
+            f"--wallet-fingerprint must be exactly 8 hex chars, got {len(fp)}: {fp!r}"
+        )
         raise typer.Exit(1)
     try:
         bytes.fromhex(fp)
     except ValueError:
-        logger.error(f"--wallet-fingerprint must be valid hex, got {fp!r}")
+        logger.error("--wallet-fingerprint must be valid hex")
+        logger.bind(sensitive=True).error(f"--wallet-fingerprint must be valid hex, got {fp!r}")
         raise typer.Exit(1)
     return fp
 
@@ -120,7 +124,8 @@ def resolve_wallet_fingerprint(
                 prompt_bip39_passphrase=prompt_bip39_passphrase,
             )
         except (FileNotFoundError, ValueError) as e:
-            logger.error(str(e))
+            logger.error("Could not resolve mnemonic for wallet fingerprint")
+            logger.bind(sensitive=True).error(str(e))
             raise typer.Exit(1)
         if resolved is None:
             logger.error("No mnemonic available; cannot derive wallet fingerprint.")
@@ -153,7 +158,10 @@ def resolve_wallet_fingerprint(
                 required=False,
             )
         except (FileNotFoundError, ValueError) as e:
-            logger.debug(f"Configured mnemonic not usable for fingerprint resolution: {e}")
+            logger.debug("Configured mnemonic not usable for fingerprint resolution")
+            logger.bind(sensitive=True).debug(
+                f"Configured mnemonic not usable for fingerprint resolution: {e}"
+            )
             configured = None
         if configured is not None:
             from jmwallet.backends.descriptor_wallet import get_mnemonic_fingerprint
@@ -168,9 +176,10 @@ def resolve_wallet_fingerprint(
     if len(known) == 1:
         fp = known[0]
         logger.info(
-            f"Using the only wallet present in the data directory (fingerprint: {fp}). "
+            "Using the only wallet present in the data directory. "
             "Pass --wallet-fingerprint or --mnemonic-file to be explicit."
         )
+        logger.bind(sensitive=True).info(f"Resolved wallet fingerprint: {fp}")
         return fp
 
     # 4) Ambiguous or empty: error with actionable guidance.
@@ -181,7 +190,7 @@ def resolve_wallet_fingerprint(
         )
         logger.info("Known wallet fingerprints:")
         for fp in known:
-            logger.info(f"  - {fp}")
+            logger.bind(sensitive=True).info(f"  - {fp}")
         hints = [
             "--mnemonic-file <file> [--prompt-bip39-passphrase] to derive the active wallet",
             "--wallet-fingerprint <fp> if you already know it (see 'jm-wallet info')",

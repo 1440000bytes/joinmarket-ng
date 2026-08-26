@@ -22,9 +22,11 @@ from unittest.mock import patch
 
 import pytest
 import typer
+from loguru import logger as loguru_logger
 from typer.testing import CliRunner
 
 from jmwallet.cli import app
+from jmwallet.cli._wallet_selection import validate_fingerprint
 from jmwallet.history import append_history_entry, create_taker_history_entry
 from jmwallet.wallet.bond_registry import (
     BondRegistry,
@@ -63,6 +65,22 @@ def _fingerprint_for(passphrase: str) -> str:
     from jmwallet.backends.descriptor_wallet import get_mnemonic_fingerprint
 
     return get_mnemonic_fingerprint(_MNEMONIC, passphrase)
+
+
+def test_invalid_fingerprint_detail_log_is_sensitive() -> None:
+    records: list[tuple[str, dict[str, object]]] = []
+    sink_id = loguru_logger.add(
+        lambda message: records.append((message.record["message"], dict(message.record["extra"])))
+    )
+    try:
+        with pytest.raises(typer.Exit):
+            validate_fingerprint("not-hex!")
+    finally:
+        loguru_logger.remove(sink_id)
+
+    detail_records = [record for record in records if "not-hex!" in record[0]]
+    assert detail_records
+    assert all(extra.get("sensitive") is True for _, extra in detail_records)
 
 
 def _seed_history(data_dir: Path, fingerprint: str, txid_seed: str) -> None:
@@ -192,8 +210,8 @@ def test_history_auto_detects_single_wallet() -> None:
 
 def test_history_multiple_wallets_requires_disambiguation() -> None:
     """When several wallets have written, the command must abort with an
-    error listing the known fingerprints rather than silently picking one
-    or returning empty results."""
+    actionable guidance rather than silently picking one or returning empty
+    results. Known fingerprints remain in sensitive log metadata."""
     fp_a = _fingerprint_for("")
     fp_b = _fingerprint_for(_PASSPHRASE)
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -208,9 +226,10 @@ def test_history_multiple_wallets_requires_disambiguation() -> None:
 
         assert result.exit_code == 1
         combined = result.output
-        assert fp_a in combined
-        assert fp_b in combined
+        assert fp_a not in combined
+        assert fp_b not in combined
         assert "multiple wallets" in combined.lower()
+        assert "--wallet-fingerprint <fp>" in combined
 
 
 def test_history_wallet_fingerprint_option() -> None:
@@ -453,7 +472,7 @@ def test_list_bonds_offline_uses_configured_mnemonic_to_show_bond(
 
 
 def test_list_bonds_offline_multi_wallet_requires_disambiguation() -> None:
-    """Multiple per-wallet registries → error with the fingerprint list."""
+    """Multiple per-wallet registries produce guidance without exposing fingerprints."""
     fp_a = _fingerprint_for("")
     fp_b = _fingerprint_for(_PASSPHRASE)
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -467,8 +486,9 @@ def test_list_bonds_offline_multi_wallet_requires_disambiguation() -> None:
         )
 
         assert result.exit_code == 1
-        assert fp_a in result.output
-        assert fp_b in result.output
+        assert fp_a not in result.output
+        assert fp_b not in result.output
+        assert "--wallet-fingerprint <fp>" in result.output
 
 
 def test_list_bonds_offline_with_wallet_fingerprint() -> None:

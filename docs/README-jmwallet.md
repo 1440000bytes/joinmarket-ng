@@ -26,7 +26,7 @@ The mnemonic is shown once during generation. Store it offline; it is your walle
 jm-wallet info
 ```
 
-JoinMarket uses 5 mixdepths. Keep mixdepths isolated and avoid merging across mixdepths outside CoinJoin.
+JoinMarket uses a configurable number of mixdepths (default 5). Keep mixdepths isolated and avoid merging across mixdepths outside CoinJoin.
 
 ### 3) Send funds
 
@@ -362,8 +362,8 @@ The full CLI reference below is auto-generated from command `--help` output.
 │                                             [env var: JOINMARKET_DATA_DIR]   │
 │ --help                                      Show this message and exit.      │
 │ --log-level                -l      TEXT     Log level                        │
-│ --mixdepth                 -m      INTEGER  Filter to a specific mixdepth    │
-│                                             (0-4)                            │
+│ --mixdepth                 -m      INTEGER  Filter to a specific configured  │
+│                                             mixdepth                          │
 │ --mnemonic-file            -f      PATH     Path to mnemonic file            │
 │                                             [env var: MNEMONIC_FILE]         │
 │ --network                  -n      TEXT     Bitcoin network                  │

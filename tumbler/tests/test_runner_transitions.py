@@ -1282,6 +1282,36 @@ class TestRunnerTakerInterop:
         # And the exception class is public/usable.
         assert issubclass(TakerPhaseError, Exception)
 
+    async def test_confirmation_txid_logs_are_sensitive(self, tmp_path: Path) -> None:
+        """Confirmation progress must not expose transaction identifiers by default."""
+        from loguru import logger
+
+        plan = _plan(tmp_path)
+        phase = plan.phases[0]
+        assert isinstance(phase, TakerCoinjoinPhase)
+        phase.txid = "ab" * 32
+
+        async def get_confirmations(_txid: str) -> int:
+            return 1
+
+        ctx = _ctx(tmp_path, taker_factory=lambda _: FakeTaker(_))
+        ctx.min_confirmations_between_phases = 1
+        ctx.get_confirmations = get_confirmations
+        records: list[tuple[str, dict[str, object]]] = []
+        handler_id = logger.add(
+            lambda message: records.append(
+                (message.record["message"], dict(message.record["extra"]))
+            )
+        )
+        try:
+            await TumbleRunner(plan, ctx)._wait_for_phase_confirmations(phase)
+        finally:
+            logger.remove(handler_id)
+
+        txid_records = [record for record in records if phase.txid in record[0]]
+        assert txid_records
+        assert all(extra.get("sensitive") is True for _, extra in txid_records)
+
     async def test_runner_still_accepts_object_with_txid_attr(self, tmp_path: Path) -> None:
         """Defensive path: legacy fakes returning ``FakeTakerResult`` must still work."""
         plan = _plan(tmp_path)

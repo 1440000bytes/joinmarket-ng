@@ -16,8 +16,14 @@ from __future__ import annotations
 import sys
 import threading
 from collections import deque
+from typing import TYPE_CHECKING
 
 from loguru import logger
+
+from jmcore.log_filter import sensitive_log_filter
+
+if TYPE_CHECKING:
+    from loguru import BasicHandlerConfig
 
 __all__ = ["LogRingBuffer", "get_log_buffer", "install_log_sink"]
 
@@ -73,26 +79,31 @@ def get_log_buffer() -> LogRingBuffer:
     return _buffer
 
 
-def install_log_sink(level: str = "DEBUG") -> None:
+def install_log_sink(level: str = "DEBUG", sensitive: bool = False) -> None:
     """Attach the ring buffer as a loguru sink and reconfigure stderr logging.
 
     This replaces the process-wide handler set so stale console sinks cannot
-    bypass the configured level. Safe to call multiple times.
+    bypass the configured level or sensitive-record policy. Safe to call
+    multiple times.
     """
     level_str = level.upper()
     buffer = get_log_buffer()
-    logger.configure(
-        handlers=[
-            {"sink": sys.stderr, "level": level_str},
-            {
-                "sink": buffer.append,
-                "format": (
-                    "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | "
-                    "{name}:{function}:{line} - {message}"
-                ),
-                "level": level_str,
-                "colorize": False,
-                "enqueue": False,
-            },
-        ]
-    )
+    handlers: list[BasicHandlerConfig] = [
+        {
+            "sink": sys.stderr,
+            "level": level_str,
+            "filter": sensitive_log_filter(sensitive),
+        },
+        {
+            "sink": buffer.append,
+            "format": (
+                "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | "
+                "{name}:{function}:{line} - {message}"
+            ),
+            "level": level_str,
+            "filter": sensitive_log_filter(sensitive),
+            "colorize": False,
+            "enqueue": False,
+        },
+    ]
+    logger.configure(handlers=handlers)

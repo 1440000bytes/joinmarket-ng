@@ -68,7 +68,8 @@ def _finalize_send_history_entry(
         if not updated:
             logger.warning("Could not find pre-broadcast send history entry to finalize")
     except Exception as exc:
-        logger.warning(f"Failed to finalize send history entry: {exc}")
+        logger.warning("Failed to finalize send history entry")
+        logger.bind(sensitive=True).warning(f"Failed to finalize send history entry: {exc}")
 
 
 def _mempool_policy_failure_reason(result: MempoolAcceptResult) -> str:
@@ -128,7 +129,8 @@ async def _select_input_utxos(
         try:
             selected_utxos = select_utxos_interactive(utxos, amount, allowed_mixdepth=mixdepth)
         except RuntimeError as e:
-            logger.error(f"Cannot use interactive UTXO selection: {e}")
+            logger.error("Cannot use interactive UTXO selection")
+            logger.bind(sensitive=True).error(f"Cannot use interactive UTXO selection: {e}")
             raise typer.Exit(1)
         if not selected_utxos:
             logger.info("UTXO selection cancelled")
@@ -149,7 +151,8 @@ async def _select_input_utxos(
                 mixdepth=mixdepth,
             )
         except ValueError as exc:
-            logger.error(str(exc))
+            logger.error("Automatic input selection failed")
+            logger.bind(sensitive=True).error(str(exc))
             raise typer.Exit(1) from exc
         logger.info(f"Selected {len(selection.utxos)} UTXO(s) from mixdepth {selected_mixdepth}")
         return selection.utxos, selected_mixdepth
@@ -159,7 +162,7 @@ async def _select_input_utxos(
         raise typer.Exit(1)
 
     balance = await wallet.get_balance(mixdepth)
-    logger.info(f"Mixdepth {mixdepth} balance: {balance:,} sats")
+    logger.bind(sensitive=True).info(f"Mixdepth {mixdepth} balance: {balance:,} sats")
 
     utxos = await wallet.get_utxos(mixdepth)
     if not utxos:
@@ -362,6 +365,7 @@ def send(
             select_utxos,
             resolved_bip39_passphrase,
             creation_height=resolved_creation_height,
+            mixdepth_count=settings.wallet.mixdepth_count,
             max_fee_rate_sat_vb=max_fee_rate,
             max_sats_freeze_reuse=settings.wallet.max_sats_freeze_reuse,
             reconstruct_history=settings.wallet.reconstruct_history,
@@ -385,6 +389,7 @@ async def _send_transaction(
     bip39_passphrase: str = "",
     *,
     creation_height: int | None = None,
+    mixdepth_count: int = 5,
     max_fee_rate_sat_vb: float = MAX_MANUAL_FEE_RATE_SAT_VB,
     max_sats_freeze_reuse: int = -1,
     reconstruct_history: bool = True,
@@ -496,7 +501,7 @@ async def _send_transaction(
         mnemonic=mnemonic,
         backend=backend,
         network=backend_settings.network,
-        mixdepth_count=5,
+        mixdepth_count=mixdepth_count,
         passphrase=bip39_passphrase,
         data_dir=backend_settings.data_dir,
         max_sats_freeze_reuse=max_sats_freeze_reuse,
@@ -526,7 +531,8 @@ async def _send_transaction(
                     allow_conflicts=allow_conflicts,
                 )
             except ValueError as e:
-                logger.error(str(e))
+                logger.error("Explicit input selection failed")
+                logger.bind(sensitive=True).error(str(e))
                 raise typer.Exit(1)
             mixdepth = resolved_mixdepth
             logger.info(f"Using {len(utxos)} explicitly selected UTXO(s) from mixdepth {mixdepth}")
@@ -554,7 +560,10 @@ async def _send_transaction(
             send_amount = amount
 
         if send_amount > total_input:
-            logger.error(f"Insufficient funds: need {send_amount:,}, have {total_input:,}")
+            logger.error("Insufficient funds")
+            logger.bind(sensitive=True).error(
+                f"Insufficient funds: need {send_amount:,}, have {total_input:,}"
+            )
             raise typer.Exit(1)
 
         # Size each selected input by script type. Expired fidelity bonds are
@@ -583,8 +592,9 @@ async def _send_transaction(
                     has_change=False,
                 )
                 if total_input < send_amount + minimum_no_change_fee:
-                    logger.error(
-                        f"Insufficient funds after fee: "
+                    logger.error("Insufficient funds after fee")
+                    logger.bind(sensitive=True).error(
+                        "Insufficient funds after fee: "
                         f"need {send_amount + minimum_no_change_fee:,}"
                     )
                     raise typer.Exit(1)
@@ -597,10 +607,10 @@ async def _send_transaction(
         # Use new format_amount for display
         from jmcore.bitcoin import format_amount
 
-        logger.info(f"Sending {format_amount(send_amount)} to {destination}")
+        logger.bind(sensitive=True).info(f"Sending {format_amount(send_amount)} to {destination}")
         logger.info(f"Fee: {format_amount(estimated_fee)} ({resolved_fee_rate:.2f} sat/vB)")
         if change_amount > 0:
-            logger.info(f"Change: {format_amount(change_amount)}")
+            logger.bind(sensitive=True).info(f"Change: {format_amount(change_amount)}")
         if allow_conflicts:
             logger.warning(
                 "Conflict replacement is enabled. Recipient payments from conflicting mempool "
@@ -638,7 +648,8 @@ async def _send_transaction(
                 skip_confirmation=skip_confirmation,
             )
         except RuntimeError as e:
-            logger.error(str(e))
+            logger.error("Transaction confirmation failed")
+            logger.bind(sensitive=True).error(str(e))
             raise typer.Exit(1)
         if not confirmed:
             logger.info("Transaction cancelled by user")
@@ -664,7 +675,10 @@ async def _send_transaction(
             with ChainParams(chain):
                 dest_script = bytes(CCoinAddress(destination).to_scriptPubKey())
         except CCoinAddressError:
-            logger.error(f"Invalid address (bad checksum, format, or wrong network): {destination}")
+            logger.error("Invalid address (bad checksum, format, or wrong network)")
+            logger.bind(sensitive=True).error(
+                f"Invalid address (bad checksum, format, or wrong network): {destination}"
+            )
             raise typer.Exit(1)
 
         # Build raw transaction
@@ -682,10 +696,10 @@ async def _send_transaction(
                 if utxo.locktime > max_locktime:
                     max_locktime = utxo.locktime
                 if utxo.locktime >= locktime_cutoff:
-                    logger.error(
+                    logger.error("Cannot spend timelocked UTXO because its locktime has not passed")
+                    logger.bind(sensitive=True).error(
                         f"Cannot spend timelocked UTXO {utxo.txid}:{utxo.vout} - "
-                        f"locktime {utxo.locktime} has not passed chain time "
-                        f"{locktime_cutoff}"
+                        f"locktime {utxo.locktime} has not passed chain time {locktime_cutoff}"
                     )
                     raise typer.Exit(1)
 
@@ -749,7 +763,8 @@ async def _send_transaction(
             try:
                 signed = wallet.sign_input(tx, i, utxo)
             except TransactionSigningError as exc:
-                logger.error(str(exc))
+                logger.error("Transaction signing failed")
+                logger.bind(sensitive=True).error(str(exc))
                 raise typer.Exit(1) from exc
             witnesses.append(signed.witness)
 
@@ -821,7 +836,10 @@ async def _send_transaction(
                         data_dir=backend_settings.data_dir,
                         history_persisted=history_persisted,
                     )
-                    logger.error("Bitcoin Core mempool policy rejected: {}", failure_reason)
+                    logger.error("Bitcoin Core mempool policy rejected the transaction")
+                    logger.bind(sensitive=True).error(
+                        "Bitcoin Core mempool policy rejected: {}", failure_reason
+                    )
                     raise typer.Exit(1)
                 logger.info("Bitcoin Core mempool policy preflight accepted the replacement")
             except typer.Exit:
@@ -836,7 +854,8 @@ async def _send_transaction(
                     data_dir=backend_settings.data_dir,
                     history_persisted=history_persisted,
                 )
-                logger.error(failure_reason)
+                logger.error("Bitcoin Core mempool policy preflight failed")
+                logger.bind(sensitive=True).error(failure_reason)
                 raise typer.Exit(1) from exc
 
         if broadcast:

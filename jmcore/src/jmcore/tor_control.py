@@ -266,13 +266,17 @@ class TorControlClient:
             return
 
         try:
-            logger.debug(f"Connecting to Tor control port {self.control_host}:{self.control_port}")
+            logger.bind(sensitive=True).debug(
+                f"Connecting to Tor control port {self.control_host}:{self.control_port}"
+            )
             self._reader, self._writer = await asyncio.wait_for(
                 asyncio.open_connection(self.control_host, self.control_port),
                 timeout=10.0,
             )
             self._connected = True
-            logger.info(f"Connected to Tor control port at {self.control_host}:{self.control_port}")
+            logger.bind(sensitive=True).info(
+                f"Connected to Tor control port at {self.control_host}:{self.control_port}"
+            )
         except TimeoutError as e:
             raise TorControlError(
                 f"Timeout connecting to Tor control port at {self.control_host}:{self.control_port}"
@@ -309,7 +313,7 @@ class TorControlClient:
             raise TorControlError("Not connected to Tor control port")
 
         async with self._write_lock:
-            logger.trace(f"Tor control send: {command}")
+            logger.trace("Tor control command sent")
             self._writer.write(f"{command}\r\n".encode())
             await self._writer.drain()
 
@@ -337,7 +341,7 @@ class TorControlClient:
                     raise TorControlError("Connection closed by Tor")
 
                 line_str = line.decode("utf-8").rstrip("\r\n")
-                logger.trace(f"Tor control recv: {line_str}")
+                logger.trace("Tor control response received")
 
                 if len(line_str) < 4:
                     raise TorControlError(f"Invalid response format: {line_str}")
@@ -628,7 +632,7 @@ class TorControlClient:
         if not detach:
             self._hidden_services.append(hs)
 
-        logger.info(f"Created ephemeral hidden service: {hs.onion_address}")
+        logger.bind(sensitive=True).info(f"Created ephemeral hidden service: {hs.onion_address}")
         return hs
 
     async def delete_ephemeral_hidden_service(self, service_id: str) -> None:
@@ -648,7 +652,7 @@ class TorControlClient:
         try:
             responses = await self._command(f"DEL_ONION {service_id}")
             self._check_success(responses)
-            logger.info(f"Deleted hidden service: {service_id}")
+            logger.bind(sensitive=True).info(f"Deleted hidden service: {service_id}")
         except TorControlError as e:
             raise TorHiddenServiceError(f"Failed to delete hidden service: {e}") from e
 
@@ -798,7 +802,9 @@ class TorControlClient:
 
         if settings:
             await self.set_config(settings)
-            logger.info(f"DoS defenses configured for hidden service {service_id[:8]}...")
+            logger.bind(sensitive=True).info(
+                f"DoS defenses configured for hidden service {service_id[:8]}..."
+            )
         else:
             logger.debug("No DoS defense settings to apply")
 

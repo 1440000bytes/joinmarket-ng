@@ -53,21 +53,21 @@ class TestGetLogs:
         assert "probe-marker-12345" in response.text
 
 
-def test_create_app_uses_configured_log_level(
+def test_create_app_uses_configured_logging_settings(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    installed_levels: list[str] = []
-    settings = SimpleNamespace(logging=SimpleNamespace(level="ERROR"))
+    installed_settings: list[tuple[str, bool]] = []
+    settings = SimpleNamespace(logging=SimpleNamespace(level="ERROR", sensitive=True))
     monkeypatch.setattr(app_module, "get_settings", lambda: settings)
     monkeypatch.setattr(
         app_module,
         "install_log_sink",
-        lambda *, level: installed_levels.append(level),
+        lambda *, level, sensitive: installed_settings.append((level, sensitive)),
     )
 
     app_module.create_app(data_dir=tmp_path)
 
-    assert installed_levels == ["ERROR"]
+    assert installed_settings == [("ERROR", True)]
 
 
 def test_install_log_sink_replaces_preconfigured_console_sink() -> None:
@@ -96,6 +96,32 @@ print(get_log_buffer().text(), end="")
     assert result.stderr.count("visible-warning-marker") == 1
     assert "filtered-debug-marker" not in result.stdout
     assert result.stdout.count("visible-warning-marker") == 1
+
+
+@pytest.mark.parametrize("sensitive", [False, True])
+def test_install_log_sink_filters_sensitive_records_for_all_sinks(sensitive: bool) -> None:
+    script = f"""
+from loguru import logger
+
+from jmwalletd.log_buffer import get_log_buffer, install_log_sink
+
+install_log_sink("INFO", sensitive={sensitive!r})
+get_log_buffer().clear()
+logger.info("ordinary-record")
+logger.bind(sensitive=True).info("sensitive-record")
+print(get_log_buffer().text(), end="")
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    for output in (result.stderr, result.stdout):
+        assert "ordinary-record" in output
+        assert ("sensitive-record" in output) is sensitive
 
 
 class TestLogRingBuffer:

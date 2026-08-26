@@ -55,7 +55,9 @@ class MessageRouter:
             or peer.status != PeerStatus.HANDSHAKED
             or not self.peer_registry.is_current_owner(from_key, connection_id)
         ):
-            logger.warning(f"Dropping message from stale or unhandshaked peer: {from_key}")
+            logger.bind(sensitive=True).warning(
+                f"Dropping message from stale or unhandshaked peer: {from_key}"
+            )
             return
         if envelope.message_type == MessageType.PUBMSG:
             await self._handle_public_message(envelope, from_key, connection_id)
@@ -88,15 +90,17 @@ class MessageRouter:
 
         from_nick, to_nick, rest = parsed
         if to_nick != "PUBLIC":
-            logger.warning(f"Public message not addressed to PUBLIC: {to_nick}")
+            logger.bind(sensitive=True).warning(
+                f"Public message not addressed to PUBLIC: {to_nick}"
+            )
             return
 
         from_peer = self.peer_registry.get_by_key(from_key)
         if not from_peer:
-            logger.warning(f"Unknown peer sending public message: {from_key}")
+            logger.bind(sensitive=True).warning(f"Unknown peer sending public message: {from_key}")
             return
         if from_nick != from_peer.nick:
-            logger.warning(
+            logger.bind(sensitive=True).warning(
                 f"Dropping public message claiming {from_nick} from connection {from_peer.nick}"
             )
             return
@@ -126,7 +130,7 @@ class MessageRouter:
                     if offer_owner not in self._peer_offers:
                         self._peer_offers[offer_owner] = set()
                     self._peer_offers[offer_owner].add(order_id)
-                    logger.trace(
+                    logger.bind(sensitive=True).trace(
                         f"Tracked offer {order_id} from {from_nick} "
                         f"(total offers: {len(self._peer_offers[offer_owner])})"
                     )
@@ -144,7 +148,9 @@ class MessageRouter:
                     offers.discard(message_parts[1])
                     if not offers:
                         self._peer_offers.pop(offer_owner, None)
-                logger.trace(f"Removed canceled offer {message_parts[1]} from {from_nick}")
+                logger.bind(sensitive=True).trace(
+                    f"Removed canceled offer {message_parts[1]} from {from_nick}"
+                )
 
         # Pre-serialize envelope once instead of per-peer
         envelope_bytes = envelope.to_bytes()
@@ -160,7 +166,9 @@ class MessageRouter:
         # Execute sends in batches to limit memory usage
         sent_count = await self._batched_broadcast_iter(target_generator(), envelope_bytes)
 
-        logger.trace(f"Broadcasted public message from {from_nick} to {sent_count} peers")
+        logger.bind(sensitive=True).trace(
+            f"Broadcasted public message from {from_nick} to {sent_count} peers"
+        )
 
     async def _safe_send(
         self,
@@ -192,7 +200,8 @@ class MessageRouter:
         try:
             await self._call_send(peer_key, data, expected_connection_id)
         except Exception as e:
-            logger.warning(f"Failed to send to {nick or peer_key}: {e}")
+            logger.warning("Failed to send to peer")
+            logger.bind(sensitive=True).warning(f"Failed to send to {nick or peer_key}: {e}")
             # Mark peer as failed to prevent repeated attempts
             failed.add(failed_owner)
             # Notify server to clean up this peer
@@ -200,7 +209,9 @@ class MessageRouter:
                 try:
                     await self._call_failed(peer_key, expected_connection_id)
                 except Exception as cleanup_err:
-                    logger.trace(f"Error in on_send_failed callback: {cleanup_err}")
+                    logger.bind(sensitive=True).trace(
+                        f"Error in on_send_failed callback: {cleanup_err}"
+                    )
 
     async def _batched_broadcast(self, targets: list[BroadcastTarget], data: bytes) -> int:
         """
@@ -272,7 +283,10 @@ class MessageRouter:
             return
 
         from_nick, to_nick, rest = parsed
-        logger.info(f"PRIVMSG routing: {from_nick} -> {to_nick} (rest: {rest[:50]}...)")
+        logger.info("Routing private message")
+        logger.bind(sensitive=True).info(
+            f"PRIVMSG routing: {from_nick} -> {to_nick} (rest: {rest[:50]}...)"
+        )
 
         # Diagnostic: warn if the message appears to lack a signature.
         # The JoinMarket protocol appends "<pubkey_hex> <sig_base64>" to all
@@ -281,7 +295,7 @@ class MessageRouter:
         rest_parts = rest.split()
         if len(rest_parts) < 3:
             # Need at least: command, pubkey, sig
-            logger.warning(
+            logger.bind(sensitive=True).warning(
                 f"PRIVMSG from {from_nick} -> {to_nick} appears to lack a "
                 f"signature (only {len(rest_parts)} space-separated tokens). "
                 f"Relaying anyway but recipient will likely reject it. "
@@ -290,8 +304,11 @@ class MessageRouter:
 
         to_peer = self.peer_registry.get_by_nick(to_nick)
         if not to_peer or to_peer.status != PeerStatus.HANDSHAKED:
-            logger.warning(f"Target peer not found: {to_nick}")
-            logger.info(f"Registered peer nicks: {list(self.peer_registry._peers)}")
+            logger.warning("Private message target peer not found")
+            logger.bind(sensitive=True).warning(f"Target peer not found: {to_nick}")
+            logger.bind(sensitive=True).info(
+                f"Registered peer nicks: {list(self.peer_registry._peers)}"
+            )
             return
 
         from_peer = self.peer_registry.get_by_key(from_key)
@@ -299,7 +316,7 @@ class MessageRouter:
             logger.warning("Network mismatch or unknown sender")
             return
         if from_nick != from_peer.nick:
-            logger.warning(
+            logger.bind(sensitive=True).warning(
                 f"Dropping private message claiming {from_nick} from connection {from_peer.nick}"
             )
             return
@@ -309,13 +326,19 @@ class MessageRouter:
         if to_connection_id is None:
             return
         try:
-            logger.info(f"Sending to peer_key: {to_peer_key}")
+            logger.bind(sensitive=True).info(f"Sending to peer_key: {to_peer_key}")
             await self._call_send(to_peer_key, envelope.to_bytes(), to_connection_id)
-            logger.info(f"Successfully routed private message: {from_nick} -> {to_nick}")
+            logger.info("Private message routed")
+            logger.bind(sensitive=True).info(
+                f"Successfully routed private message: {from_nick} -> {to_nick}"
+            )
 
             await self._send_peer_location(to_peer_key, from_peer, to_connection_id)
         except Exception as e:
-            logger.warning(f"Failed to route private message to {to_nick}: {e}")
+            logger.warning("Failed to route private message")
+            logger.bind(sensitive=True).warning(
+                f"Failed to route private message to {to_nick}: {e}"
+            )
             # Notify server to clean up this peer's mapping
             if self.on_send_failed:
                 with contextlib.suppress(Exception):
@@ -351,16 +374,16 @@ class MessageRouter:
         pong_envelope = MessageEnvelope(message_type=MessageType.PONG, payload="")
         try:
             await self._call_send(from_key, pong_envelope.to_bytes(), connection_id)
-            logger.trace(f"Sent PONG to {from_key}")
+            logger.bind(sensitive=True).trace(f"Sent PONG to {from_key}")
         except Exception as e:
-            logger.trace(f"Failed to send PONG: {e}")
+            logger.bind(sensitive=True).trace(f"Failed to send PONG: {e}")
 
     def _handle_pong(self, from_key: str, connection_id: str | None = None) -> None:
         """Handle a PONG response from a peer.
 
         Delegates to the heartbeat module via callback to clear pong_pending.
         """
-        logger.trace(f"Received PONG from {from_key}")
+        logger.bind(sensitive=True).trace(f"Received PONG from {from_key}")
         connection_id = connection_id or self.peer_registry.get_connection_id(from_key)
         if self.on_pong and connection_id is not None:
             self._call_pong(from_key, connection_id)
@@ -387,7 +410,7 @@ class MessageRouter:
                              This is enabled when the requesting peer supports peerlist_features.
             chunk_size: Maximum number of peer entries per PEERLIST message (default: 20)
         """
-        logger.debug(
+        logger.bind(sensitive=True).debug(
             f"send_peerlist called for {to_key}, network={network}, "
             f"include_features={include_features}"
         )
@@ -412,9 +435,9 @@ class MessageRouter:
             envelope = MessageEnvelope(message_type=MessageType.PEERLIST, payload="")
             try:
                 await self._call_send(to_key, envelope.to_bytes(), expected_connection_id)
-                logger.debug(f"Sent empty peerlist to {to_key}")
+                logger.bind(sensitive=True).debug(f"Sent empty peerlist to {to_key}")
             except Exception as e:
-                logger.warning(f"Failed to send peerlist to {to_key}: {e}")
+                logger.bind(sensitive=True).warning(f"Failed to send peerlist to {to_key}: {e}")
             return
 
         # Send entries in chunks
@@ -431,10 +454,12 @@ class MessageRouter:
                 if i + chunk_size < len(entries):
                     await asyncio.sleep(0.05)
             except Exception as e:
-                logger.warning(f"Failed to send peerlist chunk {chunks_sent + 1} to {to_key}: {e}")
+                logger.bind(sensitive=True).warning(
+                    f"Failed to send peerlist chunk {chunks_sent + 1} to {to_key}: {e}"
+                )
                 return
 
-        logger.debug(
+        logger.bind(sensitive=True).debug(
             f"Sent peerlist to {to_key} ({len(entries)} peers in {chunks_sent} chunks, "
             f"include_features={include_features})"
         )
@@ -453,7 +478,7 @@ class MessageRouter:
         features = FeatureSet(features={k for k, v in peer_info.features.items() if v is True})
         # Debug: Log when features are being sent
         if peer_info.features and not features.features:
-            logger.warning(
+            logger.bind(sensitive=True).warning(
                 f"Peer {peer_info.nick} has features dict {peer_info.features} but "
                 f"FeatureSet is empty after 'v is True' filter"
             )
@@ -463,7 +488,7 @@ class MessageRouter:
         try:
             await self._call_send(to_key, envelope.to_bytes(), expected_connection_id)
         except Exception as e:
-            logger.trace(f"Failed to send peer location: {e}")
+            logger.bind(sensitive=True).trace(f"Failed to send peer location: {e}")
 
     async def broadcast_peer_disconnect(
         self,
@@ -495,7 +520,9 @@ class MessageRouter:
         # Execute sends in batches to limit memory usage
         sent_count = await self._batched_broadcast_iter(target_generator(), envelope_bytes)
 
-        logger.info(f"Broadcasted disconnect for {peer.nick} to {sent_count} peers")
+        logger.bind(sensitive=True).info(
+            f"Broadcasted disconnect for {peer.nick} to {sent_count} peers"
+        )
 
     async def broadcast_displaced_peer_disconnect(
         self,

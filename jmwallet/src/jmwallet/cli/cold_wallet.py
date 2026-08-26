@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
-from jmcore.cli_common import resolve_backend_settings, setup_cli, setup_logging
+from jmcore.cli_common import resolve_backend_settings, setup_cli
 from jmcore.secure_files import atomic_write_private
 from loguru import logger
 
@@ -40,12 +40,16 @@ def _resolve_wallet_fingerprint(wallet_fingerprint: str | None) -> str:
         raise typer.Exit(1)
     fp = wallet_fingerprint.strip().lower()
     if len(fp) != 8:
-        logger.error(f"--wallet-fingerprint must be exactly 8 hex chars, got {len(fp)}: {fp!r}")
+        logger.error("--wallet-fingerprint must be exactly 8 hex chars")
+        logger.bind(sensitive=True).error(
+            f"--wallet-fingerprint must be exactly 8 hex chars, got {len(fp)}: {fp!r}"
+        )
         raise typer.Exit(1)
     try:
         bytes.fromhex(fp)
     except ValueError:
-        logger.error(f"--wallet-fingerprint must be valid hex, got {fp!r}")
+        logger.error("--wallet-fingerprint must be valid hex")
+        logger.bind(sensitive=True).error(f"--wallet-fingerprint must be valid hex, got {fp!r}")
         raise typer.Exit(1)
     return fp
 
@@ -94,7 +98,7 @@ def create_bond_address(
     Your hardware wallet never needs to be connected to this online tool.
     See docs/fidelity-bond-operations.md for the maintained workflow.
     """
-    setup_logging(log_level)
+    setup_cli(log_level, data_dir=data_dir)
 
     # Strip wpkh() wrapper if present (Sparrow copies pubkey as "wpkh(03abcd...)")
     pubkey = pubkey.strip()
@@ -293,7 +297,7 @@ def generate_hot_keypair(
     - If compromised, an attacker can impersonate your bond through cert expiry
     - But they CANNOT spend your bond funds (those remain in cold storage)
     """
-    setup_logging(log_level)
+    setup_cli(log_level, data_dir=data_dir)
 
     from coincurve import PrivateKey
     from jmcore.paths import get_default_data_dir
@@ -319,9 +323,13 @@ def generate_hot_keypair(
             bond.cert_privkey = privkey.secret.hex()
             save_registry(registry, resolved_data_dir, resolved_fingerprint)
             saved_to_registry = True
-            logger.info(f"Saved hot keypair to bond registry for {bond_address}")
+            logger.info("Saved hot keypair to bond registry")
+            logger.bind(sensitive=True).info(
+                f"Saved hot keypair to bond registry for {bond_address}"
+            )
         else:
-            logger.warning(f"Bond not found for address: {bond_address}")
+            logger.warning("Bond not found in registry")
+            logger.bind(sensitive=True).warning(f"Bond not found for address: {bond_address}")
             logger.info("Private key will be written to a local key file")
 
     if not saved_to_registry:
@@ -339,7 +347,8 @@ def generate_hot_keypair(
             + "\n"
         )
         atomic_write_private(saved_key_file, key_content.encode("utf-8"))
-        logger.info(f"Wrote hot keypair to {saved_key_file} with mode 0600")
+        logger.info("Wrote hot keypair with mode 0600")
+        logger.bind(sensitive=True).info(f"Wrote hot keypair to {saved_key_file} with mode 0600")
 
     print("\n" + "=" * 80)
     print("HOT WALLET KEYPAIR FOR FIDELITY BOND CERTIFICATE")
@@ -456,7 +465,8 @@ def prepare_certificate_message(
     bond = registry.get_bond_by_address(bond_address)
 
     if not bond:
-        logger.error(f"Bond not found for address: {bond_address}")
+        logger.error("Bond not found in registry")
+        logger.bind(sensitive=True).error(f"Bond not found for address: {bond_address}")
         logger.info("Make sure you have created the bond with 'create-bond-address' first")
         raise typer.Exit(1)
 
@@ -862,7 +872,8 @@ def import_certificate(
     # Find bond by address
     bond = registry.get_bond_by_address(address)
     if not bond:
-        logger.error(f"Bond not found for address: {address}")
+        logger.error("Bond not found in registry")
+        logger.bind(sensitive=True).error(f"Bond not found for address: {address}")
         logger.info("Make sure you have created the bond with 'create-bond-address' first")
         raise typer.Exit(1)
 
@@ -1170,7 +1181,7 @@ def spend_bond(
 
     NOTE: Sparrow Wallet also cannot sign CLTV timelock scripts.
     """
-    setup_logging(log_level)
+    setup_cli(log_level, data_dir=data_dir)
 
     from jmcore.bitcoin import (
         BIP32Derivation,
@@ -1198,7 +1209,8 @@ def spend_bond(
     # Find bond in registry
     bond = registry.get_bond_by_address(bond_address)
     if not bond:
-        logger.error(f"Bond not found for address: {bond_address}")
+        logger.error("Bond not found in registry")
+        logger.bind(sensitive=True).error(f"Bond not found for address: {bond_address}")
         logger.info("Make sure you have created the bond with 'create-bond-address' first")
         logger.info("Use 'jm-wallet list-bonds' to see all bonds")
         raise typer.Exit(1)
@@ -1264,7 +1276,8 @@ def spend_bond(
     try:
         dest_scriptpubkey = address_to_scriptpubkey(destination)
     except ValueError as e:
-        logger.error(f"Invalid destination address: {e}")
+        logger.error("Invalid destination address")
+        logger.bind(sensitive=True).error(f"Invalid destination address: {e}")
         raise typer.Exit(1)
 
     # Estimate transaction size for fee calculation
@@ -1272,7 +1285,10 @@ def spend_bond(
     try:
         dest_type = get_address_type(destination)
     except ValueError:
-        logger.warning(f"Could not determine address type for {destination}, assuming p2wpkh")
+        logger.warning("Could not determine destination address type, assuming p2wpkh")
+        logger.bind(sensitive=True).warning(
+            f"Could not determine address type for {destination}, assuming p2wpkh"
+        )
         dest_type = "p2wpkh"
 
     estimated_vsize = estimate_vsize(["p2wsh"], [dest_type])
@@ -1280,14 +1296,16 @@ def spend_bond(
 
     send_amount = input_value - estimated_fee
     if send_amount <= 0:
-        logger.error(
+        logger.error("Bond value is too small to cover the fee")
+        logger.bind(sensitive=True).error(
             f"Bond value ({format_amount(input_value)}) is too small to cover "
             f"the fee ({format_amount(estimated_fee)} at {fee_rate:.1f} sat/vB)"
         )
         raise typer.Exit(1)
 
     if send_amount < 546:
-        logger.error(
+        logger.error("Output amount is below the dust threshold")
+        logger.bind(sensitive=True).error(
             f"Output amount ({format_amount(send_amount)}) is below dust threshold (546 sats)"
         )
         raise typer.Exit(1)
@@ -1312,7 +1330,10 @@ def spend_bond(
         try:
             fp_bytes = bytes.fromhex(fingerprint_clean)
         except ValueError:
-            logger.error(f"Invalid master fingerprint hex: {master_fingerprint!r}")
+            logger.error("Invalid master fingerprint hex")
+            logger.bind(sensitive=True).error(
+                f"Invalid master fingerprint hex: {master_fingerprint!r}"
+            )
             raise typer.Exit(1)
         if len(fp_bytes) != 4:
             logger.error(
@@ -1325,7 +1346,8 @@ def spend_bond(
         try:
             path_indices = parse_derivation_path(derivation_path)
         except ValueError as e:
-            logger.error(f"Invalid derivation path: {e}")
+            logger.error("Invalid derivation path")
+            logger.bind(sensitive=True).error(f"Invalid derivation path: {e}")
             raise typer.Exit(1)
 
         pubkey_bytes = bytes.fromhex(bond.pubkey)
@@ -1336,7 +1358,8 @@ def spend_bond(
                 path=path_indices,
             )
         ]
-        logger.info(
+        logger.info("BIP32 derivation included")
+        logger.bind(sensitive=True).info(
             f"BIP32 derivation included: fingerprint={fingerprint_clean}, path={derivation_path}"
         )
 
@@ -1375,7 +1398,8 @@ def spend_bond(
     if output_file:
         output_file.parent.mkdir(parents=True, exist_ok=True)
         output_file.write_text(psbt_base64)
-        logger.info(f"PSBT saved to: {output_file}")
+        logger.info("PSBT saved")
+        logger.bind(sensitive=True).info(f"PSBT saved to: {output_file}")
 
     # Display results
     locktime_dt = datetime.fromtimestamp(bond.locktime)

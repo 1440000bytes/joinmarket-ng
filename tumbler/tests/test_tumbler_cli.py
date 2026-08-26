@@ -13,10 +13,18 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+import typer
+from loguru import logger
 from typer.testing import CliRunner
 
 from tumbler.builder import PlanBuilder, TumbleParameters
-from tumbler.cli import _collect_balances, _resolve_fee_rate, app, resolve_runner_pacing
+from tumbler.cli import (
+    _collect_balances,
+    _load_or_error,
+    _resolve_fee_rate,
+    app,
+    resolve_runner_pacing,
+)
 from tumbler.persistence import save_plan
 from tumbler.plan import Plan
 
@@ -132,6 +140,27 @@ class TestStatusDefaultsWalletFromMnemonic:
         ):
             result = runner.invoke(app, ["status"])
         assert result.exit_code == 1
+
+
+def test_missing_plan_log_keeps_wallet_and_path_sensitive(tmp_path: Path) -> None:
+    """Plan identifiers and locations must not appear in ordinary log records."""
+    wallet_name = "private-wallet"
+    records: list[tuple[str, dict[str, object]]] = []
+    handler_id = logger.add(
+        lambda message: records.append((message.record["message"], dict(message.record["extra"])))
+    )
+    try:
+        with pytest.raises(typer.Exit):
+            _load_or_error(wallet_name, tmp_path)
+    finally:
+        logger.remove(handler_id)
+
+    private_records = [
+        record for record in records if wallet_name in record[0] or str(tmp_path) in record[0]
+    ]
+    assert private_records
+    assert all(extra.get("sensitive") is True for _, extra in private_records)
+    assert ("No tumbler plan found. Check --wallet-name and --data-dir.", {}) in records
 
 
 class TestDeleteDefaultsWalletFromMnemonic:

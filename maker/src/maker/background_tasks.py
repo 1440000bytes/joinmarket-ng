@@ -104,7 +104,8 @@ class BackgroundTasksMixin:
                 self._abort_for_fatal_error(e)
                 break
             except Exception as e:
-                logger.error(f"Error in periodic rescan: {e}")
+                logger.error("Error in periodic rescan")
+                logger.bind(sensitive=True).error(f"Error in periodic rescan: {e}")
 
         logger.debug("Periodic rescan task stopped")
 
@@ -400,7 +401,8 @@ class BackgroundTasksMixin:
                 logger.debug("Pending transaction monitor cancelled")
                 break
             except Exception as e:
-                logger.error(f"Error in pending transaction monitor: {e}")
+                logger.error("Error in pending transaction monitor")
+                logger.bind(sensitive=True).error(f"Error in pending transaction monitor: {e}")
 
         logger.debug("Pending transaction monitor stopped")
 
@@ -441,7 +443,7 @@ class BackgroundTasksMixin:
                 # If entry has no txid, try to discover it from the blockchain
                 if not entry.txid:
                     if entry.destination_address:
-                        logger.debug(
+                        logger.bind(sensitive=True).debug(
                             f"Attempting to discover txid for pending entry "
                             f"(dest: {entry.destination_address[:20]}...)"
                         )
@@ -454,7 +456,7 @@ class BackgroundTasksMixin:
                                 data_dir=self.config.data_dir,
                                 wallet_fingerprint=wallet_fp,
                             )
-                            logger.info(
+                            logger.bind(sensitive=True).info(
                                 f"Discovered txid {txid[:16]}... for address "
                                 f"{entry.destination_address[:20]}..."
                             )
@@ -473,7 +475,7 @@ class BackgroundTasksMixin:
                             )
                             continue
                         else:
-                            logger.debug(
+                            logger.bind(sensitive=True).debug(
                                 f"No UTXO found for {entry.destination_address[:20]}... "
                                 f"(tx may not be confirmed yet, age: {age_minutes:.1f}m)"
                             )
@@ -510,7 +512,7 @@ class BackgroundTasksMixin:
                         )
                     elif age_minutes > 30:
                         # Log warning after 30 minutes
-                        logger.warning(
+                        logger.bind(sensitive=True).warning(
                             f"Transaction {entry.txid[:16]}... not found after "
                             f"{age_minutes:.1f} minutes"
                         )
@@ -530,7 +532,7 @@ class BackgroundTasksMixin:
 
                 # Mark as successful once it gets first confirmation
                 if confirmations > 0 and entry.confirmations == 0:
-                    logger.info(
+                    logger.bind(sensitive=True).info(
                         f"Transaction {entry.txid[:16]}... confirmed "
                         f"({confirmations} confirmation(s))"
                     )
@@ -549,8 +551,9 @@ class BackgroundTasksMixin:
                     )
 
             except Exception as e:
+                logger.debug("Error checking pending transaction")
                 txid_str = entry.txid[:16] if entry.txid else "unknown"
-                logger.debug(f"Error checking transaction {txid_str}...: {e}")
+                logger.bind(sensitive=True).debug(f"Error checking transaction {txid_str}...: {e}")
 
     async def _discover_txid_for_address(self, address: str) -> str | None:
         """Try to discover the txid for a transaction that paid to an address.
@@ -573,7 +576,8 @@ class BackgroundTasksMixin:
                 return utxos[0].txid
             return None
         except Exception as e:
-            logger.debug(f"Error discovering txid for {address[:20]}...: {e}")
+            logger.debug("Error discovering transaction ID for address")
+            logger.bind(sensitive=True).debug(f"Error discovering txid for {address[:20]}...: {e}")
             return None
 
     async def _chain_confirmations_for_entry(self, entry: TransactionHistoryEntry) -> int | None:
@@ -591,7 +595,10 @@ class BackgroundTasksMixin:
         try:
             utxos = await self.backend.get_utxos([entry.destination_address])
         except Exception as e:
-            logger.debug(f"Chain confirmation lookup failed for {entry.txid[:16]}...: {e}")
+            logger.debug("Chain confirmation lookup failed")
+            logger.bind(sensitive=True).debug(
+                f"Chain confirmation lookup failed for {entry.txid[:16]}...: {e}"
+            )
             return None
         match = next((utxo for utxo in utxos if utxo.txid == entry.txid), None)
         if match is None:
@@ -608,7 +615,8 @@ class BackgroundTasksMixin:
         except ExpiredFidelityBondCertificateError as e:
             self._abort_for_fatal_error(e)
         except Exception as e:
-            logger.error(f"Error in deferred wallet resync: {e}")
+            logger.error("Error in deferred wallet resync")
+            logger.bind(sensitive=True).error(f"Error in deferred wallet resync: {e}")
 
     async def _listen_client(self: MakerBotProtocol, node_id: str, client: DirectoryClient) -> None:
         """Listen for messages from a specific directory client"""
@@ -722,7 +730,7 @@ class BackgroundTasksMixin:
                     data_dir=self.config.data_dir,
                 )
 
-                logger.debug(
+                logger.bind(sensitive=True).debug(
                     f"{period_label} summary: "
                     f"coinjoins={int(stats['total_coinjoins'])}, "
                     f"successful={int(stats['successful_coinjoins'])}, "
@@ -783,7 +791,10 @@ class BackgroundTasksMixin:
                             for md in range(self.wallet.mixdepth_count)
                         )
                     except Exception as e:
-                        logger.warning(f"Failed to collect wallet balance for summary: {e}")
+                        logger.warning("Failed to collect wallet balance for summary")
+                        logger.bind(sensitive=True).warning(
+                            f"Failed to collect wallet balance for summary: {e}"
+                        )
 
                 sent = await notifier.notify_summary(
                     period_label=period_label,
@@ -809,4 +820,5 @@ class BackgroundTasksMixin:
                 logger.debug("Periodic summary task cancelled")
                 break
             except Exception as e:
-                logger.error(f"Error in periodic summary: {e}")
+                logger.error("Error in periodic summary")
+                logger.bind(sensitive=True).error(f"Error in periodic summary: {e}")

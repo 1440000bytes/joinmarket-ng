@@ -91,7 +91,10 @@ def _on_spawned_task_done(task: asyncio.Task[Any]) -> None:
         return
     exc = task.exception()
     if exc is not None:
-        logger.opt(exception=exc).error(f"Background task {task.get_name()!r} failed")
+        logger.error(f"Background task {task.get_name()!r} failed")
+        logger.bind(sensitive=True).opt(exception=exc).error(
+            f"Background task {task.get_name()!r} failed"
+        )
 
 
 def spawn_task(coro: Coroutine[Any, Any, Any], *, name: str | None = None) -> asyncio.Task[Any]:

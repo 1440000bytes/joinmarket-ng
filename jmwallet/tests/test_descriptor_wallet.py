@@ -59,6 +59,24 @@ class TestDescriptorWalletBackendUnit:
         assert backend._get_wallet_url() == f"{TEST_RPC_URL}/wallet/my_wallet"
 
     @pytest.mark.asyncio
+    async def test_broadcast_txid_log_is_sensitive(self) -> None:
+        from loguru import logger as loguru_logger
+
+        backend = DescriptorWalletBackend()
+        backend._rpc_call = AsyncMock(return_value="a" * 64)
+        records: list[Any] = []
+        sink_id = loguru_logger.add(lambda message: records.append(message.record), level="INFO")
+        try:
+            await backend.broadcast_transaction("00")
+        finally:
+            loguru_logger.remove(sink_id)
+
+        broadcast = next(
+            record for record in records if "Broadcast transaction" in str(record["message"])
+        )
+        assert broadcast["extra"]["sensitive"] is True
+
+    @pytest.mark.asyncio
     async def test_get_block_height_accepts_genesis_height(self):
         """An explicit zero height is valid at chain genesis."""
         backend = DescriptorWalletBackend()

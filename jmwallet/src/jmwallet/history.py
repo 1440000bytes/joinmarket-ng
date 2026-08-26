@@ -649,7 +649,9 @@ def append_history_entry(
                 f.flush()
                 os.fsync(f.fileno())
 
-        logger.debug(f"Appended history entry: txid={entry.txid[:16]}... role={entry.role}")
+        logger.bind(sensitive=True).debug(
+            f"Appended history entry: txid={entry.txid[:16]}... role={entry.role}"
+        )
     except Exception as e:
         raise HistoryWriteError(f"Failed to write history entry: {e}") from e
 
@@ -1332,9 +1334,13 @@ def update_transaction_confirmation(
             target.failure_reason = ""
             target.confirmed_at = datetime.now().isoformat()
             target.completed_at = target.confirmed_at
-            logger.info(f"Transaction {txid[:16]}... confirmed with {confirmations} confirmations")
+            logger.bind(sensitive=True).info(
+                f"Transaction {txid[:16]}... confirmed with {confirmations} confirmations"
+            )
         elif confirmations > 0:
-            logger.debug(f"Updated confirmations for {txid[:16]}...: {confirmations}")
+            logger.bind(sensitive=True).debug(
+                f"Updated confirmations for {txid[:16]}...: {confirmations}"
+            )
 
         return _write_history_entries_atomic(entries, history_path)
 
@@ -1373,7 +1379,8 @@ def abandon_transaction(
         now = datetime.now().isoformat()
         target.completed_at = now
         target.failure_reason = reason
-        logger.warning(f"Transaction {txid[:16]}... abandoned: {reason}")
+        logger.warning("Transaction abandoned")
+        logger.bind(sensitive=True).warning(f"Transaction {txid[:16]}... abandoned: {reason}")
         return _write_history_entries_atomic(entries, history_path)
 
 
@@ -1438,13 +1445,19 @@ async def update_transaction_confirmation_with_detection(
             target.failure_reason = ""
             target.confirmed_at = datetime.now().isoformat()
             target.completed_at = target.confirmed_at
-            logger.info(f"Transaction {txid[:16]}... confirmed with {confirmations} confirmations")
+            logger.bind(sensitive=True).info(
+                f"Transaction {txid[:16]}... confirmed with {confirmations} confirmations"
+            )
         elif confirmations > 0:
-            logger.debug(f"Updated confirmations for {txid[:16]}...: {confirmations}")
+            logger.bind(sensitive=True).debug(
+                f"Updated confirmations for {txid[:16]}...: {confirmations}"
+            )
 
         if detected_count is not None and target.role == "maker" and target.peer_count is None:
             target.peer_count = detected_count
-            logger.info(f"Detected {detected_count} participants in CoinJoin {txid[:16]}...")
+            logger.bind(sensitive=True).info(
+                f"Detected {detected_count} participants in CoinJoin {txid[:16]}..."
+            )
 
         return _write_history_entries_atomic(entries, history_path)
 
@@ -1484,7 +1497,7 @@ def update_pending_transaction_txid(
                 ):
                     continue
                 entry.txid = txid
-                logger.info(
+                logger.bind(sensitive=True).info(
                     f"Updated pending transaction for {destination_address[:20]}... "
                     f"with txid {txid[:16]}..."
                 )
@@ -1543,7 +1556,7 @@ def update_awaiting_transaction_signed(
                 entry.net_fee = fee_received - txfee_contribution
                 entry.destination_vout = destination_vout
                 entry.failure_reason = "Pending confirmation"
-                logger.info(
+                logger.bind(sensitive=True).info(
                     f"Updated awaiting transaction for {destination_address[:20]}... "
                     f"with txid {txid[:16]}..., fee={fee_received} sats"
                 )
@@ -1611,7 +1624,7 @@ def update_taker_awaiting_transaction_broadcast(
                 if broadcast_fallback_reason is not None:
                     entry.broadcast_fallback_reason = broadcast_fallback_reason
                 entry.failure_reason = "Pending confirmation"
-                logger.info(
+                logger.bind(sensitive=True).info(
                     f"Updated awaiting transaction for {destination_address[:20]}... "
                     f"with txid {txid[:16]}..., mining_fee={mining_fee} sats"
                 )
@@ -1719,7 +1732,7 @@ def mark_pending_transaction_failed(
                 entry.failure_reason = failure_reason
                 entry.completed_at = datetime.now().isoformat()
                 txid_str = f" (txid: {entry.txid[:16]}...)" if entry.txid else ""
-                logger.info(
+                logger.bind(sensitive=True).info(
                     f"Marked pending transaction for {destination_address[:20]}...{txid_str} "
                     f"as failed: {failure_reason}"
                 )
@@ -1774,7 +1787,7 @@ def cleanup_stale_pending_transactions(
                             f"{int(age_minutes)} minutes without confirmation"
                         )
                         txid_str = f" (txid: {entry.txid[:16]}...)" if entry.txid else ""
-                        logger.info(
+                        logger.bind(sensitive=True).info(
                             f"Marked stale pending entry{txid_str} as failed "
                             f"(age: {int(age_minutes)} minutes)"
                         )
@@ -2503,7 +2516,10 @@ async def detect_coinjoin_peer_count(
         # Fetch the transaction
         tx = await backend.get_transaction(txid)
         if not tx:
-            logger.warning(f"Could not fetch transaction {txid} for peer count detection")
+            logger.warning("Could not fetch transaction for peer count detection")
+            logger.bind(sensitive=True).warning(
+                f"Could not fetch transaction {txid} for peer count detection"
+            )
             return None
 
         # Parse the raw transaction to get outputs
@@ -2518,14 +2534,17 @@ async def detect_coinjoin_peer_count(
             )
             return None
 
-        logger.debug(
+        logger.bind(sensitive=True).debug(
             f"Detected {equal_amount_count} equal-amount outputs "
             f"({cj_amount:,} sats each) in tx {txid[:16]}..."
         )
         return equal_amount_count
 
     except Exception as e:
-        logger.warning(f"Failed to detect peer count for tx {txid[:16]}...: {e}")
+        logger.warning("Failed to detect peer count")
+        logger.bind(sensitive=True).warning(
+            f"Failed to detect peer count for tx {txid[:16]}...: {e}"
+        )
         return None
 
 
@@ -2556,7 +2575,9 @@ def update_transaction_peer_count(
         for entry in entries:
             if entry.txid == txid and entry.peer_count is None:
                 entry.peer_count = peer_count
-                logger.info(f"Updated peer count for tx {txid[:16]}... to {peer_count}")
+                logger.bind(sensitive=True).info(
+                    f"Updated peer count for tx {txid[:16]}... to {peer_count}"
+                )
                 return _write_history_entries_atomic(entries, history_path)
         return False
 
@@ -2648,10 +2669,14 @@ async def update_all_pending_transactions(
                         wallet_fingerprint=wallet_fingerprint,
                     )
                     updated_count += 1
-                    logger.debug(f"Updated pending tx {entry.txid[:16]}... via Neutrino")
+                    logger.bind(sensitive=True).debug(
+                        f"Updated pending tx {entry.txid[:16]}... via Neutrino"
+                    )
 
         except Exception as e:
-            logger.debug(f"Could not update pending tx {entry.txid[:16]}...: {e}")
+            logger.bind(sensitive=True).debug(
+                f"Could not update pending tx {entry.txid[:16]}...: {e}"
+            )
 
     if updated_count > 0:
         logger.info(f"Updated {updated_count} pending transaction(s)")

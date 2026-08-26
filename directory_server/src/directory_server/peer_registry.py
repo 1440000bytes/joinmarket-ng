@@ -98,7 +98,7 @@ class PeerRegistry:
         )
 
         peer.last_seen = datetime.now(UTC)
-        logger.info(f"Registered peer: {peer.nick} at {location}")
+        logger.bind(sensitive=True).info(f"Registered peer: {peer.nick} at {location}")
         return RegistrationResult(
             peer_key=key,
             connection_id=connection_id,
@@ -112,7 +112,9 @@ class PeerRegistry:
         peer = self._remove(key)
         if peer is None:
             return False
-        logger.info(f"Unregistered peer: {peer.nick} at {peer.location_string}")
+        logger.bind(sensitive=True).info(
+            f"Unregistered peer: {peer.nick} at {peer.location_string}"
+        )
         return True
 
     def _remove(self, key: str) -> PeerInfo | None:
@@ -229,7 +231,7 @@ class PeerRegistry:
             features = FeatureSet(features={k for k, v in peer.features.items() if v is True})
             # Debug: Log when features are extracted for peerlist
             if peer.features and not features.features:
-                logger.warning(
+                logger.bind(sensitive=True).warning(
                     f"Peer {peer.nick} has features dict {peer.features} but "
                     f"FeatureSet is empty after 'v is True' filter"
                 )

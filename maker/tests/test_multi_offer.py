@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from jmcore.constants import DUST_THRESHOLD
 from jmcore.models import NetworkType, Offer, OfferType
+from loguru import logger
 
 from maker.bot import MakerBot
 from maker.coinjoin import CoinJoinState
@@ -237,6 +238,28 @@ class TestOfferManagerMultiOffer:
         mock_wallet.get_maker_rotation_lineage_outpoints.assert_awaited_once_with()
         for call in mock_wallet.get_balance_for_offers.call_args_list:
             assert call.kwargs["md0_mergeable_outpoints"] == {"ab" * 32 + ":0"}
+
+    @pytest.mark.asyncio
+    async def test_wallet_balance_logs_are_sensitive(
+        self, mock_wallet, config_single_offer
+    ) -> None:
+        """Wallet balances must not reach standard log sinks by default."""
+        records: list[tuple[str, dict[str, object]]] = []
+        handler_id = logger.add(
+            lambda message: records.append(
+                (message.record["message"], dict(message.record["extra"]))
+            )
+        )
+        manager = OfferManager(mock_wallet, config_single_offer, "J5TestMaker")
+        try:
+            with patch("maker.offers.get_best_fidelity_bond", new=AsyncMock(return_value=None)):
+                await manager.create_offers()
+        finally:
+            logger.remove(handler_id)
+
+        balance_records = [record for record in records if "Mixdepth balances" in record[0]]
+        assert balance_records
+        assert all(extra.get("sensitive") is True for _, extra in balance_records)
 
     @pytest.mark.asyncio
     async def test_unrestricted_md0_skips_rotation_lineage(

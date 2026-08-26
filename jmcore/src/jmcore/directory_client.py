@@ -114,14 +114,16 @@ def parse_fidelity_bond_proof(
             proof_base64, maker_nick, taker_nick
         )
         if not is_valid:
-            logger.warning(f"Fidelity bond proof verification failed for {maker_nick}: {error}")
+            logger.bind(sensitive=True).warning(
+                f"Fidelity bond proof verification failed for {maker_nick}: {error}"
+            )
             return None
 
     # Parse the proof data (also extracts redeem script)
     try:
         decoded_data = base64.b64decode(proof_base64)
     except (binascii.Error, ValueError) as e:
-        logger.warning(f"Failed to decode bond proof: {e}")
+        logger.bind(sensitive=True).warning(f"Failed to decode bond proof: {e}")
         return None
 
     if len(decoded_data) != 252:
@@ -159,7 +161,7 @@ def parse_fidelity_bond_proof(
             "p2wsh_script": p2wsh_script_hex,
         }
     except Exception as e:
-        logger.warning(f"Failed to unpack bond proof: {e}")
+        logger.bind(sensitive=True).warning(f"Failed to unpack bond proof: {e}")
         return None
 
 
@@ -330,7 +332,9 @@ class DirectoryClient:
     async def connect(self) -> None:
         """Connect to the directory server and perform handshake."""
         try:
-            logger.debug(f"DirectoryClient.connect: connecting to {self.host}:{self.port}")
+            logger.bind(sensitive=True).debug(
+                f"DirectoryClient.connect: connecting to {self.host}:{self.port}"
+            )
             if not self.host.lower().endswith(".onion"):
                 if self.network != "regtest" and not self.allow_clearnet_connections:
                     raise DirectoryClientError(
@@ -338,7 +342,7 @@ class DirectoryClient:
                         f"{self.host}:{self.port}. Use an .onion endpoint, use regtest for local "
                         "development, or explicitly enable allow_clearnet_connections."
                     )
-                logger.warning(
+                logger.bind(sensitive=True).warning(
                     f"Using direct TCP for non-onion directory {self.host}:{self.port}; "
                     "this is allowed only for regtest or explicit development configuration"
                 )
@@ -365,7 +369,10 @@ class DirectoryClient:
             await self._handshake()
             logger.debug("DirectoryClient.connect: handshake complete")
         except Exception as e:
-            logger.error(f"Failed to connect to {self.host}:{self.port}: {e}", exc_info=True)
+            logger.error("Directory connection failed")
+            logger.bind(sensitive=True).error(
+                f"Failed to connect to {self.host}:{self.port}: {e}", exc_info=True
+            )
             # Clean up connection if handshake failed
             if self.connection:
                 with contextlib.suppress(Exception):
@@ -416,7 +423,9 @@ class DirectoryClient:
             directory=False,
             features=feature_set,
         )
-        logger.debug(f"DirectoryClient._handshake: created handshake data: {handshake_data}")
+        logger.bind(sensitive=True).debug(
+            f"DirectoryClient._handshake: created handshake data: {handshake_data}"
+        )
         handshake_line = json.dumps(handshake_data)
         handshake_msg = {
             "type": MessageType.HANDSHAKE.value,
@@ -428,7 +437,9 @@ class DirectoryClient:
 
         # Receive and parse directory's response
         response_data = await asyncio.wait_for(self.connection.receive(), timeout=self.timeout)
-        logger.debug(f"DirectoryClient._handshake: received response: {response_data[:200]!r}")
+        logger.bind(sensitive=True).debug(
+            f"DirectoryClient._handshake: received response: {response_data[:200]!r}"
+        )
         response = json.loads(response_data.decode("utf-8"))
 
         if response["type"] not in (MessageType.HANDSHAKE.value, MessageType.DN_HANDSHAKE.value):
@@ -485,7 +496,7 @@ class DirectoryClient:
         ):
             await self._authenticate_nick(handshake_line)
 
-        logger.info(
+        logger.bind(sensitive=True).info(
             f"Handshake successful with {self.host}:{self.port} (nick: {self.nick}, "
             f"negotiated_version: v{self.negotiated_version}, "
             f"neutrino_compat: {self.directory_neutrino_compat}, "
@@ -795,7 +806,7 @@ class DirectoryClient:
 
                 except Exception as e:
                     consecutive_errors += 1
-                    logger.warning(
+                    logger.bind(sensitive=True).warning(
                         f"Error receiving/parsing message while waiting for PEERLIST: {e}"
                     )
                     if consecutive_errors >= max_consecutive_errors:
@@ -820,7 +831,9 @@ class DirectoryClient:
         self._peerlist_timeout_count = 0
         self._peerlist_supported = True
 
-        logger.debug(f"Received {len(all_peers)} active peers from {self.host}:{self.port}")
+        logger.bind(sensitive=True).debug(
+            f"Received {len(all_peers)} active peers from {self.host}:{self.port}"
+        )
         return all_peers
 
     def _handle_peerlist_timeout(self) -> None:
@@ -830,7 +843,7 @@ class DirectoryClient:
         if self.directory_peerlist_features:
             # Directory announced peerlist_features during handshake, so it supports
             # GETPEERLIST. Timeout is likely due to large peerlist or network issues.
-            logger.warning(
+            logger.bind(sensitive=True).warning(
                 f"Timed out waiting for PEERLIST from {self.host}:{self.port} "
                 f"(attempt {self._peerlist_timeout_count}) - "
                 "peerlist may be large or network is slow"
@@ -838,7 +851,7 @@ class DirectoryClient:
             # Don't disable peerlist requests - directory supports it, just slow
         else:
             # Directory didn't announce peerlist_features - likely reference impl
-            logger.debug(
+            logger.bind(sensitive=True).debug(
                 f"Timed out waiting for PEERLIST from {self.host}:{self.port} - "
                 "directory likely doesn't support GETPEERLIST (reference implementation)"
             )
@@ -863,7 +876,7 @@ class DirectoryClient:
         Returns:
             List of active peers (nick, location, features) in this response
         """
-        logger.debug(f"Peerlist string: {peerlist_str}")
+        logger.bind(sensitive=True).debug(f"Peerlist string: {peerlist_str}")
 
         # Mark peerlist as supported since we got a valid response
         self._peerlist_supported = True
@@ -883,11 +896,11 @@ class DirectoryClient:
             # Skip entries without separator - these are metadata (e.g., 'peerlist_features')
             # from the reference implementation, not actual peer entries
             if NICK_PEERLOCATOR_SEPARATOR not in entry:
-                logger.debug(f"Skipping metadata entry in peerlist: '{entry}'")
+                logger.bind(sensitive=True).debug(f"Skipping metadata entry in peerlist: '{entry}'")
                 continue
             try:
                 nick, location, disconnected, features = parse_peerlist_entry(entry)
-                logger.debug(
+                logger.bind(sensitive=True).debug(
                     f"Parsed peer: {nick} at {location}, "
                     f"disconnected={disconnected}, features={features.to_comma_string()}"
                 )
@@ -909,14 +922,16 @@ class DirectoryClient:
                     # peerlist response arrives with features
                     self._update_offer_features(nick, features_dict)
             except ValueError as e:
-                logger.warning(f"Failed to parse peerlist entry '{entry}': {e}")
+                logger.bind(sensitive=True).warning(
+                    f"Failed to parse peerlist entry '{entry}': {e}"
+                )
                 continue
 
         # Only remove offers for nicks that are explicitly marked as disconnected
         for nick in explicitly_disconnected:
             self.remove_offers_for_nick(nick)
 
-        logger.trace(
+        logger.bind(sensitive=True).trace(
             f"Received {len(peers)} active peers with features from {self.host}:{self.port}"
             + (
                 f", {len(explicitly_disconnected)} explicitly disconnected"
@@ -958,7 +973,7 @@ class DirectoryClient:
             try:
                 buffered_msg = self._message_buffer.get_nowait()
                 await self._reject_out_of_order_nick_auth(buffered_msg.get("type"))
-                logger.trace(
+                logger.bind(sensitive=True).trace(
                     f"Processing buffered message type {buffered_msg.get('type')}: "
                     f"{buffered_msg.get('line', '')[:80]}..."
                 )
@@ -981,7 +996,7 @@ class DirectoryClient:
                 )
                 response = json.loads(response_data.decode("utf-8"))
                 await self._reject_out_of_order_nick_auth(response.get("type"))
-                logger.trace(
+                logger.bind(sensitive=True).trace(
                     f"Received message type {response.get('type')}: "
                     f"{response.get('line', '')[:80]}..."
                 )
@@ -1009,7 +1024,8 @@ class DirectoryClient:
             except Exception as e:
                 # Other errors (JSON parse, etc) - log and continue, but with a limit
                 consecutive_errors += 1
-                logger.warning(f"Error processing message: {e}")
+                logger.warning("Error processing directory message")
+                logger.bind(sensitive=True).warning(f"Error processing message: {e}")
                 if consecutive_errors >= max_consecutive_errors:
                     raise DirectoryClientError(
                         f"Too many consecutive errors ({consecutive_errors}), last error: {e}"
@@ -1058,7 +1074,9 @@ class DirectoryClient:
 
         # Log peer count for visibility (but don't filter based on peerlist)
         if peers_with_features:
-            logger.debug(f"Found {len(peers_with_features)} peers on {self.host}:{self.port}")
+            logger.bind(sensitive=True).debug(
+                f"Found {len(peers_with_features)} peers on {self.host}:{self.port}"
+            )
 
         if not self.connection:
             raise DirectoryClientError("Not connected")
@@ -1153,14 +1171,16 @@ class DirectoryClient:
                         self._handle_peerlist_response(line)
                         logger.debug("Processed PEERLIST during orderbook fetch")
                     except Exception as e:
-                        logger.debug(f"Failed to process PEERLIST: {e}")
+                        logger.bind(sensitive=True).debug(f"Failed to process PEERLIST: {e}")
                     continue
 
                 if msg_type not in (MessageType.PUBMSG.value, MessageType.PRIVMSG.value):
                     logger.debug(f"Skipping message type {msg_type}")
                     continue
 
-                logger.debug(f"Processing message type {msg_type}: {line[:100]}...")
+                logger.bind(sensitive=True).debug(
+                    f"Processing message type {msg_type}: {line[:100]}..."
+                )
 
                 parts = line.split(COMMAND_PREFIX)
                 if len(parts) < 3:
@@ -1196,10 +1216,11 @@ class DirectoryClient:
                             )
                             bonds.append(bond)
                 else:
-                    logger.debug(f"Message not an offer: {rest[:50]}...")
+                    logger.bind(sensitive=True).debug(f"Message not an offer: {rest[:50]}...")
 
             except Exception as e:
-                logger.warning(f"Failed to process message: {e}")
+                logger.warning("Failed to process directory message")
+                logger.bind(sensitive=True).warning(f"Failed to process message: {e}")
                 continue
 
         # NOTE: We trust the directory's orderbook as authoritative.
@@ -1211,7 +1232,8 @@ class DirectoryClient:
         # This prevents incorrectly rejecting valid offers from active makers
         # whose peerlist entry hasn't been received yet.
 
-        logger.debug(
+        logger.debug(f"Fetched {len(offers)} offers and {len(bonds)} fidelity bonds")
+        logger.bind(sensitive=True).debug(
             f"Fetched {len(offers)} offers and {len(bonds)} fidelity bonds from "
             f"{self.host}:{self.port}"
         )
@@ -1294,9 +1316,9 @@ class DirectoryClient:
         try:
             pong_msg = json.dumps({"type": MessageType.PONG.value, "line": ""}).encode("utf-8")
             await self.connection.send(pong_msg)
-            logger.trace(f"Sent PONG to {self.host}:{self.port}")
+            logger.bind(sensitive=True).trace(f"Sent PONG to {self.host}:{self.port}")
         except Exception as e:
-            logger.debug(f"Failed to send PONG: {e}")
+            logger.bind(sensitive=True).debug(f"Failed to send PONG: {e}")
 
     def stop(self) -> None:
         """Stop continuous listening."""
@@ -1319,7 +1341,7 @@ class DirectoryClient:
         try:
             self.on_disconnect()
         except Exception:
-            logger.exception("Directory disconnect callback failed")
+            logger.bind(sensitive=True).exception("Directory disconnect callback failed")
 
     async def listen_continuously(self, request_orderbook: bool = True) -> None:
         """
@@ -1336,7 +1358,9 @@ class DirectoryClient:
         if not self.connection:
             raise DirectoryClientError("Not connected")
 
-        logger.debug(f"Starting continuous listening on {self.host}:{self.port}")
+        logger.bind(sensitive=True).debug(
+            f"Starting continuous listening on {self.host}:{self.port}"
+        )
         self.running = True
 
         # Fetch peerlist with features to populate peer_features cache
@@ -1352,7 +1376,8 @@ class DirectoryClient:
                     "learned from offer messages"
                 )
         except Exception as e:
-            logger.warning(f"Failed to fetch peerlist with features: {e}")
+            logger.warning("Failed to fetch peerlist with features")
+            logger.bind(sensitive=True).warning(f"Failed to fetch peerlist with features: {e}")
 
         # Request current orderbook from makers
         if request_orderbook:
@@ -1364,7 +1389,8 @@ class DirectoryClient:
                 await self.connection.send(json.dumps(pubmsg).encode("utf-8"))
                 logger.debug("Sent !orderbook request to get current offers")
             except Exception as e:
-                logger.warning(f"Failed to send !orderbook request: {e}")
+                logger.warning("Failed to send orderbook request")
+                logger.bind(sensitive=True).warning(f"Failed to send !orderbook request: {e}")
 
         # Track when we last sent an orderbook request (to avoid spamming)
         last_orderbook_request = time.time()
@@ -1388,7 +1414,10 @@ class DirectoryClient:
                     data = await asyncio.wait_for(self.connection.receive(), timeout=5.0)
 
                     if not data:
-                        logger.warning(f"Connection to {self.host}:{self.port} closed")
+                        logger.warning("Directory connection closed")
+                        logger.bind(sensitive=True).warning(
+                            f"Connection to {self.host}:{self.port} closed"
+                        )
                         break
 
                     message = json.loads(data.decode("utf-8"))
@@ -1411,7 +1440,7 @@ class DirectoryClient:
                     try:
                         self._handle_peerlist_response(line)
                     except Exception as e:
-                        logger.debug(f"Failed to process PEERLIST: {e}")
+                        logger.bind(sensitive=True).debug(f"Failed to process PEERLIST: {e}")
                     continue
 
                 # Handle PING by sending PONG back immediately
@@ -1446,7 +1475,9 @@ class DirectoryClient:
                                     # if we already know their features from another source)
                                     # Features will be populated from offer messages or peerlist
                                     self._merge_peer_features(from_nick, {})
-                                    logger.debug(f"Discovered new peer: {from_nick}")
+                                    logger.bind(sensitive=True).debug(
+                                        f"Discovered new peer: {from_nick}"
+                                    )
 
                                     # If directory supports peerlist_features, request updated peerlist
                                     # to get this peer's features immediately
@@ -1459,7 +1490,7 @@ class DirectoryClient:
                                             # This is a background task - don't block message processing
                                             spawn_task(self._refresh_peerlist_for_new_peer())
                                         except Exception as e:
-                                            logger.debug(
+                                            logger.bind(sensitive=True).debug(
                                                 f"Failed to request peerlist for new peer: {e}"
                                             )
 
@@ -1478,11 +1509,13 @@ class DirectoryClient:
                                                 json.dumps(pubmsg).encode("utf-8")
                                             )
                                             last_orderbook_request = current_time
-                                            logger.debug(
+                                            logger.bind(sensitive=True).debug(
                                                 f"Sent !orderbook request for new peer {from_nick}"
                                             )
                                         except Exception as e:
-                                            logger.debug(f"Failed to send !orderbook: {e}")
+                                            logger.bind(sensitive=True).debug(
+                                                f"Failed to send !orderbook: {e}"
+                                            )
 
                                 if msg_type == MessageType.PUBMSG.value and to_nick == "PUBLIC":
                                     self._handle_public_offer_cancellation(rest, from_nick)
@@ -1498,22 +1531,27 @@ class DirectoryClient:
                                     ):
                                         continue
                     except Exception as e:
-                        logger.debug(f"Failed to process PUBMSG: {e}")
+                        logger.bind(sensitive=True).debug(f"Failed to process PUBMSG: {e}")
 
             except TimeoutError:
                 continue
             except asyncio.CancelledError:
-                logger.debug(f"Continuous listening on {self.host}:{self.port} cancelled")
+                logger.bind(sensitive=True).debug(
+                    f"Continuous listening on {self.host}:{self.port} cancelled"
+                )
                 break
             except Exception as e:
-                logger.error(f"Error in continuous listening: {e}")
+                logger.error("Directory listener failed")
+                logger.bind(sensitive=True).error(f"Error in continuous listening: {e}")
                 self._notify_disconnect()
                 break
 
         self._wake_peerlist_sink()
         self.running = False
         self._listen_loop_active = False
-        logger.debug(f"Stopped continuous listening on {self.host}:{self.port}")
+        logger.bind(sensitive=True).debug(
+            f"Stopped continuous listening on {self.host}:{self.port}"
+        )
 
     def _cache_offer_announcement(
         self,
@@ -1539,7 +1577,7 @@ class DirectoryClient:
             )
 
         self.peer_features.setdefault(from_nick, {})
-        logger.debug(
+        logger.bind(sensitive=True).debug(
             f"Updated offer cache: {from_nick} {offer.ordertype.value} oid={offer.oid}"
             + (" (with bond)" if bond_data else "")
         )
@@ -1557,7 +1595,7 @@ class DirectoryClient:
 
         oid = int(oid_text)
         if self._remove_offer((from_nick, oid)):
-            logger.debug(f"Removed canceled offer from {from_nick} oid={oid}")
+            logger.bind(sensitive=True).debug(f"Removed canceled offer from {from_nick} oid={oid}")
 
     def _parse_offer_from_message(
         self,
@@ -1605,7 +1643,7 @@ class DirectoryClient:
                     # NOTE: !neutrino in offers is deprecated - primary detection is via
                     # handshake features. Parsing kept for backwards compatibility.
                     neutrino_compat = True
-                    logger.debug(f"Maker {from_nick} requires neutrino_compat")
+                    logger.bind(sensitive=True).debug(f"Maker {from_nick} requires neutrino_compat")
                 elif flag_part.startswith("tbond "):
                     bond_parts = flag_part[6:].split()
                     if bond_parts:
@@ -1620,7 +1658,7 @@ class DirectoryClient:
                             bond_proof_b64, from_nick, taker_nick_for_proof
                         )
                         if bond_data:
-                            logger.debug(
+                            logger.bind(sensitive=True).debug(
                                 f"Parsed fidelity bond from {from_nick}: "
                                 f"txid={bond_data['utxo_txid'][:16]}..., "
                                 f"locktime={bond_data['locktime']}"
@@ -1628,7 +1666,9 @@ class DirectoryClient:
 
             offer_parts = offer_line.split()
             if len(offer_parts) < 6:
-                logger.warning(f"Offer from {from_nick} has {len(offer_parts)} parts, need 6")
+                logger.bind(sensitive=True).warning(
+                    f"Offer from {from_nick} has {len(offer_parts)} parts, need 6"
+                )
                 return None
 
             try:
@@ -1657,14 +1697,16 @@ class DirectoryClient:
                     features=self.peer_features.get(from_nick, {}),
                 )
 
-                logger.debug(
+                logger.bind(sensitive=True).debug(
                     f"Parsed {offer_type} from {from_nick}: "
                     f"oid={oid}, size={minsize}-{maxsize}, fee={cjfee}, "
                     f"has_bond={bond_data is not None}, neutrino_compat={neutrino_compat}"
                 )
                 return offer, bond_data, neutrino_compat
             except Exception as e:
-                logger.warning(f"Failed to parse {offer_type} from {from_nick}: {e}")
+                logger.bind(sensitive=True).warning(
+                    f"Failed to parse {offer_type} from {from_nick}: {e}"
+                )
                 return None
 
         # No offer type matched
@@ -1698,7 +1740,7 @@ class DirectoryClient:
                     continue
                 old_expiry = (existing.offer.fidelity_bond_data or {}).get("cert_expiry", -1)
                 if isinstance(old_expiry, int) and old_expiry > new_expiry:
-                    logger.debug(
+                    logger.bind(sensitive=True).debug(
                         f"Ignoring stale certificate expiring at {new_expiry}; "
                         f"claim already has certificate expiring at {old_expiry}"
                     )
@@ -1732,7 +1774,7 @@ class DirectoryClient:
                     and old_key in self.offers
                     and old_key[0] != offer_key[0]  # Different counterparty
                 ):
-                    logger.debug(
+                    logger.bind(sensitive=True).debug(
                         f"Removing stale offer from {old_key[0]} oid={old_key[1]} - "
                         f"same bond UTXO now used by {offer_key[0]}"
                     )
@@ -1800,7 +1842,7 @@ class DirectoryClient:
                 updated += 1
 
         if updated > 0:
-            logger.debug(
+            logger.bind(sensitive=True).debug(
                 f"Updated features on {updated} cached offer(s) for {nick}: "
                 f"{[k for k, v in features.items() if v]}"
             )
@@ -1845,7 +1887,9 @@ class DirectoryClient:
                 removed += 1
 
         if removed > 0:
-            logger.debug(f"Removed {removed} offers for nick {nick} (left/offline)")
+            logger.bind(sensitive=True).debug(
+                f"Removed {removed} offers for nick {nick} (left/offline)"
+            )
 
         # Also remove from peer_features and active_peers
         self.peer_features.pop(nick, None)
@@ -1876,7 +1920,7 @@ class DirectoryClient:
                     f"Refreshed peerlist for new peer discovery: {len(peers)} active peers"
                 )
         except Exception as e:
-            logger.debug(f"Failed to refresh peerlist for new peer: {e}")
+            logger.bind(sensitive=True).debug(f"Failed to refresh peerlist for new peer: {e}")
 
     def get_active_nicks(self) -> set[str]:
         """Get set of nicks from the last peerlist update."""
@@ -1911,7 +1955,7 @@ class DirectoryClient:
             removed_offer = self.offers.get(key)
             if removed_offer and self._remove_offer(key):
                 removed += 1
-                logger.debug(
+                logger.bind(sensitive=True).debug(
                     f"Removed stale offer from {key[0]} oid={key[1]} "
                     f"(age={current_time - removed_offer.received_at:.0f}s)"
                 )

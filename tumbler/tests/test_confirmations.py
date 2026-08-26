@@ -218,3 +218,25 @@ class TestResolveConfirmations:
         # error to preserve existing semantics. Documented here so a
         # future change to fall through is intentional.
         assert result is None
+
+    async def test_confirmation_lookup_txid_logs_are_sensitive(self, tmp_path: Path) -> None:
+        """Backend lookup failures keep txids out of ordinary log records."""
+        from loguru import logger
+
+        txid = "h" * 64
+        records: list[tuple[str, dict[str, object]]] = []
+        handler_id = logger.add(
+            lambda message: records.append(
+                (message.record["message"], dict(message.record["extra"]))
+            )
+        )
+        try:
+            result = await resolve_confirmations(txid, _FakeBackend(get_tx_raises=True), tmp_path)
+        finally:
+            logger.remove(handler_id)
+
+        assert result is None
+        txid_records = [record for record in records if txid in record[0]]
+        assert txid_records
+        assert all(extra.get("sensitive") is True for _, extra in txid_records)
+        assert ("Confirmation lookup backend error", {}) in records

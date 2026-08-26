@@ -65,7 +65,10 @@ def load_reconstruction_cursor(
     try:
         checkpoint = ReconstructionCheckpoint.model_validate_json(read_private_file(path))
     except (OSError, ValidationError, ValueError) as exc:
-        logger.warning(f"Ignoring invalid history reconstruction checkpoint {path}: {exc}")
+        logger.warning("Ignoring invalid history reconstruction checkpoint")
+        logger.bind(sensitive=True).warning(
+            f"Ignoring invalid history reconstruction checkpoint {path}: {exc}"
+        )
         return None
 
     if (
@@ -74,7 +77,10 @@ def load_reconstruction_cursor(
         or checkpoint.network != network
         or checkpoint.backend_id != _backend_id(backend)
     ):
-        logger.debug(f"Ignoring mismatched history reconstruction checkpoint {path}")
+        logger.debug("Ignoring mismatched history reconstruction checkpoint")
+        logger.bind(sensitive=True).debug(
+            f"Ignoring mismatched history reconstruction checkpoint {path}"
+        )
         return None
     return checkpoint.cursor
 
@@ -301,4 +307,7 @@ def clear_reconstruction_cursor(data_dir: Path, *, wallet_fingerprint: str) -> N
                 path.unlink(missing_ok=True)
         except OSError:
             pass
-        logger.warning(f"Could not clear history reconstruction checkpoint: {exc}")
+        logger.warning("Could not clear history reconstruction checkpoint")
+        logger.bind(sensitive=True).warning(
+            f"Could not clear history reconstruction checkpoint: {exc}"
+        )

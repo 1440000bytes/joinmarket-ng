@@ -122,13 +122,17 @@ class TakerMonitoringMixin:
                             await self._check_pending_without_mempool(entry)
 
                     except Exception as e:
-                        logger.debug(f"Error checking transaction {entry.txid[:16]}...: {e}")
+                        logger.debug("Error checking pending transaction")
+                        logger.bind(sensitive=True).debug(
+                            "Pending transaction {} check detail: {}", entry.txid, e
+                        )
 
             except asyncio.CancelledError:
                 logger.debug("Pending transaction monitor cancelled")
                 break
             except Exception as e:
-                logger.error(f"Error in pending transaction monitor: {e}")
+                logger.error("Error in pending transaction monitor")
+                logger.bind(sensitive=True).error("Pending transaction monitor detail: {}", e)
 
         logger.debug("Pending transaction monitor stopped")
 
@@ -156,9 +160,9 @@ class TakerMonitoringMixin:
                     wallet_fingerprint=self.wallet.wallet_fingerprint,
                 )
             elif age_hours > 24:
-                logger.warning(
-                    f"Transaction {entry.txid[:16]}... not found after "
-                    f"{age_hours:.1f} hours, may have been rejected"
+                logger.warning("Pending transaction may have been rejected")
+                logger.bind(sensitive=True).warning(
+                    "Transaction {} not found after {:.1f} hours", entry.txid, age_hours
                 )
             return
 
@@ -173,9 +177,12 @@ class TakerMonitoringMixin:
                 wallet_fingerprint=self.wallet.wallet_fingerprint,
             )
 
-            logger.info(
-                f"CoinJoin {entry.txid[:16]}... confirmed! "
-                f"({confirmations} confirmation{'s' if confirmations != 1 else ''})"
+            logger.info("CoinJoin confirmed")
+            logger.bind(sensitive=True).info(
+                "CoinJoin {} confirmed ({} confirmation{})",
+                entry.txid,
+                confirmations,
+                "s" if confirmations != 1 else "",
             )
 
     async def _check_pending_without_mempool(self, entry: TransactionHistoryEntry) -> None:
@@ -193,9 +200,9 @@ class TakerMonitoringMixin:
 
         # Need destination address for Neutrino verification
         if not entry.destination_address:
-            logger.debug(
-                f"Transaction {entry.txid[:16]}... has no destination_address, "
-                "cannot verify with Neutrino"
+            logger.debug("Pending transaction cannot be verified with Neutrino")
+            logger.bind(sensitive=True).debug(
+                "Transaction {} has no destination address", entry.txid
             )
             return
 
@@ -225,8 +232,9 @@ class TakerMonitoringMixin:
                 wallet_fingerprint=self.wallet.wallet_fingerprint,
             )
 
-            logger.info(
-                f"CoinJoin {entry.txid[:16]}... confirmed! (verified via Neutrino block filters)"
+            logger.info("CoinJoin confirmed via Neutrino block filters")
+            logger.bind(sensitive=True).info(
+                "CoinJoin {} confirmed via Neutrino block filters", entry.txid
             )
         else:
             # Not found yet - could be in mempool or not broadcast
@@ -250,15 +258,14 @@ class TakerMonitoringMixin:
             # For Neutrino, be more patient before warning since we can't see mempool
             # Only log at WARNING level if it's been a long time, otherwise DEBUG to reduce noise
             if age_hours > 2:  # 2 hour threshold for Neutrino
-                logger.warning(
-                    f"Transaction {entry.txid[:16]}... not confirmed after "
-                    f"{age_hours:.1f} hours. May still be in mempool (not visible to Neutrino) "
-                    "or may have been rejected/never broadcast."
+                logger.warning("Pending transaction has not confirmed and may have been rejected")
+                logger.bind(sensitive=True).warning(
+                    "Transaction {} not confirmed after {:.1f} hours", entry.txid, age_hours
                 )
             elif age_hours > 0.5:  # Log at debug for txs older than 30 min
-                logger.debug(
-                    f"Transaction {entry.txid[:16]}... not confirmed after "
-                    f"{age_hours:.1f} hours (may be in mempool, waiting for confirmation)"
+                logger.debug("Pending transaction is awaiting confirmation")
+                logger.bind(sensitive=True).debug(
+                    "Transaction {} not confirmed after {:.1f} hours", entry.txid, age_hours
                 )
 
     async def _update_pending_transaction_now(
@@ -299,14 +306,16 @@ class TakerMonitoringMixin:
                         data_dir=self.config.data_dir,
                         wallet_fingerprint=self.wallet.wallet_fingerprint,
                     )
-                    logger.info(
-                        f"CoinJoin {txid[:16]}... already confirmed "
-                        f"({confirmations} confirmation{'s' if confirmations != 1 else ''})"
+                    logger.info("CoinJoin already confirmed")
+                    logger.bind(sensitive=True).info(
+                        "CoinJoin {} already confirmed ({} confirmation{})",
+                        txid,
+                        confirmations,
+                        "s" if confirmations != 1 else "",
                     )
                 elif tx_info is not None:
-                    logger.info(
-                        f"CoinJoin {txid[:16]}... visible in mempool, awaiting confirmation"
-                    )
+                    logger.info("CoinJoin visible in mempool, awaiting confirmation")
+                    logger.bind(sensitive=True).info("CoinJoin {} visible in mempool", txid)
             else:
                 # Neutrino cannot report confirmation depth by txid. Its UTXO
                 # endpoint can explicitly exclude the mempool overlay.
@@ -331,14 +340,16 @@ class TakerMonitoringMixin:
                             data_dir=self.config.data_dir,
                             wallet_fingerprint=self.wallet.wallet_fingerprint,
                         )
-                        logger.info(f"CoinJoin {txid[:16]}... confirmed via Neutrino block filters")
-                    else:
-                        logger.debug(
-                            f"CoinJoin {txid[:16]}... not yet confirmed "
-                            "(may be in mempool, Neutrino will verify on next block)"
+                        logger.info("CoinJoin confirmed via Neutrino block filters")
+                        logger.bind(sensitive=True).info(
+                            "CoinJoin {} confirmed via Neutrino block filters", txid
                         )
+                    else:
+                        logger.debug("CoinJoin not yet confirmed")
+                        logger.bind(sensitive=True).debug("CoinJoin {} is not yet confirmed", txid)
         except Exception as e:
-            logger.debug(f"Could not update transaction status immediately: {e}")
+            logger.debug("Could not update transaction status immediately")
+            logger.bind(sensitive=True).debug("Transaction status update detail: {}", e)
 
     async def _periodic_rescan(self) -> None:
         """Background task to periodically rescan wallet.
@@ -374,13 +385,16 @@ class TakerMonitoringMixin:
                 await self.wallet.reconstruct_imported_state_safe()
 
                 total_balance = await self.wallet.get_total_balance()
-                logger.debug(f"Wallet re-synced. Total balance: {total_balance:,} sats")
+                logger.bind(sensitive=True).debug(
+                    "Wallet re-synced. Total balance: {:,} sats", total_balance
+                )
 
             except asyncio.CancelledError:
                 logger.debug("Periodic rescan task cancelled")
                 break
             except Exception as e:
-                logger.error(f"Error in periodic rescan: {e}")
+                logger.error("Error in periodic rescan")
+                logger.bind(sensitive=True).error("Periodic rescan detail: {}", e)
 
         logger.debug("Periodic rescan task stopped")
 
@@ -428,7 +442,8 @@ class TakerMonitoringMixin:
                 logger.debug("Directory connection status task cancelled")
                 break
             except Exception as e:
-                logger.error(f"Error in directory connection status task: {e}")
+                logger.error("Error in directory connection status task")
+                logger.bind(sensitive=True).error("Directory connection status detail: {}", e)
                 await asyncio.sleep(600)
 
         logger.debug("Directory connection status task stopped")

@@ -250,7 +250,8 @@ class CoinJoinSession:
                 ttl=self.input_lock_ttl_sec(),
             )
         except Exception as exc:
-            logger.error(f"Cannot {operation}: failed to renew taker input locks: {exc}")
+            logger.error(f"Cannot {operation}: failed to renew taker input locks")
+            logger.bind(sensitive=True).error("Input lock renewal detail: {}", exc)
             return False
         if not renewed:
             logger.error(f"Cannot {operation}: taker input lock ownership was lost")
@@ -283,7 +284,8 @@ class CoinJoinSession:
         try:
             all_utxos = self.wallet.get_all_utxos(mixdepth, self.config.taker_utxo_age)
         except Exception as exc:  # pragma: no cover - defensive
-            logger.warning(f"Could not list UTXOs in mixdepth {mixdepth}: {exc}")
+            logger.warning("Could not list UTXOs while selecting a PoDLE commitment")
+            logger.bind(sensitive=True).warning("PoDLE UTXO lookup detail: {}", exc)
             return 0
 
         already = {(u.txid, u.vout) for u in self.preselected_utxos}
@@ -544,12 +546,15 @@ class CoinJoinSession:
                 # Check if this is an error response
                 if responses[nick].get("error"):
                     error_msg = responses[nick].get("data", "Unknown error")
-                    logger.error(f"Maker {nick} rejected !fill: {error_msg}")
+                    logger.error("Maker rejected !fill")
+                    logger.bind(sensitive=True).error(
+                        "Maker {} rejected !fill: {}", nick, error_msg
+                    )
                     # Check if this is a blacklist error
                     if "blacklist" in error_msg.lower():
                         blacklist_error = True
                         blacklist_makers.append(nick)
-                        logger.warning(
+                        logger.bind(sensitive=True).warning(
                             f"Commitment was blacklisted by {nick} - may need retry with new index"
                         )
                     failed_makers.append(nick)
@@ -562,7 +567,10 @@ class CoinJoinSession:
                         failed_makers.append(nick)
                         del self.maker_sessions[nick]
                 except Exception as e:
-                    logger.warning(f"Invalid !pubkey response from {nick}: {e}")
+                    logger.warning("Invalid !pubkey response from maker")
+                    logger.bind(sensitive=True).warning(
+                        "Invalid !pubkey response from {}: {}", nick, e
+                    )
                     failed_makers.append(nick)
                     del self.maker_sessions[nick]
             else:
@@ -878,7 +886,7 @@ class CoinJoinSession:
                     overlapping = maker_outpoints & taken_outpoints
                     if overlapping:
                         sample = next(iter(overlapping))
-                        logger.warning(
+                        logger.bind(sensitive=True).warning(
                             f"Dropping maker {nick}: input {sample[0]}:{sample[1]} is "
                             "already used by another participant in this round"
                         )
@@ -900,7 +908,7 @@ class CoinJoinSession:
                         maker_total_input - self.cj_amount - session.offer.txfee + maker_cjfee
                     )
                     if maker_change < DUST_THRESHOLD:
-                        logger.warning(
+                        logger.bind(sensitive=True).warning(
                             f"Dropping maker {nick}: inputs total {maker_total_input} sats "
                             f"leaves change of {maker_change} sats (cj_amount={self.cj_amount}, "
                             f"txfee={session.offer.txfee}, cjfee={maker_cjfee}), below "
@@ -919,7 +927,10 @@ class CoinJoinSession:
                     if not any(
                         u.get("scriptpubkey", "").lower() == auth_spk for u in session.utxos
                     ):
-                        logger.warning(f"auth_pub from {nick} matches no declared UTXO, dropping")
+                        logger.warning("Maker authentication key matches no declared UTXO")
+                        logger.bind(sensitive=True).warning(
+                            "Authentication key for {} matches no declared UTXO", nick
+                        )
                         failed_makers.append(nick)
                         del self.maker_sessions[nick]
                         continue
@@ -928,12 +939,15 @@ class CoinJoinSession:
                     session.change_address = change_addr
                     session.auth_pubkey = auth_pub  # Store for later verification
                     session.responded_auth = True
-                    logger.debug(
+                    logger.bind(sensitive=True).debug(
                         f"Processed !ioauth from {nick}: {len(session.utxos)} UTXOs, "
                         f"cj_addr={cj_addr[:16]}..."
                     )
                 except Exception as e:
-                    logger.warning(f"Invalid !ioauth response from {nick}: {e}")
+                    logger.warning("Invalid !ioauth response from maker")
+                    logger.bind(sensitive=True).warning(
+                        "Invalid !ioauth response from {}: {}", nick, e
+                    )
                     failed_makers.append(nick)
                     del self.maker_sessions[nick]
             else:
@@ -1008,7 +1022,9 @@ class CoinJoinSession:
                     value = result.value
                     address = ""  # Not available from verification
                     scriptpubkey = utxo_meta.scriptpubkey or ""
-                    logger.debug(f"Neutrino-verified UTXO {txid}:{vout} = {value} sats")
+                    logger.bind(sensitive=True).debug(
+                        "Neutrino-verified UTXO {}:{} = {} sats", txid, vout, value
+                    )
                 else:
                     # Full node: direct UTXO lookup.
                     utxo_info = await self.backend.get_utxo(txid, vout)
@@ -1038,7 +1054,9 @@ class CoinJoinSession:
                     "blockheight": utxo_meta.blockheight,
                 }
             )
-            logger.debug(f"Added UTXO from {nick}: {txid}:{vout} = {value} sats")
+            logger.bind(sensitive=True).debug(
+                "Added UTXO from {}: {}:{} = {} sats", nick, txid, vout, value
+            )
 
         return _MakerUTXOVerificationOutcome()
 
@@ -1095,7 +1113,7 @@ class CoinJoinSession:
             if self.is_sweep:
                 # SWEEP MODE: Use ALL preselected UTXOs, preserve cj_amount from !fill
                 selected_utxos = self.preselected_utxos
-                logger.info(
+                logger.bind(sensitive=True).info(
                     f"Sweep mode: using all {len(selected_utxos)} UTXOs, "
                     f"total {preselected_total:,} sats"
                 )
@@ -1133,7 +1151,8 @@ class CoinJoinSession:
                 if residual < 0:
                     # Negative residual means the budget was insufficient
                     # This should only happen if there's a bug in the calculation
-                    logger.error(
+                    logger.error("Sweep calculation failed due to a negative residual")
+                    logger.bind(sensitive=True).error(
                         f"Sweep failed: negative residual of {residual} sats. "
                         f"This indicates a bug in cj_amount calculation. "
                         f"total_input={preselected_total}, cj_amount={self.cj_amount}, "
@@ -1148,7 +1167,7 @@ class CoinJoinSession:
                 actual_mining_fee = tx_fee + maker_txfee + residual
                 actual_fee_rate = actual_mining_fee / actual_tx_vsize if actual_tx_vsize > 0 else 0
 
-                logger.info(
+                logger.bind(sensitive=True).info(
                     f"Sweep: cj_amount={self.cj_amount:,} (from !fill), "
                     f"maker_fees={total_maker_fee:,}, "
                     f"tx_fee={tx_fee:,} (budget), "
@@ -1163,10 +1182,9 @@ class CoinJoinSession:
                 # calculate_sweep_amount. A larger residual can occur when maker
                 # fees decrease after the sweep amount is fixed. Both go to miners.
                 if residual > 100:
-                    logger.warning(
-                        f"Sweep: redirecting {residual} sats of residual value to miners. "
-                        "This usually means maker fees decreased after the sweep amount "
-                        "was fixed."
+                    logger.warning("Sweep residual value is being redirected to miners")
+                    logger.bind(sensitive=True).warning(
+                        "Sweep residual detail: {} sats redirected to miners", residual
                     )
 
                 # The residual becomes additional miner fee (no taker change in sweep).
@@ -1178,7 +1196,10 @@ class CoinJoinSession:
                             "Sweep fee budget must be positive after order selection; "
                             "retry the CoinJoin."
                         )
-                        logger.error(f"Sweep failed: {self.last_failure_reason}")
+                        logger.error("Sweep fee budget is invalid")
+                        logger.bind(sensitive=True).error(
+                            "Sweep fee budget detail: {}", self.last_failure_reason
+                        )
                         return False
 
                     tolerance = self.config.max_sweep_fee_change
@@ -1194,7 +1215,10 @@ class CoinJoinSession:
                             f"tolerance {tolerance:.2f}. "
                             "Retry the CoinJoin with different makers."
                         )
-                        logger.error(f"Sweep failed: {self.last_failure_reason}")
+                        logger.error("Sweep fee estimate differs from the selected budget")
+                        logger.bind(sensitive=True).error(
+                            "Sweep fee estimate detail: {}", self.last_failure_reason
+                        )
                         return False
 
                 # The budget was estimated from an assumed maker input count. If
@@ -1204,7 +1228,8 @@ class CoinJoinSession:
                 # (before signing) instead of broadcasting a doomed transaction.
                 fee_rate_floor = self._minimum_fee_rate_sat_vb or self.config.min_fee_rate_sat_vb
                 if not fee_rate_meets_minimum(actual_mining_fee, actual_tx_vsize, fee_rate_floor):
-                    logger.error(
+                    logger.error("Sweep fee rate is below the required minimum")
+                    logger.bind(sensitive=True).error(
                         f"Sweep failed: effective fee rate {actual_fee_rate:.2f} sat/vB "
                         f"is below the required minimum of {fee_rate_floor:.2f} sat/vB "
                         f"({actual_mining_fee:,} sats over ~{actual_tx_vsize} vB). Makers "
@@ -1224,7 +1249,7 @@ class CoinJoinSession:
                 if preselected_total >= required:
                     # Pre-selected UTXOs are sufficient
                     selected_utxos = self.preselected_utxos
-                    logger.info(
+                    logger.bind(sensitive=True).info(
                         f"Using pre-selected UTXOs: {len(selected_utxos)} UTXOs, "
                         f"total {preselected_total:,} sats (need {required:,})"
                     )
@@ -1237,11 +1262,18 @@ class CoinJoinSession:
                             f"have {preselected_total:,} sats, need {required:,} sats. "
                             "Add another --input-utxo or reduce the CoinJoin amount."
                         )
-                        logger.error(self.last_failure_reason)
+                        logger.error("Explicit input UTXOs are insufficient after negotiated fees")
+                        logger.bind(sensitive=True).error(
+                            "Explicit input UTXO funding detail: {}", self.last_failure_reason
+                        )
                         return False
                     logger.warning(
-                        f"Pre-selected UTXOs insufficient: have {preselected_total:,}, "
-                        f"need {required:,}. Selecting additional UTXOs..."
+                        "Pre-selected UTXOs are insufficient, selecting additional inputs"
+                    )
+                    logger.bind(sensitive=True).warning(
+                        "Pre-selected UTXO funding detail: have {:,}, need {:,}",
+                        preselected_total,
+                        required,
                     )
                     # Skip inputs locked by another in-flight round; our own
                     # already-reserved preselected UTXOs are force-included.
@@ -1287,13 +1319,15 @@ class CoinJoinSession:
             if expected_change > BITCOIN_DUST_THRESHOLD:
                 taker_change_address = self.wallet.get_new_internal_address(mixdepth)
                 self.taker_change_address = taker_change_address
-                logger.debug(f"Generated change address (expected: {expected_change} sats)")
+                logger.bind(sensitive=True).debug(
+                    "Generated change address (expected: {} sats)", expected_change
+                )
             else:
                 # No change output needed (sweep or change is dust)
                 taker_change_address = ""  # Will be ignored by tx builder
                 self.taker_change_address = ""
                 if expected_change > 0:
-                    logger.debug(
+                    logger.bind(sensitive=True).debug(
                         f"No change address needed: change {expected_change} sats "
                         f"is at or below the taker change threshold "
                         f"({BITCOIN_DUST_THRESHOLD})"
@@ -1343,34 +1377,40 @@ class CoinJoinSession:
                 locktime=locktime,
             )
 
-            logger.debug(f"Built unsigned tx: {len(self.unsigned_tx)} bytes")
-            logger.debug(f"Unsigned transaction hex: {self.unsigned_tx.hex()}")
+            logger.bind(sensitive=True).debug("Built unsigned tx: {} bytes", len(self.unsigned_tx))
+            logger.bind(sensitive=True).debug(
+                "Unsigned transaction hex: {}", self.unsigned_tx.hex()
+            )
 
             # Log final transaction details
-            logger.debug(
+            logger.bind(sensitive=True).debug(
                 f"Final CoinJoin transaction details: "
                 f"{num_inputs} inputs ({num_taker_inputs} taker, {num_maker_inputs} maker), "
                 f"{num_outputs} outputs"
             )
-            logger.debug(
+            logger.bind(sensitive=True).debug(
                 f"Transaction amounts: cj_amount={self.cj_amount:,} sats, "
                 f"total_maker_fees={total_maker_fee:,} sats, "
                 f"mining_fee={tx_fee:,} sats "
                 f"({self._fee_rate:.2f} sat/vB)"
             )
-            logger.debug(f"Participating makers: {', '.join(self.maker_sessions.keys())}")
+            logger.bind(sensitive=True).debug(
+                f"Participating makers: {', '.join(self.maker_sessions.keys())}"
+            )
 
             if self._minimum_fee_rate_sat_vb is not None:
                 fee_error = self._verify_unsigned_minimum_miner_fee()
                 if fee_error is not None:
                     self.last_failure_reason = fee_error
-                    logger.error(fee_error)
+                    logger.error("Unsigned transaction does not meet the minimum miner fee")
+                    logger.bind(sensitive=True).error("Minimum miner fee detail: {}", fee_error)
                     return False
 
             return True
 
         except Exception as e:
-            logger.error(f"Failed to build transaction: {e}")
+            logger.error("Failed to build transaction")
+            logger.bind(sensitive=True).error("Transaction build error detail: {}", e)
             return False
 
     def _estimate_tx_fee(
@@ -1436,7 +1476,7 @@ class CoinJoinSession:
             block_target=self.config.min_fee_block_target,
             max_fee_rate=self.config.max_fee_rate_sat_vb,
         )
-        logger.info(
+        logger.bind(sensitive=True).info(
             f"Resolved minimum CoinJoin miner fee rate: {self._minimum_fee_rate_sat_vb:.2f} sat/vB"
         )
 
@@ -1449,7 +1489,7 @@ class CoinJoinSession:
                     f"minimum {self._minimum_fee_rate_sat_vb:.2f} sat/vB"
                 )
             enforce_fee_rate_cap(self._fee_rate, self.config.max_fee_rate_sat_vb, source="manual")
-            logger.info(f"Using manual fee rate: {self._fee_rate:.2f} sat/vB")
+            logger.bind(sensitive=True).info("Using manual fee rate: {:.2f} sat/vB", self._fee_rate)
             self._apply_fee_randomization()
             return self._fee_rate
 
@@ -1464,7 +1504,7 @@ class CoinJoinSession:
                 )
             self._fee_rate = await self.backend.estimate_fee(self.config.fee_block_target)
             if self._fee_rate < self._minimum_fee_rate_sat_vb:
-                logger.info(
+                logger.bind(sensitive=True).info(
                     f"Estimated fee {self._fee_rate:.2f} sat/vB is below required minimum "
                     f"{self._minimum_fee_rate_sat_vb:.2f} sat/vB, using required minimum"
                 )
@@ -1472,7 +1512,7 @@ class CoinJoinSession:
             enforce_fee_rate_cap(
                 self._fee_rate, self.config.max_fee_rate_sat_vb, source="backend estimate"
             )
-            logger.info(
+            logger.bind(sensitive=True).info(
                 f"Fee estimation for {self.config.fee_block_target} blocks: "
                 f"{self._fee_rate:.2f} sat/vB"
             )
@@ -1484,7 +1524,7 @@ class CoinJoinSession:
             default_target = 3
             self._fee_rate = await self.backend.estimate_fee(default_target)
             if self._fee_rate < self._minimum_fee_rate_sat_vb:
-                logger.info(
+                logger.bind(sensitive=True).info(
                     f"Estimated fee {self._fee_rate:.2f} sat/vB is below required minimum "
                     f"{self._minimum_fee_rate_sat_vb:.2f} sat/vB, using required minimum"
                 )
@@ -1492,7 +1532,7 @@ class CoinJoinSession:
             enforce_fee_rate_cap(
                 self._fee_rate, self.config.max_fee_rate_sat_vb, source="backend estimate"
             )
-            logger.info(
+            logger.bind(sensitive=True).info(
                 f"Fee estimation for {default_target} blocks (default): {self._fee_rate:.2f} sat/vB"
             )
             self._apply_fee_randomization()
@@ -1500,7 +1540,7 @@ class CoinJoinSession:
 
         # 4. Neutrino backend without manual fee - fall back to 1.0 sat/vB
         fallback_rate = self._minimum_fee_rate_sat_vb
-        logger.warning(
+        logger.bind(sensitive=True).warning(
             f"Fee estimation is not available with the neutrino backend and no --fee-rate "
             f"was specified. Falling back to {fallback_rate} sat/vB."
         )
@@ -1561,13 +1601,15 @@ class CoinJoinSession:
                 self.config.max_fee_rate_sat_vb,
                 source="randomized",
             )
-            logger.info(
+            logger.bind(sensitive=True).info(
                 f"Randomized fee rate: {self._randomized_fee_rate:.2f} sat/vB "
                 f"(base={base_rate:.2f}, factor={self.config.tx_fee_factor})"
             )
         else:
             self._randomized_fee_rate = base_rate
-            logger.info(f"Fee rate randomization disabled (factor=0); using {base_rate:.2f} sat/vB")
+            logger.bind(sensitive=True).info(
+                "Fee rate randomization disabled (factor=0); using {:.2f} sat/vB", base_rate
+            )
 
     def _get_taker_cj_output_index(self) -> int | None:
         """
@@ -1612,7 +1654,8 @@ class CoinJoinSession:
             fee_error = self._verify_unsigned_minimum_miner_fee()
             if fee_error is not None:
                 self.last_failure_reason = fee_error
-                logger.error(fee_error)
+                logger.error("Unsigned transaction does not meet the minimum miner fee")
+                logger.bind(sensitive=True).error("Minimum miner fee detail: {}", fee_error)
                 return False
 
         # Encode transaction as base64 (expected by maker after decryption)
@@ -1651,12 +1694,13 @@ class CoinJoinSession:
             )
             append_history_entry(history_entry, data_dir=self.config.data_dir)
 
-            logger.debug(
+            logger.bind(sensitive=True).debug(
                 f"Recorded pre-broadcast history entry for CJ to {self.cj_destination[:20]}..."
                 + (" (no change)" if not self.taker_change_address else "")
             )
         except HistoryWriteError as e:
-            logger.error(f"Aborting coinjoin to prevent address reuse: {e}")
+            logger.error("Aborting CoinJoin to prevent address reuse")
+            logger.bind(sensitive=True).error("History write error detail: {}", e)
             return False
 
         # Send ENCRYPTED !tx to each maker
@@ -1705,7 +1749,8 @@ class CoinJoinSession:
         try:
             tx = deserialize_transaction(self.unsigned_tx)
         except Exception as e:
-            logger.error(f"Failed to deserialize transaction: {e}")
+            logger.error("Failed to deserialize transaction")
+            logger.bind(sensitive=True).error("Transaction deserialization detail: {}", e)
             return False
 
         # Build a map of input_index -> (txid_hex, vout)
@@ -1806,7 +1851,7 @@ class CoinJoinSession:
                             witness = [signature.hex(), pubkey.hex()]
 
                             sig_infos.append({"txid": txid, "vout": vout, "witness": witness})
-                            logger.debug(
+                            logger.bind(sensitive=True).debug(
                                 f"Verified signature from {nick} matches input {matched_input_idx} "
                                 f"({txid[:16]}...:{vout})"
                             )
@@ -1815,7 +1860,7 @@ class CoinJoinSession:
                                 f"Signature #{sig_idx + 1} from {nick} "
                                 "did not verify against any input"
                             )
-                            logger.debug(
+                            logger.bind(sensitive=True).debug(
                                 f"  Unverified sig pubkey={pubkey.hex()[:32]}..., "
                                 f"tried inputs={maker_input_indices}, "
                                 f"already matched={sorted(matched_indices)}"
@@ -1835,7 +1880,10 @@ class CoinJoinSession:
                     logger.debug(f"Processed {len(sig_infos)} verified signatures from {nick}")
 
                 except Exception as e:
-                    logger.warning(f"Invalid !sig response from {nick}: {e}")
+                    logger.warning("Invalid !sig response from maker")
+                    logger.bind(sensitive=True).warning(
+                        "Invalid !sig response from {}: {}", nick, e
+                    )
                     del self.maker_sessions[nick]
             else:
                 logger.warning(f"No !sig response from {nick}")
@@ -1856,7 +1904,8 @@ class CoinJoinSession:
             self.last_failure_reason = (
                 f"Missing or invalid signatures from maker(s): {', '.join(sorted(missing_makers))}"
             )
-            logger.error(
+            logger.error("Missing signatures from required makers")
+            logger.bind(sensitive=True).error(
                 f"Missing signatures from {len(missing_makers)} maker(s) "
                 f"whose inputs are in the transaction: {missing_makers}. "
                 f"Cannot proceed - transaction would be invalid."
@@ -1876,7 +1925,7 @@ class CoinJoinSession:
             self.tx_metadata,
         )
 
-        logger.info(f"Signed tx: {len(self.final_tx)} bytes")
+        logger.bind(sensitive=True).info("Signed tx: {} bytes", len(self.final_tx))
         return True
 
     async def _sign_our_inputs(self) -> list[dict[str, Any]]:
@@ -1921,7 +1970,10 @@ class CoinJoinSession:
                 # Find the input index in the transaction
                 utxo_key = (utxo.txid, utxo.vout)
                 if utxo_key not in input_index_map:
-                    logger.error(f"UTXO {utxo.txid}:{utxo.vout} not found in transaction inputs")
+                    logger.error("Selected UTXO was not found in transaction inputs")
+                    logger.bind(sensitive=True).error(
+                        "Missing selected UTXO: {}:{}", utxo.txid, utxo.vout
+                    )
                     continue
 
                 input_index = input_index_map[utxo_key]
@@ -1947,16 +1999,20 @@ class CoinJoinSession:
                     }
                 )
 
-                logger.debug(f"Signed input {input_index} for UTXO {utxo.txid}:{utxo.vout}")
+                logger.bind(sensitive=True).debug(
+                    "Signed input {} for UTXO {}:{}", input_index, utxo.txid, utxo.vout
+                )
 
             logger.info(f"Signed {len(signatures_info)} taker inputs")
             return signatures_info
 
         except TransactionSigningError as e:
-            logger.error(f"Signing error: {e}")
+            logger.error("Transaction signing error")
+            logger.bind(sensitive=True).error("Transaction signing error detail: {}", e)
             return []
         except Exception as e:
-            logger.error(f"Failed to sign transaction: {e}")
+            logger.error("Failed to sign transaction")
+            logger.bind(sensitive=True).error("Transaction signing error detail: {}", e)
             return []
 
     def _log_manual_csv_entry(
@@ -1998,13 +2054,16 @@ class CoinJoinSession:
             fieldnames = [f.name for f in fields(history_entry)]
             values = [str(getattr(history_entry, f)) for f in fieldnames]
 
-            logger.info("-" * 70)
-            logger.info("MANUAL CSV ENTRY - Add to history.csv if broadcasting manually:")
-            logger.info(f"txid: {txid}")
-            logger.info(f"CSV line: {','.join(values)}")
-            logger.info("-" * 70)
+            logger.info("Manual broadcast history entry generated")
+            sensitive_logger = logger.bind(sensitive=True)
+            sensitive_logger.info("-" * 70)
+            sensitive_logger.info("MANUAL CSV ENTRY - Add to history.csv if broadcasting manually:")
+            sensitive_logger.info(f"txid: {txid}")
+            sensitive_logger.info(f"CSV line: {','.join(values)}")
+            sensitive_logger.info("-" * 70)
         except Exception as e:
-            logger.warning(f"Failed to generate manual CSV entry: {e}")
+            logger.warning("Failed to generate manual CSV entry")
+            logger.bind(sensitive=True).warning("Manual CSV generation detail: {}", e)
 
     async def _revalidate_inputs_before_broadcast(self) -> tuple[bool, str]:
         """Recheck every known input against the current chain and mempool view."""
@@ -2075,7 +2134,8 @@ class CoinJoinSession:
 
         inputs_valid, validation_error = await self._revalidate_inputs_before_broadcast()
         if not inputs_valid:
-            logger.error(f"Refusing to broadcast after input revalidation: {validation_error}")
+            logger.error("Refusing to broadcast after input revalidation")
+            logger.bind(sensitive=True).error("Input revalidation detail: {}", validation_error)
             return ""
         if not self.renew_input_locks("broadcast transaction"):
             return ""
@@ -2118,17 +2178,23 @@ class CoinJoinSession:
             if success_count > 0:
                 self.broadcast_method = f"makers-unverified:{success_count}"
                 logger.info(
-                    f"!push delivered to {success_count}/{len(maker_nicks)} maker(s); "
-                    f"transaction {expected_txid} will be confirmed via block monitoring"
+                    "!push delivery accepted; transaction will be confirmed via block monitoring"
+                )
+                logger.bind(sensitive=True).info(
+                    "!push delivered to {}/{} maker(s); transaction {} will be confirmed via block "
+                    "monitoring",
+                    success_count,
+                    len(maker_nicks),
+                    expected_txid,
                 )
                 return expected_txid
             # Every send_privmsg raised – fall through to policy-specific handling
             # (NOT_SELF will return ""; others may self-broadcast).
             logger.warning("All !push sends failed (no mempool access path)")
             if policy == BroadcastPolicy.NOT_SELF:
-                logger.error(
-                    "NOT_SELF policy: all maker !push attempts failed. "
-                    f"Transaction hex (for manual broadcast): {self.final_tx.hex()}"
+                logger.error("NOT_SELF policy: all maker !push attempts failed")
+                logger.bind(sensitive=True).error(
+                    "Transaction hex for manual broadcast: {}", self.final_tx.hex()
                 )
                 return ""
             return await self._broadcast_self(fallback_reason="peer_delivery_failed")
@@ -2168,9 +2234,14 @@ class CoinJoinSession:
                     )
                 else:
                     logger.info(
-                        f"Broadcast sent to {success_count}/{peer_count} makers "
-                        f"(MULTIPLE_PEERS policy). Transaction {expected_txid} will be "
-                        "confirmed via block monitoring (Neutrino cannot verify mempool)"
+                        "Broadcast sent to makers and will be confirmed via block monitoring"
+                    )
+                    logger.bind(sensitive=True).info(
+                        "Broadcast sent to {}/{} makers. "
+                        "Transaction {} will be confirmed via block monitoring",
+                        success_count,
+                        peer_count,
+                        expected_txid,
                     )
                 return expected_txid
 
@@ -2192,10 +2263,9 @@ class CoinJoinSession:
                     return txid
 
             # No fallback for NOT_SELF - log the transaction for manual broadcast
-            logger.error(
-                "All maker broadcast attempts failed. "
-                "Transaction hex (for manual broadcast): "
-                f"{self.final_tx.hex()}"
+            logger.error("All maker broadcast attempts failed")
+            logger.bind(sensitive=True).error(
+                "Transaction hex for manual broadcast: {}", self.final_tx.hex()
             )
             return ""
 
@@ -2242,7 +2312,8 @@ class CoinJoinSession:
                 )
                 return True
             except Exception as e:
-                logger.warning(f"Failed to send !push to {nick}: {e}")
+                logger.warning("Failed to send !push to maker")
+                logger.bind(sensitive=True).warning("!push delivery detail for {}: {}", nick, e)
                 return False
 
         # Send to all makers concurrently
@@ -2269,23 +2340,25 @@ class CoinJoinSession:
         if fallback_reason:
             self.broadcast_fallback_reason = fallback_reason
             logger.warning(
-                "PRIVACY WARNING: {} policy is using local self-broadcast for transaction {} "
-                "because {}. The local backend can associate this CoinJoin with this client.",
+                "PRIVACY WARNING: {} policy is using local self-broadcast because {}. "
+                "The local backend can associate this CoinJoin with this client.",
                 self.broadcast_policy or self.config.tx_broadcast.value,
-                expected_txid,
                 fallback_reason,
+            )
+            logger.bind(sensitive=True).warning(
+                "Self-broadcast fallback transaction: {}", expected_txid
             )
         try:
             txid = await self.backend.broadcast_transaction(self.final_tx.hex())
             if not isinstance(txid, str) or txid.lower() != expected_txid:
-                logger.error(
-                    "Local backend returned unexpected txid {!r}; expected {}",
-                    txid,
-                    expected_txid,
+                logger.error("Local backend returned an unexpected transaction ID")
+                logger.bind(sensitive=True).error(
+                    "Local backend returned txid {!r}; expected {}", txid, expected_txid
                 )
                 return ""
             self.broadcast_method = "self-fallback" if fallback_reason else "self"
-            logger.info(f"Broadcast via self successful: {txid}")
+            logger.info("Broadcast via self successful")
+            logger.bind(sensitive=True).info("Broadcast via self successful: {}", txid)
             return expected_txid
         except Exception as e:
             error_str = str(e).lower()
@@ -2303,9 +2376,9 @@ class CoinJoinSession:
 
             if any(ind in error_str for ind in already_broadcast_indicators):
                 logger.info(
-                    f"Self-broadcast rejected ({e}), checking if transaction "
-                    "was already broadcast by a maker..."
+                    "Self-broadcast rejected, checking whether a maker broadcast the transaction"
                 )
+                logger.bind(sensitive=True).info("Self-broadcast rejection detail: {}", e)
 
                 # Calculate expected txid and verify the CoinJoin output exists
                 # Get taker's CJ output index for verification
@@ -2330,7 +2403,10 @@ class CoinJoinSession:
 
                 if cj_verified:
                     self.broadcast_method = "self-fallback" if fallback_reason else "self"
-                    logger.info(f"Transaction was already broadcast by maker: {expected_txid}")
+                    logger.info("Transaction was already broadcast by a maker")
+                    logger.bind(sensitive=True).info(
+                        "Transaction already broadcast by maker: {}", expected_txid
+                    )
                     return expected_txid
 
                 # Not verified - could be a race condition or actual failure
@@ -2345,13 +2421,18 @@ class CoinJoinSession:
 
                 if cj_verified:
                     self.broadcast_method = "self-fallback" if fallback_reason else "self"
-                    logger.info(f"Transaction confirmed after propagation delay: {expected_txid}")
+                    logger.info("Transaction confirmed after propagation delay")
+                    logger.bind(sensitive=True).info(
+                        "Transaction confirmed after propagation delay: {}", expected_txid
+                    )
                     return expected_txid
 
-                logger.warning(f"Self-broadcast failed and transaction not found: {e}")
+                logger.warning("Self-broadcast failed and transaction was not found")
+                logger.bind(sensitive=True).warning("Self-broadcast failure detail: {}", e)
                 return ""
 
-            logger.warning(f"Self-broadcast failed: {e}")
+            logger.warning("Self-broadcast failed")
+            logger.bind(sensitive=True).warning("Self-broadcast failure detail: {}", e)
             return ""
 
     async def _broadcast_via_maker(self, maker_nick: str, tx_b64: str) -> str:
@@ -2403,7 +2484,8 @@ class CoinJoinSession:
                 async with asyncio.timeout(remaining):
                     current_height = await self.backend.get_block_height()
             except Exception as e:
-                logger.debug(f"Could not get block height: {e}, proceeding without hint")
+                logger.debug("Could not get block height, proceeding without a hint")
+                logger.bind(sensitive=True).debug("Block height lookup detail: {}", e)
                 current_height = None
 
             # Get taker's CJ output index for verification
@@ -2427,16 +2509,22 @@ class CoinJoinSession:
                             tx = await self.backend.get_transaction(expected_txid)
                         except Exception as e:
                             logger.debug(
-                                f"Exact transaction lookup failed for {expected_txid}: {e}; "
-                                "trying output verification"
+                                "Exact transaction lookup failed, trying output verification"
+                            )
+                            logger.bind(sensitive=True).debug(
+                                "Exact transaction lookup failed for {}: {}", expected_txid, e
                             )
                             tx = None
                         if tx is not None and tx.txid == expected_txid:
                             self.broadcast_method = f"maker:{maker_nick}"
                             total_time = time.monotonic() - start_time
-                            logger.info(
-                                f"Transaction broadcast via {maker_nick} detected in mempool: "
-                                f"{expected_txid} (total: {total_time:.2f}s)"
+                            logger.info("Transaction broadcast via maker detected in mempool")
+                            logger.bind(sensitive=True).info(
+                                "Transaction broadcast via {} detected in mempool: {} "
+                                "(total: {:.2f}s)",
+                                maker_nick,
+                                expected_txid,
+                                total_time,
                             )
                             return expected_txid
 
@@ -2463,9 +2551,13 @@ class CoinJoinSession:
                         if cj_verified and change_verified:
                             self.broadcast_method = f"maker:{maker_nick}"
                             total_time = time.monotonic() - start_time
-                            logger.info(
-                                f"Transaction broadcast via {maker_nick} confirmed on chain: "
-                                f"{expected_txid} (total: {total_time:.2f}s)"
+                            logger.info("Transaction broadcast via maker confirmed on chain")
+                            logger.bind(sensitive=True).info(
+                                "Transaction broadcast via {} confirmed on chain: {} "
+                                "(total: {:.2f}s)",
+                                maker_nick,
+                                expected_txid,
+                                total_time,
                             )
                             return expected_txid
                 except TimeoutError:
@@ -2478,12 +2570,18 @@ class CoinJoinSession:
 
             # Could not verify broadcast
             total_time = time.monotonic() - start_time
-            logger.debug(
-                f"Could not confirm broadcast via {maker_nick} - "
-                f"transaction {expected_txid} was not visible within {total_time:.2f}s"
+            logger.debug("Could not confirm broadcast via maker within the timeout")
+            logger.bind(sensitive=True).debug(
+                "Could not confirm broadcast via {}: transaction {} was not visible within {:.2f}s",
+                maker_nick,
+                expected_txid,
+                total_time,
             )
             return ""
 
         except Exception as e:
-            logger.warning(f"Broadcast via maker {maker_nick} failed: {e}")
+            logger.warning("Broadcast via maker failed")
+            logger.bind(sensitive=True).warning(
+                "Broadcast via maker {} failure detail: {}", maker_nick, e
+            )
             return ""

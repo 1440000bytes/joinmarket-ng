@@ -8,6 +8,7 @@ import struct
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from loguru import logger
 
 from maker.fidelity import (
     CERT_EXPIRY_BLOCKS,
@@ -625,6 +626,38 @@ class TestFindFidelityBonds:
 
         bonds = await find_fidelity_bonds(mock_wallet)
         assert bonds == []
+
+    @pytest.mark.asyncio
+    async def test_unconfirmed_bond_outpoint_log_is_sensitive(self):
+        """Fidelity bond outpoints must not reach standard log sinks."""
+        txid = "ab" * 32
+        mock_utxo = MagicMock()
+        mock_utxo.path = "m/84'/0'/0'/2/0:1748736000"
+        mock_utxo.value = 100_000_000
+        mock_utxo.confirmations = 0
+        mock_utxo.height = None
+        mock_utxo.address = "bcrt1qsensitivebond"
+        mock_utxo.txid = txid
+        mock_utxo.vout = 7
+        mock_wallet = MagicMock()
+        mock_wallet.data_dir = None
+        mock_wallet.utxo_cache = {FIDELITY_BOND_MIXDEPTH: [mock_utxo]}
+
+        records: list[tuple[str, dict[str, object]]] = []
+        handler_id = logger.add(
+            lambda message: records.append(
+                (message.record["message"], dict(message.record["extra"]))
+            )
+        )
+        try:
+            bonds = await find_fidelity_bonds(mock_wallet)
+        finally:
+            logger.remove(handler_id)
+
+        assert bonds == []
+        bond_records = [record for record in records if f"{txid}:7" in record[0]]
+        assert len(bond_records) == 1
+        assert bond_records[0][1]["sensitive"] is True
 
     @pytest.mark.asyncio
     async def test_finds_external_bond_with_certificate(self, test_pubkey):

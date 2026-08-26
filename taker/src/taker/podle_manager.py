@@ -145,12 +145,16 @@ class PoDLEManager:
                     commitment_hex = podle.commitment.hex()
 
                     if commitment_hex in self.used_commitments:
-                        logger.debug(f"PoDLE commitment for {utxo_str} index {index} already used")
+                        logger.debug("PoDLE commitment retry index already used")
+                        logger.bind(sensitive=True).debug(
+                            "PoDLE commitment for {} index {} already used", utxo_str, index
+                        )
                         continue
 
                     if blacklist is not None and blacklist.is_blacklisted(commitment_hex):
-                        logger.debug(
-                            f"PoDLE commitment for {utxo_str} index {index} is blacklisted"
+                        logger.debug("PoDLE commitment retry index is blacklisted")
+                        logger.bind(sensitive=True).debug(
+                            "PoDLE commitment for {} index {} is blacklisted", utxo_str, index
                         )
                         # Also persist to used_commitments so we don't regenerate
                         # the same candidate next call.
@@ -162,9 +166,13 @@ class PoDLEManager:
                     self.used_commitments.add(commitment_hex)
                     self._save()
 
-                    logger.info(
-                        f"Generated fresh PoDLE for {utxo_str} using index {index} "
-                        f"(utxo value={utxo.value}, confs={utxo.confirmations})"
+                    logger.info("Generated fresh PoDLE commitment")
+                    logger.bind(sensitive=True).info(
+                        "Generated fresh PoDLE for {} using index {} (utxo value={}, confs={})",
+                        utxo_str,
+                        index,
+                        utxo.value,
+                        utxo.confirmations,
                     )
 
                     return ExtendedPoDLECommitment(
@@ -172,12 +180,21 @@ class PoDLEManager:
                         scriptpubkey=utxo.scriptpubkey,
                         blockheight=utxo.height,
                     )
-                except Exception as e:
-                    logger.warning(f"Failed to generate PoDLE for {utxo_str} index {index}: {e}")
+                except Exception as exc:
+                    logger.warning("Failed to generate PoDLE commitment")
+                    logger.bind(sensitive=True).warning(
+                        "Failed to generate PoDLE for {} index {}: {}", utxo_str, index, exc
+                    )
                     continue
 
             # All indices exhausted for this UTXO
-            logger.debug(f"Skipping {utxo.txid}:{utxo.vout} - all {max_retries} indices used")
+            logger.debug("Skipping UTXO after all PoDLE retry indices were used")
+            logger.bind(sensitive=True).debug(
+                "Skipping {}:{} after all {} PoDLE retry indices were used",
+                utxo.txid,
+                utxo.vout,
+                max_retries,
+            )
 
         logger.error("Failed to generate any fresh PoDLE commitment from available UTXOs")
         return None

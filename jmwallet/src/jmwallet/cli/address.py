@@ -65,6 +65,7 @@ class _AddressContext:
     bip39_passphrase: str
     backend_settings: ResolvedBackendSettings
     creation_height: int | None
+    mixdepth_count: int
     max_sats_freeze_reuse: int
     reconstruct_history: bool
 
@@ -155,6 +156,7 @@ def _resolve_address_context(options: _AddressOptions) -> _AddressContext:
         bip39_passphrase=resolved.bip39_passphrase,
         backend_settings=backend_settings,
         creation_height=resolved.creation_height,
+        mixdepth_count=settings.wallet.mixdepth_count,
         max_sats_freeze_reuse=settings.wallet.max_sats_freeze_reuse,
         reconstruct_history=settings.wallet.reconstruct_history,
     )
@@ -200,7 +202,7 @@ async def _build_wallet(c: _AddressContext) -> tuple[WalletService, str]:
         mnemonic=c.mnemonic,
         backend=backend,
         network=bs.network,
-        mixdepth_count=5,
+        mixdepth_count=c.mixdepth_count,
         passphrase=c.bip39_passphrase,
         data_dir=bs.data_dir,
         max_sats_freeze_reuse=c.max_sats_freeze_reuse,
@@ -223,7 +225,8 @@ def _require_owned(wallet: WalletService, address: str) -> int:
     """Return the mixdepth of ``address`` or exit if it is not ours."""
     path = wallet._find_address_path(address)
     if path is None:
-        logger.error(f"Address does not belong to this wallet: {address}")
+        logger.error("Address does not belong to this wallet")
+        logger.bind(sensitive=True).error(f"Address does not belong to this wallet: {address}")
         raise typer.Exit(1)
     return path[0]
 
@@ -231,7 +234,7 @@ def _require_owned(wallet: WalletService, address: str) -> int:
 @address_app.command("new")
 def address_new(
     ctx: typer.Context,
-    mixdepth: Annotated[int, typer.Argument(help="Mixdepth (0-4)")] = 0,
+    mixdepth: Annotated[int, typer.Argument(help="Configured mixdepth")] = 0,
     label: Annotated[
         str, typer.Option("--label", "-l", help="Optional label to reserve the address under")
     ] = "",

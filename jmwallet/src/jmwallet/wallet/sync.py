@@ -224,7 +224,10 @@ class WalletSyncMixin:
         try:
             store.mark_address_used(address, origin)
         except Exception as exc:  # pragma: no cover - defensive
-            logger.warning(f"Could not persist used address {address[:12]}...: {exc}")
+            logger.warning("Could not persist used address")
+            logger.bind(sensitive=True).warning(
+                f"Could not persist used address {address[:12]}...: {exc}"
+            )
 
     def _record_history_addresses(
         self, addresses: Iterable[str], origin: str | None = None
@@ -243,7 +246,8 @@ class WalletSyncMixin:
         try:
             store.mark_addresses_used(new_addresses, origin)
         except Exception as exc:  # pragma: no cover - defensive
-            logger.warning(f"Could not persist {len(new_addresses)} used addresses: {exc}")
+            logger.warning(f"Could not persist {len(new_addresses)} used addresses")
+            logger.bind(sensitive=True).warning("Could not persist used address details: {}", exc)
 
     def _clear_reconstruction_cursor(self) -> None:
         """Invalidate incremental history state after widening chain coverage."""
@@ -562,7 +566,9 @@ class WalletSyncMixin:
             try:
                 tx = await self.backend.get_transaction(txid)
             except Exception as exc:  # pragma: no cover - backend/network dependent
-                logger.debug(f"Could not fetch tx {txid[:16]}... for labels: {exc}")
+                logger.bind(sensitive=True).debug(
+                    f"Could not fetch tx {txid[:16]}... for labels: {exc}"
+                )
                 continue
             fetched += 1
             if tx is None or not tx.raw:
@@ -570,7 +576,9 @@ class WalletSyncMixin:
             try:
                 analysis = analyze_coinjoin_outputs(parse_transaction(tx.raw).outputs)
             except Exception as exc:  # pragma: no cover - defensive
-                logger.debug(f"Could not analyze tx {txid[:16]}... for labels: {exc}")
+                logger.bind(sensitive=True).debug(
+                    f"Could not analyze tx {txid[:16]}... for labels: {exc}"
+                )
                 continue
             for utxo in utxos:
                 origin = classify_imported_output(
@@ -805,7 +813,7 @@ class WalletSyncMixin:
                         locktime=locktime,  # Store locktime for P2WSH signing
                     )
                     utxos.append(utxo_info)
-                    logger.info(
+                    logger.bind(sensitive=True).info(
                         f"Found fidelity bond UTXO: {utxo.txid}:{utxo.vout} "
                         f"value={utxo.value} locktime={locktime}"
                     )
@@ -882,7 +890,7 @@ class WalletSyncMixin:
             if not await descriptor_backend.is_wallet_setup(
                 expected_descriptor_count=expected_count
             ):
-                logger.info(
+                logger.bind(sensitive=True).info(
                     "Descriptor wallet not initialised; running setup before bond discovery"
                 )
                 await self.setup_descriptor_wallet(rescan=False)
@@ -1657,7 +1665,7 @@ class WalletSyncMixin:
                         locktime=locktime,
                     )
                     fidelity_bond_utxos.append(utxo_info)
-                    logger.info(
+                    logger.bind(sensitive=True).info(
                         f"Found fidelity bond UTXO: {utxo_info.txid}:{utxo_info.vout} "
                         f"value={utxo_info.value} locktime={locktime} index={index}"
                     )
@@ -1676,7 +1684,8 @@ class WalletSyncMixin:
                 )
 
             if path_info is None:
-                logger.warning(f"Could not parse path from descriptor: {desc}")
+                logger.warning("Could not parse path from descriptor")
+                logger.bind(sensitive=True).warning(f"Could not parse path from descriptor: {desc}")
                 continue
 
             mixdepth, change, index = path_info
@@ -1695,7 +1704,7 @@ class WalletSyncMixin:
             if change == FIDELITY_BOND_BRANCH and source_address:
                 bond_info = self._resolve_bond_locktime(source_address.lower())
                 if bond_info is None:
-                    logger.warning(
+                    logger.bind(sensitive=True).warning(
                         f"Fidelity bond address {source_address[:20]}... found without "
                         "locktime, skipping"
                     )
@@ -1760,12 +1769,12 @@ class WalletSyncMixin:
         total_value = sum(sum(u.value for u in utxos) for utxos in result.values())
         bond_count = len(fidelity_bond_utxos)
         if bond_count > 0:
-            logger.info(
+            logger.bind(sensitive=True).info(
                 f"Descriptor sync complete: {total_utxos} UTXOs "
                 f"({bond_count} fidelity bond(s)), {format_amount(total_value)} total"
             )
         else:
-            logger.info(
+            logger.bind(sensitive=True).info(
                 f"Descriptor sync complete: {total_utxos} UTXOs, {format_amount(total_value)} total"
             )
 
@@ -2147,7 +2156,9 @@ class WalletSyncMixin:
                 bond_address_to_info[addr_lower] = (locktime, index)
                 self.address_cache[addr_lower] = (0, FIDELITY_BOND_BRANCH, index)
                 self.fidelity_bond_locktime_cache[addr_lower] = locktime
-            logger.debug(f"Registered {len(bond_address_to_info)} fidelity bond addresses for sync")
+            logger.bind(sensitive=True).debug(
+                f"Registered {len(bond_address_to_info)} fidelity bond addresses for sync"
+            )
 
         for utxo in all_utxos:
             # Normalize address to lowercase for consistent comparison
@@ -2174,7 +2185,7 @@ class WalletSyncMixin:
                     locktime=locktime,
                 )
                 fidelity_bond_utxos.append(utxo_info)
-                logger.debug(
+                logger.bind(sensitive=True).debug(
                     f"Recognized fidelity bond UTXO: {address[:20]}... "
                     f"value={utxo.value} locktime={locktime}"
                 )
@@ -2214,7 +2225,7 @@ class WalletSyncMixin:
                             locktime=cached_locktime,
                         )
                         fidelity_bond_utxos.append(utxo_info)
-                        logger.debug(
+                        logger.bind(sensitive=True).debug(
                             f"Recognized P2WSH as fidelity bond from registry: "
                             f"{address[:20]}... locktime={cached_locktime}"
                         )
@@ -2256,7 +2267,7 @@ class WalletSyncMixin:
                         fidelity_bond_utxos.append(utxo_info)
                         if address not in canonically_recognized_bond_addresses:
                             canonically_recognized_bond_addresses.add(address)
-                            logger.warning(
+                            logger.bind(sensitive=True).warning(
                                 f"Recognized fidelity bond address {address[:20]}... "
                                 f"(locktime={canonical_locktime}) via canonical derivation; "
                                 "it was not in the bond registry and will be self-registered"
@@ -2264,9 +2275,9 @@ class WalletSyncMixin:
                         continue
                     # Genuinely unknown P2WSH (not one of our fidelity bonds).
                     unknown_p2wsh_count += 1
-                    logger.trace(f"Skipping unknown P2WSH address {address}")
+                    logger.bind(sensitive=True).trace(f"Skipping unknown P2WSH address {address}")
                     continue
-                logger.debug(f"Unknown address {address}, skipping")
+                logger.bind(sensitive=True).debug(f"Unknown address {address}, skipping")
                 continue
 
             mixdepth, change, index = path_info
@@ -2295,14 +2306,14 @@ class WalletSyncMixin:
                         locktime=bond_locktime,
                     )
                     fidelity_bond_utxos.append(utxo_info)
-                    logger.debug(
+                    logger.bind(sensitive=True).debug(
                         f"Recognized fidelity bond from cache: "
                         f"{address[:20]}... locktime={bond_locktime} index={index}"
                     )
                     continue
                 else:
                     # Fidelity bond address without locktime - skip with warning
-                    logger.warning(
+                    logger.bind(sensitive=True).warning(
                         f"Fidelity bond address {address[:20]}... found without locktime, skipping"
                     )
                     continue
@@ -2447,13 +2458,18 @@ class WalletSyncMixin:
                 try:
                     infos: list[dict | None] = await batch_lookup(addresses_list)
                 except Exception as e:
-                    logger.debug(f"batch_get_address_info failed, falling back to serial: {e}")
+                    logger.debug("batch_get_address_info failed, falling back to serial")
+                    logger.bind(sensitive=True).debug(
+                        "batch_get_address_info failure detail: {}", e
+                    )
                     infos = []
                     for address in addresses_list:
                         try:
                             infos.append(await get_address_info(address))
                         except Exception as inner:
-                            logger.trace(f"getaddressinfo failed for {address[:20]}...: {inner}")
+                            logger.bind(sensitive=True).trace(
+                                "getaddressinfo failed for {}: {}", address, inner
+                            )
                             infos.append(None)
             else:
                 infos = []
@@ -2461,7 +2477,9 @@ class WalletSyncMixin:
                     try:
                         infos.append(await get_address_info(address))
                     except Exception as e:
-                        logger.trace(f"getaddressinfo failed for {address[:20]}...: {e}")
+                        logger.bind(sensitive=True).trace(
+                            "getaddressinfo failed for {}: {}", address, e
+                        )
                         infos.append(None)
 
             resolved = 0
