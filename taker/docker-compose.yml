@@ -35,7 +35,6 @@ services:
         condition: service_started
     # Override command for different operations:
     # command: jm-taker coinjoin --amount 1000000
-    # command: jm-taker tumble /home/jm/.joinmarket-ng/schedule.json
     deploy:
       resources:
         limits:

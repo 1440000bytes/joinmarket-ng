@@ -27,6 +27,15 @@ def test_root_help_shows_completion_options() -> None:
     assert "--show-completion" in output
 
 
+def test_legacy_tumble_command_is_not_exposed() -> None:
+    help_result = runner.invoke(app, ["--help"], prog_name="jm-taker")
+    command_result = runner.invoke(app, ["tumble", "schedule.json"], prog_name="jm-taker")
+
+    assert "tumble" not in click.unstyle(help_result.stdout)
+    assert command_result.exit_code == 2
+    assert "No such command 'tumble'" in click.unstyle(command_result.output)
+
+
 def test_help_output_is_alphabetically_sorted() -> None:
     """Subcommands and options must be listed alphabetically in --help."""
     from jmcore.cli_help import find_unsorted_help
