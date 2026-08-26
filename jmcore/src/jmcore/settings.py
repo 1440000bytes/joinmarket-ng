@@ -790,6 +790,21 @@ class MakerSettings(BaseModel):
             "have been reserved and disclosed"
         ),
     )
+    identity_renewal_min_sec: int = Field(
+        default=43_200,
+        ge=60,
+        description="Minimum randomized maker identity renewal interval in seconds",
+    )
+    identity_renewal_max_sec: int = Field(
+        default=86_400,
+        ge=60,
+        description="Maximum randomized maker identity renewal interval in seconds",
+    )
+    identity_grace_sec: int = Field(
+        default=300,
+        ge=60,
+        description="Fixed grace period for retired maker identity continuations",
+    )
     pending_tx_timeout_min: int = Field(
         default=60,
         ge=10,
@@ -928,6 +943,13 @@ class MakerSettings(BaseModel):
             except InvalidOperation:
                 pass  # Let pydantic handle the validation error
         return v
+
+    @model_validator(mode="after")
+    def validate_identity_renewal(self) -> MakerSettings:
+        """Ensure the configured randomized renewal interval is non-empty."""
+        if self.identity_renewal_min_sec > self.identity_renewal_max_sec:
+            raise ValueError("identity_renewal_min_sec must not exceed identity_renewal_max_sec")
+        return self
 
 
 class TakerSettings(BaseModel):

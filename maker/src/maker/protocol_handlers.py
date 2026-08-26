@@ -36,6 +36,7 @@ from loguru import logger
 from maker.coinjoin import CoinJoinSession, CoinJoinState
 from maker.config import MakerConfig
 from maker.fidelity import FidelityBondInfo, create_fidelity_bond_proof
+from maker.generation import GenerationState
 from maker.maker_session import MakerSession, PendingSignedRound
 from maker.offers import OfferManager
 from maker.protocols import MakerBotProtocol
@@ -71,7 +72,7 @@ class ProtocolHandlersMixin:
     fidelity_bond: FidelityBondInfo | None
     current_block_height: int
     directory_clients: dict[str, DirectoryClient]
-    active_sessions: dict[str, MakerSession]
+    active_sessions: dict[tuple[int, str], MakerSession]
     offer_manager: OfferManager
     _message_deduplicator: MessageDeduplicator
     _message_rate_limiter: RateLimiter
@@ -82,7 +83,10 @@ class ProtocolHandlersMixin:
     _hp2_relay_broadcast_semaphore: asyncio.Semaphore
 
     async def _handle_message(
-        self: MakerBotProtocol, message: dict[str, Any], source: str = "unknown"
+        self: MakerBotProtocol,
+        message: dict[str, Any],
+        source: str = "unknown",
+        generation_id: int | None = None,
     ) -> None:
         """
         Handle incoming message from directory or direct connection.
@@ -92,13 +96,24 @@ class ProtocolHandlersMixin:
             source: Message source for logging (e.g., "dir:node1", "direct:alice")
         """
         try:
+            generation_id = self.current_generation_id if generation_id is None else generation_id
+            generation = self._generation(generation_id)
+            if (
+                generation is None
+                or generation.state is GenerationState.CLOSED
+                or (
+                    generation.grace_deadline is not None
+                    and time.monotonic() >= generation.grace_deadline
+                )
+            ):
+                return
             msg_type = message.get("type")
             line = message.get("line", "")
             authenticated_data = ""
 
             if msg_type == MessageType.PRIVMSG.value:
                 route = line.split(COMMAND_PREFIX, 2)
-                if len(route) != 3 or route[1] != self.nick:
+                if len(route) != 3 or route[1] != generation.nick_identity.nick:
                     return
                 authenticated, _command, authenticated_data = verify_signed_privmsg(
                     route[0], route[2].strip().lstrip("!"), ONION_HOSTID
@@ -132,7 +147,9 @@ class ProtocolHandlersMixin:
                     fill_args = authenticated_data.split()
                     if len(fill_args) >= 4:
                         first_arg = f"{fill_args[0]}:{fill_args[3].lower()}"
-                fingerprint = MessageDeduplicator.make_fingerprint(from_nick, command, first_arg)
+                fingerprint = MessageDeduplicator.make_fingerprint(
+                    f"{generation_id}:{from_nick}", command, first_arg
+                )
             elif msg_type == MessageType.PUBMSG.value:
                 # Parse the public message to check if it's an orderbook request
                 # Wire format: nick!PUBLIC!orderbook (COMMAND_PREFIX is the field separator)
@@ -153,7 +170,7 @@ class ProtocolHandlersMixin:
                 if not is_orderbook_request:
                     # For other public messages, use the whole message as fingerprint
                     fingerprint = MessageDeduplicator.make_fingerprint(
-                        from_nick, "pubmsg", line[len(from_nick) :]
+                        f"{generation_id}:{from_nick}", "pubmsg", line[len(from_nick) :]
                     )
                 else:
                     fingerprint = None
@@ -188,9 +205,9 @@ class ProtocolHandlersMixin:
 
             # Process the message
             if msg_type == MessageType.PRIVMSG.value:
-                await self._handle_privmsg(line, source=source)
+                await self._handle_privmsg(line, source=source, generation_id=generation_id)
             elif msg_type == MessageType.PUBMSG.value:
-                await self._handle_pubmsg(line, source=source)
+                await self._handle_pubmsg(line, source=source, generation_id=generation_id)
             elif msg_type == MessageType.PEERLIST.value:
                 logger.debug(f"Received peerlist: {line[:50]}...")
             else:
@@ -199,7 +216,9 @@ class ProtocolHandlersMixin:
         except Exception as e:
             logger.error(f"Failed to handle message: {e}")
 
-    async def _handle_pubmsg(self: MakerBotProtocol, line: str, source: str = "unknown") -> None:
+    async def _handle_pubmsg(
+        self: MakerBotProtocol, line: str, source: str = "unknown", generation_id: int | None = None
+    ) -> None:
         """
         Handle public message (e.g., !orderbook request).
 
@@ -208,6 +227,10 @@ class ProtocolHandlersMixin:
             source: Message source for logging (e.g., "dir:node1")
         """
         try:
+            generation_id = self.current_generation_id if generation_id is None else generation_id
+            generation = self._generation(generation_id)
+            if generation is None:
+                return
             parts = line.split(COMMAND_PREFIX)
             if len(parts) < 3:
                 return
@@ -217,7 +240,7 @@ class ProtocolHandlersMixin:
             rest = COMMAND_PREFIX.join(parts[2:])
 
             # Ignore our own messages
-            if from_nick == self.nick:
+            if from_nick == generation.nick_identity.nick:
                 return
 
             # Strip leading "!" and get command
@@ -225,6 +248,11 @@ class ProtocolHandlersMixin:
 
             # Respond to orderbook requests with PRIVMSG (including bond if available)
             if to_nick == "PUBLIC" and command == "orderbook":
+                if (
+                    generation_id != self.current_generation_id
+                    or generation.state is not GenerationState.ACCEPTING
+                ):
+                    return
                 # Apply rate limiting to prevent spam attacks
                 if not self._orderbook_rate_limiter.check(from_nick):
                     violations = self._orderbook_rate_limiter.get_violation_count(from_nick)
@@ -257,7 +285,7 @@ class ProtocolHandlersMixin:
                 logger.info(
                     f"Received !orderbook request from {from_nick}, sending offers via PRIVMSG"
                 )
-                await self._send_offers_to_taker(from_nick)
+                await self._send_offers_to_taker(from_nick, generation_id=generation_id)
             elif to_nick == "PUBLIC" and command.startswith("hp2"):
                 # hp2 via pubmsg = commitment broadcast for blacklisting
                 await self._handle_hp2_pubmsg(from_nick, command)
@@ -265,7 +293,9 @@ class ProtocolHandlersMixin:
         except Exception as e:
             logger.error(f"Failed to handle pubmsg: {e}")
 
-    async def _send_offers_to_taker(self, taker_nick: str) -> None:
+    async def _send_offers_to_taker(
+        self: MakerBotProtocol, taker_nick: str, generation_id: int | None = None
+    ) -> None:
         """Send offers to a specific taker via PRIVMSG, including fidelity bond if available.
 
         This is called when we receive a !orderbook request from a taker.
@@ -290,7 +320,16 @@ class ProtocolHandlersMixin:
             taker_nick: The nick of the taker requesting the orderbook
         """
         try:
-            for offer in self.current_offers:
+            generation_id = self.current_generation_id if generation_id is None else generation_id
+            generation = self._generation(generation_id)
+            if generation is None or generation.state is not GenerationState.ACCEPTING:
+                return
+            offers = (
+                self.current_offers
+                if generation_id == self.current_generation_id
+                else generation.current_offers
+            )
+            for offer in offers:
                 # Format offer data (parameters without the command)
                 order_type_str = offer.ordertype.value
                 data = f"{offer.oid} {offer.minsize} {offer.maxsize} {offer.txfee} {offer.cjfee}"
@@ -300,7 +339,7 @@ class ProtocolHandlersMixin:
                 if self.fidelity_bond is not None:
                     bond_proof = create_fidelity_bond_proof(
                         bond=self.fidelity_bond,
-                        maker_nick=self.nick,
+                        maker_nick=generation.nick_identity.nick,
                         taker_nick=taker_nick,  # Sign for THIS specific taker
                         current_block_height=self.current_block_height,
                     )
@@ -312,7 +351,7 @@ class ProtocolHandlersMixin:
                         )
 
                 # Send via all connected directory clients
-                for client in self.directory_clients.values():
+                for client in self._generation_clients(generation_id).values():
                     try:
                         # Send as PRIVMSG
                         # Format: taker_nick!maker_nick!<order_type> <data> <signature>
@@ -325,7 +364,10 @@ class ProtocolHandlersMixin:
             logger.error(f"Failed to send offers to taker {taker_nick}: {e}")
 
     async def _send_offers_via_direct_connection(
-        self, taker_nick: str, connection: TCPConnection
+        self: MakerBotProtocol,
+        taker_nick: str,
+        connection: TCPConnection,
+        generation_id: int | None = None,
     ) -> None:
         """Send offers to a taker via direct connection (not through directory).
 
@@ -341,7 +383,16 @@ class ProtocolHandlersMixin:
             connection: The direct TCP connection to send the response on
         """
         try:
-            for offer in self.current_offers:
+            generation_id = self.current_generation_id if generation_id is None else generation_id
+            generation = self._generation(generation_id)
+            if generation is None or generation.state is not GenerationState.ACCEPTING:
+                return
+            offers = (
+                self.current_offers
+                if generation_id == self.current_generation_id
+                else generation.current_offers
+            )
+            for offer in offers:
                 # Format offer data (parameters without the command)
                 order_type_str = offer.ordertype.value
                 data = f"{offer.oid} {offer.minsize} {offer.maxsize} {offer.txfee} {offer.cjfee}"
@@ -350,7 +401,7 @@ class ProtocolHandlersMixin:
                 if self.fidelity_bond is not None:
                     bond_proof = create_fidelity_bond_proof(
                         bond=self.fidelity_bond,
-                        maker_nick=self.nick,
+                        maker_nick=generation.nick_identity.nick,
                         taker_nick=taker_nick,
                         current_block_height=self.current_block_height,
                     )
@@ -362,9 +413,9 @@ class ProtocolHandlersMixin:
 
                 # Direct private messages use the same signed envelope as
                 # directory-relayed private messages.
-                signed_data = self.nick_identity.sign_message(data, ONION_HOSTID)
+                signed_data = generation.nick_identity.sign_message(data, ONION_HOSTID)
                 line = (
-                    f"{self.nick}{COMMAND_PREFIX}{taker_nick}{COMMAND_PREFIX}"
+                    f"{generation.nick_identity.nick}{COMMAND_PREFIX}{taker_nick}{COMMAND_PREFIX}"
                     f"{order_type_str} {signed_data}"
                 )
 
@@ -376,7 +427,9 @@ class ProtocolHandlersMixin:
         except Exception as e:
             logger.error(f"Failed to send offers to {taker_nick} via direct connection: {e}")
 
-    async def _handle_privmsg(self: MakerBotProtocol, line: str, source: str = "unknown") -> None:
+    async def _handle_privmsg(
+        self: MakerBotProtocol, line: str, source: str = "unknown", generation_id: int | None = None
+    ) -> None:
         """
         Handle private message (CoinJoin protocol).
 
@@ -385,6 +438,17 @@ class ProtocolHandlersMixin:
             source: Message source for logging (e.g., "dir:node1", "direct:alice")
         """
         try:
+            generation_id = self.current_generation_id if generation_id is None else generation_id
+            generation = self._generation(generation_id)
+            if (
+                generation is None
+                or generation.state is GenerationState.CLOSED
+                or (
+                    generation.grace_deadline is not None
+                    and time.monotonic() >= generation.grace_deadline
+                )
+            ):
+                return
             parts = line.split(COMMAND_PREFIX)
             if len(parts) < 3:
                 return
@@ -393,7 +457,7 @@ class ProtocolHandlersMixin:
             to_nick = parts[1]
             rest = COMMAND_PREFIX.join(parts[2:])
 
-            if to_nick != self.nick:
+            if to_nick != generation.nick_identity.nick:
                 return
 
             # Strip leading "!" if present (due to !!command message format)
@@ -401,13 +465,21 @@ class ProtocolHandlersMixin:
 
             # Note: command prefix already stripped
             if command.startswith("fill"):
-                await self._handle_fill(from_nick, command, source=source)
+                await self._handle_fill(
+                    from_nick, command, source=source, generation_id=generation_id
+                )
             elif command.startswith("auth"):
-                await self._handle_auth(from_nick, command, source=source)
+                await self._handle_auth(
+                    from_nick, command, source=source, generation_id=generation_id
+                )
             elif command.startswith("tx"):
-                await self._handle_tx(from_nick, command, source=source)
+                await self._handle_tx(
+                    from_nick, command, source=source, generation_id=generation_id
+                )
             elif command.startswith("push"):
-                await self._handle_push(from_nick, command, source=source)
+                await self._handle_push(
+                    from_nick, command, source=source, generation_id=generation_id
+                )
             elif command.startswith("hp2"):
                 # hp2 via privmsg = commitment transfer request
                 # We should re-broadcast it publicly to obfuscate the source
@@ -419,7 +491,11 @@ class ProtocolHandlersMixin:
             logger.error(f"Failed to handle privmsg: {e}")
 
     async def _handle_fill(
-        self: MakerBotProtocol, taker_nick: str, msg: str, source: str = "unknown"
+        self: MakerBotProtocol,
+        taker_nick: str,
+        msg: str,
+        source: str = "unknown",
+        generation_id: int | None = None,
     ) -> None:
         """Handle !fill request from taker.
 
@@ -433,6 +509,14 @@ class ProtocolHandlersMixin:
         session: MakerSession | None = None
         log_context: AbstractContextManager[None] | None = None
         try:
+            generation_id = self.current_generation_id if generation_id is None else generation_id
+            generation = self._generation(generation_id)
+            if (
+                generation is None
+                or generation_id != self.current_generation_id
+                or generation.state is not GenerationState.ACCEPTING
+            ):
+                return
             # Check for self-CoinJoin (same wallet running both maker and taker)
             if taker_nick in self._own_wallet_nicks:
                 logger.warning(
@@ -479,10 +563,9 @@ class ProtocolHandlersMixin:
                 )
                 return
 
-            if (
-                taker_nick not in self.active_sessions
-                and len(self.active_sessions) >= MAX_ACTIVE_MAKER_SESSIONS
-            ):
+            if (generation_id, taker_nick) not in self.active_sessions and len(
+                self.active_sessions
+            ) >= MAX_ACTIVE_MAKER_SESSIONS:
                 self._log_rate_limited(
                     "maker-active-session-cap",
                     f"Rejecting new maker session at cap ({MAX_ACTIVE_MAKER_SESSIONS})",
@@ -504,17 +587,26 @@ class ProtocolHandlersMixin:
             reservation_owned = True
 
             # Find the offer by ID (supports multiple offers with different IDs)
-            offer = self.offer_manager.get_offer_by_id(self.current_offers, offer_id)
+            offers = (
+                self.current_offers
+                if generation_id == self.current_generation_id
+                else generation.current_offers
+            )
+            offer_manager = (
+                self.offer_manager
+                if generation_id == self.current_generation_id
+                else generation.offer_manager
+            )
+            offer = offer_manager.get_offer_by_id(offers, offer_id)
             if offer is None:
                 self._release_commitment_reservation(commitment)
                 reservation_owned = False
                 logger.warning(
-                    f"Invalid offer ID: {offer_id} (available: "
-                    f"{[o.oid for o in self.current_offers]})"
+                    f"Invalid offer ID: {offer_id} (available: {[o.oid for o in offers]})"
                 )
                 return
 
-            is_valid, error = self.offer_manager.validate_offer_fill(offer, amount)
+            is_valid, error = offer_manager.validate_offer_fill(offer, amount)
             if not is_valid:
                 self._release_commitment_reservation(commitment)
                 reservation_owned = False
@@ -544,7 +636,7 @@ class ProtocolHandlersMixin:
                     minimum_fee_rate if isinstance(minimum_fee_rate, (int, float)) else None
                 ),
             )
-            session = MakerSession(inner=session_inner)
+            session = MakerSession(inner=session_inner, generation_id=generation_id)
 
             # Record the channel this !fill arrived on (always accepted; a
             # taker may switch direct<->directory mid-session, see
@@ -555,7 +647,8 @@ class ProtocolHandlersMixin:
             success, response = await session.handle_fill(amount, commitment, taker_pk)
 
             if success:
-                previous_session = self.active_sessions.get(taker_nick)
+                session_key = (generation_id, taker_nick)
+                previous_session = self.active_sessions.get(session_key)
                 if previous_session is not None:
                     # Takers may rotate a rejected commitment and retry the
                     # fill phase under the same nick. Preserve that behavior
@@ -576,7 +669,7 @@ class ProtocolHandlersMixin:
                     self._release_podle_outpoint(previous_session)
                     self._release_commitment_reservation(previous_session.commitment.hex())
 
-                self.active_sessions[taker_nick] = session
+                self.active_sessions[session_key] = session
                 logger.info(
                     f"Created CoinJoin session with {taker_nick} "
                     f"(offer_id={offer_id}, type={offer.ordertype.value})"
@@ -589,7 +682,9 @@ class ProtocolHandlersMixin:
                     )
                 )
 
-                await self._send_response(taker_nick, "pubkey", response)
+                await self._send_response(
+                    taker_nick, "pubkey", response, generation_id=generation_id
+                )
             else:
                 self._release_commitment_reservation(commitment)
                 reservation_owned = False
@@ -602,8 +697,8 @@ class ProtocolHandlersMixin:
             if reservation_owned:
                 self._release_commitment_reservation(commitment)
             if session is not None:
-                if self.active_sessions.get(taker_nick) is session:
-                    self.active_sessions.pop(taker_nick, None)
+                if self.active_sessions.get((generation_id, taker_nick)) is session:
+                    self.active_sessions.pop((generation_id, taker_nick), None)
                     self._release_podle_outpoint(session)
             logger.error("Failed to handle !fill")
             logger.bind(sensitive=True).error(f"Failed to handle !fill: {e}")
@@ -612,7 +707,11 @@ class ProtocolHandlersMixin:
                 log_context.__exit__(None, None, None)
 
     async def _handle_auth(
-        self: MakerBotProtocol, taker_nick: str, msg: str, source: str = "unknown"
+        self: MakerBotProtocol,
+        taker_nick: str,
+        msg: str,
+        source: str = "unknown",
+        generation_id: int | None = None,
     ) -> None:
         """Dispatch !auth to the per-taker MakerSession.
 
@@ -622,7 +721,18 @@ class ProtocolHandlersMixin:
         warning early for unknown nicks preserves the pre-refactor contract
         where stray !auth messages were ignored gracefully.
         """
-        session = self.active_sessions.get(taker_nick)
+        generation_id = self.current_generation_id if generation_id is None else generation_id
+        generation = self._generation(generation_id)
+        if (
+            generation is None
+            or generation.state is GenerationState.CLOSED
+            or (
+                generation.grace_deadline is not None
+                and time.monotonic() >= generation.grace_deadline
+            )
+        ):
+            return
+        session = self.active_sessions.get((generation_id, taker_nick))
         if session is None:
             logger.warning(f"No active session for {taker_nick}")
             return
@@ -694,7 +804,11 @@ class ProtocolHandlersMixin:
         self._detached_handler_tasks.add(task)
 
     async def _handle_tx(
-        self: MakerBotProtocol, taker_nick: str, msg: str, source: str = "unknown"
+        self: MakerBotProtocol,
+        taker_nick: str,
+        msg: str,
+        source: str = "unknown",
+        generation_id: int | None = None,
     ) -> None:
         """Dispatch !tx to the per-taker MakerSession.
 
@@ -702,7 +816,18 @@ class ProtocolHandlersMixin:
         the call, and lets :meth:`MakerSession.on_tx` carry out the signing /
         history / notifier work.
         """
-        session = self.active_sessions.get(taker_nick)
+        generation_id = self.current_generation_id if generation_id is None else generation_id
+        generation = self._generation(generation_id)
+        if (
+            generation is None
+            or generation.state is GenerationState.CLOSED
+            or (
+                generation.grace_deadline is not None
+                and time.monotonic() >= generation.grace_deadline
+            )
+        ):
+            return
+        session = self.active_sessions.get((generation_id, taker_nick))
         if session is None:
             logger.warning(f"No active session for {taker_nick}")
             return
@@ -714,10 +839,10 @@ class ProtocolHandlersMixin:
         )
 
     async def _expire_timed_out_session(
-        self: MakerBotProtocol, taker_nick: str, session: MakerSession
+        self: MakerBotProtocol, session_key: tuple[int, str], session: MakerSession
     ) -> bool:
         """Cancel, detach, and clean one expired session by object identity."""
-        if self.active_sessions.get(taker_nick) is not session or session.cleanup_started is True:
+        if self.active_sessions.get(session_key) is not session or session.cleanup_started is True:
             return False
 
         session.cleanup_started = True
@@ -734,13 +859,13 @@ class ProtocolHandlersMixin:
             if not handler_task.done():
                 self._register_detached_handler_task(handler_task)
 
-        if self.active_sessions.get(taker_nick) is session:
-            self.active_sessions.pop(taker_nick)
+        if self.active_sessions.get(session_key) is session:
+            self.active_sessions.pop(session_key)
         self._release_podle_outpoint(session)
         session.detached = True
         session.detached_event.set()
         state = session.state
-        logger.debug("Cleaning up timed out session: {} (state={})", taker_nick, state)
+        logger.debug("Cleaning up timed out session: {} (state={})", session.taker_nick, state)
 
         # IOAUTH only reveals inputs and addresses. Until signatures have been
         # produced, those inputs can safely return to the offer pool.
@@ -777,6 +902,7 @@ class ProtocolHandlersMixin:
         now = time.monotonic()
         pending_ttl = session.inner.pending_broadcast_ttl_sec
         record = PendingSignedRound(
+            generation_id=session.generation_id,
             taker_nick=session.taker_nick,
             txid=txid.lower(),
             input_lock_owner=session.inner.input_lock_owner,
@@ -786,7 +912,7 @@ class ProtocolHandlersMixin:
         )
         async with self._pending_signed_rounds_lock:
             self._prune_pending_signed_rounds_locked(now)
-            key = (record.taker_nick, record.txid)
+            key = (record.generation_id, record.taker_nick, record.txid)
             if key not in self._pending_signed_rounds and (
                 len(self._pending_signed_rounds) >= MAX_PENDING_SIGNED_ROUNDS
             ):
@@ -831,7 +957,11 @@ class ProtocolHandlersMixin:
                 )
 
     async def _handle_push(
-        self: MakerBotProtocol, taker_nick: str, msg: str, source: str = "unknown"
+        self: MakerBotProtocol,
+        taker_nick: str,
+        msg: str,
+        source: str = "unknown",
+        generation_id: int | None = None,
     ) -> None:
         """Handle !push request from taker.
 
@@ -856,6 +986,17 @@ class ProtocolHandlersMixin:
         fire-and-forget and not part of the critical CoinJoin handshake.
         """
         try:
+            generation_id = self.current_generation_id if generation_id is None else generation_id
+            generation = self._generation(generation_id)
+            if (
+                generation is None
+                or generation.state is GenerationState.CLOSED
+                or (
+                    generation.grace_deadline is not None
+                    and time.monotonic() >= generation.grace_deadline
+                )
+            ):
+                return
             parts = msg.split()
             if len(parts) < 2:
                 logger.warning(f"Invalid !push format from {taker_nick}")
@@ -872,7 +1013,7 @@ class ProtocolHandlersMixin:
                 logger.bind(sensitive=True).error(f"Failed to decode !push transaction: {e}")
                 return
 
-            key = (taker_nick, txid.lower())
+            key = (generation_id, taker_nick, txid.lower())
             async with self._pending_signed_rounds_lock:
                 self._prune_pending_signed_rounds_locked(time.monotonic())
                 pending = self._pending_signed_rounds.get(key)
@@ -1145,7 +1286,11 @@ class ProtocolHandlersMixin:
                     pass
 
     async def _send_response(
-        self: MakerBotProtocol, taker_nick: str, command: str, data: dict[str, Any]
+        self: MakerBotProtocol,
+        taker_nick: str,
+        command: str,
+        data: dict[str, Any],
+        generation_id: int | None = None,
     ) -> None:
         """Send a maker -> taker response.
 
@@ -1156,8 +1301,9 @@ class ProtocolHandlersMixin:
         crypto state.
         """
         try:
+            generation_id = self.current_generation_id if generation_id is None else generation_id
             if command in ("ioauth", "sig"):
-                session = self.active_sessions.get(taker_nick)
+                session = self.active_sessions.get((generation_id, taker_nick))
                 if session is None:
                     logger.error(f"No active session for {taker_nick} to encrypt {command}")
                     return
@@ -1175,7 +1321,7 @@ class ProtocolHandlersMixin:
                 # Fallback to JSON for unknown commands
                 msg_content = json.dumps(data)
 
-            for client in self.directory_clients.values():
+            for client in self._generation_clients(generation_id).values():
                 await client.send_private_message(taker_nick, command, msg_content)
 
             logger.debug(f"Sent signed {command} to {taker_nick}")

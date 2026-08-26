@@ -18,6 +18,10 @@ from loguru import logger
 from maker.fidelity import FidelityBondInfo, create_fidelity_bond_proof
 
 
+def _session_key(taker_nick: str, generation_id: int = 0) -> tuple[int, str]:
+    return (generation_id, taker_nick)
+
+
 @pytest.mark.asyncio
 async def test_maker_encryption_setup():
     """Test maker sets up encryption with taker's pubkey from !fill."""
@@ -1025,7 +1029,7 @@ async def test_on_auth_releases_reservation_only_after_persistence(
     replacement = MagicMock()
 
     bot = MagicMock()
-    bot.active_sessions = {taker_nick: replacement if session_replaced else session}
+    bot.active_sessions = {_session_key(taker_nick): replacement if session_replaced else session}
     bot.directory_clients = {}
     bot.config.network.value = "regtest"
     bot.wallet.wallet_fingerprint = "fingerprint"
@@ -1051,7 +1055,7 @@ async def test_on_auth_releases_reservation_only_after_persistence(
     if auth_success and lock_renewal_success:
         assert create_history.call_args.kwargs["input_value"] == 612_345
         bot._broadcast_commitment.assert_awaited_once_with(commitment)
-        assert bot.active_sessions[taker_nick] is session
+        assert bot.active_sessions[_session_key(taker_nick)] is session
         assert session.state == CoinJoinState.IOAUTH_SENT
         inner.wallet.renew_coinjoin_inputs.assert_called_once()
         inner.wallet.release_coinjoin_inputs.assert_not_called()
@@ -1068,7 +1072,7 @@ async def test_on_auth_releases_reservation_only_after_persistence(
         bot._broadcast_commitment.assert_not_awaited()
         bot._release_commitment_reservation.assert_called_once_with(commitment)
         assert commitment not in bot._reserved_commitments
-        assert taker_nick not in bot.active_sessions
+        assert _session_key(taker_nick) not in bot.active_sessions
         inner.wallet.release_coinjoin_inputs.assert_called_once_with(
             {outpoint}, owner=inner.input_lock_owner
         )
@@ -1078,13 +1082,13 @@ async def test_on_auth_releases_reservation_only_after_persistence(
         if session_replaced:
             bot._release_commitment_reservation.assert_not_called()
             assert commitment in bot._reserved_commitments
-            assert bot.active_sessions[taker_nick] is replacement
+            assert bot.active_sessions[_session_key(taker_nick)] is replacement
             inner.wallet.release_coinjoin_inputs.assert_not_called()
             replacement.release_input_locks.assert_not_called()
         else:
             bot._release_commitment_reservation.assert_called_once_with(commitment)
             assert commitment not in bot._reserved_commitments
-            assert taker_nick not in bot.active_sessions
+            assert _session_key(taker_nick) not in bot.active_sessions
             inner.wallet.release_coinjoin_inputs.assert_called_once_with(
                 {outpoint}, owner=inner.input_lock_owner
             )
@@ -1118,7 +1122,7 @@ async def test_on_auth_history_failure_prevents_address_reveal():
     session.send_response = AsyncMock(return_value=True)
 
     bot = MagicMock()
-    bot.active_sessions = {taker_nick: session}
+    bot.active_sessions = {_session_key(taker_nick): session}
     bot.config.network.value = "regtest"
     bot.wallet.wallet_fingerprint = "fingerprint"
     bot._broadcast_commitment = AsyncMock(return_value=True)
@@ -1139,7 +1143,7 @@ async def test_on_auth_history_failure_prevents_address_reveal():
     inner.wallet.release_coinjoin_inputs.assert_called_once_with(
         {outpoint}, owner=inner.input_lock_owner
     )
-    assert taker_nick not in bot.active_sessions
+    assert _session_key(taker_nick) not in bot.active_sessions
 
 
 @pytest.mark.asyncio
@@ -1178,7 +1182,7 @@ async def test_stale_on_tx_terminal_callback_keeps_replacement(tx_success):
     replacement.our_utxos = {outpoint: MagicMock()}
 
     bot = MagicMock()
-    bot.active_sessions = {taker_nick: replacement}
+    bot.active_sessions = {_session_key(taker_nick): replacement}
     notifier = MagicMock()
 
     with (
@@ -1188,7 +1192,7 @@ async def test_stale_on_tx_terminal_callback_keeps_replacement(tx_success):
     ):
         await session.on_tx(bot, "tx ciphertext", "dir:test")
 
-    assert bot.active_sessions[taker_nick] is replacement
+    assert bot.active_sessions[_session_key(taker_nick)] is replacement
     wallet.release_coinjoin_inputs.assert_not_called()
     replacement.release_input_locks.assert_not_called()
 
@@ -1224,7 +1228,7 @@ async def test_on_tx_fallback_history_records_input_value():
     session.send_response = AsyncMock(return_value=True)
 
     bot = MagicMock()
-    bot.active_sessions = {taker_nick: session}
+    bot.active_sessions = {_session_key(taker_nick): session}
     bot._register_pending_signed_round = AsyncMock(return_value=True)
     bot.config.network.value = "regtest"
     bot.wallet.wallet_fingerprint = "deadbeef"
@@ -1496,7 +1500,7 @@ async def test_on_tx_failure_after_signing_retains_input_locks():
     inner.handle_tx = AsyncMock(side_effect=fail_after_signing)
     session = MakerSession(inner)
     bot = MagicMock()
-    bot.active_sessions = {taker_nick: session}
+    bot.active_sessions = {_session_key(taker_nick): session}
 
     with (
         patch("maker.maker_session.get_notifier", return_value=MagicMock()),
@@ -1504,7 +1508,7 @@ async def test_on_tx_failure_after_signing_retains_input_locks():
     ):
         await session.on_tx(bot, "tx ciphertext", "dir:test")
 
-    assert taker_nick not in bot.active_sessions
+    assert _session_key(taker_nick) not in bot.active_sessions
     inner.wallet.release_coinjoin_inputs.assert_not_called()
     inner.wallet.renew_coinjoin_inputs.assert_called_once()
 
@@ -1528,7 +1532,7 @@ async def test_decoded_transaction_log_is_sensitive():
     inner.handle_tx = AsyncMock(return_value=(False, {"error": "invalid transaction"}))
     session = MakerSession(inner)
     bot = MagicMock()
-    bot.active_sessions = {taker_nick: session}
+    bot.active_sessions = {_session_key(taker_nick): session}
 
     records: list[tuple[str, dict[str, object]]] = []
     handler_id = logger.add(

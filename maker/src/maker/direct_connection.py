@@ -66,14 +66,32 @@ class DirectConnectionMixin:
     _direct_connection_states: dict[TCPConnection, DirectConnectionState]
     _direct_connection_rate_limiter: DirectConnectionRateLimiter
 
-    def _remove_direct_connection(self, connection: TCPConnection) -> None:
+    def _remove_direct_connection(
+        self: MakerBotProtocol, connection: TCPConnection, generation_id: int | None = None
+    ) -> None:
         """Forget one socket without disturbing a newer routing hint."""
-        self._direct_connection_states.pop(connection, None)
-        for nick, registered_connection in list(self.direct_connections.items()):
+        generation_id = self.current_generation_id if generation_id is None else generation_id
+        generation = self._generation(generation_id)
+        if generation is None:
+            return
+        states = (
+            self._direct_connection_states
+            if generation_id == self.current_generation_id
+            else generation.direct_connection_states
+        )
+        connections = (
+            self.direct_connections
+            if generation_id == self.current_generation_id
+            else generation.direct_connections
+        )
+        states.pop(connection, None)
+        for nick, registered_connection in list(connections.items()):
             if registered_connection is connection:
-                del self.direct_connections[nick]
+                del connections[nick]
 
-    def _parse_direct_message(self, data: bytes) -> tuple[str, str, str] | None:
+    def _parse_direct_message(
+        self: MakerBotProtocol, data: bytes, generation_id: int | None = None
+    ) -> tuple[str, str, str] | None:
         """Parse a direct connection message supporting both formats.
 
         The reference implementation uses OnionCustomMessage format:
@@ -85,6 +103,10 @@ class DirectConnectionMixin:
             For PUBMSG (orderbook), returns (sender_nick, "PUBLIC:orderbook", "").
         """
         try:
+            generation_id = self.current_generation_id if generation_id is None else generation_id
+            generation = self._generation(generation_id)
+            if generation is None:
+                return None
             message = json.loads(data.decode("utf-8"))
         except json.JSONDecodeError:
             return None
@@ -132,8 +154,10 @@ class DirectConnectionMixin:
             rest = COMMAND_PREFIX.join(parts[2:])
 
             # Check if message is for us
-            if to_nick != self.nick:
-                logger.debug(f"Ignoring message not for us: to={to_nick}, us={self.nick}")
+            if to_nick != generation.nick_identity.nick:
+                logger.debug(
+                    f"Ignoring message not for us: to={to_nick}, us={generation.nick_identity.nick}"
+                )
                 return None
 
             # Authenticate the same signed envelope used through directories.
@@ -150,7 +174,11 @@ class DirectConnectionMixin:
         return None
 
     async def _try_handle_handshake(
-        self, connection: TCPConnection, data: bytes, peer_str: str
+        self: MakerBotProtocol,
+        connection: TCPConnection,
+        data: bytes,
+        peer_str: str,
+        generation_id: int | None = None,
     ) -> bool:
         """Try to handle a handshake request on a direct connection.
 
@@ -167,6 +195,15 @@ class DirectConnectionMixin:
             True if this was a handshake message (handled), False otherwise.
         """
         try:
+            generation_id = self.current_generation_id if generation_id is None else generation_id
+            generation = self._generation(generation_id)
+            if generation is None:
+                return True
+            states = (
+                self._direct_connection_states
+                if generation_id == self.current_generation_id
+                else generation.direct_connection_states
+            )
             message = json.loads(data.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
             return False
@@ -187,14 +224,14 @@ class DirectConnectionMixin:
         peer_nick = handshake_data.get("nick", "unknown")
         peer_network = handshake_data.get("network", "")
 
-        state = self._direct_connection_states.setdefault(connection, DirectConnectionState())
+        state = states.setdefault(connection, DirectConnectionState())
         if state.nick is not None and state.nick != peer_nick:
             logger.warning(
                 f"Rejecting nick change on direct connection from {peer_str}: "
                 f"{state.nick} -> {peer_nick}"
             )
             await connection.close()
-            self._remove_direct_connection(connection)
+            self._remove_direct_connection(connection, generation_id)
             return True
 
         # Parse peer's advertised features (supports both dict and comma-string formats)
@@ -245,7 +282,7 @@ class DirectConnectionMixin:
             features.features.add(FEATURE_NICK_AUTH)
 
         # Determine our location string (onion address or NOT-SERVING-ONION)
-        onion_host = self.config.onion_host
+        onion_host = generation.onion_host
         if onion_host:
             our_location = f"{onion_host}:{self.config.onion_serving_port}"
         else:
@@ -253,7 +290,7 @@ class DirectConnectionMixin:
 
         # Advertise optional capabilities with a reciprocal peer HANDSHAKE.
         response_data = create_handshake_request(
-            nick=self.nick,
+            nick=generation.nick_identity.nick,
             location=our_location,
             network=self.config.network.value,
             directory=False,
@@ -275,7 +312,10 @@ class DirectConnectionMixin:
         return True
 
     async def _on_direct_connection(
-        self: MakerBotProtocol, connection: TCPConnection, peer_str: str
+        self: MakerBotProtocol,
+        connection: TCPConnection,
+        peer_str: str,
+        generation_id: int | None = None,
     ) -> None:
         """Handle incoming direct connection from a taker via hidden service.
 
@@ -313,7 +353,22 @@ class DirectConnectionMixin:
             await connection.close()
             return
 
-        self._direct_connection_states.setdefault(connection, DirectConnectionState())
+        generation_id = self.current_generation_id if generation_id is None else generation_id
+        generation = self._generation(generation_id)
+        if generation is None:
+            await connection.close()
+            return
+        states = (
+            self._direct_connection_states
+            if generation_id == self.current_generation_id
+            else generation.direct_connection_states
+        )
+        connections = (
+            self.direct_connections
+            if generation_id == self.current_generation_id
+            else generation.direct_connections
+        )
+        states.setdefault(connection, DirectConnectionState())
 
         try:
             # Keep connection open and process messages
@@ -337,13 +392,15 @@ class DirectConnectionMixin:
                         continue
 
                     # Check for handshake request first (health check / feature discovery)
-                    handshake_handled = await self._try_handle_handshake(connection, data, peer_str)
+                    handshake_handled = await self._try_handle_handshake(
+                        connection, data, peer_str, generation_id
+                    )
                     if handshake_handled:
                         # Handshake was handled, connection may close after response
                         # Continue to allow follow-up messages or clean disconnect
                         continue
 
-                    state = self._direct_connection_states.get(connection)
+                    state = states.get(connection)
                     if state is None or state.nick is None:
                         logger.warning("Dropping message before direct handshake")
                         logger.bind(sensitive=True).warning(
@@ -352,7 +409,7 @@ class DirectConnectionMixin:
                         continue
 
                     # Parse the message (supports both formats)
-                    parsed = self._parse_direct_message(data)
+                    parsed = self._parse_direct_message(data, generation_id)
                     if parsed is None:
                         # Log message content for debugging
                         # data is bytes, decode for display (replace errors to handle binary)
@@ -418,7 +475,9 @@ class DirectConnectionMixin:
                                 f"Received !orderbook request from {sender_nick} via direct "
                                 f"connection, sending offers"
                             )
-                            await self._send_offers_via_direct_connection(sender_nick, connection)
+                            await self._send_offers_via_direct_connection(
+                                sender_nick, connection, generation_id
+                            )
                         else:
                             logger.debug(
                                 f"Unknown PUBLIC command from {sender_nick} via direct: "
@@ -444,20 +503,28 @@ class DirectConnectionMixin:
                         # This map is a non-authoritative routing/lifecycle hint.
                         # Duplicate verified senders are allowed and the newest
                         # verified socket becomes the current hint.
-                        self.direct_connections[sender_nick] = connection
+                        connections[sender_nick] = connection
 
                     # Process the command - reuse existing handlers
                     # Commands: fill, auth, tx (same as via directory)
                     full_msg = f"{cmd} {msg_data}" if msg_data else cmd
 
                     if cmd == "fill":
-                        await self._handle_fill(sender_nick, full_msg, source="direct")
+                        await self._handle_fill(
+                            sender_nick, full_msg, source="direct", generation_id=generation_id
+                        )
                     elif cmd == "auth":
-                        await self._handle_auth(sender_nick, full_msg, source="direct")
+                        await self._handle_auth(
+                            sender_nick, full_msg, source="direct", generation_id=generation_id
+                        )
                     elif cmd == "tx":
-                        await self._handle_tx(sender_nick, full_msg, source="direct")
+                        await self._handle_tx(
+                            sender_nick, full_msg, source="direct", generation_id=generation_id
+                        )
                     elif cmd == "push":
-                        await self._handle_push(sender_nick, full_msg, source="direct")
+                        await self._handle_push(
+                            sender_nick, full_msg, source="direct", generation_id=generation_id
+                        )
                     else:
                         logger.debug(f"Unknown direct command from {sender_nick}: {cmd}")
 
@@ -488,5 +555,5 @@ class DirectConnectionMixin:
             )
         finally:
             await connection.close()
-            self._remove_direct_connection(connection)
+            self._remove_direct_connection(connection, generation_id)
             logger.bind(sensitive=True).debug(f"Direct connection from {peer_str} closed")

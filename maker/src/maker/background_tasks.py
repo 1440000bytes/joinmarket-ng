@@ -291,8 +291,22 @@ class BackgroundTasksMixin:
             try:
                 await asyncio.sleep(self.config.directory_reconnect_interval)
 
+                generation = self._generation()
+                if generation is None:
+                    continue
+                generation_id = generation.generation_id
+                directory_pool = generation.directory_pool
+                clients = self.directory_clients
+                offers = self.current_offers
+                reconnect_attempts = self._directory_reconnect_attempts
+                generation.directory_clients = clients
+                generation.current_offers = offers
+                generation.reconnect_attempts = reconnect_attempts
+                if self._all_directories_disconnected:
+                    generation.all_directories_disconnected = True
+
                 # Find disconnected directories
-                disconnected_servers = self._directory_pool.list_disconnected()
+                disconnected_servers = directory_pool.list_disconnected()
 
                 if not disconnected_servers:
                     continue
@@ -305,7 +319,7 @@ class BackgroundTasksMixin:
                 for dir_server, node_id in disconnected_servers:
                     # Check retry limit
                     max_retries = self.config.directory_reconnect_max_retries
-                    attempts = self._directory_reconnect_attempts.get(node_id, 0)
+                    attempts = reconnect_attempts.get(node_id, 0)
 
                     if max_retries > 0 and attempts >= max_retries:
                         logger.debug(f"Skipping {node_id}: max retries ({max_retries}) reached")
@@ -314,12 +328,23 @@ class BackgroundTasksMixin:
                     # Attempt reconnection
                     result = await self._connect_to_directory(dir_server)
 
+                    # Rotation may complete while a Tor connection is being
+                    # established. Never install a client prepared for a stale
+                    # identity into the new generation.
+                    if (
+                        self.current_generation_id != generation_id
+                        or self._generation(generation_id) is not generation
+                    ):
+                        if result is not None:
+                            await result[1].close()
+                        break
+
                     if result:
                         new_node_id, client = result
-                        self.directory_clients[new_node_id] = client
+                        clients[new_node_id] = client
 
                         # Reset retry counter on success
-                        self._directory_reconnect_attempts.pop(node_id, None)
+                        reconnect_attempts.pop(node_id, None)
 
                         logger.debug(f"Reconnected to directory: {dir_server}")
 
@@ -331,7 +356,7 @@ class BackgroundTasksMixin:
                         # joinmarket-clientserver, which asserts
                         # `fidelity_bond_proof_msg is None` for public pit
                         # announcements).
-                        for offer in self.current_offers:
+                        for offer in offers:
                             try:
                                 offer_msg = self._format_offer_announcement(
                                     offer, include_bond=False
@@ -344,11 +369,14 @@ class BackgroundTasksMixin:
                         # Prune completed tasks first to prevent listen_tasks from growing
                         # unboundedly on repeated reconnection cycles
                         self._prune_done_tasks()
-                        task = asyncio.create_task(self._listen_client(new_node_id, client))
+                        task = asyncio.create_task(
+                            self._listen_client(new_node_id, client, generation_id=generation_id)
+                        )
+                        generation.tasks.append(task)
                         self.listen_tasks.append(task)
 
                         # Notify reconnection
-                        connected_count = len(self.directory_clients)
+                        connected_count = len(clients)
                         total_count = len(self.config.directory_servers)
                         spawn_task(
                             get_notifier().notify_directory_reconnect(
@@ -357,7 +385,8 @@ class BackgroundTasksMixin:
                         )
 
                         # If all directories were previously disconnected, send a recovery alert
-                        if self._all_directories_disconnected:
+                        if generation.all_directories_disconnected:
+                            generation.all_directories_disconnected = False
                             self._all_directories_disconnected = False
                             spawn_task(
                                 get_notifier().notify_all_directories_reconnected(
@@ -366,7 +395,7 @@ class BackgroundTasksMixin:
                             )
                     else:
                         # Increment retry counter
-                        self._directory_reconnect_attempts[node_id] = attempts + 1
+                        reconnect_attempts[node_id] = attempts + 1
                         logger.debug(
                             f"Reconnection to {dir_server} failed "
                             f"(attempt {attempts + 1}"
@@ -618,8 +647,22 @@ class BackgroundTasksMixin:
             logger.error("Error in deferred wallet resync")
             logger.bind(sensitive=True).error(f"Error in deferred wallet resync: {e}")
 
-    async def _listen_client(self: MakerBotProtocol, node_id: str, client: DirectoryClient) -> None:
+    async def _listen_client(
+        self: MakerBotProtocol,
+        node_id: str,
+        client: DirectoryClient,
+        generation_id: int | None = None,
+    ) -> None:
         """Listen for messages from a specific directory client"""
+        generation_id = self.current_generation_id if generation_id is None else generation_id
+        generation = self._generation(generation_id)
+        if generation is None:
+            return
+        clients = (
+            self.directory_clients
+            if generation_id == self.current_generation_id
+            else generation.directory_clients
+        )
         logger.debug(f"Started listening on {node_id}")
 
         # Track consecutive errors for exponential backoff
@@ -635,7 +678,9 @@ class BackgroundTasksMixin:
                     logger.debug(f"Received {len(messages)} messages from {node_id}")
 
                 for message in messages:
-                    await self._handle_message(message, source=f"dir:{node_id}")
+                    await self._handle_message(
+                        message, source=f"dir:{node_id}", generation_id=generation_id
+                    )
 
                 # Reset error counter on successful iteration
                 consecutive_errors = 0
@@ -648,7 +693,10 @@ class BackgroundTasksMixin:
                 logger.warning(f"Connection lost on {node_id}: {e}")
 
                 # Remove from connected clients
-                self.directory_clients.pop(node_id, None)
+                # A stale listener must never erase a newer connection with
+                # the same node id (including after a generation cutover).
+                if clients.get(node_id) is client:
+                    clients.pop(node_id, None)
 
                 # Close the client gracefully
                 try:
@@ -657,7 +705,7 @@ class BackgroundTasksMixin:
                     pass
 
                 # Fire-and-forget notification for directory disconnect
-                connected_count = len(self.directory_clients)
+                connected_count = len(clients)
                 total_count = len(self.config.directory_servers)
                 spawn_task(
                     get_notifier().notify_directory_disconnect(
@@ -665,7 +713,9 @@ class BackgroundTasksMixin:
                     )
                 )
                 if connected_count == 0:
-                    self._all_directories_disconnected = True
+                    generation.all_directories_disconnected = True
+                    if generation_id == self.current_generation_id:
+                        self._all_directories_disconnected = True
                     spawn_task(get_notifier().notify_all_directories_disconnected())
                 break
             except Exception as e:
@@ -678,7 +728,8 @@ class BackgroundTasksMixin:
                     logger.error(
                         f"Too many consecutive errors on {node_id}, disconnecting for reconnection"
                     )
-                    self.directory_clients.pop(node_id, None)
+                    if clients.get(node_id) is client:
+                        clients.pop(node_id, None)
                     try:
                         await client.close()
                     except Exception:

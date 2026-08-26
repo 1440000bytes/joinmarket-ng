@@ -19,6 +19,7 @@ plumbing and matches the taker's separation of concerns.
 
 from __future__ import annotations
 
+import secrets
 from typing import Any
 
 from jmcore.directory_pool import DirectoryClientPool
@@ -50,9 +51,14 @@ class MakerDirectoryPool(DirectoryClientPool):
         config: MakerConfig,
         nick_identity: Any,  # NickIdentity, kept Any to avoid import cycle
         neutrino_compat: bool,
+        onion_host: str | None = None,
+        onion_serving_port: int | None = None,
     ):
         self._config = config
         self._neutrino_compat = neutrino_compat
+        self._onion_host = onion_host
+        self._onion_serving_port = onion_serving_port
+        self._dir_creds: tuple[str | None, str | None]
         super().__init__(
             directory_servers=list(config.directory_servers),
             network=config.network.value,
@@ -64,12 +70,18 @@ class MakerDirectoryPool(DirectoryClientPool):
             nick_auth_mode=config.nick_auth_mode,
             nick_auth_directory_ids=config.nick_auth_directory_ids,
         )
+        # Identity renewal requires a fresh Tor circuit even when general
+        # component stream isolation is disabled. Keep credentials stable
+        # within this pool, but unique across maker generations.
+        directory_username = self._dir_creds[0] or "jm-maker-generation"
+        self._dir_creds = (directory_username, secrets.token_hex(32))
 
     def _build_client_kwargs(self, host: str, port: int) -> dict[str, Any]:
         kwargs = super()._build_client_kwargs(host, port)
-        onion_host = self._config.onion_host
+        onion_host = self._onion_host if self._onion_host is not None else self._config.onion_host
         if onion_host:
-            location = f"{onion_host}:{self._config.onion_serving_port}"
+            port = self._onion_serving_port or self._config.onion_serving_port
+            location = f"{onion_host}:{port}"
         else:
             location = "NOT-SERVING-ONION"
         kwargs["location"] = location

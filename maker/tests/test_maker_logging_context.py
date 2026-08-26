@@ -16,10 +16,11 @@ from maker.maker_session import MakerSession
 async def test_session_handler_binds_commitment_context() -> None:
     session = object.__new__(MakerSession)
     session.inner = SimpleNamespace(taker_nick="taker", commitment=bytes.fromhex("ab" * 32))
+    session.generation_id = 0
     session.lock = asyncio.Lock()
     session.expired = False
     session.deadline = time.monotonic() + 1
-    bot = SimpleNamespace(active_sessions={"taker": session})
+    bot = SimpleNamespace(active_sessions={(0, "taker"): session})
     records: list[dict[str, object]] = []
     handler_id = logger.add(lambda message: records.append(dict(message.record["extra"])))
     try:

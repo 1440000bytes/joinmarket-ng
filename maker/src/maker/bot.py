@@ -28,6 +28,7 @@ from jmcore.protocol import (
 )
 from jmcore.randomness import secure_random
 from jmcore.rate_limiter import RateLimiter
+from jmcore.tasks import spawn_task
 from jmcore.tor_control import (
     EphemeralHiddenService,
     TorAuthenticationError,
@@ -52,6 +53,7 @@ from maker.fidelity import (
     find_fidelity_bonds,
     get_best_fidelity_bond,
 )
+from maker.generation import GenerationState, MakerGeneration
 from maker.maker_session import MakerSession, PendingSignedRound
 from maker.offers import OfferManager
 from maker.protocol_handlers import ProtocolHandlersMixin
@@ -94,14 +96,13 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
         self.wallet = wallet
         self.backend = backend
         self.config = config
+        self._static_onion_configured = config.onion_host is not None
         self.minimum_fee_rate_sat_vb = config.min_fee_rate_sat_vb
         self._minimum_fee_policy_warning_emitted = False
 
         # Create nick identity for signing messages
         self.nick_identity = NickIdentity(JM_VERSION)
         self.nick = self.nick_identity.nick
-
-        self.offer_manager = OfferManager(self.wallet, config, self.nick)
 
         self.directory_clients: dict[str, DirectoryClient] = {}
         # Shared connection plumbing (parsing, SOCKS isolation creds,
@@ -115,7 +116,8 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
             neutrino_compat=backend.can_provide_neutrino_metadata(),
         )
         self._directory_pool.clients = self.directory_clients
-        self.active_sessions: dict[str, MakerSession] = {}
+        self.offer_manager = OfferManager(self.wallet, config, self.nick)
+        self.active_sessions: dict[tuple[int, str], MakerSession] = {}
         self._reserved_commitments: set[str] = set()
         self._active_podle_outpoints: dict[tuple[str, int], MakerSession] = {}
         self.current_offers: list[Offer] = []
@@ -127,7 +129,7 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
         self._session_cleanup_task: asyncio.Task[None] | None = None
         self._session_handler_task_count = 0
         self._detached_handler_tasks: set[asyncio.Task[None]] = set()
-        self._pending_signed_rounds: dict[tuple[str, str], PendingSignedRound] = {}
+        self._pending_signed_rounds: dict[tuple[int, str, str], PendingSignedRound] = {}
         self._pending_signed_rounds_lock = asyncio.Lock()
         self._fatal_error: Exception | None = None
 
@@ -142,6 +144,10 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
         # Tor control for dynamic hidden service creation
         self._tor_control: TorControlClient | None = None
         self._ephemeral_hidden_service: EphemeralHiddenService | None = None
+        self.generations: dict[int, MakerGeneration] = {}
+        self.current_generation_id = 0
+        self._generation_lock = asyncio.Lock()
+        self._identity_renewal_task: asyncio.Task[None] | None = None
 
         # Generic per-peer rate limiter (token bucket algorithm)
         # Generous burst (100 msgs) but low sustained rate (10 msg/s)
@@ -205,6 +211,57 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
         if taker_nick:
             self._own_wallet_nicks.add(taker_nick)
             logger.info(f"Self-CoinJoin protection: excluding taker nick {taker_nick}")
+
+        initial_generation = MakerGeneration(
+            generation_id=0,
+            nick_identity=self.nick_identity,
+            offer_manager=self.offer_manager,
+            directory_pool=self._directory_pool,
+            directory_clients=self.directory_clients,
+            current_offers=self.current_offers,
+            direct_connections=self.direct_connections,
+            direct_connection_states=self._direct_connection_states,
+            reconnect_attempts=self._directory_reconnect_attempts,
+            all_directories_disconnected=self._all_directories_disconnected,
+        )
+        self.generations[0] = initial_generation
+
+    def _generation(self, generation_id: int | None = None) -> MakerGeneration | None:
+        """Resolve an explicit generation, defaulting only for legacy callers."""
+        return self.generations.get(
+            self.current_generation_id if generation_id is None else generation_id
+        )
+
+    def _generation_clients(self, generation_id: int) -> dict[str, DirectoryClient]:
+        generation = self._generation(generation_id)
+        if generation is None:
+            return {}
+        # Existing embedders and tests may replace the current alias directly.
+        return (
+            self.directory_clients
+            if generation_id == self.current_generation_id
+            else generation.directory_clients
+        )
+
+    def _activate_generation(self, generation: MakerGeneration) -> None:
+        """Switch compatibility aliases after a generation has become current."""
+        self.current_generation_id = generation.generation_id
+        self.nick_identity = generation.nick_identity
+        self.nick = generation.nick_identity.nick
+        self.offer_manager = generation.offer_manager
+        self._directory_pool = generation.directory_pool
+        self.directory_clients = generation.directory_clients
+        self.current_offers = generation.current_offers
+        self.hidden_service_listener = generation.hidden_service_listener
+        self._tor_control = generation.tor_control
+        self._ephemeral_hidden_service = generation.ephemeral_hidden_service
+        self.direct_connections = generation.direct_connections
+        self._direct_connection_states = generation.direct_connection_states
+        self._directory_reconnect_attempts = generation.reconnect_attempts
+        self._all_directories_disconnected = generation.all_directories_disconnected
+
+    def _current_session_key(self, taker_nick: str) -> tuple[int, str]:
+        return (self.current_generation_id, taker_nick)
 
     def _seed_mempool_notification_state(self) -> None:
         """Remember pending transactions inherited from a prior maker process."""
@@ -416,6 +473,245 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
                 "Resolved minimum CoinJoin miner fee rate: "
                 f"{self.minimum_fee_rate_sat_vb:.2f} sat/vB"
             )
+
+    async def _create_replacement_generation(self) -> MakerGeneration | None:
+        """Prepare independent identity, offer, directory, and Tor resources."""
+        if self._static_onion_configured:
+            logger.warning(
+                "Skipping maker identity renewal because static onion services are not isolatable"
+            )
+            return None
+
+        generation_id = max(self.generations, default=-1) + 1
+        identity = NickIdentity(JM_VERSION)
+        offer_manager = OfferManager(self.wallet, self.config, identity.nick)
+        offers = await offer_manager.create_offers()
+        listener: HiddenServiceListener | None = None
+        tor_control: TorControlClient | None = None
+        service: EphemeralHiddenService | None = None
+        directory_pool: MakerDirectoryPool | None = None
+        try:
+            onion_host: str | None = None
+            listener_port: int | None = None
+            if self.config.tor_control.enabled:
+                listener = HiddenServiceListener(
+                    host=self.config.onion_serving_host,
+                    port=0,
+                    on_connection=lambda connection, peer: self._on_direct_connection(
+                        connection, peer, generation_id=generation_id
+                    ),
+                )
+                await listener.start()
+                listener_port = listener.bound_port
+                tor_control = TorControlClient(
+                    control_host=self.config.tor_control.host,
+                    control_port=self.config.tor_control.port,
+                    cookie_path=self.config.tor_control.cookie_path,
+                    password=(
+                        self.config.tor_control.password.get_secret_value()
+                        if self.config.tor_control.password
+                        else None
+                    ),
+                )
+                await tor_control.connect()
+                await tor_control.authenticate()
+                service = await tor_control.create_ephemeral_hidden_service(
+                    ports=[
+                        (
+                            self.config.onion_serving_port,
+                            f"{self.config.tor_target_host}:{listener.bound_port}",
+                        )
+                    ],
+                    discard_pk=True,
+                    detach=False,
+                    max_streams=self.config.hidden_service_dos.max_streams,
+                    dos_config=self.config.hidden_service_dos,
+                )
+                onion_host = service.onion_address
+
+            directory_pool = MakerDirectoryPool(
+                config=self.config,
+                nick_identity=identity,
+                neutrino_compat=self.backend.can_provide_neutrino_metadata(),
+                onion_host=onion_host,
+                # This is the peer-visible virtual onion port. Tor maps it
+                # independently to listener_port above.
+                onion_serving_port=self.config.onion_serving_port,
+            )
+            generation = MakerGeneration(
+                generation_id=generation_id,
+                nick_identity=identity,
+                offer_manager=offer_manager,
+                directory_pool=directory_pool,
+                current_offers=offers,
+                hidden_service_listener=listener,
+                tor_control=tor_control,
+                ephemeral_hidden_service=service,
+                onion_host=onion_host,
+                listener_port=listener_port,
+            )
+            directory_pool.clients = generation.directory_clients
+            await directory_pool.connect_all_with_retry(
+                timeout=self.config.directory_startup_timeout,
+                initial_delay=5.0,
+                max_delay=30.0,
+                backoff=1.5,
+            )
+            return generation
+        except Exception:
+            if directory_pool is not None:
+                await directory_pool.close_all()
+            if service is not None and tor_control is not None:
+                try:
+                    await tor_control.delete_ephemeral_hidden_service(service.service_id)
+                except Exception:
+                    pass
+            if tor_control is not None:
+                try:
+                    await tor_control.close()
+                except Exception:
+                    pass
+            if listener is not None:
+                await listener.stop()
+            raise
+
+    async def _close_generation(self, generation: MakerGeneration) -> None:
+        """Close only resources owned by one retired generation."""
+        if generation.state is GenerationState.CLOSED:
+            return
+        generation.state = GenerationState.CLOSED
+        current_task = asyncio.current_task()
+        tasks = [task for task in generation.tasks if task is not current_task]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.wait(set(tasks), timeout=2.0)
+        direct_states = (
+            self._direct_connection_states
+            if generation.generation_id == self.current_generation_id
+            else generation.direct_connection_states
+        )
+        direct_connections = (
+            self.direct_connections
+            if generation.generation_id == self.current_generation_id
+            else generation.direct_connections
+        )
+        for connection in set(direct_states) | set(direct_connections.values()):
+            try:
+                await connection.close()
+            except Exception:
+                pass
+        direct_connections.clear()
+        direct_states.clear()
+        if generation.hidden_service_listener is not None:
+            await generation.hidden_service_listener.stop()
+        if generation.ephemeral_hidden_service is not None and generation.tor_control is not None:
+            try:
+                await generation.tor_control.delete_ephemeral_hidden_service(
+                    generation.ephemeral_hidden_service.service_id
+                )
+            except Exception as exc:
+                logger.warning(f"Failed to remove retired ephemeral hidden service: {exc}")
+        if generation.tor_control is not None:
+            try:
+                await generation.tor_control.close()
+            except Exception:
+                pass
+        clients = self._generation_clients(generation.generation_id)
+        for client in clients.values():
+            try:
+                await client.close()
+            except Exception:
+                pass
+
+    async def _retire_generation_after_grace(self, generation_id: int, deadline: float) -> None:
+        await asyncio.sleep(max(0.0, deadline - time.monotonic()))
+        generation = self.generations.get(generation_id)
+        if generation is None or generation.grace_deadline != deadline:
+            return
+        for key, session in list(self.active_sessions.items()):
+            if key[0] == generation_id:
+                await self._expire_timed_out_session(key, session)
+        async with self._pending_signed_rounds_lock:
+            pending_keys = [
+                pending_key
+                for pending_key in self._pending_signed_rounds
+                if pending_key[0] == generation_id
+            ]
+            for pending_key in pending_keys:
+                self._pending_signed_rounds.pop(pending_key, None)
+        await self._close_generation(generation)
+        self.generations.pop(generation_id, None)
+
+    async def _rotate_generation(self) -> bool:
+        """Atomically publish a prepared generation and retain the old one for grace."""
+        replacement = await self._create_replacement_generation()
+        if replacement is None:
+            return False
+        async with self._generation_lock:
+            old = self._generation()
+            if old is None or not self.running:
+                await self._close_generation(replacement)
+                return False
+            old.state = GenerationState.GRACE
+            old.grace_deadline = time.monotonic() + max(
+                self.config.identity_grace_sec, self.config.session_timeout_sec
+            )
+            if old.hidden_service_listener is not None:
+                # Stop admitting new direct sockets. Existing accepted socket
+                # handlers remain alive for generation-pinned continuations.
+                await old.hidden_service_listener.stop()
+            await self._cancel_generation_offers(old, {offer.oid for offer in old.current_offers})
+            self.generations[replacement.generation_id] = replacement
+            self._activate_generation(replacement)
+            await self._announce_generation_offers(replacement)
+            self._start_generation_listeners(replacement)
+            logger.bind(sensitive=True).info(
+                f"Maker identity generation cut over: {old.nick_identity.nick} -> "
+                f"{replacement.nick_identity.nick}"
+            )
+            try:
+                spawn_task(
+                    get_notifier().notify_nick_change(
+                        old.nick_identity.nick, replacement.nick_identity.nick
+                    )
+                )
+            except Exception as exc:
+                logger.warning(f"Could not schedule maker nick-change notification: {exc}")
+            task = asyncio.create_task(
+                self._retire_generation_after_grace(old.generation_id, old.grace_deadline),
+                name=f"maker-generation-retire-{old.generation_id}",
+            )
+            old.tasks.append(task)
+        return True
+
+    async def _identity_renewal_scheduler(self) -> None:
+        """Renew on one secure random delay per cycle, independent of activity."""
+        while self.running:
+            delay = secure_random.uniform(
+                self.config.identity_renewal_min_sec, self.config.identity_renewal_max_sec
+            )
+            try:
+                await asyncio.sleep(delay)
+            except asyncio.CancelledError:
+                return
+            if self.running:
+                try:
+                    await self._rotate_generation()
+                except Exception as exc:
+                    logger.warning(f"Maker identity renewal failed: {exc}")
+
+    def _start_generation_listeners(self, generation: MakerGeneration) -> None:
+        for node_id, client in generation.directory_clients.items():
+            task = asyncio.create_task(
+                self._listen_client(node_id, client, generation_id=generation.generation_id)
+            )
+            generation.tasks.append(task)
+            self.listen_tasks.append(task)
+        if generation.hidden_service_listener is not None:
+            task = asyncio.create_task(generation.hidden_service_listener.serve_forever())
+            generation.tasks.append(task)
+            self.listen_tasks.append(task)
 
     async def start(self) -> None:
         """
@@ -733,7 +1029,9 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
                 self.hidden_service_listener = HiddenServiceListener(
                     host=self.config.onion_serving_host,
                     port=self.config.onion_serving_port,
-                    on_connection=self._on_direct_connection,
+                    on_connection=lambda connection, peer: self._on_direct_connection(
+                        connection, peer, generation_id=0
+                    ),
                 )
                 await self.hidden_service_listener.start()
                 logger.info("Hidden service listener started")
@@ -744,20 +1042,23 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
             logger.info("Announcing offers...")
             await self._announce_offers()
 
+            initial_generation = self.generations[0]
+            initial_generation.current_offers = self.current_offers
+            initial_generation.hidden_service_listener = self.hidden_service_listener
+            initial_generation.tor_control = self._tor_control
+            initial_generation.ephemeral_hidden_service = self._ephemeral_hidden_service
+            initial_generation.onion_host = onion_host
+            initial_generation.listener_port = (
+                self.hidden_service_listener.bound_port if self.hidden_service_listener else None
+            )
+
             logger.info("Maker bot started. Listening for takers...")
             self.running = True
 
             self._start_session_cleanup_task()
 
             # Start listening on all directory clients
-            for node_id, client in self.directory_clients.items():
-                task = asyncio.create_task(self._listen_client(node_id, client))
-                self.listen_tasks.append(task)
-
-            # If hidden service listener is running, start serve_forever task
-            if self.hidden_service_listener:
-                task = asyncio.create_task(self.hidden_service_listener.serve_forever())
-                self.listen_tasks.append(task)
+            self._start_generation_listeners(initial_generation)
 
             # Start background task to monitor pending transactions
             monitor_task = asyncio.create_task(self._monitor_pending_transactions())
@@ -778,6 +1079,11 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
             # Start periodic directory reconnection task
             reconnect_task = asyncio.create_task(self._periodic_directory_reconnect())
             self.listen_tasks.append(reconnect_task)
+
+            self._identity_renewal_task = asyncio.create_task(
+                self._identity_renewal_scheduler(), name="maker-identity-renewal"
+            )
+            self.listen_tasks.append(self._identity_renewal_task)
 
             # Start periodic summary notification task (if enabled)
             notifier = get_notifier()
@@ -803,6 +1109,8 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
         """Stop the maker bot"""
         logger.info("Stopping maker bot...")
         self.running = False
+        if self._identity_renewal_task is not None:
+            self._identity_renewal_task.cancel()
 
         # Stop the dedicated reaper, then independently expire every exact
         # session object. Handler cancellation and cleanup are bounded inside
@@ -813,8 +1121,8 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
             await asyncio.wait({cleanup_task}, timeout=1.0)
 
         expiration_tasks = [
-            asyncio.create_task(self._expire_timed_out_session(nick, session))
-            for nick, session in list(self.active_sessions.items())
+            asyncio.create_task(self._expire_timed_out_session(key, session))
+            for key, session in list(self.active_sessions.items())
         ]
         if expiration_tasks:
             _, pending_expirations = await asyncio.wait(expiration_tasks, timeout=1.5)
@@ -851,31 +1159,12 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
         self.listen_tasks.clear()
         self._session_cleanup_task = None
 
-        # Stop hidden service listener
-        if self.hidden_service_listener:
-            await self.hidden_service_listener.stop()
-
-        # Clean up Tor control connection (ephemeral hidden service auto-removed)
-        await self._cleanup_tor_hidden_service()
-
-        # Close every accepted direct socket, including sockets that never
-        # completed a handshake or authenticated a sender.
-        direct_sockets = set(self._direct_connection_states)
-        direct_sockets.update(self.direct_connections.values())
-        for conn in direct_sockets:
-            try:
-                await conn.close()
-            except Exception:
-                pass
-        self.direct_connections.clear()
-        self._direct_connection_states.clear()
-
-        # Close all directory clients
-        for client in self.directory_clients.values():
-            try:
-                await client.close()
-            except Exception:
-                pass
+        # Close every generation. The compatibility aliases point at the
+        # current record, so generation-owned cleanup also handles replacement
+        # transports that are not present in those aliases.
+        for generation in list(self.generations.values()):
+            await self._close_generation(generation)
+        self.generations.clear()
 
         # Do not close the wallet here as it might be shared (e.g. in jmwalletd)
         # The caller is responsible for managing the wallet lifecycle.
@@ -1074,6 +1363,9 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
                 offer.counterparty = self.nick
 
             self.current_offers = new_offers
+            current_generation = self._generation()
+            if current_generation is not None:
+                current_generation.current_offers = new_offers
 
             delay_max = self.config.offer_reannounce_delay_max
             if delay_max > 0:
@@ -1096,8 +1388,16 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
 
     async def _cancel_offers(self, offer_ids: set[int]) -> None:
         """Withdraw OIDs using the reference-compatible public cancel command."""
+        generation = self._generation()
+        if generation is not None:
+            await self._cancel_generation_offers(generation, offer_ids)
+
+    async def _cancel_generation_offers(
+        self, generation: MakerGeneration, offer_ids: set[int]
+    ) -> None:
+        """Withdraw OIDs using the clients that announced this generation."""
         for offer_id in sorted(offer_ids):
-            for client in self.directory_clients.values():
+            for client in self._generation_clients(generation.generation_id).values():
                 try:
                     await client.send_public_message(f"cancel {offer_id}")
                     logger.debug(f"Canceled offer {offer_id} on directory")
@@ -1106,10 +1406,17 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
 
     async def _announce_offers(self) -> None:
         """Announce offers to all connected directory servers (public broadcast, NO bonds)"""
-        for offer in self.current_offers:
+        generation = self._generation()
+        if generation is not None:
+            generation.current_offers = self.current_offers
+            await self._announce_generation_offers(generation)
+
+    async def _announce_generation_offers(self, generation: MakerGeneration) -> None:
+        """Announce offers using only the identity that owns them."""
+        for offer in generation.current_offers:
             offer_msg = self._format_offer_announcement(offer, include_bond=False)
 
-            for client in self.directory_clients.values():
+            for client in generation.directory_clients.values():
                 try:
                     await client.send_public_message(offer_msg)
                     logger.debug("Announced offer to directory")

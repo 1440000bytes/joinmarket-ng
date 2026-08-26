@@ -468,7 +468,12 @@ class TestHiddenServiceListener:
         fill_called = False
         connection_was_tracked = False
 
-        async def mock_handle_fill(taker_nick: str, msg: str, source: str = "unknown") -> None:
+        async def mock_handle_fill(
+            taker_nick: str,
+            msg: str,
+            source: str = "unknown",
+            generation_id: int | None = None,
+        ) -> None:
             nonlocal fill_called, connection_was_tracked
             fill_called = True
             # At this point, the connection should be tracked
@@ -476,6 +481,7 @@ class TestHiddenServiceListener:
             assert taker_nick == taker_identity.nick
             assert "fill" in msg
             assert source == "direct"  # Should be called with source="direct"
+            assert generation_id == 0
 
         bot._handle_fill = mock_handle_fill
 
@@ -545,7 +551,7 @@ class TestHiddenServiceListener:
             await asyncio.Event().wait()
 
         session.on_auth = AsyncMock(side_effect=block_auth)
-        bot.active_sessions[taker_identity.nick] = session
+        bot.active_sessions[(session.generation_id, taker_identity.nick)] = session
         bot._reserved_commitments.add(commitment)
         bot._handle_push = AsyncMock()
         bot._start_session_cleanup_task()
@@ -588,9 +594,9 @@ class TestHiddenServiceListener:
         cleanup_task.cancel()
         await asyncio.gather(cleanup_task, return_exceptions=True)
 
-        assert taker_identity.nick not in bot.active_sessions
+        assert (session.generation_id, taker_identity.nick) not in bot.active_sessions
         bot._handle_push.assert_awaited_once_with(
-            taker_identity.nick, "push transaction", source="direct"
+            taker_identity.nick, "push transaction", source="direct", generation_id=0
         )
 
     @pytest.mark.asyncio
@@ -654,7 +660,7 @@ class TestHiddenServiceListener:
         await bot._on_direct_connection(genuine_connection, "genuine:2")
 
         bot._handle_fill.assert_awaited_once_with(
-            genuine.nick, f"fill {fill_data}", source="direct"
+            genuine.nick, f"fill {fill_data}", source="direct", generation_id=0
         )
         attacker_connection.close.assert_not_awaited()
         bot._remove_direct_connection(attacker_connection)
@@ -715,7 +721,12 @@ class TestHiddenServiceListener:
         )
         observed_state: DirectConnectionState | None = None
 
-        async def capture_state(_nick: str, _msg: str, source: str = "unknown") -> None:
+        async def capture_state(
+            _nick: str,
+            _msg: str,
+            source: str = "unknown",
+            generation_id: int | None = None,
+        ) -> None:
             nonlocal observed_state
             state = bot._direct_connection_states[connection]
             observed_state = DirectConnectionState(nick=state.nick, verified=state.verified)
@@ -747,7 +758,9 @@ class TestHiddenServiceListener:
 
         await bot._on_direct_connection(connection, "peer:1")
 
-        bot._handle_fill.assert_awaited_once_with(first.nick, "fill first", source="direct")
+        bot._handle_fill.assert_awaited_once_with(
+            first.nick, "fill first", source="direct", generation_id=0
+        )
         bot._handle_auth.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -785,7 +798,7 @@ class TestHiddenServiceListener:
 
         await bot._on_direct_connection(ingress, "peer:1")
 
-        bot._send_offers_via_direct_connection.assert_awaited_once_with(taker.nick, ingress)
+        bot._send_offers_via_direct_connection.assert_awaited_once_with(taker.nick, ingress, 0)
         assert bot.direct_connections[taker.nick] is newer_hint
 
     def test_disconnect_does_not_remove_newer_mapping(
@@ -942,13 +955,14 @@ class TestHandlePush:
         from maker.maker_session import PendingSignedRound
 
         txid = get_txid(tx_bytes.hex())
-        maker_bot._pending_signed_rounds[(taker_nick, txid)] = PendingSignedRound(
+        maker_bot._pending_signed_rounds[(0, taker_nick, txid)] = PendingSignedRound(
             taker_nick=taker_nick,
             txid=txid,
             input_lock_owner="round-owner",
             outpoints=frozenset({("ab" * 32, 0)}),
             expires_at=time.monotonic() + 60,
             lock_ttl_sec=3600,
+            generation_id=0,
         )
         renew = maker_bot.wallet.renew_coinjoin_inputs
         if isinstance(renew, MagicMock):
@@ -971,7 +985,7 @@ class TestHandlePush:
         maker_bot.wallet.renew_coinjoin_inputs.assert_called_once_with(
             {("ab" * 32, 0)}, owner="round-owner", ttl=3600
         )
-        assert ("J5taker123", txid) not in maker_bot._pending_signed_rounds
+        assert (0, "J5taker123", txid) not in maker_bot._pending_signed_rounds
 
     @pytest.mark.asyncio
     async def test_handle_push_invalid_format(self, maker_bot):
@@ -1025,7 +1039,7 @@ class TestHandlePush:
         )
 
         maker_bot.backend.broadcast_transaction.assert_not_called()
-        assert ("J5ExpectedTaker", txid) in maker_bot._pending_signed_rounds
+        assert (0, "J5ExpectedTaker", txid) in maker_bot._pending_signed_rounds
 
     @pytest.mark.asyncio
     async def test_delayed_push_fails_after_lease_loss_and_reacquisition(self, maker_bot, tmp_path):
@@ -1053,7 +1067,7 @@ class TestHandlePush:
         )
 
         maker_bot.backend.broadcast_transaction.assert_not_called()
-        assert ("J5StaleTaker", txid) not in maker_bot._pending_signed_rounds
+        assert (0, "J5StaleTaker", txid) not in maker_bot._pending_signed_rounds
         wallet.metadata_store.load()
         assert wallet.metadata_store.records[ref].lock_owner == "replacement-owner"
 
@@ -1061,8 +1075,8 @@ class TestHandlePush:
     async def test_expired_pending_push_record_is_cleaned(self, maker_bot):
         tx_bytes = self._transaction()
         txid = self._authorize_push(maker_bot, "J5ExpiredTaker", tx_bytes)
-        record = maker_bot._pending_signed_rounds[("J5ExpiredTaker", txid)]
-        maker_bot._pending_signed_rounds[("J5ExpiredTaker", txid)] = replace(
+        record = maker_bot._pending_signed_rounds[(0, "J5ExpiredTaker", txid)]
+        maker_bot._pending_signed_rounds[(0, "J5ExpiredTaker", txid)] = replace(
             record, expires_at=time.monotonic() - 1
         )
 
@@ -1094,11 +1108,17 @@ class TestHandlePush:
         # Set up the bot with a mock _handle_push
         push_called = False
 
-        async def mock_handle_push(taker_nick: str, msg: str, source: str = "unknown") -> None:
+        async def mock_handle_push(
+            taker_nick: str,
+            msg: str,
+            source: str = "unknown",
+            generation_id: int | None = None,
+        ) -> None:
             nonlocal push_called
             push_called = True
             assert taker_nick == "J5taker123"
             assert "push" in msg
+            assert generation_id == 0
 
         maker_bot._handle_push = mock_handle_push
 
@@ -3160,7 +3180,7 @@ class TestListenTasksMemoryLeak:
         session.state = CoinJoinState.PUBKEY_SENT
         session.comm_channel = "direct"
         maker_bot.directory_clients.clear()
-        maker_bot.active_sessions["J5IdleDirectTaker"] = session
+        maker_bot.active_sessions[(0, "J5IdleDirectTaker")] = session
         maker_bot._reserved_commitments.add(commitment)
         maker_bot.running = True
         cleanup = maker_bot._cleanup_timed_out_sessions
@@ -3176,7 +3196,7 @@ class TestListenTasksMemoryLeak:
                 await maker_bot._periodic_session_cleanup()
 
         assert maker_bot.directory_clients == {}
-        assert "J5IdleDirectTaker" not in maker_bot.active_sessions
+        assert (0, "J5IdleDirectTaker") not in maker_bot.active_sessions
         assert commitment not in maker_bot._reserved_commitments
         session.release_input_locks.assert_called_once_with()
 
@@ -3219,8 +3239,8 @@ class TestListenTasksMemoryLeak:
         pre_sign = session("J5PreSign", "d2" * 32, CoinJoinState.IOAUTH_SEND_STARTED)
         post_sign = session("J5PostSign", "d3" * 32, CoinJoinState.SIG_SENT)
         maker_bot.active_sessions = {
-            pre_sign.taker_nick: pre_sign,
-            post_sign.taker_nick: post_sign,
+            (pre_sign.generation_id, pre_sign.taker_nick): pre_sign,
+            (post_sign.generation_id, post_sign.taker_nick): post_sign,
         }
         maker_bot._reserved_commitments.update({"d2" * 32, "d3" * 32})
         maker_bot._broadcast_commitment = AsyncMock(return_value=True)
@@ -3253,7 +3273,9 @@ class TestListenTasksMemoryLeak:
             expires_at=time.monotonic() + 60,
             lock_ttl_sec=3600,
         )
-        maker_bot._pending_signed_rounds[(record.taker_nick, record.txid)] = record
+        maker_bot._pending_signed_rounds[(record.generation_id, record.taker_nick, record.txid)] = (
+            record
+        )
         maker_bot.wallet.renew_coinjoin_inputs.return_value = True
         maker_bot.directory_clients.clear()
 

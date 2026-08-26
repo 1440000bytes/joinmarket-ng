@@ -430,6 +430,10 @@
 # Timeouts and intervals
 # session_timeout_sec = 300      # Range: 60-86400 seconds
 # pre_sign_timeout_sec = 180     # Wait after !ioauth for !tx (range: 60-3600 seconds)
+# Randomized identity renewal is independent of fills, sessions, balances, and bonds.
+# identity_renewal_min_sec = 43200  # 12 hours
+# identity_renewal_max_sec = 86400  # 24 hours
+# identity_grace_sec = 300          # At least session_timeout_sec at cutover
 # rescan_interval_sec = 600
 # pending_tx_timeout_min = 60   # Minutes before marking unbroadcast CoinJoins as failed
 # pending_tx_abandon_hours = 72  # Hours before abandoning a broadcast but unconfirmed tx
@@ -440,7 +444,9 @@
 # offer_reannounce_delay_max = 600
 
 # Onion service settings
-# onion_host = ""  # Static hidden service address (e.g., 'mymaker...onion'). When not set, Tor control auto-generates one.
+# Static hidden service address (e.g., 'mymaker...onion'). When set, automatic
+# identity renewal is skipped because it cannot create an independent onion transport.
+# onion_host = ""
 # onion_serving_host = "127.0.0.1"
 # onion_serving_port = 5222
 # The hidden-service target is configured as [tor] target_host above.

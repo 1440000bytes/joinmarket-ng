@@ -58,6 +58,7 @@ class PendingSignedRound:
     outpoints: frozenset[tuple[str, int]]
     expires_at: float
     lock_ttl_sec: float
+    generation_id: int = 0
 
 
 def _notification_coinjoin_id(commitment: object) -> str | None:
@@ -81,8 +82,9 @@ class MakerSession:
     the session itself; `MakerBot` only routes incoming messages.
     """
 
-    def __init__(self, inner: CoinJoinSession) -> None:
+    def __init__(self, inner: CoinJoinSession, generation_id: int = 0) -> None:
         self.inner = inner
+        self.generation_id = generation_id
         self.lock = asyncio.Lock()
         self.podle_outpoint: tuple[str, int] | None = None
         # This is deliberately independent of an event loop so sessions remain
@@ -230,7 +232,10 @@ class MakerSession:
 
     def is_active(self, bot: MakerBotProtocol) -> bool:
         """Return whether this exact session may still progress."""
-        return not self.expired and bot.active_sessions.get(self.taker_nick) is self
+        return (
+            not self.expired
+            and bot.active_sessions.get((self.generation_id, self.taker_nick)) is self
+        )
 
     async def run_handler(
         self,
@@ -423,8 +428,8 @@ class MakerSession:
                     logger.bind(sensitive=True).error(
                         f"Refusing to reveal addresses because history persistence failed: {e}"
                     )
-                    if bot.active_sessions.get(taker_nick) is self:
-                        bot.active_sessions.pop(taker_nick)
+                    if bot.active_sessions.get((self.generation_id, taker_nick)) is self:
+                        bot.active_sessions.pop((self.generation_id, taker_nick))
                         bot._release_podle_outpoint(self)
                         self.release_input_locks()
                         bot._release_commitment_reservation(commitment)
@@ -434,8 +439,8 @@ class MakerSession:
                     return
                 if not self.begin_pre_sign_wait():
                     logger.error("Maker input lock ownership was lost before !ioauth")
-                    if bot.active_sessions.get(taker_nick) is self:
-                        bot.active_sessions.pop(taker_nick)
+                    if bot.active_sessions.get((self.generation_id, taker_nick)) is self:
+                        bot.active_sessions.pop((self.generation_id, taker_nick))
                         bot._release_podle_outpoint(self)
                         self.release_input_locks()
                         bot._release_commitment_reservation(commitment)
@@ -460,7 +465,7 @@ class MakerSession:
                 logger.bind(sensitive=True).error(f"Authentication failed: {error_msg}")
 
                 try:
-                    for client in bot.directory_clients.values():
+                    for client in bot._generation_clients(self.generation_id).values():
                         await client.send_private_message(taker_nick, "error", error_msg)
                         if not self.is_active(bot):
                             return
@@ -473,8 +478,8 @@ class MakerSession:
 
                 # Release protocol resources before best-effort notification
                 # work so notifier failures cannot extend the reservation.
-                if bot.active_sessions.get(taker_nick) is self:
-                    bot.active_sessions.pop(taker_nick)
+                if bot.active_sessions.get((self.generation_id, taker_nick)) is self:
+                    bot.active_sessions.pop((self.generation_id, taker_nick))
                     bot._release_podle_outpoint(self)
                     self.release_input_locks()
                     bot._release_commitment_reservation(commitment)
@@ -560,8 +565,8 @@ class MakerSession:
                     logger.error(
                         f"Cannot retain signed round for {taker_nick}; withholding signatures"
                     )
-                    if bot.active_sessions.get(taker_nick) is self:
-                        bot.active_sessions.pop(taker_nick)
+                    if bot.active_sessions.get((self.generation_id, taker_nick)) is self:
+                        bot.active_sessions.pop((self.generation_id, taker_nick))
                         bot._release_podle_outpoint(self)
                     self.retain_input_locks()
                     return
@@ -631,9 +636,9 @@ class MakerSession:
                     )
                 )
 
-                if bot.active_sessions.get(taker_nick) is self:
+                if bot.active_sessions.get((self.generation_id, taker_nick)) is self:
                     self.state = CoinJoinState.COMPLETE
-                    bot.active_sessions.pop(taker_nick)
+                    bot.active_sessions.pop((self.generation_id, taker_nick))
                     bot._release_podle_outpoint(self)
 
                 # Schedule wallet re-sync in background to avoid blocking !push handling
@@ -646,8 +651,8 @@ class MakerSession:
                 # Before signing starts, a failed transaction cannot conflict
                 # with a later use of these inputs. Once signing starts, retain
                 # the persisted locks through their TTL.
-                if bot.active_sessions.get(taker_nick) is self:
-                    bot.active_sessions.pop(taker_nick)
+                if bot.active_sessions.get((self.generation_id, taker_nick)) is self:
+                    bot.active_sessions.pop((self.generation_id, taker_nick))
                     bot._release_podle_outpoint(self)
                     if self.signing_boundary_crossed:
                         self.retain_input_locks()
@@ -698,7 +703,7 @@ class MakerSession:
             else:
                 msg_content = json.dumps(data)
 
-            clients = list(bot.directory_clients.values())
+            clients = list(bot._generation_clients(self.generation_id).values())
             if not clients:
                 logger.warning(f"No directory client available to send {command}")
                 return False

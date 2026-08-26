@@ -23,6 +23,10 @@ from maker.offer_math import max_fillable_cj_amount, required_maker_input
 from maker.offers import OfferManager
 
 
+def _session_key(taker_nick: str, generation_id: int = 0) -> tuple[int, str]:
+    return (generation_id, taker_nick)
+
+
 class TestOfferConfig:
     """Tests for OfferConfig model."""
 
@@ -646,8 +650,8 @@ class TestMakerBotMultiOfferFill:
             )
 
         mock_session_class.assert_called_once()
-        assert "J5FirstTaker" in maker_bot.active_sessions
-        assert "J5SecondTaker" not in maker_bot.active_sessions
+        assert _session_key("J5FirstTaker") in maker_bot.active_sessions
+        assert _session_key("J5SecondTaker") not in maker_bot.active_sessions
         assert "ab" * 32 in maker_bot._reserved_commitments
 
     def test_podle_outpoint_allows_only_one_concurrent_session(self, maker_bot) -> None:
@@ -668,7 +672,7 @@ class TestMakerBotMultiOfferFill:
         from maker.protocol_handlers import MAX_ACTIVE_MAKER_SESSIONS
 
         maker_bot.active_sessions = {
-            f"J5Existing{i}": MagicMock() for i in range(MAX_ACTIVE_MAKER_SESSIONS)
+            _session_key(f"J5Existing{i}"): MagicMock() for i in range(MAX_ACTIVE_MAKER_SESSIONS)
         }
         commitment = "bc" * 32
 
@@ -734,10 +738,10 @@ class TestMakerBotMultiOfferFill:
             mock_session_class.return_value = mock_session
 
             async def fail_send(*args, **kwargs):
-                installed_session = maker_bot.active_sessions[taker_nick]
+                installed_session = maker_bot.active_sessions[_session_key(taker_nick)]
                 assert installed_session.inner is mock_session
                 if session_replaced:
-                    maker_bot.active_sessions[taker_nick] = replacement
+                    maker_bot.active_sessions[_session_key(taker_nick)] = replacement
                 raise RuntimeError("send failed")
 
             with patch.object(maker_bot, "_send_response", new=fail_send):
@@ -747,9 +751,9 @@ class TestMakerBotMultiOfferFill:
 
         assert commitment not in maker_bot._reserved_commitments
         if session_replaced:
-            assert maker_bot.active_sessions[taker_nick] is replacement
+            assert maker_bot.active_sessions[_session_key(taker_nick)] is replacement
         else:
-            assert taker_nick not in maker_bot.active_sessions
+            assert _session_key(taker_nick) not in maker_bot.active_sessions
 
     @pytest.mark.asyncio
     async def test_fill_exception_before_reservation_keeps_other_session_reservation(
@@ -795,14 +799,14 @@ class TestMakerBotMultiOfferFill:
             await maker_bot._handle_fill(
                 "J5RepeatedTaker", f"fill 0 500000 taker_pk_hex P{'ad' * 32}"
             )
-            first_session = maker_bot.active_sessions["J5RepeatedTaker"]
+            first_session = maker_bot.active_sessions[_session_key("J5RepeatedTaker")]
             first_session.release_input_locks = MagicMock()
             await maker_bot._handle_fill(
                 "J5RepeatedTaker", f"fill 0 500000 taker_pk_hex P{'ae' * 32}"
             )
 
         assert mock_session_class.call_count == 2
-        assert maker_bot.active_sessions["J5RepeatedTaker"] is not first_session
+        assert maker_bot.active_sessions[_session_key("J5RepeatedTaker")] is not first_session
         assert "ad" * 32 not in maker_bot._reserved_commitments
         assert "ae" * 32 in maker_bot._reserved_commitments
         first_session.release_input_locks.assert_called_once_with()
@@ -833,14 +837,14 @@ class TestMakerBotMultiOfferFill:
             await maker_bot._handle_fill(
                 "J5AuthenticatingTaker", f"fill 0 500000 taker_pk_hex P{'b1' * 32}"
             )
-            first_session = maker_bot.active_sessions["J5AuthenticatingTaker"]
+            first_session = maker_bot.active_sessions[_session_key("J5AuthenticatingTaker")]
             first_session.release_input_locks = MagicMock()
             await first_session.lock.acquire()
             await maker_bot._handle_fill(
                 "J5AuthenticatingTaker", f"fill 0 500000 taker_pk_hex P{'b2' * 32}"
             )
 
-        assert maker_bot.active_sessions["J5AuthenticatingTaker"] is first_session
+        assert maker_bot.active_sessions[_session_key("J5AuthenticatingTaker")] is first_session
         assert "b1" * 32 in maker_bot._reserved_commitments
         assert "b2" * 32 not in maker_bot._reserved_commitments
         first_session.release_input_locks.assert_not_called()
@@ -860,7 +864,7 @@ class TestMakerBotMultiOfferFill:
         replacement = MagicMock()
         replacement.on_auth = AsyncMock()
         replacement.on_tx = AsyncMock()
-        maker_bot.active_sessions[taker_nick] = old_session
+        maker_bot.active_sessions[_session_key(taker_nick)] = old_session
         commitments = set(maker_bot._reserved_commitments)
 
         await old_session.lock.acquire()
@@ -870,12 +874,12 @@ class TestMakerBotMultiOfferFill:
         await asyncio.sleep(0)
         assert not task.done()
 
-        assert maker_bot.active_sessions.pop(taker_nick) is old_session
-        maker_bot.active_sessions[taker_nick] = replacement
+        assert maker_bot.active_sessions.pop(_session_key(taker_nick)) is old_session
+        maker_bot.active_sessions[_session_key(taker_nick)] = replacement
         old_session.lock.release()
         await task
 
-        assert maker_bot.active_sessions[taker_nick] is replacement
+        assert maker_bot.active_sessions[_session_key(taker_nick)] is replacement
         getattr(old_session, callback_name).assert_not_awaited()
         getattr(replacement, callback_name).assert_not_awaited()
         old_session.inner.wallet.release_coinjoin_inputs.assert_not_called()
@@ -892,13 +896,13 @@ class TestMakerBotMultiOfferFill:
         session.state = CoinJoinState.PUBKEY_SENT
         podle_outpoint = ("cd" * 32, 0)
         session.podle_outpoint = podle_outpoint
-        maker_bot.active_sessions["J5TimedOutTaker"] = session
+        maker_bot.active_sessions[_session_key("J5TimedOutTaker")] = session
         maker_bot._active_podle_outpoints[podle_outpoint] = session
         maker_bot._reserved_commitments.add(commitment)
 
         await maker_bot._cleanup_timed_out_sessions()
 
-        assert "J5TimedOutTaker" not in maker_bot.active_sessions
+        assert _session_key("J5TimedOutTaker") not in maker_bot.active_sessions
         assert commitment not in maker_bot._reserved_commitments
         assert podle_outpoint not in maker_bot._active_podle_outpoints
         session.release_input_locks.assert_called_once_with()
@@ -912,7 +916,7 @@ class TestMakerBotMultiOfferFill:
         session.commitment = bytes.fromhex(commitment)
         session.state = CoinJoinState.AUTH_RECEIVED
         session.ioauth_boundary_crossed = False
-        maker_bot.active_sessions["J5AuthStageTaker"] = session
+        maker_bot.active_sessions[_session_key("J5AuthStageTaker")] = session
         maker_bot._reserved_commitments.add(commitment)
         maker_bot._broadcast_commitment = AsyncMock(return_value=True)
 
@@ -937,7 +941,7 @@ class TestMakerBotMultiOfferFill:
         second = MagicMock()
         second.send_private_message = AsyncMock(side_effect=record_state)
         maker_bot.directory_clients = {"first": first, "second": second}
-        maker_bot.active_sessions[session.taker_nick] = session
+        maker_bot.active_sessions[_session_key(session.taker_nick)] = session
 
         sent = await session.send_response(
             maker_bot,
@@ -994,7 +998,7 @@ class TestMakerBotMultiOfferFill:
 
         second.send_private_message = AsyncMock(side_effect=block_second)
         maker_bot.directory_clients = {"first": first, "second": second}
-        maker_bot.active_sessions[session.taker_nick] = session
+        maker_bot.active_sessions[_session_key(session.taker_nick)] = session
         maker_bot._reserved_commitments.add(commitment)
         maker_bot._broadcast_commitment = AsyncMock(return_value=True)
 
@@ -1027,7 +1031,7 @@ class TestMakerBotMultiOfferFill:
 
         assert second_cancelled.is_set()
         assert session.state == CoinJoinState.IOAUTH_SEND_STARTED
-        assert session.taker_nick not in maker_bot.active_sessions
+        assert _session_key(session.taker_nick) not in maker_bot.active_sessions
         assert commitment not in maker_bot._reserved_commitments
         maker_bot._broadcast_commitment.assert_awaited_once_with(commitment)
         session.inner.wallet.release_coinjoin_inputs.assert_called_once_with(
@@ -1045,7 +1049,7 @@ class TestMakerBotMultiOfferFill:
         client = MagicMock()
         client.send_private_message = AsyncMock()
         maker_bot.directory_clients = {"only": client}
-        maker_bot.active_sessions[session.taker_nick] = session
+        maker_bot.active_sessions[_session_key(session.taker_nick)] = session
         maker_bot._reserved_commitments.add(commitment)
         maker_bot._broadcast_commitment = AsyncMock(return_value=True)
 
@@ -1083,13 +1087,13 @@ class TestMakerBotMultiOfferFill:
         session.commitment = bytes.fromhex(commitment)
         session.state = CoinJoinState.IOAUTH_SENT
         session.ioauth_boundary_crossed = True
-        maker_bot.active_sessions["J5UnpersistedTaker"] = session
+        maker_bot.active_sessions[_session_key("J5UnpersistedTaker")] = session
         maker_bot._reserved_commitments.add(commitment)
         maker_bot._broadcast_commitment = AsyncMock(return_value=False)
 
         await maker_bot._cleanup_timed_out_sessions()
 
-        assert "J5UnpersistedTaker" not in maker_bot.active_sessions
+        assert _session_key("J5UnpersistedTaker") not in maker_bot.active_sessions
         assert commitment in maker_bot._reserved_commitments
         session.release_input_locks.assert_called_once_with()
         maker_bot._broadcast_commitment.assert_awaited_once_with(commitment)
@@ -1102,13 +1106,13 @@ class TestMakerBotMultiOfferFill:
         session.lock = asyncio.Lock()
         session.commitment = bytes.fromhex(commitment)
         session.state = CoinJoinState.SIG_SENT
-        maker_bot.active_sessions["J5SignedTaker"] = session
+        maker_bot.active_sessions[_session_key("J5SignedTaker")] = session
         maker_bot._reserved_commitments.add(commitment)
         maker_bot._broadcast_commitment = AsyncMock(return_value=True)
 
         await maker_bot._cleanup_timed_out_sessions()
 
-        assert "J5SignedTaker" not in maker_bot.active_sessions
+        assert _session_key("J5SignedTaker") not in maker_bot.active_sessions
         assert commitment not in maker_bot._reserved_commitments
         session.release_input_locks.assert_not_called()
         session.retain_input_locks.assert_called_once_with()
@@ -1123,12 +1127,12 @@ class TestMakerBotMultiOfferFill:
         await session.lock.acquire()
         session.commitment = bytes.fromhex(commitment)
         session.state = CoinJoinState.PUBKEY_SENT
-        maker_bot.active_sessions["J5BusyTaker"] = session
+        maker_bot.active_sessions[_session_key("J5BusyTaker")] = session
         maker_bot._reserved_commitments.add(commitment)
 
         await maker_bot._cleanup_timed_out_sessions()
 
-        assert "J5BusyTaker" not in maker_bot.active_sessions
+        assert _session_key("J5BusyTaker") not in maker_bot.active_sessions
         assert commitment not in maker_bot._reserved_commitments
         session.release_input_locks.assert_called_once_with()
         session.lock.release()
@@ -1157,7 +1161,7 @@ class TestMakerBotMultiOfferFill:
                 raise
 
         setattr(session, callback_name, block)
-        maker_bot.active_sessions[taker_nick] = session
+        maker_bot.active_sessions[_session_key(taker_nick)] = session
         maker_bot._reserved_commitments.add(commitment)
 
         dispatch = asyncio.create_task(
@@ -1170,7 +1174,7 @@ class TestMakerBotMultiOfferFill:
 
         assert cancelled_while_locked is True
         assert session.lock.locked() is False
-        assert taker_nick not in maker_bot.active_sessions
+        assert _session_key(taker_nick) not in maker_bot.active_sessions
         assert commitment not in maker_bot._reserved_commitments
         session.inner.wallet.release_coinjoin_inputs.assert_called_once_with(
             set(), owner="test-owner"
@@ -1183,7 +1187,7 @@ class TestMakerBotMultiOfferFill:
         session = self._session(taker_nick, commitment, timeout=0.0)
         await session.lock.acquire()
         session.on_auth = AsyncMock()
-        maker_bot.active_sessions[taker_nick] = session
+        maker_bot.active_sessions[_session_key(taker_nick)] = session
         maker_bot._reserved_commitments.add(commitment)
 
         dispatch = asyncio.create_task(maker_bot._handle_auth(taker_nick, "auth payload"))
@@ -1191,7 +1195,7 @@ class TestMakerBotMultiOfferFill:
         await maker_bot._cleanup_timed_out_sessions()
         await dispatch
 
-        assert taker_nick not in maker_bot.active_sessions
+        assert _session_key(taker_nick) not in maker_bot.active_sessions
         assert commitment not in maker_bot._reserved_commitments
         session.on_auth.assert_not_awaited()
         session.lock.release()
@@ -1226,7 +1230,7 @@ class TestMakerBotMultiOfferFill:
 
         session.inner.handle_auth = AsyncMock(side_effect=suppress_cancellation)
         session.send_response = AsyncMock()
-        maker_bot.active_sessions[taker_nick] = session
+        maker_bot.active_sessions[_session_key(taker_nick)] = session
         maker_bot._reserved_commitments.add(commitment)
 
         dispatch = asyncio.create_task(
@@ -1244,7 +1248,7 @@ class TestMakerBotMultiOfferFill:
         assert cancelled.is_set()
         assert elapsed < 0.8
         assert session.detached is True
-        assert taker_nick not in maker_bot.active_sessions
+        assert _session_key(taker_nick) not in maker_bot.active_sessions
         detached_task = session.handler_task
         assert detached_task is not None
         assert detached_task in maker_bot._detached_handler_tasks
@@ -1276,7 +1280,7 @@ class TestMakerBotMultiOfferFill:
                     cancellation_count += 1
 
         session.on_auth = suppress_every_cancellation
-        maker_bot.active_sessions[taker_nick] = session
+        maker_bot.active_sessions[_session_key(taker_nick)] = session
         maker_bot._reserved_commitments.add(commitment)
         dispatch = asyncio.create_task(maker_bot._handle_auth(taker_nick, "auth payload"))
         await started.wait()
@@ -1305,7 +1309,7 @@ class TestMakerBotMultiOfferFill:
 
         session = self._session("J5CappedTaker", "bb" * 32)
         session.on_auth = AsyncMock()
-        maker_bot.active_sessions[session.taker_nick] = session
+        maker_bot.active_sessions[_session_key(session.taker_nick)] = session
         maker_bot._session_handler_task_count = MAX_SESSION_HANDLER_TASKS
 
         await maker_bot._handle_auth(session.taker_nick, "auth payload")
@@ -1321,12 +1325,12 @@ class TestMakerBotMultiOfferFill:
         stale.commitment = bytes.fromhex("b7" * 32)
         stale.state = CoinJoinState.PUBKEY_SENT
         replacement = MagicMock()
-        maker_bot.active_sessions[taker_nick] = replacement
+        maker_bot.active_sessions[_session_key(taker_nick)] = replacement
 
-        expired = await maker_bot._expire_timed_out_session(taker_nick, stale)
+        expired = await maker_bot._expire_timed_out_session(_session_key(taker_nick), stale)
 
         assert expired is False
-        assert maker_bot.active_sessions[taker_nick] is replacement
+        assert maker_bot.active_sessions[_session_key(taker_nick)] is replacement
         stale.release_input_locks.assert_not_called()
         replacement.release_input_locks.assert_not_called()
 
@@ -1342,7 +1346,7 @@ class TestMakerBotMultiOfferFill:
             await asyncio.Event().wait()
 
         session.on_auth = AsyncMock(side_effect=block_auth)
-        maker_bot.active_sessions[taker_nick] = session
+        maker_bot.active_sessions[_session_key(taker_nick)] = session
         maker_bot._reserved_commitments.add(commitment)
         maker_bot._handle_push = AsyncMock()
 
@@ -1359,9 +1363,9 @@ class TestMakerBotMultiOfferFill:
             f"{taker_nick}!{maker_bot.nick}!!push transaction", source="dir:test"
         )
 
-        assert taker_nick not in maker_bot.active_sessions
+        assert _session_key(taker_nick) not in maker_bot.active_sessions
         maker_bot._handle_push.assert_awaited_once_with(
-            taker_nick, "push transaction", source="dir:test"
+            taker_nick, "push transaction", source="dir:test", generation_id=0
         )
 
     @pytest.mark.asyncio
@@ -1374,7 +1378,7 @@ class TestMakerBotMultiOfferFill:
             )
 
         # Should not create a session - the invalid offer ID causes rejection
-        assert "J5Taker789" not in maker_bot.active_sessions
+        assert _session_key("J5Taker789") not in maker_bot.active_sessions
 
     @pytest.mark.asyncio
     async def test_fill_rejects_commitment_without_scheme_prefix(self, maker_bot):
@@ -1383,7 +1387,7 @@ class TestMakerBotMultiOfferFill:
             f"fill 0 500000 taker_pk_hex {'cc' * 32}",
         )
 
-        assert "J5BareCommitment" not in maker_bot.active_sessions
+        assert _session_key("J5BareCommitment") not in maker_bot.active_sessions
 
     @pytest.mark.asyncio
     async def test_fill_amount_validation_per_offer(self, maker_bot):
@@ -1396,7 +1400,7 @@ class TestMakerBotMultiOfferFill:
             )
 
         # Should not create a session - amount validation fails
-        assert "J5TakerLow" not in maker_bot.active_sessions
+        assert _session_key("J5TakerLow") not in maker_bot.active_sessions
 
     @pytest.mark.asyncio
     async def test_fill_amount_validation_succeeds_for_correct_offer(self, maker_bot, mock_backend):
@@ -1421,7 +1425,7 @@ class TestMakerBotMultiOfferFill:
                     )
 
         # Session should be created
-        assert "J5TakerOK" in maker_bot.active_sessions
+        assert _session_key("J5TakerOK") in maker_bot.active_sessions
 
 
 class TestMakerBotOfferAnnouncement:

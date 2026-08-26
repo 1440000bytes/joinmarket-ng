@@ -345,6 +345,21 @@ class MakerConfig(WalletConfig):
             "have been reserved and disclosed"
         ),
     )
+    identity_renewal_min_sec: int = Field(
+        default=43_200,
+        ge=60,
+        description="Minimum randomized maker identity renewal interval in seconds",
+    )
+    identity_renewal_max_sec: int = Field(
+        default=86_400,
+        ge=60,
+        description="Maximum randomized maker identity renewal interval in seconds",
+    )
+    identity_grace_sec: int = Field(
+        default=300,
+        ge=60,
+        description="Fixed grace period for continuations on a retired maker identity",
+    )
 
     # Pending transaction timeout
     pending_tx_timeout_min: int = Field(
@@ -491,6 +506,8 @@ class MakerConfig(WalletConfig):
             object.__setattr__(self, "bitcoin_network", self.network)
         if self.min_fee_rate_sat_vb > self.max_fee_rate_sat_vb:
             raise ValueError("min_fee_rate_sat_vb must not exceed max_fee_rate_sat_vb")
+        if self.identity_renewal_min_sec > self.identity_renewal_max_sec:
+            raise ValueError("identity_renewal_min_sec must not exceed identity_renewal_max_sec")
 
         # Only validate single-offer fields if offer_configs is empty
         # (when offer_configs is set, those fields are ignored)

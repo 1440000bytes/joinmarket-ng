@@ -923,6 +923,30 @@ class TestCreateWalletService:
 
 
 class TestNewSettingsWiring:
+    def test_identity_generation_settings_passed_from_settings(self) -> None:
+        from jmcore.settings import JoinMarketSettings
+
+        from maker.cli import build_maker_config
+
+        settings = JoinMarketSettings()
+        settings.maker.identity_renewal_min_sec = 60
+        settings.maker.identity_renewal_max_sec = 120
+        settings.maker.identity_grace_sec = 90
+
+        config = build_maker_config(settings, TEST_MNEMONIC, "")
+
+        assert config.identity_renewal_min_sec == 60
+        assert config.identity_renewal_max_sec == 120
+        assert config.identity_grace_sec == 90
+
+    def test_identity_generation_interval_is_validated(self) -> None:
+        with pytest.raises(ValueError, match="identity_renewal_min_sec"):
+            MakerConfig(
+                mnemonic=TEST_MNEMONIC,
+                identity_renewal_min_sec=121,
+                identity_renewal_max_sec=120,
+            )
+
     """Round-trip tests for settings that were previously silently ignored.
 
     Each test verifies that a setting defined in MakerSettings reaches the

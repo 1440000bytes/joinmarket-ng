@@ -51,12 +51,13 @@ class MakerBotProtocol(Protocol):
     backend: BlockchainBackend
     nick: str
     nick_identity: NickIdentity
+    current_generation_id: int
     current_offers: list[Offer]
     fidelity_bond: FidelityBondInfo | None
     current_block_height: int
     directory_clients: dict[str, DirectoryClient]
     _directory_pool: MakerDirectoryPool
-    active_sessions: dict[str, MakerSession]
+    active_sessions: dict[tuple[int, str], MakerSession]
     offer_manager: OfferManager
     listen_tasks: list[asyncio.Task[None]]
     direct_connections: dict[str, TCPConnection]
@@ -76,28 +77,38 @@ class MakerBotProtocol(Protocol):
     _session_cleanup_task: asyncio.Task[None] | None
     _session_handler_task_count: int
     _detached_handler_tasks: set[asyncio.Task[None]]
-    _pending_signed_rounds: dict[tuple[str, str], PendingSignedRound]
+    _pending_signed_rounds: dict[tuple[int, str, str], PendingSignedRound]
     _pending_signed_rounds_lock: asyncio.Lock
     minimum_fee_rate_sat_vb: float
 
     # -- Cross-mixin methods --
 
     # Defined in ProtocolHandlersMixin, called by BackgroundTasksMixin
-    async def _handle_message(self, message: dict[str, Any], source: str = "unknown") -> None: ...
+    async def _handle_message(
+        self, message: dict[str, Any], source: str = "unknown", generation_id: int | None = None
+    ) -> None: ...
 
     async def _initialize_minimum_fee_policy(self, *, announce: bool = True) -> None: ...
 
     # Defined in ProtocolHandlersMixin, called by DirectConnectionMixin
-    async def _handle_fill(self, taker_nick: str, msg: str, source: str = "unknown") -> None: ...
+    async def _handle_fill(
+        self, taker_nick: str, msg: str, source: str = "unknown", generation_id: int | None = None
+    ) -> None: ...
 
-    async def _handle_auth(self, taker_nick: str, msg: str, source: str = "unknown") -> None: ...
+    async def _handle_auth(
+        self, taker_nick: str, msg: str, source: str = "unknown", generation_id: int | None = None
+    ) -> None: ...
 
-    async def _handle_tx(self, taker_nick: str, msg: str, source: str = "unknown") -> None: ...
+    async def _handle_tx(
+        self, taker_nick: str, msg: str, source: str = "unknown", generation_id: int | None = None
+    ) -> None: ...
 
-    async def _handle_push(self, taker_nick: str, msg: str, source: str = "unknown") -> None: ...
+    async def _handle_push(
+        self, taker_nick: str, msg: str, source: str = "unknown", generation_id: int | None = None
+    ) -> None: ...
 
     async def _send_offers_via_direct_connection(
-        self, taker_nick: str, connection: TCPConnection
+        self, taker_nick: str, connection: TCPConnection, generation_id: int | None = None
     ) -> None: ...
 
     # Defined in MakerBot, called by BackgroundTasksMixin
@@ -109,7 +120,9 @@ class MakerBotProtocol(Protocol):
 
     def _prune_done_tasks(self) -> None: ...
 
-    async def _expire_timed_out_session(self, taker_nick: str, session: MakerSession) -> bool: ...
+    async def _expire_timed_out_session(
+        self, session_key: tuple[int, str], session: MakerSession
+    ) -> bool: ...
 
     async def _dispatch_session_handler(
         self,
@@ -170,7 +183,9 @@ class MakerBotProtocol(Protocol):
 
     async def _connect_to_directories_with_retry(self) -> None: ...
 
-    async def _listen_client(self, node_id: str, client: DirectoryClient) -> None: ...
+    async def _listen_client(
+        self, node_id: str, client: DirectoryClient, generation_id: int | None = None
+    ) -> None: ...
 
     # Defined in DirectConnectionMixin, called internally with Protocol-typed self
     def _parse_direct_message(self, data: bytes) -> tuple[str, str, str] | None: ...
@@ -182,7 +197,9 @@ class MakerBotProtocol(Protocol):
     def _remove_direct_connection(self, connection: TCPConnection) -> None: ...
 
     # Defined in ProtocolHandlersMixin, called internally with Protocol-typed self
-    async def _send_response(self, taker_nick: str, command: str, data: dict[str, Any]) -> None: ...
+    async def _send_response(
+        self, taker_nick: str, command: str, data: dict[str, Any], generation_id: int | None = None
+    ) -> None: ...
 
     async def _broadcast_commitment(self, commitment: str) -> bool: ...
 
@@ -194,4 +211,10 @@ class MakerBotProtocol(Protocol):
 
     async def _handle_hp2_privmsg(self, from_nick: str, msg: str) -> None: ...
 
-    async def _send_offers_to_taker(self, taker_nick: str) -> None: ...
+    async def _send_offers_to_taker(
+        self, taker_nick: str, generation_id: int | None = None
+    ) -> None: ...
+
+    def _generation(self, generation_id: int | None = None) -> Any: ...
+
+    def _generation_clients(self, generation_id: int) -> dict[str, DirectoryClient]: ...
