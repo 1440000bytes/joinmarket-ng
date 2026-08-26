@@ -168,6 +168,7 @@ async def test_coinjoin_creates_history_entry(
                 "rpc_password": _RPC_PASSWORD,
             },
             directory_servers=[_DIRECTORY_SERVER],
+            allow_clearnet_connections=True,
             counterparty_count=2,
             minimum_makers=2,
             # The shared Docker makers charge fees and do not create bonds.

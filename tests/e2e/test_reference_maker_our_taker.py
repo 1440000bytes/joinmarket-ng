@@ -1115,6 +1115,7 @@ async def test_our_taker_replaces_failed_reference_maker_without_duplicate_auth(
             "rpc_password": rpc_password,
         },
         directory_servers=[f"127.0.0.1:{os.environ.get('DIRECTORY_PORT', '5222')}"],
+        allow_clearnet_connections=True,
         counterparty_count=2,
         minimum_makers=2,
         maker_timeout_sec=15,

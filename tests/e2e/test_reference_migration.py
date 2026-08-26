@@ -44,6 +44,7 @@ MIXDEPTH_BALANCE_PATTERN = re.compile(
 BONDED_OFFER_PATTERN = re.compile(
     r"\bcreated offer \d+:.*\bbond_value=(\d+)\b", re.IGNORECASE
 )
+ANSI_ESCAPE_PATTERN = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
 @dataclass(frozen=True)
@@ -359,9 +360,10 @@ def _parse_mixdepth_balances(output: str) -> dict[int, int]:
 
 def _migration_maker_is_ready(logs: str) -> bool:
     """Require a bonded offer plus a live announcement and listener."""
-    lowered = logs.lower()
+    plain_logs = ANSI_ESCAPE_PATTERN.sub("", logs)
+    lowered = plain_logs.lower()
     has_bonded_offer = any(
-        int(value) > 0 for value in BONDED_OFFER_PATTERN.findall(logs)
+        int(value) > 0 for value in BONDED_OFFER_PATTERN.findall(plain_logs)
     )
     has_announcement = "announcing offers" in lowered
     has_listener = "maker bot started. listening for takers" in lowered
@@ -400,6 +402,9 @@ def test_migration_maker_readiness_requires_bonded_operational_offer() -> None:
     assert not _migration_maker_is_ready(ready_logs.replace("Announcing offers...", ""))
     assert not _migration_maker_is_ready(
         ready_logs.replace("Maker bot started. Listening for takers...", "")
+    )
+    assert _migration_maker_is_ready(
+        ready_logs.replace("Created offer", "\x1b[1mCreated offer")
     )
 
 

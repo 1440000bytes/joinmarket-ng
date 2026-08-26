@@ -86,6 +86,7 @@ async def test_issued_addresses_persist_across_restart(
         # Restart: a brand-new service over the same data dir.
         wallet2, _ = _make_wallet(cfg, mnemonic, data_dir)
         try:
+            await wallet2.setup_descriptor_wallet(scan_range=1000, rescan=False)
             await wallet2.sync_with_descriptor_wallet()
 
             reserved = wallet2.get_reserved_addresses()
