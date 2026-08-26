@@ -51,7 +51,7 @@ from taker.config import BroadcastPolicy
 from taker.models import MakerSession, PhaseResult
 from taker.orderbook import calculate_cj_fee
 from taker.podle import ExtendedPoDLECommitment, get_eligible_podle_utxos
-from taker.tx_builder import CoinJoinTxBuilder, build_coinjoin_tx
+from taker.tx_builder import CoinJoinTxBuilder, build_coinjoin_tx, compute_tx_locktime
 
 if TYPE_CHECKING:
     from jmwallet.backends.base import BlockchainBackend
@@ -1315,6 +1315,8 @@ class CoinJoinSession:
 
             # Build transaction
             network = self.config.network.value
+            current_height = await self.backend.get_block_height()
+            locktime = compute_tx_locktime(current_height)
             self.unsigned_tx, self.tx_metadata = build_coinjoin_tx(
                 taker_utxos=[
                     {
@@ -1332,6 +1334,7 @@ class CoinJoinSession:
                 cj_amount=self.cj_amount,
                 tx_fee=tx_fee,
                 network=network,
+                locktime=locktime,
             )
 
             logger.debug(f"Built unsigned tx: {len(self.unsigned_tx)} bytes")

@@ -44,6 +44,7 @@ def _backend() -> AsyncMock:
     backend = AsyncMock()
     backend.can_provide_neutrino_metadata = Mock(return_value=False)
     backend.requires_neutrino_metadata = Mock(return_value=False)
+    backend.get_block_height = AsyncMock(return_value=840_000)
     return backend
 
 

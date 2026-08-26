@@ -10,7 +10,8 @@ Builds the unsigned CoinJoin transaction from:
 from __future__ import annotations
 
 import logging
-from typing import Any
+from dataclasses import replace
+from typing import Any, Protocol
 
 from jmcore.bitcoin import (
     TxInput,
@@ -26,9 +27,29 @@ from pydantic.dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
+LOCKTIME_SEQUENCE = 0xFFFFFFFE
+MAX_LOCKTIME = 0xFFFFFFFF
+
 
 # Alias for backward compatibility
 varint = encode_varint
+
+
+class _RandomSource(Protocol):
+    def randint(self, start: int, end: int) -> int: ...
+
+
+def compute_tx_locktime(current_height: int, rng: _RandomSource = secure_random) -> int:
+    """Return a reference-compatible anti-fee-sniping locktime."""
+    if (
+        not isinstance(current_height, int)
+        or isinstance(current_height, bool)
+        or not 0 <= current_height <= MAX_LOCKTIME
+    ):
+        raise ValueError(f"Invalid current block height: {current_height!r}")
+    if rng.randint(0, 9) == 0:
+        return max(1, current_height - rng.randint(0, 99))
+    return current_height
 
 
 @dataclass
@@ -60,8 +81,15 @@ class CoinJoinTxBuilder:
     - Outputs: Equal CJ outputs + Change outputs (shuffled)
     """
 
-    def __init__(self, network: str = "mainnet"):
+    def __init__(self, network: str = "mainnet", locktime: int = 0):
+        if (
+            not isinstance(locktime, int)
+            or isinstance(locktime, bool)
+            or not 0 <= locktime <= MAX_LOCKTIME
+        ):
+            raise ValueError(f"Invalid transaction locktime: {locktime!r}")
         self.network = network
+        self.locktime = locktime
 
     def build_unsigned_tx(self, tx_data: CoinJoinTxData) -> tuple[bytes, dict[str, Any]]:
         """
@@ -123,11 +151,16 @@ class CoinJoinTxBuilder:
         For unsigned transactions, we use non-SegWit format (no marker/flag/witness).
         The SegWit marker (0x00, 0x01) is only added when witnesses are present.
         """
+        serialized_inputs = (
+            [replace(tx_input, sequence=LOCKTIME_SEQUENCE) for tx_input in inputs]
+            if self.locktime != 0
+            else inputs
+        )
         return serialize_transaction(
             version=2,
-            inputs=inputs,
+            inputs=serialized_inputs,
             outputs=outputs,
-            locktime=0,
+            locktime=self.locktime,
             witnesses=None,
         )
 
@@ -268,6 +301,7 @@ def build_coinjoin_tx(
     tx_fee: int,
     network: str = "mainnet",
     dust_threshold: int = DUST_THRESHOLD,
+    locktime: int = 0,
 ) -> tuple[bytes, dict[str, Any]]:
     """
     Build a complete CoinJoin transaction.
@@ -283,6 +317,8 @@ def build_coinjoin_tx(
         network: Network name
         dust_threshold: Backward-compatible maker threshold argument. JoinMarket
             coordination requires this to remain 27300.
+        locktime: Current-height anti-fee-sniping locktime. Nonzero values use
+            non-final, non-RBF input sequences.
 
     Returns:
         (tx_bytes, metadata)
@@ -292,7 +328,7 @@ def build_coinjoin_tx(
             f"Maker change threshold is fixed at {DUST_THRESHOLD} sats for peer compatibility"
         )
 
-    builder = CoinJoinTxBuilder(network)
+    builder = CoinJoinTxBuilder(network, locktime=locktime)
 
     # Build taker inputs
     taker_inputs = [

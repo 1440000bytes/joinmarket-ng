@@ -22,6 +22,7 @@ from _taker_test_helpers import (
     make_taker_config,
     make_utxo,
 )
+from jmcore.bitcoin import parse_transaction_bytes
 from jmcore.constants import DUST_THRESHOLD
 from jmcore.crypto import NickIdentity
 from jmcore.encryption import CryptoSession
@@ -75,6 +76,7 @@ def mock_backend():
         return_value=make_utxo(txid_char="c", value=10_000_000, address="bcrt1qmaker")
     )
     backend.get_transaction = AsyncMock()
+    backend.get_block_height = AsyncMock(return_value=840_000)
     backend.broadcast_transaction = AsyncMock(return_value="txid123")
     # can_provide_neutrino_metadata is a synchronous method, not async
     backend.can_provide_neutrino_metadata = Mock(return_value=True)
@@ -783,6 +785,7 @@ class TestSweepCjAmountPreservation:
             )
         )
         backend.get_transaction = AsyncMock()
+        backend.get_block_height = AsyncMock(return_value=840_000)
         backend.broadcast_transaction = AsyncMock(return_value="txid123")
         backend.can_provide_neutrino_metadata = Mock(return_value=False)
         backend.requires_neutrino_metadata = Mock(return_value=False)
@@ -894,6 +897,10 @@ class TestSweepCjAmountPreservation:
             f"cj_amount was modified from {initial_cj_amount} to {taker._session.cj_amount}. "
             "This would cause maker to reject tx with 'wrong change'!"
         )
+        parsed = parse_transaction_bytes(taker._session.unsigned_tx)
+        assert 839_901 <= parsed.locktime <= 840_000
+        assert {tx_input.sequence for tx_input in parsed.inputs} == {0xFFFFFFFE}
+        mock_backend_for_sweep.get_block_height.assert_awaited_once_with()
 
     @pytest.mark.asyncio
     async def test_sweep_handles_tx_fee_difference_as_residual(

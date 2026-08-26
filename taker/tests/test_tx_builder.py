@@ -5,7 +5,7 @@ Tests for transaction builder module.
 from __future__ import annotations
 
 import pytest
-from jmcore.bitcoin import address_to_scriptpubkey, serialize_outpoint
+from jmcore.bitcoin import address_to_scriptpubkey, parse_transaction_bytes, serialize_outpoint
 from jmcore.constants import BITCOIN_DUST_THRESHOLD, DUST_THRESHOLD
 
 from taker.tx_builder import (
@@ -15,8 +15,36 @@ from taker.tx_builder import (
     TxOutput,
     build_coinjoin_tx,
     calculate_tx_fee,
+    compute_tx_locktime,
     varint,
 )
+
+
+class TestComputeTxLocktime:
+    def test_uses_current_height_normally(self) -> None:
+        rng = MockRandom([1])
+
+        assert compute_tx_locktime(840_000, rng) == 840_000
+
+    def test_randomly_backdates_within_reference_window(self) -> None:
+        rng = MockRandom([0, 37])
+
+        assert compute_tx_locktime(840_000, rng) == 839_963
+
+    def test_backdating_is_bounded_at_one(self) -> None:
+        rng = MockRandom([0, 99])
+
+        assert compute_tx_locktime(42, rng) == 1
+
+
+class MockRandom:
+    def __init__(self, values: list[int]):
+        self._values = iter(values)
+
+    def randint(self, start: int, end: int) -> int:
+        value = next(self._values)
+        assert start <= value <= end
+        return value
 
 
 class TestVarint:
@@ -321,6 +349,18 @@ class TestCoinJoinTxBuilder:
         assert len(parsed.outputs) == 6
         assert parsed.version == 2
         assert parsed.locktime == 0
+
+    def test_nonzero_locktime_enables_all_inputs_without_signaling_rbf(
+        self, sample_tx_data: CoinJoinTxData
+    ) -> None:
+        builder = CoinJoinTxBuilder(network="regtest", locktime=840_000)
+
+        tx_bytes, _ = builder.build_unsigned_tx(sample_tx_data)
+        parsed = parse_transaction_bytes(tx_bytes)
+
+        assert parsed.locktime == 840_000
+        assert {tx_input.sequence for tx_input in parsed.inputs} == {0xFFFFFFFE}
+        assert sample_tx_data.taker_inputs[0].sequence == 0xFFFFFFFF
 
     def test_get_txid(self, builder: CoinJoinTxBuilder, sample_tx_data: CoinJoinTxData) -> None:
         """Test txid calculation."""
