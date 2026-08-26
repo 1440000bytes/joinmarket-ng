@@ -228,6 +228,7 @@ async def test_old_fill_rejected_while_same_taker_can_fill_new_generation(bot: M
     assert bot.active_sessions[(0, taker_nick)] is old_session
     assert isinstance(bot.active_sessions[(1, taker_nick)], MakerSession)
     send_response.assert_awaited_once()
+    assert send_response.await_args is not None
     assert send_response.await_args.kwargs["generation_id"] == 1
 
 
@@ -254,6 +255,7 @@ async def test_old_continuation_dispatches_only_to_old_session(
         await getattr(bot, handler_name)(taker_nick, "command payload", generation_id=0)
 
     assert dispatch.await_count == 1
+    assert dispatch.await_args is not None
     assert dispatch.await_args.args[0] is old_session
 
 

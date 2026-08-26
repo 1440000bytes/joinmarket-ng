@@ -67,6 +67,7 @@ def test_playwright_uses_jam_docker_standalone_ng() -> None:
         "BITCOIN__RPC_COOKIE_FILE=/shared/.cookie",
         "NETWORK_CONFIG__NETWORK=testnet",
         "NETWORK_CONFIG__BITCOIN_NETWORK=regtest",
+        "NETWORK_CONFIG__ALLOW_CLEARNET_CONNECTIONS=true",
         "NETWORK_CONFIG__DIRECTORY_SERVERS=jm-directory:5222,jm-directory2:5223",
         (
             'NETWORK_CONFIG__NICK_AUTH_DIRECTORY_IDS={"jm-directory:5222":'
