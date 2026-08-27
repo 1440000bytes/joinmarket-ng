@@ -307,7 +307,7 @@ def _ensure_direct_send_outpoints_unlocked(
     locked_outpoints = {(txid.lower(), vout) for txid, vout in wallet.get_locked_input_outpoints()}
     for txid, vout in outpoints:
         if (txid.lower(), vout) in locked_outpoints:
-            msg = f"Input UTXO {txid}:{vout} is locked/reserved by an in-flight CoinJoin"
+            msg = f"Input UTXO {txid}:{vout} is locked by another in-flight CoinJoin"
             raise ValueError(msg)
 
 

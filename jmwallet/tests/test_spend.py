@@ -380,7 +380,7 @@ class TestDirectTransactionPolicy:
         utxo = _make_utxo(value=50_000)
         wallet.get_locked_input_outpoints.return_value = {(utxo.txid, utxo.vout)}
 
-        with pytest.raises(ValueError, match="locked/reserved by an in-flight CoinJoin"):
+        with pytest.raises(ValueError, match="locked by another in-flight CoinJoin"):
             build_and_sign_direct_tx(
                 wallet=wallet,
                 utxos=[utxo],
@@ -1380,7 +1380,7 @@ class TestResolveConflictedInputs:
 
         with pytest.raises(
             ValueError,
-            match=f"Input UTXO {txid}:0 is locked/reserved by an in-flight CoinJoin",
+            match=f"Input UTXO {txid}:0 is locked by another in-flight CoinJoin",
         ):
             await resolve_input_utxos(
                 wallet=wallet,
