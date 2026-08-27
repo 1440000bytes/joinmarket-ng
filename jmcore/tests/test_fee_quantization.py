@@ -29,7 +29,8 @@ class TestGridShape:
         assert len(set(values)) == len(values)
 
     def test_smallest_rel_quantum(self) -> None:
-        assert QUANT_REL[0] == Decimal("0.00002")
+        assert QUANT_REL[0] == Decimal("0")
+        assert QUANT_REL[1] == Decimal("0.00002")
 
     def test_smallest_abs_quantum(self) -> None:
         # The grid starts at 0, the free-maker band.
@@ -51,8 +52,8 @@ class TestQuantizeRelDown:
     def test_floor_to_grid(self, rel_fee: str, expected: Decimal) -> None:
         assert quantize_rel_down(rel_fee) == expected
 
-    def test_below_grid_returns_none(self) -> None:
-        assert quantize_rel_down("0.00001") is None
+    def test_below_smallest_paid_band_floors_to_free(self) -> None:
+        assert quantize_rel_down("0.00001") == Decimal("0")
 
     def test_accepts_float_and_decimal(self) -> None:
         assert quantize_rel_down(0.001) == Decimal("0.001")
@@ -109,3 +110,19 @@ class TestRelQuantumToSats:
 
     def test_zero_amount(self) -> None:
         assert rel_quantum_to_sats(Decimal("0.001"), 0) == 0
+
+
+class TestFreeMakerBand:
+    """A zero relative fee is on the grid, mirroring the absolute free band."""
+
+    def test_rel_up_keeps_zero_free(self) -> None:
+        assert quantize_rel_up(Decimal("0")) == Decimal("0")
+
+    def test_rel_down_keeps_zero_free(self) -> None:
+        assert quantize_rel_down(Decimal("0")) == Decimal("0")
+
+    def test_zero_is_on_the_relative_grid(self) -> None:
+        assert Decimal("0") in QUANT_REL
+
+    def test_smallest_paid_band_still_rounds_up(self) -> None:
+        assert quantize_rel_up(Decimal("0.00001")) == Decimal("0.00002")
