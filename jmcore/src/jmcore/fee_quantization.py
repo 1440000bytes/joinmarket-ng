@@ -16,10 +16,13 @@ from __future__ import annotations
 from decimal import ROUND_HALF_EVEN, Decimal
 
 # Relative-fee grid (fraction of the CoinJoin amount). Base-10 mantissas:
-#   0.002%, 0.005%, 0.01%, 0.02%, 0.05%, 0.1%, 0.2%, 0.5%, 1%, 2%, 5%, 10%
+#   0%, 0.002%, 0.005%, 0.01%, 0.02%, 0.05%, 0.1%, 0.2%, 0.5%, 1%, 2%, 5%, 10%
+# The leading 0 is the free-maker band, mirroring QUANT_ABS: a maker that
+# advertises a zero relative fee must not be rounded up into a paid band.
 QUANT_REL: tuple[Decimal, ...] = tuple(
     Decimal(v)
     for v in (
+        "0",
         "0.00002",
         "0.00005",
         "0.0001",
