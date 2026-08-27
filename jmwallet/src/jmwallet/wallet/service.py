@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
-from itertools import count
+from itertools import count, islice
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -32,10 +32,15 @@ from jmwallet.wallet.utxo_metadata import (
     load_metadata_store,
 )
 
+# Upper bound on how far one allocation may walk a branch looking for an
+# address that is neither used nor already reserved.
+MAX_ADDRESS_ALLOCATION_CANDIDATES = 10_000
+
 # Re-export constants so external code importing from service.py still works
 __all__ = [
     "DEFAULT_SCAN_RANGE",
     "FIDELITY_BOND_BRANCH",
+    "MAX_ADDRESS_ALLOCATION_CANDIDATES",
     "WalletService",
 ]
 
@@ -893,7 +898,13 @@ class WalletService(
         """
         with self._address_allocation_lock:
             start_index = self.get_next_address_index(mixdepth, change)
-            candidates = (self.get_address(mixdepth, change, index) for index in count(start_index))
+            # Bounded: the metadata store consumes this while holding its
+            # cross-process lock, so an endless sequence would spin there
+            # instead of surfacing AddressReservationError.
+            candidates = (
+                self.get_address(mixdepth, change, index)
+                for index in islice(count(start_index), MAX_ADDRESS_ALLOCATION_CANDIDATES)
+            )
 
             store = self.metadata_store
             if store is not None:
@@ -907,14 +918,15 @@ class WalletService(
                     | self.reserved_addresses
                     | self.issued_receive_addresses
                 )
-                address = next(
+                selected = next(
                     (candidate for candidate in candidates if candidate not in unavailable),
                     None,
                 )
-                if address is None:
+                if selected is None:
                     raise AddressReservationError(
                         "No available address candidates could be reserved"
                     )
+                address = selected
 
             # Update local state only after the reservation has succeeded.
             self.reserved_addresses.add(address)
