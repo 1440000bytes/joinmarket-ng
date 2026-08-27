@@ -10,6 +10,8 @@ These tests ensure that:
 
 from __future__ import annotations
 
+import threading
+
 import pytest
 from bitcointx import ChainParams
 from bitcointx.wallet import CCoinAddress, CCoinAddressError
@@ -152,3 +154,42 @@ class TestAddressValidation:
         """Uppercase addresses (e.g. from QR decoders) must be accepted."""
         spk = address_to_scriptpubkey("mainnet", "BC1QW508D6QEJXTDG4Y5R3ZARVARY0C5XW7KV8F3T4")
         assert spk.hex() == "0014751e76e8199196d454941c45d1b3a323f1433bd6"
+
+
+class TestAddressAllocationIsBounded:
+    """Allocation must fail loudly instead of deriving addresses forever."""
+
+    @staticmethod
+    def _wallet():
+        from unittest.mock import MagicMock
+
+        from jmwallet.wallet.service import WalletService
+
+        wallet = WalletService.__new__(WalletService)
+        wallet._address_allocation_lock = threading.Lock()
+        wallet.metadata_store = None
+        wallet.reserved_addresses = set()
+        wallet.issued_receive_addresses = set()
+        wallet.reserved_address_labels = {}
+        wallet.addresses_with_history = set()
+        wallet.get_next_address_index = MagicMock(return_value=0)
+        wallet.get_address = lambda mixdepth, change, index: f"addr-{mixdepth}-{change}-{index}"
+        return wallet
+
+    def test_raises_when_every_candidate_in_range_is_reserved(self) -> None:
+        from jmwallet.wallet.service import MAX_ADDRESS_ALLOCATION_CANDIDATES
+        from jmwallet.wallet.utxo_metadata import AddressReservationError
+
+        wallet = self._wallet()
+        wallet.reserved_addresses = {
+            f"addr-0-1-{index}" for index in range(MAX_ADDRESS_ALLOCATION_CANDIDATES)
+        }
+
+        with pytest.raises(AddressReservationError):
+            wallet.allocate_output_address(0, 1)
+
+    def test_allocates_the_first_free_candidate(self) -> None:
+        wallet = self._wallet()
+        wallet.reserved_addresses = {"addr-0-1-0", "addr-0-1-1"}
+
+        assert wallet.allocate_output_address(0, 1) == "addr-0-1-2"
