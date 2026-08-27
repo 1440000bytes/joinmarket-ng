@@ -4198,3 +4198,49 @@ class TestYieldGeneratorReport:
         rows = format_yield_generator_report(temp_data_dir, wallet_fingerprint="aaaaaaaa")
         assert len(rows) == 2  # only wallet aaaaaaaa's row
         assert rows[-1].split(",")[1] == "1"
+
+
+class TestHistoryReadLockIsShared:
+    """Readers must not queue behind each other on the history lock."""
+
+    def test_read_history_proceeds_while_a_shared_lock_is_held(self, tmp_path) -> None:
+        import fcntl
+        import os
+        import threading
+
+        from jmwallet.history import (
+            HISTORY_LOCK_SUFFIX,
+            TransactionHistoryEntry,
+            _get_history_path,
+            append_history_entry,
+            read_history,
+        )
+
+        append_history_entry(
+            TransactionHistoryEntry(
+                timestamp="2026-01-01T00:00:00Z",
+                txid="ab" * 32,
+                role="taker",
+                cj_amount=100_000,
+            ),
+            data_dir=tmp_path,
+        )
+
+        lock_path = _get_history_path(tmp_path).with_name(
+            _get_history_path(tmp_path).name + HISTORY_LOCK_SUFFIX
+        )
+        holder = os.open(lock_path, os.O_RDWR | os.O_CREAT)
+        result: list[list] = []
+        try:
+            fcntl.flock(holder, fcntl.LOCK_SH)
+            reader = threading.Thread(target=lambda: result.append(read_history(data_dir=tmp_path)))
+            reader.start()
+            reader.join(timeout=5.0)
+            assert not reader.is_alive(), "read_history blocked behind a shared lock"
+        finally:
+            fcntl.flock(holder, fcntl.LOCK_UN)
+            os.close(holder)
+            reader.join(timeout=5.0)
+
+        assert len(result) == 1
+        assert len(result[0]) == 1
