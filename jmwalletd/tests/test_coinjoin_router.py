@@ -825,3 +825,57 @@ class TestStopMaker:
         )
         # ServiceNotStarted is a 401 in jmwalletd/errors.py
         assert resp.status_code == 401
+
+
+class TestMakerSettingsPlumbing:
+    """Jam-launched makers must inherit the configured maker policy."""
+
+    @staticmethod
+    def _source(path: str) -> str:
+        from pathlib import Path
+
+        return Path(path).read_text()
+
+    def test_coinjoin_router_passes_maker_policy_settings(self) -> None:
+        source = self._source("jmwalletd/src/jmwalletd/routers/coinjoin.py")
+        for field in (
+            "min_fee_rate_sat_vb=jm_settings.maker.min_fee_rate_sat_vb",
+            "min_fee_block_target=jm_settings.maker.min_fee_block_target",
+            "max_fee_rate_sat_vb=jm_settings.wallet.max_fee_rate_sat_vb",
+            "pre_sign_timeout_sec=jm_settings.maker.pre_sign_timeout_sec",
+            "identity_renewal_min_sec=jm_settings.maker.identity_renewal_min_sec",
+            "identity_renewal_max_sec=jm_settings.maker.identity_renewal_max_sec",
+            "identity_grace_sec=jm_settings.maker.identity_grace_sec",
+        ):
+            assert field in source, field
+
+    def test_tumbler_router_passes_maker_policy_settings(self) -> None:
+        source = self._source("jmwalletd/src/jmwalletd/routers/tumbler.py")
+        for field in (
+            "min_fee_rate_sat_vb=jm_settings.maker.min_fee_rate_sat_vb",
+            "pre_sign_timeout_sec=jm_settings.maker.pre_sign_timeout_sec",
+            "identity_renewal_min_sec=jm_settings.maker.identity_renewal_min_sec",
+        ):
+            assert field in source, field
+
+    def test_maker_config_accepts_the_plumbed_settings(self) -> None:
+        from jmcore.models import NetworkType
+        from jmcore.settings import JoinMarketSettings
+        from maker.config import MakerConfig
+
+        jm_settings = JoinMarketSettings()
+        config = MakerConfig(
+            mnemonic="test " * 12,
+            directory_servers=["localhost:5222"],
+            network=NetworkType.REGTEST,
+            min_fee_rate_sat_vb=jm_settings.maker.min_fee_rate_sat_vb,
+            min_fee_block_target=jm_settings.maker.min_fee_block_target,
+            max_fee_rate_sat_vb=jm_settings.wallet.max_fee_rate_sat_vb,
+            pre_sign_timeout_sec=jm_settings.maker.pre_sign_timeout_sec,
+            identity_renewal_min_sec=jm_settings.maker.identity_renewal_min_sec,
+            identity_renewal_max_sec=jm_settings.maker.identity_renewal_max_sec,
+            identity_grace_sec=jm_settings.maker.identity_grace_sec,
+        )
+        assert config.min_fee_rate_sat_vb == jm_settings.maker.min_fee_rate_sat_vb
+        assert config.pre_sign_timeout_sec == jm_settings.maker.pre_sign_timeout_sec
+        assert config.identity_grace_sec == jm_settings.maker.identity_grace_sec
