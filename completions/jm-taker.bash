@@ -8,7 +8,7 @@ _jm_taker_completion() {
     prev="${COMP_WORDS[COMP_CWORD-1]}"
 
     if [ "$COMP_CWORD" -eq 1 ]; then
-        COMPREPLY=( $(compgen -W "clear-ignored-makers coinjoin config-init tumble" -- "$cur") )
+        COMPREPLY=( $(compgen -W "clear-ignored-makers coinjoin config-init" -- "$cur") )
         return 0
     fi
 
@@ -22,9 +22,6 @@ _jm_taker_completion() {
         ;;
       config-init)
         COMPREPLY=( $(compgen -W "--help --data-dir -d --config-file" -- "$cur") )
-        ;;
-      tumble)
-        COMPREPLY=( $(compgen -W "--help --mnemonic-file -f --prompt-bip39-passphrase --network --backend -b --rpc-url --neutrino-url --directory -D --tor-socks-host --tor-socks-port --data-dir --config-file --log-level -l" -- "$cur") )
         ;;
     esac
     return 0

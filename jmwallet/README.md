@@ -291,8 +291,8 @@ For full documentation, see [jmwallet Documentation](https://joinmarket-ng.githu
 │                                             [env var: JOINMARKET_DATA_DIR]   │
 │ --help                                      Show this message and exit.      │
 │ --log-level                -l      TEXT     Log level                        │
-│ --mixdepth                 -m      INTEGER  Filter to a specific mixdepth    │
-│                                             (0-4)                            │
+│ --mixdepth                 -m      INTEGER  Filter to a specific configured  │
+│                                             mixdepth                         │
 │ --mnemonic-file            -f      PATH     Path to mnemonic file            │
 │                                             [env var: MNEMONIC_FILE]         │
 │ --network                  -n      TEXT     Bitcoin network                  │

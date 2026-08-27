@@ -86,7 +86,7 @@ _jm_wallet() {
             '--backend=[Backend\: descriptor_wallet | neutrino]: :' \
             '--rpc-url=[]: :' \
             '--neutrino-url=[]: :' \
-            '--mixdepth=[Filter to a specific mixdepth (0-4)]: :' \
+            '--mixdepth=[Filter to a specific configured mixdepth]: :' \
             '--data-dir=[Data directory (default\: ~/.joinmarket-ng or $JOINMARKET_DATA_DIR)]:file:_files' \
             '--config-file=[Config file path (decoupled from data dir). Defaults to <data-dir>/config.toml]:file:_files' \
             '--log-level=[Log level]: :' \
@@ -280,7 +280,7 @@ _jm_wallet() {
             '--amount=[Amount in sats (0 for sweep)]: :' \
             '--mnemonic-file=[]:file:_files' \
             '--prompt-bip39-passphrase[Prompt for BIP39 passphrase]' \
-            '--mixdepth=[Source mixdepth (default 0; with --select-utxos, derived from the selection unless set explicitly)]: :' \
+            '--mixdepth=[Source mixdepth. Fixed-amount automatic sends use the highest funded mixdepth unless set explicitly; sweeps require this option. With --select-utxos, it is derived from the selection unless set explicitly.]: :' \
             '--fee-rate=[Manual fee rate in sat/vB (e.g. 1.5). Mutually exclusive with --block-target. Defaults to 3-block estimation.]: :' \
             '--block-target=[Target blocks for fee estimation (1-1008). Defaults to 3.]: :' \
             '--network=[Bitcoin network]: :' \

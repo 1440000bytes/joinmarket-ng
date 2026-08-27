@@ -67,8 +67,6 @@ def _validate_inputs(
         if isinstance(mixdepth, bool) or not isinstance(mixdepth, int):
             raise ValueError(f"mixdepth must be an integer, got {mixdepth!r}")
         if not 0 <= mixdepth < mixdepth_count:
-            raise ValueError(
-                f"eligible mixdepth {mixdepth} is outside 0..{mixdepth_count - 1}"
-            )
+            raise ValueError(f"eligible mixdepth {mixdepth} is outside 0..{mixdepth_count - 1}")
         if isinstance(balance, bool) or not isinstance(balance, int) or balance < 0:
             raise ValueError(f"balance for mixdepth {mixdepth} must be a non-negative integer")

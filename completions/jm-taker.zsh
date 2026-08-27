@@ -9,7 +9,6 @@ _jm_taker() {
     'clear-ignored-makers:Clear the list of ignored makers.'
     'coinjoin:Execute a single CoinJoin transaction.'
     'config-init:Initialize the config file with default settings.'
-    'tumble:Run a tumbler schedule of CoinJoins.'
   )
 
   _arguments -C \
@@ -65,22 +64,6 @@ _jm_taker() {
           _arguments \
             '--data-dir=[Data directory for JoinMarket files]:file:_files' \
             '--config-file=[Config file path (decoupled from data dir). Defaults to <data-dir>/config.toml]:file:_files' \
-            '--help[Show this message and exit]'
-          ;;
-        tumble)
-          _arguments \
-            '--mnemonic-file=[Path to mnemonic file]:file:_files' \
-            '--prompt-bip39-passphrase[Prompt for BIP39 passphrase interactively]' \
-            '--network=[Bitcoin network]:choice:(mainnet testnet signet regtest)' \
-            '--backend=[Backend type\: descriptor_wallet | neutrino]: :' \
-            '--rpc-url=[Bitcoin full node RPC URL]: :' \
-            '--neutrino-url=[Neutrino REST API URL]: :' \
-            '--directory=[Directory servers (comma-separated)]: :' \
-            '--tor-socks-host=[Tor SOCKS proxy host (overrides TOR__SOCKS_HOST)]: :' \
-            '--tor-socks-port=[Tor SOCKS proxy port (overrides TOR__SOCKS_PORT)]: :' \
-            '--data-dir=[Data directory (default\: ~/.joinmarket-ng or $JOINMARKET_DATA_DIR)]:file:_files' \
-            '--config-file=[Config file path (decoupled from data dir). Defaults to <data-dir>/config.toml]:file:_files' \
-            '--log-level=[Log level]: :' \
             '--help[Show this message and exit]'
           ;;
       esac

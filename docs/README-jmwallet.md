@@ -363,7 +363,7 @@ The full CLI reference below is auto-generated from command `--help` output.
 │ --help                                      Show this message and exit.      │
 │ --log-level                -l      TEXT     Log level                        │
 │ --mixdepth                 -m      INTEGER  Filter to a specific configured  │
-│                                             mixdepth                          │
+│                                             mixdepth                         │
 │ --mnemonic-file            -f      PATH     Path to mnemonic file            │
 │                                             [env var: MNEMONIC_FILE]         │
 │ --network                  -n      TEXT     Bitcoin network                  │
