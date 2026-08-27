@@ -812,6 +812,16 @@ class MakerSettings(BaseModel):
         ge=60,
         description="Fixed grace period for retired maker identity continuations",
     )
+    identity_rotation_quiet_min_sec: int = Field(
+        default=60,
+        ge=0,
+        description="Minimum quiet interval between old and replacement directory identities",
+    )
+    identity_rotation_quiet_max_sec: int = Field(
+        default=600,
+        ge=0,
+        description="Maximum quiet interval between old and replacement directory identities",
+    )
     pending_tx_timeout_min: int = Field(
         default=60,
         ge=10,
@@ -956,6 +966,10 @@ class MakerSettings(BaseModel):
         """Ensure the configured randomized renewal interval is non-empty."""
         if self.identity_renewal_min_sec > self.identity_renewal_max_sec:
             raise ValueError("identity_renewal_min_sec must not exceed identity_renewal_max_sec")
+        if self.identity_rotation_quiet_min_sec > self.identity_rotation_quiet_max_sec:
+            raise ValueError(
+                "identity_rotation_quiet_min_sec must not exceed identity_rotation_quiet_max_sec"
+            )
         return self
 
 

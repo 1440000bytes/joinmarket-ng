@@ -992,12 +992,16 @@ class TestNewSettingsWiring:
         settings.maker.identity_renewal_min_sec = 60
         settings.maker.identity_renewal_max_sec = 120
         settings.maker.identity_grace_sec = 90
+        settings.maker.identity_rotation_quiet_min_sec = 10
+        settings.maker.identity_rotation_quiet_max_sec = 20
 
         config = build_maker_config(settings, TEST_MNEMONIC, "")
 
         assert config.identity_renewal_min_sec == 60
         assert config.identity_renewal_max_sec == 120
         assert config.identity_grace_sec == 90
+        assert config.identity_rotation_quiet_min_sec == 10
+        assert config.identity_rotation_quiet_max_sec == 20
 
     def test_identity_generation_interval_is_validated(self) -> None:
         with pytest.raises(ValueError, match="identity_renewal_min_sec"):
@@ -1005,6 +1009,13 @@ class TestNewSettingsWiring:
                 mnemonic=TEST_MNEMONIC,
                 identity_renewal_min_sec=121,
                 identity_renewal_max_sec=120,
+            )
+
+        with pytest.raises(ValueError, match="identity_rotation_quiet_min_sec"):
+            MakerConfig(
+                mnemonic=TEST_MNEMONIC,
+                identity_rotation_quiet_min_sec=61,
+                identity_rotation_quiet_max_sec=60,
             )
 
     """Round-trip tests for settings that were previously silently ignored.

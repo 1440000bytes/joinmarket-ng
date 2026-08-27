@@ -34,6 +34,8 @@ def config() -> MakerConfig:
         identity_renewal_min_sec=60,
         identity_renewal_max_sec=120,
         identity_grace_sec=60,
+        identity_rotation_quiet_min_sec=0,
+        identity_rotation_quiet_max_sec=0,
     )
 
 
@@ -139,11 +141,13 @@ async def test_scheduler_samples_independently_of_activity(
 
 
 @pytest.mark.asyncio
-async def test_cutover_retains_old_direct_routes_and_uses_new_generation(bot: MakerBot) -> None:
+@pytest.mark.parametrize("bonded", [False, True])
+async def test_cutover_silently_disconnects_before_replacement(bot: MakerBot, bonded: bool) -> None:
     old = bot.generations[0]
     old.current_offers = [MagicMock(oid=0), MagicMock(oid=1)]
     bot.current_offers = old.current_offers
     old_client = MagicMock()
+    old_client.close = AsyncMock()
     old_client.send_public_message = AsyncMock()
     old.directory_clients["directory:5222"] = old_client
     old_connection = MagicMock()
@@ -151,15 +155,25 @@ async def test_cutover_retains_old_direct_routes_and_uses_new_generation(bot: Ma
     old.hidden_service_listener = MagicMock()
     old.hidden_service_listener.stop = AsyncMock()
     replacement = _generation(bot, 1)
+    replacement.directory_pool.connect_all_with_retry = AsyncMock()
     new_connection = MagicMock()
     replacement.direct_connections["J5SameTaker"] = new_connection
     bot.running = True
+    bot.fidelity_bond = MagicMock() if bonded else None
+    events: list[str] = []
+    old_client.close.side_effect = lambda: events.append("old-close")
+    replacement.directory_pool.connect_all_with_retry.side_effect = lambda **_kwargs: events.append(
+        "new-connect"
+    )
+
+    async def announce(_generation: MakerGeneration) -> None:
+        events.append("new-announce")
 
     with (
         patch.object(
             bot, "_create_replacement_generation", new=AsyncMock(return_value=replacement)
         ),
-        patch.object(bot, "_announce_generation_offers", new=AsyncMock()),
+        patch.object(bot, "_announce_generation_offers", side_effect=announce),
         patch.object(bot, "_start_generation_listeners"),
         patch("maker.bot.spawn_task", side_effect=lambda coroutine: coroutine.close()),
     ):
@@ -170,10 +184,169 @@ async def test_cutover_retains_old_direct_routes_and_uses_new_generation(bot: Ma
     assert old.direct_connections["J5SameTaker"] is old_connection
     assert bot.direct_connections["J5SameTaker"] is new_connection
     old.hidden_service_listener.stop.assert_awaited_once_with()
-    assert [call.args[0] for call in old_client.send_public_message.await_args_list] == [
-        "cancel 0",
-        "cancel 1",
-    ]
+    old_client.send_public_message.assert_not_awaited()
+    assert events == ["old-close", "new-connect", "new-announce"]
+    for task in old.tasks:
+        task.cancel()
+    await asyncio.gather(*old.tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_cutover_waits_quietly_after_old_disconnect(bot: MakerBot) -> None:
+    old = bot.generations[0]
+    old_client = MagicMock()
+    old_client.close = AsyncMock()
+    old.directory_clients["directory:5222"] = old_client
+    replacement = _generation(bot, 1)
+    replacement.directory_pool.connect_all_with_retry = AsyncMock()
+    bot.config.identity_rotation_quiet_min_sec = 60
+    bot.config.identity_rotation_quiet_max_sec = 600
+    bot.running = True
+    events: list[str] = []
+    old_client.close.side_effect = lambda: events.append("old-close")
+
+    async def sleep(delay: float) -> None:
+        events.append(f"sleep:{delay}")
+
+    replacement.directory_pool.connect_all_with_retry.side_effect = lambda **_kwargs: events.append(
+        "new-connect"
+    )
+    with (
+        patch.object(
+            bot, "_create_replacement_generation", new=AsyncMock(return_value=replacement)
+        ),
+        patch.object(bot, "_announce_generation_offers", new=AsyncMock()),
+        patch.object(bot, "_start_generation_listeners"),
+        patch("maker.bot.secure_random.uniform", return_value=173.0),
+        patch("maker.bot.asyncio.sleep", side_effect=sleep),
+        patch("maker.bot.spawn_task", side_effect=lambda coroutine: coroutine.close()),
+    ):
+        assert await bot._rotate_generation() is True
+
+    assert events == ["old-close", "sleep:173.0", "new-connect"]
+    for task in old.tasks:
+        task.cancel()
+    await asyncio.gather(*old.tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_rotation_drains_generation_pinned_session_before_disconnect(bot: MakerBot) -> None:
+    old = bot.generations[0]
+    old_client = MagicMock()
+    old_client.close = AsyncMock()
+    old.directory_clients["directory:5222"] = old_client
+    bot.active_sessions[(0, "J5Active")] = MagicMock()
+    replacement = _generation(bot, 1)
+    replacement.directory_pool.connect_all_with_retry = AsyncMock()
+    bot.running = True
+    sleeps = 0
+
+    async def sleep(_delay: float) -> None:
+        nonlocal sleeps
+        sleeps += 1
+        bot.active_sessions.clear()
+
+    with (
+        patch.object(
+            bot, "_create_replacement_generation", new=AsyncMock(return_value=replacement)
+        ),
+        patch.object(bot, "_announce_generation_offers", new=AsyncMock()),
+        patch.object(bot, "_start_generation_listeners"),
+        patch("maker.bot.asyncio.sleep", side_effect=sleep),
+        patch("maker.bot.spawn_task", side_effect=lambda coroutine: coroutine.close()),
+    ):
+        assert await bot._rotate_generation() is True
+
+    assert sleeps == 1
+    old_client.close.assert_awaited_once_with()
+    for task in old.tasks:
+        task.cancel()
+    await asyncio.gather(*old.tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_replacement_connect_failure_closes_prepared_generation(bot: MakerBot) -> None:
+    old = bot.generations[0]
+    old_client = MagicMock()
+    old_client.close = AsyncMock()
+    old.directory_clients["directory:5222"] = old_client
+    replacement = _generation(bot, 1)
+    replacement.directory_pool.connect_all_with_retry = AsyncMock(
+        side_effect=RuntimeError("connect failed")
+    )
+    bot.running = True
+
+    with patch.object(
+        bot, "_create_replacement_generation", new=AsyncMock(return_value=replacement)
+    ):
+        assert await bot._rotate_generation() is False
+
+    assert bot.current_generation_id == 0
+    assert old.state is GenerationState.CLOSED
+    assert replacement.state is GenerationState.CLOSED
+    assert bot.generations == {}
+    old_client.close.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_rotation_cancellation_closes_unregistered_replacement(bot: MakerBot) -> None:
+    old = bot.generations[0]
+    replacement = _generation(bot, 1)
+    replacement_client = MagicMock()
+    replacement_client.close = AsyncMock()
+    replacement.directory_clients["directory:5222"] = replacement_client
+    bot.config.identity_rotation_quiet_min_sec = 60
+    bot.config.identity_rotation_quiet_max_sec = 60
+    bot.running = True
+    real_sleep = asyncio.sleep
+
+    async def cancel_quiet_sleep(delay: float) -> None:
+        if delay == 60:
+            raise asyncio.CancelledError
+        await real_sleep(delay)
+
+    with (
+        patch.object(
+            bot, "_create_replacement_generation", new=AsyncMock(return_value=replacement)
+        ),
+        patch("maker.bot.asyncio.sleep", side_effect=cancel_quiet_sleep),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await bot._rotate_generation()
+
+    assert replacement.state is GenerationState.CLOSED
+    replacement_client.close.assert_awaited_once_with()
+    for task in old.tasks:
+        task.cancel()
+    await asyncio.gather(*old.tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_grace_retirement_starts_before_quiet_interval(bot: MakerBot) -> None:
+    old = bot.generations[0]
+    replacement = _generation(bot, 1)
+    bot.config.identity_rotation_quiet_min_sec = 60
+    bot.config.identity_rotation_quiet_max_sec = 60
+    bot.running = True
+    observed_retirement_task = False
+
+    async def sleep(_delay: float) -> None:
+        nonlocal observed_retirement_task
+        observed_retirement_task = any(
+            task.get_name() == "maker-generation-retire-0" for task in old.tasks
+        )
+        raise asyncio.CancelledError
+
+    with (
+        patch.object(
+            bot, "_create_replacement_generation", new=AsyncMock(return_value=replacement)
+        ),
+        patch("maker.bot.asyncio.sleep", side_effect=sleep),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await bot._rotate_generation()
+
+    assert observed_retirement_task is True
     for task in old.tasks:
         task.cancel()
     await asyncio.gather(*old.tasks, return_exceptions=True)

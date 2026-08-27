@@ -392,6 +392,8 @@ def build_maker_config(
         identity_renewal_min_sec=settings.maker.identity_renewal_min_sec,
         identity_renewal_max_sec=settings.maker.identity_renewal_max_sec,
         identity_grace_sec=settings.maker.identity_grace_sec,
+        identity_rotation_quiet_min_sec=settings.maker.identity_rotation_quiet_min_sec,
+        identity_rotation_quiet_max_sec=settings.maker.identity_rotation_quiet_max_sec,
         pending_tx_timeout_min=settings.maker.pending_tx_timeout_min,
         pending_tx_abandon_hours=settings.maker.pending_tx_abandon_hours,
         rescan_interval_sec=settings.maker.rescan_interval_sec,

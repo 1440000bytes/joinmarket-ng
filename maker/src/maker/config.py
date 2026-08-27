@@ -362,6 +362,16 @@ class MakerConfig(WalletConfig):
         ge=60,
         description="Fixed grace period for continuations on a retired maker identity",
     )
+    identity_rotation_quiet_min_sec: int = Field(
+        default=60,
+        ge=0,
+        description="Minimum quiet interval between old and replacement directory identities",
+    )
+    identity_rotation_quiet_max_sec: int = Field(
+        default=600,
+        ge=0,
+        description="Maximum quiet interval between old and replacement directory identities",
+    )
 
     # Pending transaction timeout
     pending_tx_timeout_min: int = Field(
@@ -518,6 +528,10 @@ class MakerConfig(WalletConfig):
             raise ValueError("min_fee_rate_sat_vb must not exceed max_fee_rate_sat_vb")
         if self.identity_renewal_min_sec > self.identity_renewal_max_sec:
             raise ValueError("identity_renewal_min_sec must not exceed identity_renewal_max_sec")
+        if self.identity_rotation_quiet_min_sec > self.identity_rotation_quiet_max_sec:
+            raise ValueError(
+                "identity_rotation_quiet_min_sec must not exceed identity_rotation_quiet_max_sec"
+            )
 
         # Only validate single-offer fields if offer_configs is empty
         # (when offer_configs is set, those fields are ignored)
