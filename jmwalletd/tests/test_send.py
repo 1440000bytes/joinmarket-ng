@@ -80,7 +80,7 @@ async def test_direct_send_refreshes_registered_bonds_and_writes_history(
         destination="bcrt1qdestination",
     )
 
-    assert actual.txid == "txid_123"
+    assert actual.txid == prepared.txid
     wallet.sync_with_registered_bonds.assert_awaited_once_with()
     wallet.sync.assert_not_awaited()
 
@@ -104,7 +104,7 @@ async def test_direct_send_refreshes_registered_bonds_and_writes_history(
     mock_append_entry.assert_called_once_with(fake_entry, data_dir=ANY)
     mock_update_entry.assert_called_once_with(
         fake_entry,
-        txid="txid_123",
+        txid=prepared.txid,
         success=True,
         failure_reason="",
         data_dir=ANY,
@@ -240,9 +240,11 @@ async def test_direct_send_forwards_fee_overrides(
         destination="bcrt1qdestination",
         fee_rate=2.5,
         tx_fee_factor=0.4,
+        rbf=False,
     )
     assert mock_prepare_direct_send.call_args.kwargs["fee_rate"] == 2.5
     assert mock_prepare_direct_send.call_args.kwargs["tx_fee_factor"] == 0.4
+    assert mock_prepare_direct_send.call_args.kwargs["rbf"] is False
     assert "fee_target_blocks" not in mock_prepare_direct_send.call_args.kwargs
 
     await do_direct_send(

@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
 import typer
-from jmcore.bitcoin import get_txid
 from jmcore.cli_common import (
     ResolvedBackendSettings,
     resolve_backend_settings,
@@ -25,9 +24,13 @@ from jmwallet.wallet.spend import (
 )
 from jmwallet.wallet.spend import (
     DUST_THRESHOLD,
+    DirectTxOutput,
     ExcessiveFeeRateError,
+    build_and_sign_direct_tx,
     enforce_fee_rate_cap,
     estimate_fee,
+    resolve_broadcast_txid,
+    resolve_direct_send_locktime,
 )
 
 if TYPE_CHECKING:
@@ -38,8 +41,8 @@ if TYPE_CHECKING:
 
 
 def _resolve_broadcast_txid(tx_hex: str, backend_txid: str | None) -> str:
-    """Return the backend txid, falling back to the signed transaction."""
-    return backend_txid or get_txid(tx_hex)
+    """Return the txid committed by the signed transaction bytes."""
+    return resolve_broadcast_txid(tx_hex, backend_txid)
 
 
 def _finalize_send_history_entry(
@@ -234,6 +237,13 @@ def send(
             help="Broadcast the transaction (use --no-broadcast to skip)",
         ),
     ] = True,
+    rbf: Annotated[
+        bool,
+        typer.Option(
+            "--rbf/--no-rbf",
+            help="Signal BIP125 replace-by-fee (enabled by default)",
+        ),
+    ] = True,
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation prompt")] = False,
     select_utxos: Annotated[
         bool,
@@ -371,6 +381,7 @@ def send(
             reconstruct_history=settings.wallet.reconstruct_history,
             input_utxos=input_utxo,
             allow_conflicts=allow_conflicts,
+            rbf=rbf,
         )
     )
 
@@ -395,6 +406,7 @@ async def _send_transaction(
     reconstruct_history: bool = True,
     input_utxos: list[str] | None = None,
     allow_conflicts: bool = False,
+    rbf: bool = True,
 ) -> None:
     """Send transaction implementation."""
     if allow_conflicts and not input_utxos:
@@ -413,8 +425,6 @@ async def _send_transaction(
     from jmwallet.wallet.service import WalletService
     from jmwallet.wallet.signing import (
         TransactionSigningError,
-        deserialize_transaction,
-        encode_varint,
     )
 
     # The wallet name is derived from the master fingerprint. Registered
@@ -518,12 +528,13 @@ async def _send_transaction(
         await wallet.sync_with_registered_bonds()
 
         # Pick the inputs: explicit --input-utxo, interactive, or automatic.
+        locktime_cutoff: int | None = None
         if input_utxos:
             from jmwallet.wallet.spend import resolve_input_utxos
 
             resolved_mixdepth = mixdepth if mixdepth is not None else 0
             try:
-                utxos, _locktime_cutoff = await resolve_input_utxos(
+                utxos, locktime_cutoff = await resolve_input_utxos(
                     wallet=wallet,
                     backend=backend,
                     mixdepth=resolved_mixdepth,
@@ -602,8 +613,6 @@ async def _send_transaction(
                 estimated_fee = total_input - send_amount
                 change_amount = 0
 
-        num_outputs = 1 + int(change_amount > 0)
-
         # Use new format_amount for display
         from jmcore.bitcoin import format_amount
 
@@ -634,6 +643,7 @@ async def _send_transaction(
                     ),
                     "Change": format_amount(change_amount) if change_amount > 0 else "None",
                     "Miner Fee Rate": f"{resolved_fee_rate:.2f} sat/vB",
+                    "Replace-By-Fee": "Enabled" if rbf else "Disabled",
                     **(
                         {
                             "Conflict Replacement": (
@@ -655,7 +665,7 @@ async def _send_transaction(
             logger.info("Transaction cancelled by user")
             raise typer.Exit(1)
 
-        # Build unsigned transaction
+        # Resolve scripts and policy before the shared builder signs anything.
         from bitcointx import ChainParams
         from bitcointx.wallet import CCoinAddress, CCoinAddressError
 
@@ -681,51 +691,13 @@ async def _send_transaction(
             )
             raise typer.Exit(1)
 
-        # Build raw transaction
-        version = (2).to_bytes(4, "little")
-
-        # Determine transaction locktime - must be >= max CLTV locktime if spending timelocked UTXOs
-        max_locktime = 0
-        has_timelocked = False
-        locktime_cutoff = 0
-        if any(utxo.is_timelocked for utxo in utxos):
-            locktime_cutoff = await backend.get_median_time_past()
-        for utxo in utxos:
-            if utxo.is_timelocked and utxo.locktime is not None:
-                has_timelocked = True
-                if utxo.locktime > max_locktime:
-                    max_locktime = utxo.locktime
-                if utxo.locktime >= locktime_cutoff:
-                    logger.error("Cannot spend timelocked UTXO because its locktime has not passed")
-                    logger.bind(sensitive=True).error(
-                        f"Cannot spend timelocked UTXO {utxo.txid}:{utxo.vout} - "
-                        f"locktime {utxo.locktime} has not passed chain time {locktime_cutoff}"
-                    )
-                    raise typer.Exit(1)
-
-        locktime = max_locktime.to_bytes(4, "little")
-
-        # Inputs
-        inputs_data = bytearray()
-        for utxo in utxos:
-            txid_bytes = bytes.fromhex(utxo.txid)[::-1]  # Little-endian
-            inputs_data.extend(txid_bytes)
-            inputs_data.extend(utxo.vout.to_bytes(4, "little"))
-            inputs_data.append(0)  # Empty scriptSig for SegWit
-            # For timelocked UTXOs, sequence must be < 0xFFFFFFFF to enable locktime
-            if has_timelocked:
-                inputs_data.extend((0xFFFFFFFE).to_bytes(4, "little"))  # Enable locktime
-            else:
-                inputs_data.extend((0xFFFFFFFF).to_bytes(4, "little"))  # Sequence
-
-        # Outputs
-        outputs_data = bytearray()
-        # Destination
-        outputs_data.extend(send_amount.to_bytes(8, "little"))
-        outputs_data.extend(encode_varint(len(dest_script)))
-        outputs_data.extend(dest_script)
-
-        # Change (if any)
+        outputs = [
+            DirectTxOutput(
+                value_sats=send_amount,
+                script_pubkey=dest_script,
+                address=destination,
+            )
+        ]
         change_addr = ""
         if change_amount > 0:
             change_addr = wallet.get_new_internal_address(mixdepth)
@@ -740,54 +712,35 @@ async def _send_transaction(
             change_script = pubkey_to_p2wpkh_script(
                 change_key.get_public_key_bytes(compressed=True).hex()
             )
-            outputs_data.extend(change_amount.to_bytes(8, "little"))
-            outputs_data.extend(encode_varint(len(change_script)))
-            outputs_data.extend(change_script)
+            outputs.append(
+                DirectTxOutput(
+                    value_sats=change_amount,
+                    script_pubkey=change_script,
+                    address=change_addr,
+                )
+            )
 
-        # Assemble unsigned transaction (without witness)
-        unsigned_tx = (
-            version
-            + encode_varint(len(utxos))
-            + bytes(inputs_data)
-            + encode_varint(num_outputs)
-            + bytes(outputs_data)
-            + locktime
-        )
+        try:
+            locktime = await resolve_direct_send_locktime(
+                backend=backend,
+                utxos=utxos,
+                locktime_cutoff=locktime_cutoff,
+            )
+            built = build_and_sign_direct_tx(
+                wallet=wallet,
+                utxos=utxos,
+                outputs=outputs,
+                locktime=locktime,
+                rbf=rbf,
+            )
+        except (TransactionSigningError, ValueError) as exc:
+            logger.error("Transaction construction or signing failed")
+            logger.bind(sensitive=True).error(str(exc))
+            raise typer.Exit(1) from exc
 
-        # Sign the transaction. Key access and signing are delegated to the
-        # wallet (issue #518) so private keys never leave the wallet boundary.
-        tx = deserialize_transaction(unsigned_tx)
-        witnesses: list[list[bytes]] = []
-
-        for i, utxo in enumerate(utxos):
-            try:
-                signed = wallet.sign_input(tx, i, utxo)
-            except TransactionSigningError as exc:
-                logger.error("Transaction signing failed")
-                logger.bind(sensitive=True).error(str(exc))
-                raise typer.Exit(1) from exc
-            witnesses.append(signed.witness)
-
-        # Build signed transaction with witness
-        signed_tx = bytearray()
-        signed_tx.extend(version)
-        signed_tx.extend(b"\x00\x01")  # Marker and flag for SegWit
-        signed_tx.extend(encode_varint(len(utxos)))
-        signed_tx.extend(inputs_data)
-        signed_tx.extend(encode_varint(num_outputs))
-        signed_tx.extend(outputs_data)
-
-        # Witness stack
-        for witness_stack in witnesses:
-            signed_tx.extend(encode_varint(len(witness_stack)))
-            for item in witness_stack:
-                signed_tx.extend(encode_varint(len(item)))
-                signed_tx.extend(item)
-
-        signed_tx.extend(locktime)
-
-        tx_hex = bytes(signed_tx).hex()
-        print(f"\nSigned Transaction ({len(signed_tx)} bytes):")
+        utxos = built.inputs
+        tx_hex = built.raw.hex()
+        print(f"\nSigned Transaction ({len(built.raw)} bytes):")
         print(f"{tx_hex[:80]}...")
 
         # Persist a "send" history entry BEFORE broadcasting so that the

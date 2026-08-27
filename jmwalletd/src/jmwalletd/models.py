@@ -368,6 +368,10 @@ class DirectSendRequest(BaseModel):
     anything unusable is rejected with a reason rather than falling back to
     automatic selection. Omit the field (the default) to keep the previous
     auto-selecting behavior; an explicit empty list is always an error.
+
+    ``rbf`` controls BIP125 replacement signaling and defaults to ``True``.
+    Set it to ``False`` to retain anti-fee-sniping locktime without opting in
+    to replacement.
     """
 
     mixdepth: int = Field(..., ge=0)
@@ -375,6 +379,7 @@ class DirectSendRequest(BaseModel):
     destination: str
     txfee: int | None = Field(default=None, ge=0)
     input_utxos: list[str] | None = None
+    rbf: bool = True
 
 
 class DirectSendResponse(BaseModel):

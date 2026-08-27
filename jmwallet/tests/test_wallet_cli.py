@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import click
 import pytest
 import typer
+from jmcore.bitcoin import parse_transaction
 from jmcore.cli_common import ResolvedBackendSettings
 from mnemonic import Mnemonic
 from typer.testing import CliRunner
@@ -721,6 +722,15 @@ def test_send_help_exposes_no_broadcast_flag() -> None:
     assert "--no-broadcast" in output
 
 
+def test_send_help_exposes_rbf_opt_out() -> None:
+    result = runner.invoke(app, ["send", "--help"], prog_name="jm-wallet")
+    output = click.unstyle(result.stdout)
+
+    assert result.exit_code == 0, output
+    assert "--rbf" in output
+    assert "--no-rbf" in output
+
+
 def test_send_sweep_requires_explicit_mixdepth() -> None:
     with patch("jmwallet.cli.send.resolve_mnemonic") as mock_resolve:
         result = runner.invoke(
@@ -817,21 +827,21 @@ def test_send_rejects_nan_manual_fee_rate():
 def test_send_uses_local_txid_when_backend_omits_it(backend_txid: str | None) -> None:
     from jmwallet.cli.send import _resolve_broadcast_txid
 
-    with patch("jmwallet.cli.send.get_txid", return_value="local_txid") as mock_get_txid:
+    with patch("jmwallet.wallet.spend.get_txid", return_value="local_txid") as mock_get_txid:
         txid = _resolve_broadcast_txid("signed_tx_hex", backend_txid)
 
     assert txid == "local_txid"
     mock_get_txid.assert_called_once_with("signed_tx_hex")
 
 
-def test_send_prefers_backend_txid() -> None:
+def test_send_uses_local_txid_when_backend_disagrees() -> None:
     from jmwallet.cli.send import _resolve_broadcast_txid
 
-    with patch("jmwallet.cli.send.get_txid") as mock_get_txid:
+    with patch("jmwallet.wallet.spend.get_txid", return_value="local_txid") as mock_get_txid:
         txid = _resolve_broadcast_txid("signed_tx_hex", "backend_txid")
 
-    assert txid == "backend_txid"
-    mock_get_txid.assert_not_called()
+    assert txid == "local_txid"
+    mock_get_txid.assert_called_once_with("signed_tx_hex")
 
 
 def test_send_skips_finalization_when_history_append_failed(tmp_path: Path) -> None:
@@ -901,6 +911,7 @@ def _mock_send_execution(tmp_path: Path) -> Iterator[tuple[ResolvedBackendSettin
     mocks = MagicMock()
     mocks.backend = MagicMock(spec=DescriptorWalletBackend)
     mocks.backend.get_mempool_min_fee = AsyncMock(return_value=None)
+    mocks.backend.get_block_height = AsyncMock(return_value=840_000)
     mocks.backend.broadcast_transaction = AsyncMock(return_value="backend_txid")
     mocks.backend.test_mempool_accept = AsyncMock()
     mocks.wallet = MagicMock()
@@ -935,6 +946,7 @@ async def _run_mock_send(
     broadcast: bool = True,
     skip_confirmation: bool = True,
     interactive_utxo_selection: bool = False,
+    rbf: bool = True,
 ) -> None:
     from jmwallet.cli.send import _send_transaction
 
@@ -949,7 +961,28 @@ async def _run_mock_send(
         broadcast=broadcast,
         skip_confirmation=skip_confirmation,
         interactive_utxo_selection=interactive_utxo_selection,
+        rbf=rbf,
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("rbf", "expected_sequence"),
+    [(True, 0xFFFFFFFD), (False, 0xFFFFFFFE)],
+)
+async def test_send_serializes_locktime_and_requested_rbf_policy(
+    tmp_path: Path,
+    rbf: bool,
+    expected_sequence: int,
+) -> None:
+    with _mock_send_execution(tmp_path) as (backend_settings, mocks):
+        await _run_mock_send(backend_settings, rbf=rbf)
+
+    tx_hex = mocks.backend.broadcast_transaction.call_args.args[0]
+    parsed = parse_transaction(tx_hex)
+    assert parsed.version == 2
+    assert 839_901 <= parsed.locktime <= 840_000
+    assert {tx_input.sequence for tx_input in parsed.inputs} == {expected_sequence}
 
 
 @pytest.mark.asyncio

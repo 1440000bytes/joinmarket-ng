@@ -38,6 +38,10 @@ jm-wallet send <destination_address> --amount 100000
 jm-wallet send <destination_address> --amount 0 --mixdepth 2
 ```
 
+Direct sends signal replace-by-fee by default and use a current-height
+anti-fee-sniping locktime. Pass `--no-rbf` to disable replacement signaling for
+a specific send. Transaction inputs and outputs are randomized before signing.
+
 For fixed amounts without `--mixdepth`, automatic selection checks mixdepths
 from highest to lowest and uses the first one that can fund the amount and fee.
 Within that mixdepth it minimizes linked address clusters first, then input
@@ -1236,6 +1240,10 @@ The full CLI reference below is auto-generated from command `--help` output.
 │                                                       NEUTRINO_URL]          │
 │ --prompt-bip39-passp…                                 Prompt for BIP39       │
 │                                                       passphrase             │
+│ --rbf                      --no-rbf                   Signal BIP125          │
+│                                                       replace-by-fee         │
+│                                                       (enabled by default)   │
+│                                                       [default: rbf]         │
 │ --rpc-url                                    TEXT     [env var:              │
 │                                                       BITCOIN_RPC_URL]       │
 │ --select-utxos         -s                             Interactively select   │

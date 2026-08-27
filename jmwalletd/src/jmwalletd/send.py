@@ -20,6 +20,7 @@ from jmwallet.wallet.spend import (
     DEFAULT_MAX_FEE_RATE_SAT_VB,
     DirectSendResult,
     prepare_direct_send,
+    resolve_broadcast_txid,
 )
 
 if TYPE_CHECKING:
@@ -37,6 +38,7 @@ async def do_direct_send(
     tx_fee_factor: float = 0.0,
     max_fee_rate_sat_vb: float = DEFAULT_MAX_FEE_RATE_SAT_VB,
     input_utxos: list[str] | None = None,
+    rbf: bool = True,
 ) -> DirectSendResult:
     """Build, sign, broadcast, and record a direct (non-coinjoin) transaction.
 
@@ -47,7 +49,8 @@ async def do_direct_send(
     ``input_utxos``, when given, spends exactly those ``txid:vout`` outpoints
     instead of running automatic coin selection (issue #587); see
     :func:`jmwallet.wallet.spend.prepare_direct_send` for the validation
-    rules.
+    rules. ``rbf`` defaults to BIP125 replacement signaling and can be disabled
+    per transaction without disabling anti-fee-sniping locktime.
 
     Follows the same two-phase history-write pattern as the CLI send command:
 
@@ -96,6 +99,7 @@ async def do_direct_send(
         tx_fee_factor=tx_fee_factor,
         max_fee_rate_sat_vb=max_fee_rate_sat_vb,
         input_utxos=input_utxos,
+        rbf=rbf,
         **extra_kwargs,
     )
 
@@ -129,7 +133,12 @@ async def do_direct_send(
             "Broadcasting direct-send transaction ({} bytes)",
             len(bytes.fromhex(prepared.tx_hex)),
         )
-        txid = (await backend.broadcast_transaction(prepared.tx_hex)) or prepared.txid
+        broadcast_txid = await backend.broadcast_transaction(prepared.tx_hex)
+        txid = resolve_broadcast_txid(
+            prepared.tx_hex,
+            broadcast_txid,
+            local_txid=prepared.txid,
+        )
         logger.bind(sensitive=True).info("Broadcast OK: {}", txid)
     except Exception as exc:
         broadcast_exc = exc
@@ -168,4 +177,6 @@ async def do_direct_send(
         num_outputs=prepared.num_outputs,
         inputs=prepared.inputs,
         outputs=prepared.outputs,
+        version=prepared.version,
+        locktime=prepared.locktime,
     )

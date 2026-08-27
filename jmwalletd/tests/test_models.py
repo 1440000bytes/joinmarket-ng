@@ -226,6 +226,16 @@ class TestDirectSendRequest:
         req = DirectSendRequest(mixdepth=0, amount_sats=100_000, destination="bcrt1qtest")
         assert req.mixdepth == 0
         assert req.amount_sats == 100_000
+        assert req.rbf is True
+
+    def test_rbf_can_be_disabled(self) -> None:
+        req = DirectSendRequest(
+            mixdepth=0,
+            amount_sats=100_000,
+            destination="bcrt1qtest",
+            rbf=False,
+        )
+        assert req.rbf is False
 
     def test_with_txfee(self) -> None:
         req = DirectSendRequest(

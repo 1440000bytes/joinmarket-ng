@@ -12,18 +12,29 @@ from dataclasses import dataclass, field
 from hashlib import sha256
 from typing import TYPE_CHECKING
 
-from jmcore.bitcoin import estimate_vsize, get_address_type, get_txid, scriptpubkey_to_address
+from jmcore.bitcoin import (
+    TxInput,
+    TxOutput,
+    estimate_vsize,
+    get_address_type,
+    get_txid,
+    scriptpubkey_to_address,
+    serialize_transaction,
+)
 from jmcore.btc_script import mk_freeze_script
 from jmcore.randomness import secure_random
+from jmcore.transaction_policy import (
+    MAX_LOCKTIME,
+    NON_RBF_LOCKTIME_SEQUENCE,
+    RBF_SEQUENCE,
+    compute_tx_locktime,
+)
 from loguru import logger
 
 from jmwallet.wallet.address import pubkey_to_p2wpkh_script
 from jmwallet.wallet.constants import FIDELITY_BOND_BRANCH
 from jmwallet.wallet.models import UTXOInfo
-from jmwallet.wallet.signing import (
-    deserialize_transaction,
-    encode_varint,
-)
+from jmwallet.wallet.signing import deserialize_transaction
 
 if TYPE_CHECKING:
     from jmwallet.backends.base import BlockchainBackend
@@ -106,6 +117,8 @@ class DirectSendResult:
     num_outputs: int
     inputs: list[dict[str, object]] = field(default_factory=list)
     outputs: list[dict[str, object]] = field(default_factory=list)
+    version: int = 2
+    locktime: int = 0
 
 
 @dataclass
@@ -126,6 +139,48 @@ class SignedDirectTx:
     source_addresses: list[str] = field(default_factory=list)
     inputs: list[dict[str, object]] = field(default_factory=list)
     outputs: list[dict[str, object]] = field(default_factory=list)
+    version: int = 2
+    locktime: int = 0
+
+
+@dataclass(frozen=True)
+class DirectTxOutput:
+    """Validated output data used by the shared direct-send signer."""
+
+    value_sats: int
+    script_pubkey: bytes
+    address: str
+
+
+@dataclass
+class BuiltDirectTx:
+    """Signed direct transaction plus its final wire-order metadata."""
+
+    raw: bytes
+    inputs: list[UTXOInfo]
+    outputs: list[DirectTxOutput]
+    sequence: int
+    locktime: int
+    version: int = 2
+
+
+def resolve_broadcast_txid(
+    tx_hex: str,
+    backend_txid: str | None,
+    *,
+    local_txid: str | None = None,
+) -> str:
+    """Return the txid committed by signed bytes and report backend disagreement."""
+    authoritative_txid = local_txid or get_txid(tx_hex)
+    if (
+        isinstance(backend_txid, str)
+        and backend_txid
+        and backend_txid.lower() != authoritative_txid
+    ):
+        logger.bind(sensitive=True).warning(
+            "Backend returned txid {} for transaction {}", backend_txid, authoritative_txid
+        )
+    return authoritative_txid
 
 
 # Map of wallet networks to python-bitcointx chain parameter names. Used so
@@ -555,119 +610,92 @@ async def select_automatic_direct_send_inputs(
     raise ValueError(f"No mixdepth has sufficient eligible funds ({detail})")
 
 
-def _build_unsigned_tx(
-    utxos: list[UTXOInfo],
-    dest_script: bytes,
-    send_amount: int,
-    change_script: bytes | None,
-    change_amount: int,
+async def resolve_direct_send_locktime(
     *,
-    locktime_cutoff: int | None = None,
-) -> tuple[bytes, bytes, bytes, bytes, int]:
-    """Build an unsigned raw transaction.
-
-    Returns ``(unsigned_tx, version_bytes, inputs_data, outputs_data, locktime_int)``.
-    """
-    version = (2).to_bytes(4, "little")
-
-    # Determine locktime from timelocked UTXOs
-    max_locktime = 0
-    has_timelocked = False
-    cutoff = int(time.time()) if locktime_cutoff is None else locktime_cutoff
-    for utxo in utxos:
-        if utxo.is_timelocked and utxo.locktime is not None:
-            has_timelocked = True
-            if utxo.locktime > max_locktime:
-                max_locktime = utxo.locktime
-            if utxo.locktime >= cutoff:
-                msg = (
-                    f"Cannot spend timelocked UTXO {utxo.txid}:{utxo.vout}: "
-                    f"locktime {utxo.locktime} has not passed chain time {cutoff}"
-                )
-                raise ValueError(msg)
-
-    locktime = max_locktime.to_bytes(4, "little")
-
-    # Inputs
-    inputs_data = bytearray()
-    for utxo in utxos:
-        txid_bytes = bytes.fromhex(utxo.txid)[::-1]  # big-endian → little-endian
-        inputs_data.extend(txid_bytes)
-        inputs_data.extend(utxo.vout.to_bytes(4, "little"))
-        inputs_data.append(0)  # empty scriptSig for SegWit
-        seq = 0xFFFFFFFE if has_timelocked else 0xFFFFFFFF
-        inputs_data.extend(seq.to_bytes(4, "little"))
-
-    # Outputs
-    num_outputs = 1
-    outputs_data = bytearray()
-    outputs_data.extend(send_amount.to_bytes(8, "little"))
-    outputs_data.extend(encode_varint(len(dest_script)))
-    outputs_data.extend(dest_script)
-
-    if change_amount > 0 and change_script is not None:
-        num_outputs += 1
-        outputs_data.extend(change_amount.to_bytes(8, "little"))
-        outputs_data.extend(encode_varint(len(change_script)))
-        outputs_data.extend(change_script)
-
-    unsigned_tx = (
-        version
-        + encode_varint(len(utxos))
-        + bytes(inputs_data)
-        + encode_varint(num_outputs)
-        + bytes(outputs_data)
-        + locktime
-    )
-    return unsigned_tx, version, bytes(inputs_data), bytes(outputs_data), num_outputs
-
-
-def _sign_inputs(
-    unsigned_tx: bytes,
+    backend: BlockchainBackend,
     utxos: list[UTXOInfo],
+    locktime_cutoff: int | None = None,
+) -> int:
+    """Resolve a valid fidelity-bond or anti-fee-sniping locktime."""
+    timelocked = [utxo for utxo in utxos if utxo.is_timelocked and utxo.locktime is not None]
+    if not timelocked:
+        return compute_tx_locktime(await backend.get_block_height())
+
+    cutoff = await backend.get_median_time_past() if locktime_cutoff is None else locktime_cutoff
+    for utxo in timelocked:
+        assert utxo.locktime is not None
+        if utxo.locktime >= cutoff:
+            msg = (
+                f"Cannot spend timelocked UTXO {utxo.txid}:{utxo.vout}: "
+                f"locktime {utxo.locktime} has not passed chain time {cutoff}"
+            )
+            raise ValueError(msg)
+    return max(utxo.locktime for utxo in timelocked if utxo.locktime is not None)
+
+
+def build_and_sign_direct_tx(
+    *,
     wallet: WalletService,
-) -> list[list[bytes]]:
-    """Sign all inputs and return witness stacks.
+    utxos: list[UTXOInfo],
+    outputs: list[DirectTxOutput],
+    locktime: int,
+    rbf: bool = True,
+) -> BuiltDirectTx:
+    """Shuffle, serialize, and sign a fully validated direct transaction."""
+    if not utxos:
+        raise ValueError("A direct transaction requires at least one input")
+    if not outputs:
+        raise ValueError("A direct transaction requires at least one output")
+    if (
+        not isinstance(locktime, int)
+        or isinstance(locktime, bool)
+        or not 0 <= locktime <= MAX_LOCKTIME
+    ):
+        raise ValueError(f"Invalid transaction locktime: {locktime!r}")
 
-    Key access and signing are delegated to the wallet (issue #518) so private
-    keys never leave the wallet boundary.
-    """
-    tx = deserialize_transaction(unsigned_tx)
+    outpoints = [(utxo.txid, utxo.vout) for utxo in utxos]
+    if len(set(outpoints)) != len(outpoints):
+        raise ValueError("A direct transaction cannot contain duplicate inputs")
+    required_locktime = max((utxo.locktime or 0 for utxo in utxos if utxo.is_timelocked), default=0)
+    if locktime < required_locktime:
+        raise ValueError(
+            f"Transaction locktime {locktime} does not satisfy input locktime {required_locktime}"
+        )
+    if any(output.value_sats <= 0 or not output.script_pubkey for output in outputs):
+        raise ValueError("Direct transaction outputs require positive values and non-empty scripts")
+    if sum(output.value_sats for output in outputs) > sum(utxo.value for utxo in utxos):
+        raise ValueError("Direct transaction outputs exceed its input value")
+
+    ordered_utxos = list(utxos)
+    ordered_outputs = list(outputs)
+    secure_random.shuffle(ordered_utxos)
+    secure_random.shuffle(ordered_outputs)
+
+    sequence = RBF_SEQUENCE if rbf else NON_RBF_LOCKTIME_SEQUENCE
+    tx_inputs = [
+        TxInput.from_hex(utxo.txid, utxo.vout, sequence=sequence) for utxo in ordered_utxos
+    ]
+    tx_outputs = [
+        TxOutput(value=output.value_sats, script=output.script_pubkey) for output in ordered_outputs
+    ]
+    unsigned_tx = serialize_transaction(2, tx_inputs, tx_outputs, locktime)
+    parsed = deserialize_transaction(unsigned_tx)
+
     witnesses: list[list[bytes]] = []
+    for index, utxo in enumerate(ordered_utxos):
+        witness = wallet.sign_input(parsed, index, utxo).witness
+        if not witness or any(not isinstance(item, bytes) or not item for item in witness):
+            raise ValueError(f"Wallet returned an invalid witness for input {index}")
+        witnesses.append(witness)
 
-    for i, utxo in enumerate(utxos):
-        signed = wallet.sign_input(tx, i, utxo)
-        witnesses.append(signed.witness)
-
-    return witnesses
-
-
-def _assemble_signed_tx(
-    version: bytes,
-    inputs_data: bytes,
-    num_outputs: int,
-    outputs_data: bytes,
-    locktime_bytes: bytes,
-    witnesses: list[list[bytes]],
-    num_inputs: int,
-) -> bytes:
-    """Assemble a fully signed SegWit transaction."""
-    signed = bytearray()
-    signed.extend(version)
-    signed.extend(b"\x00\x01")  # SegWit marker + flag
-    signed.extend(encode_varint(num_inputs))
-    signed.extend(inputs_data)
-    signed.extend(encode_varint(num_outputs))
-    signed.extend(outputs_data)
-
-    for witness_stack in witnesses:
-        signed.extend(encode_varint(len(witness_stack)))
-        for item in witness_stack:
-            signed.extend(encode_varint(len(item)))
-            signed.extend(item)
-
-    signed.extend(locktime_bytes)
-    return bytes(signed)
+    signed_tx = serialize_transaction(2, tx_inputs, tx_outputs, locktime, witnesses)
+    return BuiltDirectTx(
+        raw=signed_tx,
+        inputs=ordered_utxos,
+        outputs=ordered_outputs,
+        sequence=sequence,
+        locktime=locktime,
+    )
 
 
 async def prepare_direct_send(
@@ -682,6 +710,7 @@ async def prepare_direct_send(
     tx_fee_factor: float = 0.0,
     max_fee_rate_sat_vb: float = DEFAULT_MAX_FEE_RATE_SAT_VB,
     input_utxos: list[str] | None = None,
+    rbf: bool = True,
 ) -> SignedDirectTx:
     """Build and sign a direct-send transaction WITHOUT broadcasting.
 
@@ -689,6 +718,7 @@ async def prepare_direct_send(
     those UTXOs are spent and automatic coin selection is skipped entirely;
     anything unusable raises :class:`ValueError` rather than falling back. An
     empty list is an error — omit the argument for automatic selection.
+    ``rbf`` controls BIP125 signaling and defaults to enabled.
 
     Returns a :class:`SignedDirectTx` containing the signed hex and all
     metadata needed to broadcast and record a history entry. Callers that want
@@ -807,37 +837,35 @@ async def prepare_direct_send(
             change_key.get_public_key_bytes(compressed=True).hex()
         )
 
-    # --- Build unsigned tx ---
-    unsigned_tx, version, inputs_data, outputs_data, num_outputs = _build_unsigned_tx(
-        utxos,
-        dest_script,
-        send_amount,
-        change_script,
-        change_amount,
-        locktime_cutoff=locktime_cutoff,
-    )
-
-    # --- Sign ---
-    witnesses = _sign_inputs(unsigned_tx, utxos, wallet)
-
-    # --- Assemble signed tx ---
-    locktime_bytes = unsigned_tx[-4:]
-    signed_tx = _assemble_signed_tx(
-        version, inputs_data, num_outputs, outputs_data, locktime_bytes, witnesses, len(utxos)
-    )
-    tx_hex = signed_tx.hex()
-
-    outputs_list: list[dict[str, object]] = [
-        {"value_sats": send_amount, "scriptPubKey": dest_script.hex(), "address": destination},
+    outputs = [
+        DirectTxOutput(
+            value_sats=send_amount,
+            script_pubkey=dest_script,
+            address=destination,
+        )
     ]
     if change_amount > 0 and change_script is not None:
-        outputs_list.append(
-            {
-                "value_sats": change_amount,
-                "scriptPubKey": change_script.hex(),
-                "address": change_addr,
-            }
+        outputs.append(
+            DirectTxOutput(
+                value_sats=change_amount,
+                script_pubkey=change_script,
+                address=change_addr,
+            )
         )
+
+    locktime = await resolve_direct_send_locktime(
+        backend=backend,
+        utxos=utxos,
+        locktime_cutoff=locktime_cutoff,
+    )
+    built = build_and_sign_direct_tx(
+        wallet=wallet,
+        utxos=utxos,
+        outputs=outputs,
+        locktime=locktime,
+        rbf=rbf,
+    )
+    tx_hex = built.raw.hex()
 
     return SignedDirectTx(
         txid=get_txid(tx_hex),
@@ -846,24 +874,31 @@ async def prepare_direct_send(
         fee_rate=fee_rate,
         send_amount=send_amount,
         change_amount=change_amount,
-        num_inputs=len(utxos),
-        num_outputs=num_outputs,
+        num_inputs=len(built.inputs),
+        num_outputs=len(built.outputs),
         destination=destination,
         change_address=change_addr if change_amount > 0 else "",
-        selected_utxos=[(u.txid, u.vout) for u in utxos],
-        source_addresses=[u.address for u in utxos],
+        selected_utxos=[(u.txid, u.vout) for u in built.inputs],
+        source_addresses=[u.address for u in built.inputs],
         inputs=[
             {
                 "outpoint": f"{u.txid}:{u.vout}",
                 "scriptSig": "",
-                "nSequence": 0xFFFFFFFE
-                if any(ut.is_timelocked and ut.locktime is not None for ut in utxos)
-                else 0xFFFFFFFF,
+                "nSequence": built.sequence,
                 "witness": "",
             }
-            for u in utxos
+            for u in built.inputs
         ],
-        outputs=outputs_list,
+        outputs=[
+            {
+                "value_sats": output.value_sats,
+                "scriptPubKey": output.script_pubkey.hex(),
+                "address": output.address,
+            }
+            for output in built.outputs
+        ],
+        version=built.version,
+        locktime=built.locktime,
     )
 
 
@@ -879,6 +914,7 @@ async def direct_send(
     tx_fee_factor: float = 0.0,
     max_fee_rate_sat_vb: float = DEFAULT_MAX_FEE_RATE_SAT_VB,
     input_utxos: list[str] | None = None,
+    rbf: bool = True,
 ) -> DirectSendResult:
     """Build, sign, and broadcast a direct (non-CoinJoin) transaction.
 
@@ -915,6 +951,9 @@ async def direct_send(
         (also for sweeps); they must all be unfrozen and in *mixdepth*, or
         :class:`ValueError` is raised naming the reason.  An empty list is an
         error; pass *None* for automatic selection.
+    rbf:
+        Signal BIP125 opt-in RBF. Enabled by default; disabling it retains a
+        non-final sequence so anti-fee-sniping locktime remains effective.
 
     Returns
     -------
@@ -931,12 +970,17 @@ async def direct_send(
         tx_fee_factor=tx_fee_factor,
         max_fee_rate_sat_vb=max_fee_rate_sat_vb,
         input_utxos=input_utxos,
+        rbf=rbf,
     )
 
     tx_bytes_len = len(bytes.fromhex(prepared.tx_hex))
     logger.info("Broadcasting direct-send transaction ({} bytes)", tx_bytes_len)
     broadcast_txid = await backend.broadcast_transaction(prepared.tx_hex)
-    txid = broadcast_txid or prepared.txid
+    txid = resolve_broadcast_txid(
+        prepared.tx_hex,
+        broadcast_txid,
+        local_txid=prepared.txid,
+    )
 
     logger.bind(sensitive=True).info("Broadcast OK: {}", txid)
     return DirectSendResult(
@@ -950,4 +994,6 @@ async def direct_send(
         num_outputs=prepared.num_outputs,
         inputs=prepared.inputs,
         outputs=prepared.outputs,
+        version=prepared.version,
+        locktime=prepared.locktime,
     )

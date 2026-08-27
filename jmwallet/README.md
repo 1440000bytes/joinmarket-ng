@@ -1165,6 +1165,10 @@ For full documentation, see [jmwallet Documentation](https://joinmarket-ng.githu
 │                                                       NEUTRINO_URL]          │
 │ --prompt-bip39-passp…                                 Prompt for BIP39       │
 │                                                       passphrase             │
+│ --rbf                      --no-rbf                   Signal BIP125          │
+│                                                       replace-by-fee         │
+│                                                       (enabled by default)   │
+│                                                       [default: rbf]         │
 │ --rpc-url                                    TEXT     [env var:              │
 │                                                       BITCOIN_RPC_URL]       │
 │ --select-utxos         -s                             Interactively select   │

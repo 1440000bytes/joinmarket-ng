@@ -59,6 +59,39 @@ class TestDirectSend:
         assert resp.status_code == 200
         assert resp.json()["txinfo"]["txid"] == "txid123"
         mock_send.assert_awaited_once()
+        assert mock_send.call_args.kwargs["rbf"] is True
+
+    @patch("jmwalletd.send.do_direct_send")
+    def test_direct_send_forwards_rbf_opt_out(
+        self,
+        mock_send: AsyncMock,
+        authed_client: tuple[TestClient, str],
+    ) -> None:
+        client, token = authed_client
+        mock_send.return_value = Mock(
+            txid="txid123",
+            tx_hex="rawhex",
+            inputs=[],
+            outputs=[],
+            locktime=840_000,
+            version=2,
+        )
+
+        resp = client.post(
+            "/api/v1/wallet/test_wallet.jmdat/taker/direct-send",
+            json={
+                "mixdepth": 0,
+                "amount_sats": 1000,
+                "destination": "bcrt1qdest",
+                "rbf": False,
+            },
+            headers=_auth_headers(token),
+        )
+
+        assert resp.status_code == 200
+        assert mock_send.call_args.kwargs["rbf"] is False
+        assert resp.json()["txinfo"]["nVersion"] == 2
+        assert resp.json()["txinfo"]["nLockTime"] == 840_000
 
     @patch("jmwalletd.send.do_direct_send")
     def test_direct_send_honors_configset_fee_rate(

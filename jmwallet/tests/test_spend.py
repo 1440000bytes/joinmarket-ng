@@ -8,7 +8,13 @@ from hashlib import sha256
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from jmcore.bitcoin import TxOutput, get_txid, scriptpubkey_to_address, serialize_transaction
+from jmcore.bitcoin import (
+    TxOutput,
+    get_txid,
+    parse_transaction,
+    scriptpubkey_to_address,
+    serialize_transaction,
+)
 from jmcore.btc_script import mk_freeze_script
 
 from jmwallet.backends.base import BlockchainBackend, MempoolSpenderLookupResult, Transaction
@@ -18,15 +24,17 @@ from jmwallet.wallet.models import UTXOInfo
 from jmwallet.wallet.spend import (
     DUST_THRESHOLD,
     DirectSendResult,
+    DirectTxOutput,
     ExcessiveFeeRateError,
     SignedDirectTx,
-    _build_unsigned_tx,
     _decode_bech32_scriptpubkey,
+    build_and_sign_direct_tx,
     direct_send,
     enforce_fee_rate_cap,
     estimate_fee,
     parse_outpoint,
     prepare_direct_send,
+    resolve_direct_send_locktime,
     resolve_input_utxos,
     select_automatic_direct_send_inputs,
     select_spendable_utxos,
@@ -284,90 +292,110 @@ class TestEstimateFee:
 
 
 # ---------------------------------------------------------------------------
-# _build_unsigned_tx
+# Direct transaction construction policy
 # ---------------------------------------------------------------------------
 
 
-class TestBuildUnsignedTx:
-    """Test raw unsigned transaction construction."""
-
-    def test_single_input_no_change(self) -> None:
-        utxos = [_make_utxo(value=50_000)]
-        dest_script = bytes([0x00, 0x14]) + b"\xaa" * 20
-        tx, version, inputs_data, outputs_data, num_outputs = _build_unsigned_tx(
-            utxos,
-            dest_script,
-            49_000,
-            None,
-            0,
+class TestDirectTransactionPolicy:
+    def _wallet(self) -> MagicMock:
+        wallet = MagicMock()
+        wallet.sign_input.side_effect = lambda _tx, index, _utxo: MagicMock(
+            witness=[f"sig-{index}".encode(), b"pubkey"]
         )
-        assert version == (2).to_bytes(4, "little")
-        assert num_outputs == 1
-        # TX starts with version
-        assert tx[:4] == version
-        # Should contain the dest amount
-        assert (49_000).to_bytes(8, "little") in outputs_data
+        return wallet
 
-    def test_single_input_with_change(self) -> None:
-        utxos = [_make_utxo(value=100_000)]
-        dest_script = bytes([0x00, 0x14]) + b"\xaa" * 20
-        change_script = bytes([0x00, 0x14]) + b"\xbb" * 20
-        tx, version, inputs_data, outputs_data, num_outputs = _build_unsigned_tx(
-            utxos,
-            dest_script,
-            50_000,
-            change_script,
-            49_000,
+    def _output(self, value: int = 49_000, marker: int = 0xAA) -> DirectTxOutput:
+        return DirectTxOutput(
+            value_sats=value,
+            script_pubkey=bytes([0x00, 0x14]) + bytes([marker]) * 20,
+            address=f"output-{marker}",
         )
-        assert num_outputs == 2
-        assert (50_000).to_bytes(8, "little") in outputs_data
-        assert (49_000).to_bytes(8, "little") in outputs_data
 
-    def test_locktime_from_timelocked_utxo(self) -> None:
-        past_time = int(time.time()) - 10_000
-        utxos = [_make_utxo(value=100_000, locktime=past_time)]
-        dest_script = bytes([0x00, 0x14]) + b"\xaa" * 20
-        tx, _, _, _, _ = _build_unsigned_tx(utxos, dest_script, 99_000, None, 0)
-        # Last 4 bytes are locktime
-        locktime_bytes = tx[-4:]
-        assert int.from_bytes(locktime_bytes, "little") == past_time
+    def test_default_policy_is_version_two_locktime_and_rbf(self) -> None:
+        built = build_and_sign_direct_tx(
+            wallet=self._wallet(),
+            utxos=[_make_utxo(value=50_000)],
+            outputs=[self._output()],
+            locktime=840_000,
+        )
 
-    def test_future_locktime_raises(self) -> None:
-        future_time = int(time.time()) + 100_000
-        utxos = [_make_utxo(value=100_000, locktime=future_time)]
-        dest_script = bytes([0x00, 0x14]) + b"\xaa" * 20
-        with pytest.raises(ValueError, match="has not passed chain time"):
-            _build_unsigned_tx(utxos, dest_script, 99_000, None, 0)
+        parsed = parse_transaction(built.raw.hex())
+        assert parsed.version == 2
+        assert parsed.locktime == 840_000
+        assert {tx_input.sequence for tx_input in parsed.inputs} == {0xFFFFFFFD}
 
-    def test_locktime_equal_to_chain_time_raises(self) -> None:
-        cutoff = int(time.time()) - 1000
-        utxos = [_make_utxo(value=100_000, locktime=cutoff)]
-        dest_script = bytes([0x00, 0x14]) + b"\xaa" * 20
-        with pytest.raises(ValueError, match="has not passed chain time"):
-            _build_unsigned_tx(
-                utxos,
-                dest_script,
-                99_000,
-                None,
-                0,
-                locktime_cutoff=cutoff,
+    def test_rbf_opt_out_keeps_locktime_enabled(self) -> None:
+        built = build_and_sign_direct_tx(
+            wallet=self._wallet(),
+            utxos=[_make_utxo(value=50_000)],
+            outputs=[self._output()],
+            locktime=840_000,
+            rbf=False,
+        )
+
+        parsed = parse_transaction(built.raw.hex())
+        assert parsed.locktime == 840_000
+        assert {tx_input.sequence for tx_input in parsed.inputs} == {0xFFFFFFFE}
+
+    def test_inputs_and_outputs_are_independently_shuffled_before_signing(self) -> None:
+        first = _make_utxo(txid="aa" * 32, vout=0, value=30_000)
+        second = _make_utxo(txid="bb" * 32, vout=1, value=30_000)
+        wallet = self._wallet()
+
+        with patch(
+            "jmwallet.wallet.spend.secure_random.shuffle",
+            side_effect=lambda values: values.reverse(),
+        ) as shuffle:
+            built = build_and_sign_direct_tx(
+                wallet=wallet,
+                utxos=[first, second],
+                outputs=[self._output(20_000, 0xAA), self._output(39_000, 0xBB)],
+                locktime=840_000,
             )
 
-    def test_sequence_fffffffe_when_timelocked(self) -> None:
-        past_time = int(time.time()) - 10_000
-        utxos = [_make_utxo(value=100_000, locktime=past_time)]
-        dest_script = bytes([0x00, 0x14]) + b"\xaa" * 20
-        _, _, inputs_data, _, _ = _build_unsigned_tx(utxos, dest_script, 99_000, None, 0)
-        # Input: 32-byte txid + 4-byte vout + 1-byte empty scriptsig + 4-byte sequence
-        seq_bytes = inputs_data[37:41]
-        assert int.from_bytes(seq_bytes, "little") == 0xFFFFFFFE
+        parsed = parse_transaction(built.raw.hex())
+        assert shuffle.call_count == 2
+        assert [tx_input.txid for tx_input in parsed.inputs] == [second.txid, first.txid]
+        assert [output.value for output in parsed.outputs] == [39_000, 20_000]
+        assert [output.value_sats for output in built.outputs] == [39_000, 20_000]
+        assert [call.args[2] for call in wallet.sign_input.call_args_list] == [second, first]
 
-    def test_sequence_ffffffff_when_not_timelocked(self) -> None:
-        utxos = [_make_utxo(value=100_000)]
-        dest_script = bytes([0x00, 0x14]) + b"\xaa" * 20
-        _, _, inputs_data, _, _ = _build_unsigned_tx(utxos, dest_script, 99_000, None, 0)
-        seq_bytes = inputs_data[37:41]
-        assert int.from_bytes(seq_bytes, "little") == 0xFFFFFFFF
+    def test_rejects_locktime_below_cltv_requirement_before_signing(self) -> None:
+        wallet = self._wallet()
+        utxo = _make_utxo(value=50_000, locktime=1_700_000_000)
+
+        with pytest.raises(ValueError, match="does not satisfy input locktime"):
+            build_and_sign_direct_tx(
+                wallet=wallet,
+                utxos=[utxo],
+                outputs=[self._output()],
+                locktime=840_000,
+            )
+
+        wallet.sign_input.assert_not_called()
+
+    @pytest.mark.anyio
+    async def test_resolves_height_locktime_for_regular_inputs(self) -> None:
+        backend = _make_mock_backend(block_height=840_000)
+
+        with patch("jmcore.transaction_policy.secure_random.randint", return_value=1):
+            locktime = await resolve_direct_send_locktime(
+                backend=backend,
+                utxos=[_make_utxo()],
+            )
+
+        assert locktime == 840_000
+
+    @pytest.mark.anyio
+    async def test_rejects_unexpired_cltv_locktime(self) -> None:
+        cutoff = int(time.time()) - 1000
+        backend = _make_mock_backend(median_time_past=cutoff)
+
+        with pytest.raises(ValueError, match="has not passed chain time"):
+            await resolve_direct_send_locktime(
+                backend=backend,
+                utxos=[_make_utxo(locktime=cutoff)],
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -399,6 +427,7 @@ def _make_mock_wallet(utxos: list[UTXOInfo], change_addr: str = REGTEST_P2WPKH_A
     wallet.select_utxos = MagicMock(side_effect=ValueError("no coin selection in tests"))
     wallet.get_key_for_address = MagicMock(return_value=_make_mock_key())
     wallet.get_new_internal_address = MagicMock(return_value=change_addr)
+    wallet.sign_input.return_value = MagicMock(witness=[b"signature", b"pubkey"])
     return wallet
 
 
@@ -411,12 +440,14 @@ def _make_mock_backend(
     fee_rate: float = 1.0,
     txid: str = "cc" * 32,
     median_time_past: int | None = None,
+    block_height: int = 840_000,
 ) -> MagicMock:
     """Create a mock BlockchainBackend."""
     backend = MagicMock()
     backend.estimate_fee = AsyncMock(return_value=fee_rate)
     backend.broadcast_transaction = AsyncMock(return_value=txid)
     backend.get_median_time_past = AsyncMock(return_value=median_time_past or int(time.time()))
+    backend.get_block_height = AsyncMock(return_value=block_height)
     return backend
 
 
@@ -544,7 +575,7 @@ class TestDirectSend:
 
         assert result.num_inputs == 1
         assert result.send_amount == 100_000 - result.fee
-        assert int.from_bytes(bytes.fromhex(result.tx_hex)[-4:], "little") == 0
+        assert 839_901 <= int.from_bytes(bytes.fromhex(result.tx_hex)[-4:], "little") <= 840_000
         backend.get_median_time_past.assert_not_awaited()
 
     @pytest.mark.anyio
@@ -613,7 +644,7 @@ class TestDirectSend:
         assert result.num_inputs == 1
         assert result.send_amount == 100_000 - result.fee
         tx_bytes = bytes.fromhex(result.tx_hex)
-        assert int.from_bytes(tx_bytes[-4:], "little") == 0
+        assert 839_901 <= int.from_bytes(tx_bytes[-4:], "little") <= 840_000
 
     @pytest.mark.anyio
     async def test_change_below_dust_added_to_fee(self) -> None:
@@ -758,7 +789,7 @@ class TestDirectSend:
             destination=REGTEST_P2WPKH_ADDR,
             fee_rate=1.0,
         )
-        assert result.txid == "dd" * 32
+        assert result.txid == get_txid(result.tx_hex)
         assert result.num_inputs == 1
         assert result.num_outputs == 2  # send + change
         assert len(result.inputs) == 1
@@ -979,7 +1010,31 @@ class TestPrepareDirectSend:
         assert result.selected_utxos == [(utxos[0].txid, utxos[0].vout)]
         assert result.source_addresses == ["bcrt1qinput"]
         assert len(result.outputs) == 2
+        assert result.version == 2
+        assert 839_901 <= result.locktime <= 840_000
+        parsed = parse_transaction(result.tx_hex)
+        assert parsed.locktime == result.locktime
+        assert {tx_input.sequence for tx_input in parsed.inputs} == {0xFFFFFFFD}
         backend.broadcast_transaction.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_prepare_can_disable_rbf_without_disabling_locktime(self) -> None:
+        wallet = _make_mock_wallet([_make_utxo(value=200_000)])
+        backend = _make_mock_backend(block_height=840_000)
+
+        result = await prepare_direct_send(
+            wallet=wallet,
+            backend=backend,
+            mixdepth=0,
+            amount_sats=50_000,
+            destination=REGTEST_P2WPKH_ADDR,
+            fee_rate=1.0,
+            rbf=False,
+        )
+
+        parsed = parse_transaction(result.tx_hex)
+        assert parsed.locktime == result.locktime
+        assert {tx_input.sequence for tx_input in parsed.inputs} == {0xFFFFFFFE}
 
     @pytest.mark.anyio
     async def test_prepare_sweep_has_empty_change_address(self) -> None:
@@ -1069,23 +1124,27 @@ class TestPrepareDirectSendExplicitInputs:
         wallet.select_utxos.assert_not_called()
 
     @pytest.mark.anyio
-    async def test_input_order_is_preserved(self) -> None:
+    async def test_input_order_is_randomized(self) -> None:
         first = _make_utxo(txid="aa" * 32, vout=0, value=200_000)
         second = _make_utxo(txid="bb" * 32, vout=1, value=200_000)
         wallet = _make_mock_wallet([first, second])
         backend = _make_mock_backend()
 
-        result = await prepare_direct_send(
-            wallet=wallet,
-            backend=backend,
-            mixdepth=0,
-            amount_sats=50_000,
-            destination=REGTEST_P2WPKH_ADDR,
-            fee_rate=1.0,
-            input_utxos=[f"{'bb' * 32}:1", f"{'aa' * 32}:0"],
-        )
+        with patch(
+            "jmwallet.wallet.spend.secure_random.shuffle",
+            side_effect=lambda values: values.reverse(),
+        ):
+            result = await prepare_direct_send(
+                wallet=wallet,
+                backend=backend,
+                mixdepth=0,
+                amount_sats=50_000,
+                destination=REGTEST_P2WPKH_ADDR,
+                fee_rate=1.0,
+                input_utxos=[f"{'bb' * 32}:1", f"{'aa' * 32}:0"],
+            )
 
-        assert result.selected_utxos == [("bb" * 32, 1), ("aa" * 32, 0)]
+        assert result.selected_utxos == [("aa" * 32, 0), ("bb" * 32, 1)]
 
     @pytest.mark.anyio
     async def test_sweep_spends_exactly_the_listed_utxos(self) -> None:

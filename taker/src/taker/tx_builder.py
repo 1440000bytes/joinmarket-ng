@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import logging
 from dataclasses import replace
-from typing import Any, Protocol
+from typing import Any
 
+from jmcore import transaction_policy
 from jmcore.bitcoin import (
     TxInput,
     TxOutput,
@@ -27,29 +28,13 @@ from pydantic.dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
-LOCKTIME_SEQUENCE = 0xFFFFFFFE
-MAX_LOCKTIME = 0xFFFFFFFF
+LOCKTIME_SEQUENCE = transaction_policy.NON_RBF_LOCKTIME_SEQUENCE
+MAX_LOCKTIME = transaction_policy.MAX_LOCKTIME
+compute_tx_locktime = transaction_policy.compute_tx_locktime
 
 
 # Alias for backward compatibility
 varint = encode_varint
-
-
-class _RandomSource(Protocol):
-    def randint(self, start: int, end: int) -> int: ...
-
-
-def compute_tx_locktime(current_height: int, rng: _RandomSource = secure_random) -> int:
-    """Return a reference-compatible anti-fee-sniping locktime."""
-    if (
-        not isinstance(current_height, int)
-        or isinstance(current_height, bool)
-        or not 0 <= current_height <= MAX_LOCKTIME
-    ):
-        raise ValueError(f"Invalid current block height: {current_height!r}")
-    if rng.randint(0, 9) == 0:
-        return max(1, current_height - rng.randint(0, 99))
-    return current_height
 
 
 @dataclass

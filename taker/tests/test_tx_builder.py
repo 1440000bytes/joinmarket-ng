@@ -5,7 +5,12 @@ Tests for transaction builder module.
 from __future__ import annotations
 
 import pytest
-from jmcore.bitcoin import address_to_scriptpubkey, parse_transaction_bytes, serialize_outpoint
+from jmcore.bitcoin import (
+    address_to_scriptpubkey,
+    parse_transaction_bytes,
+    serialize_outpoint,
+    serialize_transaction,
+)
 from jmcore.constants import BITCOIN_DUST_THRESHOLD, DUST_THRESHOLD
 
 from taker.tx_builder import (
@@ -35,6 +40,9 @@ class TestComputeTxLocktime:
         rng = MockRandom([0, 99])
 
         assert compute_tx_locktime(42, rng) == 1
+
+    def test_genesis_height_remains_final(self) -> None:
+        assert compute_tx_locktime(0, MockRandom([])) == 0
 
 
 class MockRandom:
@@ -616,7 +624,7 @@ class TestAddSignaturesValidation:
 
     @pytest.fixture
     def builder(self) -> CoinJoinTxBuilder:
-        return CoinJoinTxBuilder(network="regtest")
+        return CoinJoinTxBuilder(network="regtest", locktime=840_000)
 
     @pytest.fixture
     def two_maker_tx(self, builder: CoinJoinTxBuilder) -> tuple[bytes, dict]:
@@ -748,5 +756,14 @@ class TestAddSignaturesValidation:
             "maker2": [self._make_fake_sig("c" * 64, 2)],
         }
         signed_tx = builder.add_signatures(tx_bytes, signatures, metadata)
-        assert isinstance(signed_tx, bytes)
-        assert len(signed_tx) > len(tx_bytes)
+        parsed = parse_transaction_bytes(signed_tx)
+        non_witness_tx = serialize_transaction(
+            parsed.version,
+            parsed.inputs,
+            parsed.outputs,
+            parsed.locktime,
+        )
+
+        assert non_witness_tx == tx_bytes
+        assert parsed.locktime == 840_000
+        assert {tx_input.sequence for tx_input in parsed.inputs} == {0xFFFFFFFE}
