@@ -420,24 +420,6 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
                 self._tor_control = None
             raise
 
-    async def _cleanup_tor_hidden_service(self) -> None:
-        """Remove the ephemeral hidden service and close the Tor control connection."""
-        if self._ephemeral_hidden_service and self._tor_control:
-            try:
-                await self._tor_control.delete_ephemeral_hidden_service(
-                    self._ephemeral_hidden_service.service_id
-                )
-                logger.info("Removed ephemeral Tor hidden service")
-            except TorControlError as e:
-                logger.warning(f"Failed to remove ephemeral hidden service: {e}")
-        if self._tor_control:
-            try:
-                await self._tor_control.close()
-            except Exception as e:
-                logger.warning(f"Error closing Tor control connection: {e}")
-            self._tor_control = None
-            self._ephemeral_hidden_service = None
-
     async def _regenerate_nick(self) -> None:
         """
         Regenerate nick identity for privacy (currently disabled).
@@ -1004,7 +986,10 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
             # Set up ephemeral hidden service via Tor control port if enabled
             # This must happen before connecting to directory servers so we can
             # advertise the onion address
+            initial_generation = self.generations[0]
             ephemeral_onion = await self._setup_tor_hidden_service()
+            initial_generation.tor_control = self._tor_control
+            initial_generation.ephemeral_hidden_service = self._ephemeral_hidden_service
             if ephemeral_onion:
                 # Override onion_host with the dynamically created one
                 object.__setattr__(self.config, "onion_host", ephemeral_onion)
@@ -1034,6 +1019,8 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
                     ),
                 )
                 await self.hidden_service_listener.start()
+                initial_generation.hidden_service_listener = self.hidden_service_listener
+                initial_generation.listener_port = self.hidden_service_listener.bound_port
                 logger.info("Hidden service listener started")
                 logger.bind(sensitive=True).info(
                     f"Hidden service listener started (onion: {onion_host})"
@@ -1042,15 +1029,8 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
             logger.info("Announcing offers...")
             await self._announce_offers()
 
-            initial_generation = self.generations[0]
             initial_generation.current_offers = self.current_offers
-            initial_generation.hidden_service_listener = self.hidden_service_listener
-            initial_generation.tor_control = self._tor_control
-            initial_generation.ephemeral_hidden_service = self._ephemeral_hidden_service
             initial_generation.onion_host = onion_host
-            initial_generation.listener_port = (
-                self.hidden_service_listener.bound_port if self.hidden_service_listener else None
-            )
 
             logger.info("Maker bot started. Listening for takers...")
             self.running = True
