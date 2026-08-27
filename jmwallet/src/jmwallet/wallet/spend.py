@@ -15,8 +15,6 @@ from typing import TYPE_CHECKING
 from jmcore.bitcoin import (
     TxInput,
     TxOutput,
-    estimate_vsize,
-    get_address_type,
     get_txid,
     scriptpubkey_to_address,
     serialize_transaction,
@@ -32,6 +30,7 @@ from jmcore.transaction_policy import (
 from loguru import logger
 
 from jmwallet.wallet.address import pubkey_to_p2wpkh_script
+from jmwallet.wallet.coin_selection import estimate_direct_send_fee
 from jmwallet.wallet.constants import FIDELITY_BOND_BRANCH
 from jmwallet.wallet.models import UTXOInfo
 from jmwallet.wallet.signing import deserialize_transaction
@@ -551,25 +550,12 @@ def estimate_fee(
 ) -> tuple[int, int]:
     """Estimate the transaction fee and vsize.
 
-    P2WSH inputs (expired fidelity bonds being swept) are larger than P2WPKH
-    inputs (their witness carries the timelock script), so size them as such
-    or the resulting fee rate falls below the requested one (and potentially
-    below the relay floor).
+    Thin wrapper kept for its existing callers; the single implementation
+    lives in coin_selection so selection and signing cannot drift apart.
 
     Returns ``(fee, vsize)``.
     """
-    input_types = ["p2wsh" if u.is_p2wsh else "p2wpkh" for u in utxos]
-    try:
-        dest_type = get_address_type(destination)
-    except ValueError:
-        dest_type = "p2wpkh"
-
-    output_types = [dest_type]
-    if has_change:
-        output_types.append("p2wpkh")
-
-    vsize = estimate_vsize(input_types, output_types)
-    return math.ceil(vsize * fee_rate), vsize
+    return estimate_direct_send_fee(utxos, destination, fee_rate, has_change=has_change)
 
 
 async def select_automatic_direct_send_inputs(

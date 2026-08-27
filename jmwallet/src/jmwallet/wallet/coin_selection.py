@@ -39,10 +39,17 @@ class _DirectSendScriptGroup:
     all_coinjoin_outputs: bool
 
 
-def _direct_send_fee_and_vsize(
+def estimate_direct_send_fee(
     utxos: list[UTXOInfo], destination: str, fee_rate: float, *, has_change: bool
 ) -> tuple[int, int]:
-    """Estimate direct-send fees with the shared transaction-vsize helpers."""
+    """Estimate the direct-send fee and vsize.
+
+    P2WSH inputs (expired fidelity bonds being swept) are larger than P2WPKH
+    inputs because their witness carries the timelock script, so size them as
+    such or the resulting fee rate falls below the requested one.
+
+    Returns ``(fee, vsize)``.
+    """
     input_types = ["p2wsh" if utxo.is_p2wsh else "p2wpkh" for utxo in utxos]
     try:
         destination_type = get_address_type(destination)
@@ -66,14 +73,14 @@ def _evaluate_direct_send_selection(
 ) -> DirectSendSelection | None:
     """Return fee/change details when *utxos* can fund a direct send."""
     total_value = sum(utxo.value for utxo in utxos)
-    fee_with_change, vsize_with_change = _direct_send_fee_and_vsize(
+    fee_with_change, vsize_with_change = estimate_direct_send_fee(
         utxos, destination, fee_rate, has_change=True
     )
     change_amount = total_value - amount_sats - fee_with_change
     if change_amount >= dust_threshold:
         return DirectSendSelection(utxos, fee_with_change, change_amount, vsize_with_change)
 
-    fee_without_change, vsize_without_change = _direct_send_fee_and_vsize(
+    fee_without_change, vsize_without_change = estimate_direct_send_fee(
         utxos, destination, fee_rate, has_change=False
     )
     actual_fee = total_value - amount_sats
