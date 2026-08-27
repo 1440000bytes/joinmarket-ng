@@ -1055,6 +1055,54 @@ class TestPhaseCollectSignaturesCompleteness:
         assert result is False
         assert "maker1" not in taker._session.maker_sessions
 
+    @pytest.mark.asyncio
+    async def test_declining_maker_is_not_added_to_failed_signers(
+        self,
+        two_maker_tx_data: CoinJoinTxData,
+    ) -> None:
+        """A maker that answers !tx with a policy error must not be blacklisted.
+
+        Rejecting a low-fee CoinJoin is honest, so the nick belongs in
+        declined_signer_nicks and must stay out of failed_signer_nicks, which
+        the caller persists to the ignored-maker file.
+        """
+        from jmcore.models import NetworkType, Offer, OfferType
+
+        offer = Offer(
+            counterparty="maker1",
+            oid=0,
+            ordertype=OfferType.SW0_RELATIVE,
+            minsize=100_000,
+            maxsize=10_000_000,
+            txfee=0,
+            cjfee="0.001",
+            fidelity_bond_value=0,
+        )
+        maker_sessions = {
+            "maker1": self._make_maker_session(
+                "maker1", offer, [{"txid": "b" * 64, "vout": 0, "value": 1_500_000}]
+            ),
+            "maker2": self._make_maker_session(
+                "maker2", offer, [{"txid": "c" * 64, "vout": 0, "value": 1_200_000}]
+            ),
+        }
+        taker = self._build_taker_with_tx(two_maker_tx_data, maker_sessions=maker_sessions)
+        taker.config.network = NetworkType.REGTEST
+        taker.directory_client.wait_for_responses = AsyncMock(
+            return_value={
+                "maker1": {
+                    "error": True,
+                    "data": "miner fee rate 1.20 sat/vB is below minimum 3.00 sat/vB",
+                }
+            }
+        )
+
+        result = await taker._session._phase_collect_signatures()
+
+        assert result is False
+        assert taker.failed_signer_nicks == {"maker2"}
+        assert taker._session.declined_signer_nicks == {"maker1"}
+
 
 # Re-export fixtures for use in conftest
 @pytest.fixture
