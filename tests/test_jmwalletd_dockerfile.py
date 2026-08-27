@@ -17,6 +17,8 @@ PLAYWRIGHT_API_HELPER = (
     REPO_ROOT / "tests" / "playwright" / "fixtures" / "jmwalletd-api.ts"
 )
 PLAYWRIGHT_GLOBAL_SETUP = REPO_ROOT / "tests" / "playwright" / "global-setup.ts"
+PLAYWRIGHT_DOCKERFILE = REPO_ROOT / "tests" / "playwright" / "Dockerfile"
+PLAYWRIGHT_INSTALL_SCRIPT = REPO_ROOT / ".github" / "scripts" / "install-playwright.sh"
 RELEASE_SCRIPTS = (
     REPO_ROOT / "scripts" / "build-release.sh",
     REPO_ROOT / "scripts" / "sign-release.sh",
@@ -46,20 +48,27 @@ def test_e2e_jmwalletd_accepts_fee_charging_bondless_makers() -> None:
 
 def test_playwright_uses_jam_docker_standalone_ng() -> None:
     compose = yaml.safe_load(COMPOSE_FILE.read_text())
+    base_service = compose["services"]["jam-playwright-base"]
     service = compose["services"]["jam-playwright"]
 
-    assert service["image"] == f"${{JAM_NG_IMAGE:-{STANDALONE_NG_IMAGE}}}"
-    assert service["pull_policy"] == "${JAM_NG_PULL_POLICY:-build}"
-    assert service["build"]["context"] == (
+    assert base_service["build"]["context"] == (
         f"${{JAM_DOCKER_CONTEXT:-{STANDALONE_NG_CONTEXT}}}"
     )
-    assert service["build"]["args"]["JAM_REPO_REF"] == (
+    assert base_service["build"]["args"]["JAM_REPO_REF"] == (
         f"${{JAM_REPO_REF:-{JAM_REPO_REF}}}"
     )
-    assert service["build"]["args"]["JM_NG_REPO_REF"] == "${JM_NG_REPO_REF:-main}"
-    assert service["build"]["args"]["SKIP_RELEASE_VERIFICATION"] == (
-        "${SKIP_RELEASE_VERIFICATION:-true}"
-    )
+    assert base_service["deploy"]["replicas"] == 0
+    assert service["image"] == "${JAM_NG_IMAGE:-joinmarket-ng-jam-playwright:local}"
+    assert service["pull_policy"] == "${JAM_NG_PULL_POLICY:-build}"
+    assert service["build"]["context"] == "."
+    assert service["build"]["dockerfile"] == "tests/playwright/Dockerfile"
+    assert service["build"]["additional_contexts"] == {
+        "jam_ng_base": "service:jam-playwright-base"
+    }
+    dockerfile = PLAYWRIGHT_DOCKERFILE.read_text()
+    assert dockerfile.startswith("FROM jam_ng_base\n")
+    assert "COPY jmwalletd /build/jmwalletd" in dockerfile
+    assert "/build/jmwalletd" in dockerfile
     assert service["ports"] == ["29183:80"]
     assert service["environment"] == [
         "BITCOIN__BACKEND_TYPE=descriptor_wallet",
@@ -94,14 +103,18 @@ def test_playwright_ci_builds_the_checked_out_joinmarket_ref() -> None:
     workflow = CI_WORKFLOW.read_text()
 
     assert (
-        "JM_NG_REPO: ${{ github.server_url }}/"
-        "${{ github.event.pull_request.head.repo.full_name || github.repository }}"
+        "JM_NG_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}"
         in workflow
     )
-    assert (
-        "JM_NG_REPO_REF: "
-        "${{ github.event.pull_request.head.ref || github.ref_name }}" in workflow
-    )
+    assert "run: bash .github/scripts/install-playwright.sh" in workflow
+    assert "docker compose --profile e2e up -d --no-build" in workflow
+    for image in (
+        "MAKER_IMAGE",
+        "DIRECTORY_SERVER_IMAGE",
+        "ORDERBOOK_WATCHER_IMAGE",
+        "JMWALLETD_IMAGE",
+    ):
+        assert f"docker pull ${image}" in workflow
 
 
 def test_release_and_ci_matrices_publish_jmwalletd_but_not_jam_ng() -> None:
@@ -142,7 +155,25 @@ def test_parallel_playwright_uses_standalone_ng_http_endpoint() -> None:
     )
     assert 'JAM_URL="http://localhost:${jam_pw_port}"' in playwright_runner
     assert 'JMWALLETD_URL="http://localhost:${jam_pw_port}"' in playwright_runner
+    assert "CI=true" in playwright_runner
+    assert (
+        'bash "${PROJECT_ROOT}/.github/scripts/install-playwright.sh"'
+        in playwright_runner
+    )
+    assert "--profile e2e up -d --no-build" in playwright_runner
+    assert "npm install" not in playwright_runner
+    assert "skipping Playwright tests" not in playwright_runner
+    assert 'dump_suite_logs "$suite"' in playwright_runner
     assert "NODE_TLS_REJECT_UNAUTHORIZED" not in playwright_runner
+
+
+def test_playwright_dependency_setup_is_locked_and_bounded() -> None:
+    script = PLAYWRIGHT_INSTALL_SCRIPT.read_text()
+
+    assert "npm ci" in script
+    assert "timeout 240 npx playwright install chromium" in script
+    assert "npx playwright install-deps chromium" in script
+    assert "sudo -n" in script
 
 
 def test_parallel_runner_imports_this_worktree() -> None:
@@ -184,6 +215,8 @@ def test_parallel_runner_uses_shared_images() -> None:
         "MAKER_IMAGE": "maker",
         "TAKER_IMAGE": "taker",
         "JMWALLETD_IMAGE": "jmwalletd",
+        "JAM_NG_BASE_IMAGE": "jam-playwright-base",
+        "JAM_NG_IMAGE": "jam-playwright",
     }
     for variable, service in expected.items():
         assert (

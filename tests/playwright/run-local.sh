@@ -108,9 +108,8 @@ timeout 120 bash -c 'until curl -sf http://localhost:29183/api/v1/session >/dev/
 
 # -- 2. Install Playwright --
 info "Installing Playwright dependencies..."
+bash "${REPO_ROOT}/.github/scripts/install-playwright.sh"
 cd "${PW_DIR}"
-npm install
-npx playwright install chromium
 
 # -- 3. Run tests --
 info "Running Playwright tests..."

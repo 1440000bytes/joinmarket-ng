@@ -160,7 +160,7 @@ def test_report_jam_release_pins_detects_stale_test_expectation() -> None:
     )
 
 
-def test_replace_jam_compose_pins_only_updates_playwright_service() -> None:
+def test_replace_jam_compose_pins_only_updates_playwright_base_service() -> None:
     module = _load_update_flatpak_deps_module()
     old_commit = "a" * 40
     other_commit = "b" * 40
@@ -170,7 +170,7 @@ def test_replace_jam_compose_pins_only_updates_playwright_service() -> None:
       context: ${{JAM_DOCKER_CONTEXT:-https://github.com/joinmarket-webui/jam-docker.git#{other_commit}:standalone-ng}}
       args:
         JAM_REPO_REF: ${{JAM_REPO_REF:-v1.0.0}}
-  jam-playwright:
+  jam-playwright-base:
     build:
       context: ${{JAM_DOCKER_CONTEXT:-https://github.com/joinmarket-webui/jam-docker.git#{old_commit}:standalone-ng}}
       args:
@@ -194,7 +194,7 @@ def test_extract_jam_compose_pins_rejects_duplicate_pin() -> None:
     module = _load_update_flatpak_deps_module()
     commit = "a" * 40
     compose_text = f"""services:
-  jam-playwright:
+  jam-playwright-base:
     build:
       context: ${{JAM_DOCKER_CONTEXT:-https://github.com/joinmarket-webui/jam-docker.git#{commit}:standalone-ng}}
       args:

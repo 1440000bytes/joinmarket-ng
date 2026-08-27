@@ -753,8 +753,9 @@ jobs:
     env:
       MAKER_IMAGE: ghcr.io/${{ github.repository }}/maker:ci-unsafe-do-not-run-${{ github.event.pull_request.head.sha || github.sha }}
       DIRECTORY_SERVER_IMAGE: ghcr.io/${{ github.repository }}/directory-server:ci-unsafe-do-not-run-${{ github.event.pull_request.head.sha || github.sha }}
-      JM_NG_REPO: ${{ github.server_url }}/${{ github.event.pull_request.head.repo.full_name || github.repository }}
-      JM_NG_REPO_REF: ${{ github.event.pull_request.head.ref || github.ref_name }}
+      ORDERBOOK_WATCHER_IMAGE: ghcr.io/${{ github.repository }}/orderbook-watcher:ci-unsafe-do-not-run-${{ github.event.pull_request.head.sha || github.sha }}
+      JMWALLETD_IMAGE: ghcr.io/${{ github.repository }}/jmwalletd:ci-unsafe-do-not-run-${{ github.event.pull_request.head.sha || github.sha }}
+      JM_NG_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
 
     steps:
       - uses: actions/checkout@v6
@@ -787,49 +788,9 @@ jobs:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('tests/playwright/package-lock.json') }}
 
-      - name: Install npm dependencies
-        working-directory: tests/playwright
-        run: npm ci
-
-      # Bounded so a flaky CDN download fails this step within minutes instead
-      # of hanging until the job-level 30m timeout cancels it. The previous
-      # "download hangs at 100%" failures were a Node 24.16.0 ZIP-extraction
-      # regression, not a network stall, and are fixed by the Node pin above
-      # (microsoft/playwright#40724); the retry only guards real CDN hiccups.
-      - name: Install Playwright browsers
-        working-directory: tests/playwright
-        timeout-minutes: 10
-        run: |
-          # On a cache hit the binaries already exist; install is then a
-          # fast no-op validation. On a miss this downloads Chrome, the
-          # Chrome Headless Shell and FFmpeg from cdn.playwright.dev. Wrap
-          # each attempt in a hard per-attempt timeout and retry so a single
-          # stalled connection does not hang the whole job; the partial cache
-          # dir is reused across attempts.
-          for attempt in 1 2 3; do
-            echo "Playwright browser install attempt ${attempt}..."
-            if timeout 240 npx playwright install chromium; then
-              echo "Playwright browsers installed."
-              exit 0
-            fi
-            echo "Attempt ${attempt} failed or timed out; retrying..."
-            sleep 5
-          done
-          echo "Playwright browser install failed after 3 attempts." >&2
-          exit 1
-
-
-      - name: Install Playwright OS dependencies
-        working-directory: tests/playwright
-        timeout-minutes: 8
-        env:
-          DEBIAN_FRONTEND: noninteractive
-        run: |
-          # Install OS-level system dependencies for Chromium. playwright
-          # install-deps calls apt-get internally via sudo; we pass
-          # DEBIAN_FRONTEND=noninteractive explicitly through sudo env so it
-          # is not dropped by sudo's env_reset policy.
-          sudo env DEBIAN_FRONTEND=noninteractive npx playwright install-deps chromium
+      - name: Install Playwright dependencies
+        timeout-minutes: 18
+        run: bash .github/scripts/install-playwright.sh
 
       # Orderbook watcher frontend tests: self-contained (each spec serves the
       # real static frontend plus a fixture orderbook.json from an in-process
@@ -854,6 +815,8 @@ jobs:
         run: |
           docker pull $MAKER_IMAGE &
           docker pull $DIRECTORY_SERVER_IMAGE &
+          docker pull $ORDERBOOK_WATCHER_IMAGE &
+          docker pull $JMWALLETD_IMAGE &
           wait
 
       - name: Build JAM standalone image
@@ -861,7 +824,7 @@ jobs:
 
       - name: Start e2e services
         run: |
-          docker compose --profile e2e up -d
+          docker compose --profile e2e up -d --no-build
 
           .github/scripts/wait-for-service.sh "Bitcoin" \
             "docker compose exec -T bitcoin bitcoin-cli -chain=regtest -rpcport=18443 -rpcuser=test -rpcpassword=test getblockchaininfo" \

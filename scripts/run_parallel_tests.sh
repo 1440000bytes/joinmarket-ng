@@ -19,7 +19,7 @@ set -euo pipefail
 # Prerequisites:
 #   - Docker and Docker Compose
 #   - Python 3.11+ with project dependencies installed
-#   - Node.js (optional, for Playwright tests)
+#   - Node.js (required for Playwright tests)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -700,11 +700,19 @@ dump_suite_logs() {
     local log=$3
     shift 3
 
+    local override_file="${PARALLEL_DIR}/docker-compose.${suite}.override.yml"
+    if [ ! -f "$override_file" ]; then
+        printf '\nNo Compose stack was created before suite %s failed (rc=%s).\n' \
+            "$suite" "$rc" >> "$log"
+        return 0
+    fi
+
     {
         echo
         echo "=========================================================="
         echo "Container logs for diagnostics (suite=${suite}, rc=${rc})"
         echo "=========================================================="
+        compose_cmd "$suite" ps 2>&1 || true
         for svc in "$@"; do
             echo
             echo "----- ${svc} -----"
@@ -840,17 +848,22 @@ configure_shared_images() {
         docker compose config --environment)
 
     local directory_server_image orderbook_watcher_image maker_image taker_image jmwalletd_image
+    local jam_ng_base_image jam_ng_image
     directory_server_image=$(compose_environment_value DIRECTORY_SERVER_IMAGE "$compose_environment")
     orderbook_watcher_image=$(compose_environment_value ORDERBOOK_WATCHER_IMAGE "$compose_environment")
     maker_image=$(compose_environment_value MAKER_IMAGE "$compose_environment")
     taker_image=$(compose_environment_value TAKER_IMAGE "$compose_environment")
     jmwalletd_image=$(compose_environment_value JMWALLETD_IMAGE "$compose_environment")
+    jam_ng_base_image=$(compose_environment_value JAM_NG_BASE_IMAGE "$compose_environment")
+    jam_ng_image=$(compose_environment_value JAM_NG_IMAGE "$compose_environment")
 
     export DIRECTORY_SERVER_IMAGE="${directory_server_image:-${SHARED_IMAGE_PROJECT}-directory:latest}"
     export ORDERBOOK_WATCHER_IMAGE="${orderbook_watcher_image:-${SHARED_IMAGE_PROJECT}-orderbook-watcher:latest}"
     export MAKER_IMAGE="${maker_image:-${SHARED_IMAGE_PROJECT}-maker:latest}"
     export TAKER_IMAGE="${taker_image:-${SHARED_IMAGE_PROJECT}-taker:latest}"
     export JMWALLETD_IMAGE="${jmwalletd_image:-${SHARED_IMAGE_PROJECT}-jmwalletd:latest}"
+    export JAM_NG_BASE_IMAGE="${jam_ng_base_image:-${SHARED_IMAGE_PROJECT}-jam-playwright-base:latest}"
+    export JAM_NG_IMAGE="${jam_ng_image:-${SHARED_IMAGE_PROJECT}-jam-playwright:latest}"
 }
 
 build_images() {
@@ -860,6 +873,8 @@ build_images() {
         return 0
     fi
     log_info "Building Docker images (shared across suites)..."
+    export JM_NG_REVISION="${JM_NG_REVISION:-$(git rev-parse HEAD)}"
+    configure_shared_images
     # Use --profile all so profile-gated services (e.g. jam-playwright,
     # neutrino*, reference, maker) are built too. Without this, profile
     # services keep stale images from previous runs.
@@ -1039,14 +1054,15 @@ run_suite_playwright() {
     set +e
     (
         set -e
-        if ! command -v node >/dev/null 2>&1; then
-            log_warning "Node.js not found -- skipping Playwright tests"
-            exit 0
-        fi
+        local PW_DIR="${PROJECT_ROOT}/tests/playwright"
+        bash "${PROJECT_ROOT}/.github/scripts/install-playwright.sh"
+
+        # These tests are self-contained and run before Docker, matching CI.
+        CI=true bash -c "cd '${PW_DIR}' && npx playwright test -c playwright.obwatcher.config.ts"
 
         generate_override "$suite"
         cleanup_suite "$suite"
-        compose_cmd "$suite" --profile e2e up -d
+        compose_cmd "$suite" --profile e2e up -d --no-build
 
         if ! wait_for_bitcoin_rpc "$suite" "$btc_rpc"; then
             log_error "Bitcoin RPC not ready on host port $btc_rpc for suite $suite"
@@ -1092,14 +1108,7 @@ run_suite_playwright() {
             return 1
         fi
 
-        local PW_DIR="${PROJECT_ROOT}/tests/playwright"
-        (cd "$PW_DIR" && npm install && npx playwright install chromium)
-
-        # Orderbook watcher frontend tests: self-contained (in-process HTTP
-        # server serving the static frontend plus fixture payloads), so they
-        # need none of the Docker services or port mappings above.
-        bash -c "cd '${PW_DIR}' && npx playwright test -c playwright.obwatcher.config.ts"
-
+        CI=true \
         JAM_URL="http://localhost:${jam_pw_port}" \
         JMWALLETD_URL="http://localhost:${jam_pw_port}" \
         BITCOIN_RPC_URL="http://localhost:${btc_rpc}" \
@@ -1112,6 +1121,11 @@ run_suite_playwright() {
     ) > "$log" 2>&1
     rc=$?
     set -e
+    if [ "$rc" -ne 0 ]; then
+        dump_suite_logs "$suite" "$rc" "$log" \
+            jam-playwright bitcoin directory directory2 \
+            orderbook-watcher maker1 maker2 maker3 maker4 maker5
+    fi
     cleanup_suite "$suite"
     return $rc
 }

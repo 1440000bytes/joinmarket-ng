@@ -309,24 +309,38 @@ services:
 
   # ============================================================================
   # JAM Frontend for Playwright E2E tests (profile: e2e, all)
-  # Uses jam-docker's standalone-ng image on a separate port so
+  # Uses jam-docker's standalone-ng image as a pinned base on a separate port so
   # Playwright tests can interact with a real browser UI without
   # interfering with the Python e2e tests that use the jmwalletd above.
-  # Builds use the pinned JAM_DOCKER_CONTEXT by default. Set JAM_NG_PULL_POLICY
-  # explicitly only when testing a pre-built JAM_NG_IMAGE override.
+  # The runnable image overlays this working tree onto that base, ensuring local
+  # and CI runs test the checked-out code even when the remote base is cached.
   # ============================================================================
 
-  jam-playwright:
-    image: ${JAM_NG_IMAGE:-ghcr.io/joinmarket-webui/jam-dev-standalone-ng:master}
-    pull_policy: ${JAM_NG_PULL_POLICY:-build}
+  jam-playwright-base:
+    image: ${JAM_NG_BASE_IMAGE:-joinmarket-ng-jam-playwright-base:local}
+    pull_policy: build
     build:
       context: ${JAM_DOCKER_CONTEXT:-https://github.com/joinmarket-webui/jam-docker.git#33d15ea4a5a750e1e2c6d8acf73413cb32dafd27:standalone-ng}
       args:
         JAM_REPO_REF: ${JAM_REPO_REF:-v2.0.0-beta.3}
-        JM_NG_REPO: ${JM_NG_REPO:-https://github.com/joinmarket-ng/joinmarket-ng}
-        JM_NG_REPO_REF: ${JM_NG_REPO_REF:-main}
         # Development branches are not guaranteed to have signed tip commits.
         SKIP_RELEASE_VERIFICATION: ${SKIP_RELEASE_VERIFICATION:-true}
+    deploy:
+      replicas: 0
+    profiles:
+      - e2e
+      - all
+
+  jam-playwright:
+    image: ${JAM_NG_IMAGE:-joinmarket-ng-jam-playwright:local}
+    pull_policy: ${JAM_NG_PULL_POLICY:-build}
+    build:
+      context: .
+      dockerfile: tests/playwright/Dockerfile
+      additional_contexts:
+        jam_ng_base: service:jam-playwright-base
+      args:
+        JM_NG_REVISION: ${JM_NG_REVISION:-local}
     container_name: jm-jam-playwright
     restart: "no"
     logging:

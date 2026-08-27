@@ -42,8 +42,8 @@ NEUTRINO_ARM64_RE = re.compile(
     r"neutrinod-linux-arm64)(\s*\n\s*sha256:\s*)([a-f0-9]+)"
 )
 JAM_COMMIT_RE = re.compile(r"(?ms)(- name: jam-frontend\b.*?commit:\s*)([a-f0-9]+)")
-JAM_PLAYWRIGHT_SERVICE_RE = re.compile(
-    r"(?ms)^  jam-playwright:\s*\n.*?(?=^  [A-Za-z0-9][A-Za-z0-9_-]*:\s*$|\Z)"
+JAM_PLAYWRIGHT_BASE_SERVICE_RE = re.compile(
+    r"(?ms)^  jam-playwright-base:\s*\n.*?(?=^  [A-Za-z0-9][A-Za-z0-9_-]*:\s*$|\Z)"
 )
 JAM_DOCKER_CONTEXT_RE = re.compile(
     r"(\$\{JAM_DOCKER_CONTEXT:-https://github\.com/joinmarket-webui/"
@@ -290,10 +290,10 @@ def replace_jam_commit(text: str, commit: str) -> str:
 
 
 def extract_jam_compose_pins(text: str) -> tuple[str, str]:
-    service_matches = list(JAM_PLAYWRIGHT_SERVICE_RE.finditer(text))
+    service_matches = list(JAM_PLAYWRIGHT_BASE_SERVICE_RE.finditer(text))
     if len(service_matches) != 1:
         raise UpdateError(
-            "Expected one jam-playwright service in Compose file, "
+            "Expected one jam-playwright-base service in Compose file, "
             f"found {len(service_matches)}"
         )
     service_text = service_matches[0].group(0)
@@ -302,14 +302,14 @@ def extract_jam_compose_pins(text: str) -> tuple[str, str]:
     context_match = context_matches[0] if len(context_matches) == 1 else None
     if context_match is None:
         raise UpdateError(
-            "Expected one pinned jam-docker context in jam-playwright service, "
+            "Expected one pinned jam-docker context in jam-playwright-base service, "
             f"found {len(context_matches)}"
         )
     ref_matches = list(JAM_REPO_REF_RE.finditer(service_text))
     ref_match = ref_matches[0] if len(ref_matches) == 1 else None
     if ref_match is None:
         raise UpdateError(
-            "Expected one pinned JAM repository ref in jam-playwright service, "
+            "Expected one pinned JAM repository ref in jam-playwright-base service, "
             f"found {len(ref_matches)}"
         )
     return ref_match.group(2), context_match.group(2)
@@ -317,9 +317,9 @@ def extract_jam_compose_pins(text: str) -> tuple[str, str]:
 
 def replace_jam_compose_pins(text: str, jam_ref: str, jam_docker_commit: str) -> str:
     extract_jam_compose_pins(text)
-    service_match = JAM_PLAYWRIGHT_SERVICE_RE.search(text)
+    service_match = JAM_PLAYWRIGHT_BASE_SERVICE_RE.search(text)
     if service_match is None:  # Guaranteed by extract_jam_compose_pins.
-        raise UpdateError("Could not find jam-playwright service in Compose file")
+        raise UpdateError("Could not find jam-playwright-base service in Compose file")
     service_text = service_match.group(0)
     updated, ref_count = JAM_REPO_REF_RE.subn(
         lambda match: f"{match.group(1)}{jam_ref}{match.group(3)}",
