@@ -621,6 +621,7 @@ class TestStartMaker:
     @patch("maker.bot.MakerBot")
     @patch("maker.config.MakerConfig")
     @patch("jmwalletd.routers.coinjoin.get_settings")
+    @pytest.mark.parametrize("allow_clearnet_connections", [False, True])
     def test_start_maker_uses_runtime_settings(
         self,
         mock_get_settings: Mock,
@@ -628,6 +629,7 @@ class TestStartMaker:
         mock_maker_cls: Mock,
         mock_backend: AsyncMock,
         authed_client: tuple[TestClient, str],
+        allow_clearnet_connections: bool,
     ) -> None:
         """MakerConfig receives network, Tor, and maker policy settings."""
         client, token = authed_client
@@ -643,6 +645,7 @@ class TestStartMaker:
         mock_settings = Mock()
         mock_settings.get_directory_servers.return_value = expected_dirs
         mock_settings.network_config.network = NetworkType.SIGNET
+        mock_settings.network_config.allow_clearnet_connections = allow_clearnet_connections
         mock_settings.network_config.nick_auth_mode = "require_verified"
         expected_ids = {expected_dirs[0]: "test:walletd-directory"}
         mock_settings.network_config.nick_auth_directory_ids = expected_ids
@@ -669,6 +672,7 @@ class TestStartMaker:
         assert kwargs["mnemonic"] == state.wallet_mnemonic
         assert kwargs["network"] == NetworkType.SIGNET
         assert kwargs["directory_servers"] == expected_dirs
+        assert kwargs["allow_clearnet_connections"] is allow_clearnet_connections
         assert kwargs["nick_auth_mode"] == "require_verified"
         assert kwargs["nick_auth_directory_ids"] == expected_ids
         assert kwargs["socks_host"] == "127.0.0.1"
