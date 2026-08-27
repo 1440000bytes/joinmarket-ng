@@ -3363,3 +3363,85 @@ class TestListenTasksMemoryLeak:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestStartupTransportOwnership:
+    """A failure during start() must still release Tor and listener handles.
+
+    stop() only closes generation-owned transports, so anything created during
+    start() has to be attached to generation 0 as soon as it exists.
+    """
+
+    @staticmethod
+    def _make_bot() -> MakerBot:
+        wallet = MagicMock()
+        wallet.mixdepth_count = 5
+        wallet.utxo_cache = {}
+        wallet.network = NetworkType.REGTEST
+        backend = MagicMock()
+        config = MakerConfig(
+            mnemonic="test " * 12,
+            directory_servers=["localhost:5222"],
+            network=NetworkType.REGTEST,
+        )
+        return MakerBot(wallet=wallet, backend=backend, config=config)
+
+    @pytest.mark.asyncio
+    async def test_stop_closes_tor_handles_created_before_a_start_failure(self):
+        bot = self._make_bot()
+
+        tor_control = AsyncMock()
+        ephemeral = MagicMock()
+        ephemeral.service_id = "abc123"
+        listener = AsyncMock()
+        listener.bound_port = 5222
+
+        generation = bot.generations[0]
+        generation.tor_control = tor_control
+        generation.ephemeral_hidden_service = ephemeral
+        generation.hidden_service_listener = listener
+
+        await bot.stop()
+
+        listener.stop.assert_awaited()
+        tor_control.delete_ephemeral_hidden_service.assert_awaited_with("abc123")
+        tor_control.close.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_start_attaches_tor_handles_before_directory_connect(self):
+        bot = self._make_bot()
+        tor_control = AsyncMock()
+        ephemeral = MagicMock()
+        ephemeral.onion_address = "aaaa.onion"
+
+        async def fake_setup():
+            bot._tor_control = tor_control
+            bot._ephemeral_hidden_service = ephemeral
+            return ephemeral.onion_address
+
+        offer = Offer(
+            counterparty=bot.nick,
+            oid=0,
+            ordertype=OfferType.SW0_RELATIVE,
+            minsize=100_000,
+            maxsize=10_000_000,
+            txfee=1000,
+            cjfee="0.0003",
+            fidelity_bond_value=0,
+        )
+        bot.backend.get_block_height = AsyncMock(return_value=800_000)
+        bot.wallet.sync_all = AsyncMock()
+        bot.wallet.sync_with_descriptor_wallet = AsyncMock()
+        bot.wallet.reconstruct_imported_state_safe = AsyncMock()
+        bot.wallet.get_total_balance = AsyncMock(return_value=10_000_000)
+        bot.offer_manager.create_offers = AsyncMock(return_value=[offer])
+        bot._setup_tor_hidden_service = fake_setup
+        bot._connect_to_directories_with_retry = AsyncMock(
+            side_effect=RuntimeError("no directories")
+        )
+
+        with pytest.raises(RuntimeError):
+            await bot.start()
+
+        assert bot.generations[0].tor_control is tor_control
+        assert bot.generations[0].ephemeral_hidden_service is ephemeral
