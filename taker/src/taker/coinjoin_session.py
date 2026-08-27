@@ -163,6 +163,10 @@ class CoinJoinSession:
         # The owner adds these nicks to the persistent ignored-maker set after
         # the round fails; replacing them here would invalidate the transaction.
         self.failed_signer_nicks: set[str] = set()
+        # Makers that answered !tx with an explicit protocol error, such as a
+        # minimum miner fee policy rejection. Declining is honest behaviour, so
+        # these nicks are kept out of the persistent ignored-maker set.
+        self.declined_signer_nicks: set[str] = set()
 
         # Addresses recorded for broadcast verification and history reconciliation.
         self.cj_destination: str = ""
@@ -219,6 +223,7 @@ class CoinJoinSession:
         self.last_used_maker_keys = set()
         self.last_failure_reason = None
         self.failed_signer_nicks = set()
+        self.declined_signer_nicks = set()
         self.cj_destination = ""
         self.taker_change_address = ""
         self._sweep_tx_fee_budget = 0
@@ -1762,6 +1767,15 @@ class CoinJoinSession:
         # Process responses
         for nick in list(self.maker_sessions.keys()):
             if nick in responses:
+                if responses[nick].get("error"):
+                    logger.warning(f"Maker {nick} declined to sign")
+                    logger.bind(sensitive=True).warning(
+                        "Maker {} declined to sign: {}", nick, responses[nick].get("data", "")
+                    )
+                    self.declined_signer_nicks.add(nick)
+                    del self.maker_sessions[nick]
+                    continue
+
                 try:
                     session = self.maker_sessions[nick]
                     if session.crypto is None:
@@ -1900,7 +1914,7 @@ class CoinJoinSession:
         missing_makers = required_makers - signed_makers
 
         if missing_makers:
-            self.failed_signer_nicks.update(missing_makers)
+            self.failed_signer_nicks.update(missing_makers - self.declined_signer_nicks)
             self.last_failure_reason = (
                 f"Missing or invalid signatures from maker(s): {', '.join(sorted(missing_makers))}"
             )
