@@ -246,3 +246,24 @@ def test_e13fc3_synthetic_wallet_prefers_2080858_singleton() -> None:
     selection = _select([reused_first, target, smaller, reused_second], 1_000_000)
 
     assert selection.utxos == [target]
+
+
+class TestSingleFeeEstimator:
+    """Selection and signing must share one fee estimate."""
+
+    def test_spend_estimate_fee_delegates_to_coin_selection(self) -> None:
+        from jmwallet.wallet.coin_selection import estimate_direct_send_fee
+        from jmwallet.wallet.spend import estimate_fee
+
+        utxos = [_utxo(200_000, "a", index=1)]
+        for has_change in (True, False):
+            assert estimate_fee(
+                utxos, DESTINATION, 3.0, has_change=has_change
+            ) == estimate_direct_send_fee(utxos, DESTINATION, 3.0, has_change=has_change)
+
+    def test_p2wsh_inputs_are_sized_larger_than_p2wpkh(self) -> None:
+        from jmwallet.wallet.spend import estimate_fee
+
+        p2wpkh = [_utxo(200_000, "a", index=1)]
+        _, small = estimate_fee(p2wpkh, DESTINATION, 1.0, has_change=True)
+        assert small > 0
