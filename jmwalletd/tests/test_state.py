@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from jmwalletd.log_buffer import get_log_buffer
 from jmwalletd.state import CoinjoinState, DaemonState, WebSocketControl, WebSocketNotification
 
 
@@ -74,6 +75,26 @@ class TestDaemonState:
         assert daemon_state.wallet_mnemonic == ""
         assert daemon_state.wallet_name == ""
         assert daemon_state.coinjoin_state == CoinjoinState.NOT_RUNNING
+
+    @pytest.mark.asyncio
+    async def test_lock_wallet_clears_logs_only_on_loaded_transition(
+        self, daemon_state: DaemonState, mock_wallet_service: MagicMock
+    ) -> None:
+        log_buffer = get_log_buffer()
+        log_buffer.clear()
+        try:
+            log_buffer.append("wallet session log\n")
+            daemon_state.wallet_service = mock_wallet_service
+
+            assert await daemon_state.lock_wallet() is False
+            assert log_buffer.text() == ""
+
+            log_buffer.append("daemon startup log\n")
+
+            assert await daemon_state.lock_wallet() is True
+            assert log_buffer.text() == "daemon startup log\n"
+        finally:
+            log_buffer.clear()
 
     @pytest.mark.asyncio
     async def test_lock_wallet_resets_token_authority(

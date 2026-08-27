@@ -22,6 +22,7 @@ from loguru import logger
 from jmcore.paths import get_default_data_dir
 from jmcore.secure_files import ensure_private_directory
 from jmwalletd.auth import JMTokenAuthority
+from jmwalletd.log_buffer import get_log_buffer
 
 
 class CoinjoinState(enum.IntEnum):
@@ -282,6 +283,7 @@ class DaemonState:
         self.tumble_task = None
         self.tumble_plan_wallet = None
         self.config_overrides.clear()
+        get_log_buffer().clear()
         return False  # was not locked, we just locked it
 
     def activate_coinjoin_state(self, state: CoinjoinState) -> None:
