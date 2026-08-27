@@ -470,6 +470,13 @@ async def start_plan(
             socks_port=jm_settings.tor.socks_port,
             stream_isolation=jm_settings.tor.stream_isolation,
             mixdepth_selection_policy=jm_settings.maker.mixdepth_selection_policy,
+            min_fee_rate_sat_vb=jm_settings.maker.min_fee_rate_sat_vb,
+            min_fee_block_target=jm_settings.maker.min_fee_block_target,
+            max_fee_rate_sat_vb=jm_settings.wallet.max_fee_rate_sat_vb,
+            pre_sign_timeout_sec=jm_settings.maker.pre_sign_timeout_sec,
+            identity_renewal_min_sec=jm_settings.maker.identity_renewal_min_sec,
+            identity_renewal_max_sec=jm_settings.maker.identity_renewal_max_sec,
+            identity_grace_sec=jm_settings.maker.identity_grace_sec,
             # Log maker history into the daemon's data dir (#531).
             data_dir=state.data_dir,
         )
