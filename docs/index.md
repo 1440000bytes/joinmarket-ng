@@ -16,6 +16,7 @@ It is wire-compatible with the reference JoinMarket network and can run as:
 1. [Installation](install.md)
 2. [Wallet guide](README-jmwallet.md)
 3. [Taker guide](README-taker.md) or [Maker guide](README-maker.md)
+4. [Frequently asked questions](faq.md)
 
 ## Quick Start
 
@@ -54,6 +55,7 @@ jm-maker start
 ## Key Docs
 
 - [Installation](install.md)
+- [Frequently asked questions](faq.md)
 - [Technical Documentation](technical/index.md)
 - [JM Core](README-jmcore.md)
 - [Wallet](README-jmwallet.md)

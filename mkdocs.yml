@@ -254,6 +254,7 @@ nav:
   # Main Pages
   # -------------------------------------------------------------------------
   - Home: index.md
+  - FAQ: faq.md
   - Installation: install.md
   - Flatpak: flatpak.md
   - TUI Menu: README-tui.md
