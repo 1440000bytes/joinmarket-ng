@@ -17,6 +17,7 @@ import json
 import struct
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
@@ -75,6 +76,27 @@ class OfferWithTimestamp:
 
 class DirectoryClientError(Exception):
     """Error raised by DirectoryClient operations."""
+
+
+@dataclass(frozen=True)
+class PeerlistSnapshot:
+    """A completed, authoritative GETPEERLIST response."""
+
+    peers: tuple[tuple[str, str, FeatureSet], ...]
+
+    @property
+    def nicks(self) -> set[str]:
+        """Return the nicks present in this completed snapshot."""
+        return {nick for nick, _location, _features in self.peers}
+
+
+@dataclass(frozen=True)
+class _PeerlistFetchResult:
+    """Internal result that preserves legacy fetch return semantics."""
+
+    peers: tuple[tuple[str, str, FeatureSet], ...]
+    snapshot: PeerlistSnapshot | None
+    legacy_returns_none: bool = False
 
 
 _NICK_AUTH_MESSAGE_TYPES = frozenset(
@@ -628,17 +650,40 @@ class DirectoryClient:
             return []
         return result
 
-    async def _fetch_peerlist(self) -> list[tuple[str, str, FeatureSet]] | None:
+    async def get_authoritative_peerlist_snapshot(self) -> PeerlistSnapshot | None:
+        """Fetch a completed GETPEERLIST snapshot when one is safe to use.
+
+        A snapshot is authoritative only after a valid first PEERLIST response
+        and the normal inter-chunk timeout that marks the response complete.
+        Rate limits, unsupported directories, timeouts, connection failures,
+        and malformed or incomplete responses return ``None``.
         """
-        Internal method to fetch the peerlist with features from the directory.
+        try:
+            return (await self._fetch_peerlist_result()).snapshot
+        except Exception as e:
+            logger.bind(sensitive=True).debug(
+                f"GETPEERLIST did not yield an authoritative snapshot: {e}"
+            )
+            return None
+
+    async def _fetch_peerlist(self) -> list[tuple[str, str, FeatureSet]] | None:
+        """Fetch peerlist data with the legacy list-or-None return contract."""
+        fetch_result = await self._fetch_peerlist_result()
+        if fetch_result.legacy_returns_none:
+            return None
+        return list(fetch_result.peers)
+
+    async def _fetch_peerlist_result(self) -> _PeerlistFetchResult:
+        """
+        Internal method to fetch peerlist data and identify completed snapshots.
 
         Handles connection checks, peerlist support detection, rate limiting,
         sending the GETPEERLIST request, and accumulating chunked responses.
 
         Returns:
-            List of (nick, location, features) tuples for active peers.
-            Returns empty list if directory doesn't support GETPEERLIST.
-            Returns None if rate-limited (caller should use cached data).
+            A result with a snapshot only when the response was complete and
+            valid. Legacy callers retain their established list-or-None
+            behavior through ``_fetch_peerlist``.
         """
         if not self.connection:
             raise DirectoryClientError("Not connected")
@@ -647,7 +692,7 @@ class DirectoryClient:
         # (only applies to directories that didn't announce peerlist_features)
         if self._peerlist_supported is False and not self.directory_peerlist_features:
             logger.debug("Skipping GETPEERLIST - directory doesn't support it")
-            return []
+            return _PeerlistFetchResult(peers=(), snapshot=None)
 
         # Rate-limit peerlist requests to avoid spamming
         current_time = time.time()
@@ -656,7 +701,7 @@ class DirectoryClient:
                 f"Skipping GETPEERLIST - rate limited "
                 f"(last request {current_time - self._last_peerlist_request_time:.1f}s ago)"
             )
-            return None
+            return _PeerlistFetchResult(peers=(), snapshot=None, legacy_returns_none=True)
 
         self._last_peerlist_request_time = current_time
 
@@ -673,7 +718,7 @@ class DirectoryClient:
                 # happen -- callers are serialised by the listen loop -- but
                 # surface the condition loudly if it ever does.
                 logger.warning("Another GETPEERLIST is already in flight; aborting duplicate fetch")
-                return None
+                return _PeerlistFetchResult(peers=(), snapshot=None, legacy_returns_none=True)
             self._peerlist_inflight = asyncio.Queue()
 
         getpeerlist_msg = {"type": MessageType.GETPEERLIST.value, "line": ""}
@@ -696,6 +741,7 @@ class DirectoryClient:
         all_peers: list[tuple[str, str, FeatureSet]] = []
         chunks_received = 0
         got_first_response = False
+        response_incomplete = False
 
         # Bound non-connection errors (e.g. malformed payloads) so a
         # persistently misbehaving directory cannot spin this loop. Mirrors
@@ -714,7 +760,7 @@ class DirectoryClient:
                     remaining = first_response_timeout - elapsed
                     if remaining <= 0:
                         self._handle_peerlist_timeout()
-                        return []
+                        return _PeerlistFetchResult(peers=(), snapshot=None)
                     receive_timeout = remaining
                 else:
                     # Already received at least one chunk - use shorter inter-chunk timeout
@@ -734,7 +780,8 @@ class DirectoryClient:
                         consecutive_errors = 0
                         got_first_response = True
                         chunks_received += 1
-                        chunk_peers = self._handle_peerlist_response(peerlist_str)
+                        chunk_peers, chunk_malformed = self._process_peerlist_response(peerlist_str)
+                        response_incomplete = response_incomplete or chunk_malformed
                         all_peers.extend(chunk_peers)
                         logger.debug(
                             f"Received PEERLIST chunk {chunks_received} with "
@@ -754,7 +801,8 @@ class DirectoryClient:
                         got_first_response = True
                         chunks_received += 1
                         peerlist_str = response.get("line", "")
-                        chunk_peers = self._handle_peerlist_response(peerlist_str)
+                        chunk_peers, chunk_malformed = self._process_peerlist_response(peerlist_str)
+                        response_incomplete = response_incomplete or chunk_malformed
                         all_peers.extend(chunk_peers)
                         logger.debug(
                             f"Received PEERLIST chunk {chunks_received} with "
@@ -778,7 +826,7 @@ class DirectoryClient:
                     if not got_first_response:
                         # Never received any PEERLIST - this is a real timeout
                         self._handle_peerlist_timeout()
-                        return []
+                        return _PeerlistFetchResult(peers=(), snapshot=None)
                     # Received at least one chunk, inter-chunk timeout means we're done
                     logger.debug(
                         f"Peerlist complete: received {len(all_peers)} peers "
@@ -819,9 +867,10 @@ class DirectoryClient:
                     elapsed = asyncio.get_event_loop().time() - start_time
                     if not got_first_response and elapsed > first_response_timeout:
                         self._handle_peerlist_timeout()
-                        return []
+                        return _PeerlistFetchResult(peers=(), snapshot=None)
                     # If we already have some data, return what we have
                     if got_first_response:
+                        response_incomplete = True
                         break
         finally:
             if use_inflight_sink:
@@ -834,7 +883,13 @@ class DirectoryClient:
         logger.bind(sensitive=True).debug(
             f"Received {len(all_peers)} active peers from {self.host}:{self.port}"
         )
-        return all_peers
+        peers = tuple(all_peers)
+        if response_incomplete:
+            return _PeerlistFetchResult(peers=peers, snapshot=None)
+
+        snapshot = PeerlistSnapshot(peers=peers)
+        self._active_peers = {nick: location for nick, location, _features in snapshot.peers}
+        return _PeerlistFetchResult(peers=peers, snapshot=snapshot)
 
     def _handle_peerlist_timeout(self) -> None:
         """Handle timeout when waiting for PEERLIST response."""
@@ -858,24 +913,14 @@ class DirectoryClient:
             self._peerlist_supported = False
 
     def _handle_peerlist_response(self, peerlist_str: str) -> list[tuple[str, str, FeatureSet]]:
-        """
-        Process a PEERLIST response and update internal state.
+        """Process an incremental PEERLIST response and update internal state."""
+        peers, _ = self._process_peerlist_response(peerlist_str)
+        return peers
 
-        Note: Some directories send multiple partial PEERLIST responses (one per peer)
-        instead of a single complete list. We handle this by only adding/updating
-        peers from each response, not removing nicks that aren't present.
-
-        Removal of stale offers is handled by:
-        1. Explicit disconnect markers (;D suffix) in peerlist entries
-        2. The periodic peerlist refresh in OrderbookAggregator
-        3. Staleness cleanup for directories without GETPEERLIST support
-
-        Args:
-            peerlist_str: Comma-separated list of peer entries
-
-        Returns:
-            List of active peers (nick, location, features) in this response
-        """
+    def _process_peerlist_response(
+        self, peerlist_str: str
+    ) -> tuple[list[tuple[str, str, FeatureSet]], bool]:
+        """Apply a PEERLIST chunk and report whether any entry was malformed."""
         logger.bind(sensitive=True).debug(f"Peerlist string: {peerlist_str}")
 
         # Mark peerlist as supported since we got a valid response
@@ -884,10 +929,11 @@ class DirectoryClient:
         if not peerlist_str:
             # Empty peerlist response - just return empty list
             # Don't remove offers as this might be a partial response
-            return []
+            return [], False
 
         peers: list[tuple[str, str, FeatureSet]] = []
         explicitly_disconnected: list[str] = []
+        malformed = False
 
         for entry in peerlist_str.split(","):
             # Skip empty entries
@@ -925,6 +971,7 @@ class DirectoryClient:
                 logger.bind(sensitive=True).warning(
                     f"Failed to parse peerlist entry '{entry}': {e}"
                 )
+                malformed = True
                 continue
 
         # Only remove offers for nicks that are explicitly marked as disconnected
@@ -939,7 +986,7 @@ class DirectoryClient:
                 else ""
             )
         )
-        return peers
+        return peers, malformed
 
     async def listen_for_messages(self, duration: float = 5.0) -> list[dict[str, Any]]:
         """

@@ -452,27 +452,26 @@ class OrderbookAggregator:
                 fallback_cleanups = 0
 
                 for node_id, client in list(self.clients.items()):
-                    refresh_ok = False
+                    snapshot = None
                     try:
-                        await client.get_peerlist_with_features()
-                        refresh_ok = True
-                        refreshed += 1
+                        snapshot = await client.get_authoritative_peerlist_snapshot()
+                        if snapshot is not None:
+                            refreshed += 1
                     except Exception as e:
                         logger.bind(sensitive=True).debug(
                             f"Failed to refresh peerlist from {node_id}: {e}"
                         )
                         refresh_failures += 1
 
-                    if refresh_ok and client._peerlist_supported:
+                    if snapshot is not None:
                         # Per-directory trust: drop offers from nicks the
                         # directory no longer reports as connected.
-                        active_nicks = client.get_active_nicks()
                         client_nicks = {key[0] for key in client.offers}
-                        stale_nicks = client_nicks - active_nicks
+                        stale_nicks = client_nicks - snapshot.nicks
                         for nick in stale_nicks:
                             total_removed += client.remove_offers_for_nick(nick)
                         logger.bind(sensitive=True).debug(
-                            f"Directory {node_id}: {len(active_nicks)} active nicks, "
+                            f"Directory {node_id}: {len(snapshot.nicks)} active nicks, "
                             f"removed offers for {len(stale_nicks)} disconnected nicks"
                         )
                     elif client._peerlist_supported is False:

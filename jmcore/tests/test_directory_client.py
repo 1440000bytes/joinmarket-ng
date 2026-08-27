@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import json
+import time
 from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -1203,6 +1204,115 @@ async def test_get_peerlist_empty_first_chunk():
 
     assert peers is not None
     assert len(peers) == 0
+
+
+@pytest.mark.asyncio
+async def test_authoritative_peerlist_snapshot_reconciles_active_peers() -> None:
+    """A completed response replaces peers accumulated from prior updates."""
+    mock_connection = AsyncMock()
+    mock_connection.receive.side_effect = [
+        json.dumps(
+            {
+                "type": MessageType.PEERLIST.value,
+                "line": "alice;alice.onion:5222",
+            }
+        ).encode("utf-8"),
+        TimeoutError(),
+    ]
+
+    client = DirectoryClient("host", 1234, "mainnet")
+    client.connection = mock_connection
+    client._peerlist_chunk_timeout = 0.1
+    client._active_peers = {"stale": "stale.onion:5222"}
+
+    snapshot = await client.get_authoritative_peerlist_snapshot()
+
+    assert snapshot is not None
+    assert snapshot.nicks == {"alice"}
+    assert client.get_active_nicks() == {"alice"}
+
+
+@pytest.mark.asyncio
+async def test_authoritative_peerlist_snapshot_allows_empty_peerlist() -> None:
+    """An empty completed response is authoritative and clears active peers."""
+    mock_connection = AsyncMock()
+    mock_connection.receive.side_effect = [
+        json.dumps({"type": MessageType.PEERLIST.value, "line": ""}).encode("utf-8"),
+        TimeoutError(),
+    ]
+
+    client = DirectoryClient("host", 1234, "mainnet")
+    client.connection = mock_connection
+    client._peerlist_chunk_timeout = 0.1
+    client._active_peers = {"stale": "stale.onion:5222"}
+
+    snapshot = await client.get_authoritative_peerlist_snapshot()
+
+    assert snapshot is not None
+    assert snapshot.nicks == set()
+    assert client.get_active_nicks() == set()
+
+
+@pytest.mark.asyncio
+async def test_authoritative_peerlist_snapshot_rate_limit_is_non_authoritative() -> None:
+    """Rate limiting must retain the incremental active-peer cache."""
+    client = DirectoryClient("host", 1234, "mainnet")
+    client.connection = AsyncMock()
+    client._active_peers = {"alice": "alice.onion:5222"}
+    client._last_peerlist_request_time = time.time()
+
+    snapshot = await client.get_authoritative_peerlist_snapshot()
+
+    assert snapshot is None
+    assert client.get_active_nicks() == {"alice"}
+    client.connection.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_authoritative_peerlist_snapshot_timeout_is_non_authoritative() -> None:
+    """A first-response timeout must not turn cached peers into a snapshot."""
+    mock_connection = AsyncMock()
+    mock_connection.receive.side_effect = TimeoutError()
+
+    client = DirectoryClient("host", 1234, "mainnet")
+    client.connection = mock_connection
+    client.directory_peerlist_features = True
+    client._peerlist_timeout = 0.1
+    client._active_peers = {"alice": "alice.onion:5222"}
+
+    snapshot = await client.get_authoritative_peerlist_snapshot()
+
+    assert snapshot is None
+    assert client.get_active_nicks() == {"alice"}
+
+
+@pytest.mark.asyncio
+async def test_authoritative_peerlist_snapshot_malformed_response_is_non_authoritative() -> None:
+    """Repeated malformed responses must never produce a snapshot."""
+    mock_connection = AsyncMock()
+    mock_connection.receive.side_effect = [b"not-json"] * 5
+
+    client = DirectoryClient("host", 1234, "mainnet")
+    client.connection = mock_connection
+    client._active_peers = {"alice": "alice.onion:5222"}
+
+    snapshot = await client.get_authoritative_peerlist_snapshot()
+
+    assert snapshot is None
+    assert client.get_active_nicks() == {"alice"}
+
+
+def test_explicit_peerlist_disconnect_removes_active_peer_and_offers() -> None:
+    """An unsolicited ;D remains an incremental disconnect notification."""
+    client = DirectoryClient("host", 1234, "mainnet")
+    client._active_peers = {"alice": "alice.onion:5222"}
+    client._store_offer(("alice", 0), _bond_offer("alice", 0), None)
+
+    peers = client._handle_peerlist_response("alice;alice.onion:5222;D")
+
+    assert peers == []
+    assert client.get_active_nicks() == set()
+    assert client.offers == {}
 
 
 @pytest.mark.asyncio
