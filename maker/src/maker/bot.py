@@ -65,6 +65,7 @@ from maker.rate_limiting import (
 # Approximately 64MB of memory for str->float mapping (including overhead)
 MAX_LOG_RATE_LIMIT_ENTRIES = 200000
 _DETACHED_SHUTDOWN_GRACE_SEC = 0.5
+MIN_FEE_POLICY_TTL_SEC = 60.0
 
 
 def _get_fidelity_bond_linkable_utxos(
@@ -98,6 +99,7 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
         self.config = config
         self._static_onion_configured = config.onion_host is not None
         self.minimum_fee_rate_sat_vb = config.min_fee_rate_sat_vb
+        self._minimum_fee_policy_resolved_at: float | None = None
         self._minimum_fee_policy_warning_emitted = False
 
         # Create nick identity for signing messages
@@ -462,12 +464,20 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
                 )
                 self._minimum_fee_policy_warning_emitted = True
             return
+        # !fill refreshes this policy, so an unauthenticated peer can drive the
+        # backend calls below. The floor tracks mempool conditions that move at
+        # most once per block, so a recent value is reused instead.
+        now = time.monotonic()
+        resolved_at = self._minimum_fee_policy_resolved_at
+        if resolved_at is not None and now - resolved_at < MIN_FEE_POLICY_TTL_SEC:
+            return
         self.minimum_fee_rate_sat_vb = await resolve_min_fee_rate(
             self.backend,
             static_floor=self.config.min_fee_rate_sat_vb,
             block_target=self.config.min_fee_block_target,
             max_fee_rate=self.config.max_fee_rate_sat_vb,
         )
+        self._minimum_fee_policy_resolved_at = now
         if announce:
             logger.info(
                 "Resolved minimum CoinJoin miner fee rate: "
