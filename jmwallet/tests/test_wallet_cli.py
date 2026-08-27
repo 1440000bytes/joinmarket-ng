@@ -919,6 +919,7 @@ def _mock_send_execution(tmp_path: Path) -> Iterator[tuple[ResolvedBackendSettin
     mocks.wallet.sync_with_registered_bonds = AsyncMock(return_value={})
     mocks.wallet.get_balance = AsyncMock(return_value=utxo.value)
     mocks.wallet.get_utxos = AsyncMock(return_value=[utxo])
+    mocks.wallet.get_locked_input_outpoints.return_value = set()
     mocks.wallet.sign_input.return_value = MagicMock(witness=[b"signature", b"pubkey"])
     mocks.wallet.close = AsyncMock()
     mocks.send_entry = MagicMock()
@@ -1002,6 +1003,44 @@ async def test_send_exits_one_when_interactive_utxo_selection_is_cancelled(
     mocks.wallet.sign_input.assert_not_called()
     mocks.backend.broadcast_transaction.assert_not_awaited()
     mocks.wallet.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_send_interactive_selection_marks_leased_inputs_unavailable(tmp_path: Path) -> None:
+    with _mock_send_execution(tmp_path) as (backend_settings, mocks):
+        mocks.wallet.mixdepth_count = 1
+        locked_outpoints = {("a" * 64, 0)}
+        mocks.wallet.get_locked_input_outpoints.return_value = locked_outpoints
+        with patch("jmwallet.utxo_selector.select_utxos_interactive", return_value=[]) as selector:
+            with pytest.raises(typer.Exit):
+                await _run_mock_send(backend_settings, interactive_utxo_selection=True)
+
+    assert selector.call_args.kwargs["excluded_outpoints"] == locked_outpoints
+    mocks.wallet.sign_input.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_sweep_does_not_spend_leased_input(tmp_path: Path) -> None:
+    with _mock_send_execution(tmp_path) as (backend_settings, mocks):
+        mocks.wallet.get_locked_input_outpoints.return_value = {("a" * 64, 0)}
+
+        with pytest.raises(typer.Exit):
+            await _run_mock_send(backend_settings)
+
+    mocks.wallet.sign_input.assert_not_called()
+    mocks.backend.broadcast_transaction.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_send_rechecks_lease_immediately_before_signing(tmp_path: Path) -> None:
+    with _mock_send_execution(tmp_path) as (backend_settings, mocks):
+        mocks.wallet.get_locked_input_outpoints.side_effect = [set(), {("a" * 64, 0)}]
+
+        with pytest.raises(typer.Exit):
+            await _run_mock_send(backend_settings)
+
+    mocks.wallet.sign_input.assert_not_called()
+    mocks.backend.broadcast_transaction.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -36,6 +36,7 @@ async def test_selector_preserves_user_and_fidelity_bond_labels(
     wallet.mixdepth_count = 1
     wallet.get_utxos = AsyncMock(return_value=[user_labeled, fidelity_bond])
     wallet.get_utxo_label_from_wallet = Mock(return_value="cj-out")
+    wallet.get_locked_input_outpoints = Mock(return_value=set())
 
     captured: list[UTXOInfo] = []
 
@@ -72,6 +73,7 @@ async def test_selector_classifies_unlabeled_regular_utxo(
     wallet.mixdepth_count = 1
     wallet.get_utxos = AsyncMock(return_value=[unlabeled])
     wallet.get_utxo_label_from_wallet = Mock(return_value="cj-out")
+    wallet.get_locked_input_outpoints = Mock(return_value=set())
 
     import jmwallet.utxo_selector
 

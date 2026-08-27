@@ -42,8 +42,22 @@ def _utxo(
     )
 
 
-def _select(utxos: list[UTXOInfo], amount: int, *, mixdepth: int = 1, fee_rate: float = 1.0):
-    return select_direct_send_utxos(utxos, amount, DESTINATION, fee_rate, mixdepth=mixdepth)
+def _select(
+    utxos: list[UTXOInfo],
+    amount: int,
+    *,
+    mixdepth: int = 1,
+    fee_rate: float = 1.0,
+    excluded_outpoints: set[tuple[str, int]] | None = None,
+):
+    return select_direct_send_utxos(
+        utxos,
+        amount,
+        DESTINATION,
+        fee_rate,
+        mixdepth=mixdepth,
+        excluded_outpoints=excluded_outpoints,
+    )
 
 
 def test_selects_smallest_sufficient_singleton() -> None:
@@ -97,6 +111,14 @@ def test_underconfirmed_script_sibling_blocks_partial_cluster() -> None:
 
     with pytest.raises(ValueError, match="No eligible direct-send"):
         _select([eligible, unconfirmed], 100_000)
+
+
+def test_leased_script_sibling_blocks_partial_cluster() -> None:
+    eligible = _utxo(150_000, "a", index=1)
+    leased = _utxo(1_000, "a", index=2)
+
+    with pytest.raises(ValueError, match="No eligible direct-send"):
+        _select([eligible, leased], 100_000, excluded_outpoints={(leased.txid, leased.vout)})
 
 
 def test_search_limit_fails_instead_of_returning_non_optimal_baseline() -> None:

@@ -142,13 +142,15 @@ def select_direct_send_utxos(
     dust_threshold: int = 546,
     restrict_md0: bool = True,
     max_search_nodes: int = 100_000,
+    excluded_outpoints: set[tuple[str, int]] | None = None,
 ) -> DirectSendSelection:
     """Select direct-send inputs without joining independent script clusters.
 
     Every eligible regular UTXO at a scriptPubKey is selected atomically. The
     selector minimizes script groups, then input count, then selected value.
     In mixdepth zero, multiple groups are allowed only when every selected
-    input is an exact CoinJoin output.
+    input is an exact CoinJoin output. Excluded outpoints block their entire
+    regular script group.
     """
     if amount_sats <= 0:
         raise ValueError("Direct-send amount must be positive")
@@ -163,15 +165,21 @@ def select_direct_send_utxos(
     if max_search_nodes <= 0:
         raise ValueError("Direct-send selection search limit must be positive")
 
-    # A frozen or under-confirmed regular coin marks its whole script cluster
-    # unavailable. Spending only its eligible sibling would still link it.
+    # A frozen, under-confirmed, or CoinJoin-leased regular coin marks its
+    # whole script cluster unavailable. Spending only its eligible sibling
+    # would still link it.
+    excluded_outpoints = {(txid.lower(), vout) for txid, vout in (excluded_outpoints or set())}
     regular_utxos = [
         utxo for utxo in utxos if utxo.mixdepth == mixdepth and not utxo.is_fidelity_bond
     ]
     blocked_scripts = {
         utxo.scriptpubkey
         for utxo in regular_utxos
-        if utxo.frozen or utxo.confirmations < min_confirmations
+        if (
+            utxo.frozen
+            or utxo.confirmations < min_confirmations
+            or (utxo.txid, utxo.vout) in excluded_outpoints
+        )
     }
     eligible_utxos = [
         utxo
@@ -179,6 +187,7 @@ def select_direct_send_utxos(
         if utxo.scriptpubkey not in blocked_scripts
         and not utxo.frozen
         and utxo.confirmations >= min_confirmations
+        and (utxo.txid, utxo.vout) not in excluded_outpoints
     ]
 
     grouped_utxos: dict[str, list[UTXOInfo]] = {}

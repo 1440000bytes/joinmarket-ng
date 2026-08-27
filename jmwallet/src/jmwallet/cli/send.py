@@ -116,6 +116,9 @@ async def _select_input_utxos(
     if interactive:
         from jmwallet.utxo_selector import select_utxos_interactive
 
+        locked_outpoints = {
+            (txid.lower(), vout) for txid, vout in wallet.get_locked_input_outpoints()
+        }
         utxos: list[UTXOInfo] = []
         for md in range(wallet.mixdepth_count):
             utxos.extend(await wallet.get_utxos(md))
@@ -130,7 +133,12 @@ async def _select_input_utxos(
                 utxo.label = wallet.get_utxo_label_from_wallet(utxo.address)
 
         try:
-            selected_utxos = select_utxos_interactive(utxos, amount, allowed_mixdepth=mixdepth)
+            selected_utxos = select_utxos_interactive(
+                utxos,
+                amount,
+                allowed_mixdepth=mixdepth,
+                excluded_outpoints=locked_outpoints,
+            )
         except RuntimeError as e:
             logger.error("Cannot use interactive UTXO selection")
             logger.bind(sensitive=True).error(f"Cannot use interactive UTXO selection: {e}")
@@ -175,10 +183,26 @@ async def _select_input_utxos(
     # Auto-selection: filter out frozen and fidelity bond UTXOs
     # (frozen UTXOs must never be auto-spent; fidelity bonds must be
     # explicitly selected via interactive mode)
-    spendable = [u for u in utxos if not u.frozen and not u.is_fidelity_bond]
+    locked_outpoints = {(txid.lower(), vout) for txid, vout in wallet.get_locked_input_outpoints()}
+    blocked_regular_scripts = {
+        utxo.scriptpubkey
+        for utxo in utxos
+        if not utxo.is_fidelity_bond and (utxo.txid, utxo.vout) in locked_outpoints
+    }
+    spendable = [
+        utxo
+        for utxo in utxos
+        if not utxo.frozen
+        and not utxo.is_fidelity_bond
+        and (utxo.txid, utxo.vout) not in locked_outpoints
+        and utxo.scriptpubkey not in blocked_regular_scripts
+    ]
     frozen_count = len(utxos) - len(spendable)
     if frozen_count > 0:
-        logger.info(f"Excluding {frozen_count} frozen/fidelity-bond UTXO(s) from auto-selection")
+        logger.info(
+            f"Excluding {frozen_count} frozen, fidelity-bond, or CoinJoin-locked UTXO(s) "
+            "from auto-selection"
+        )
     if not spendable:
         logger.error("No spendable UTXOs available (all UTXOs are frozen or fidelity bonds)")
         raise typer.Exit(1)

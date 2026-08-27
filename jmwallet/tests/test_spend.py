@@ -299,6 +299,7 @@ class TestEstimateFee:
 class TestDirectTransactionPolicy:
     def _wallet(self) -> MagicMock:
         wallet = MagicMock()
+        wallet.get_locked_input_outpoints.return_value = set()
         wallet.sign_input.side_effect = lambda _tx, index, _utxo: MagicMock(
             witness=[f"sig-{index}".encode(), b"pubkey"]
         )
@@ -374,6 +375,21 @@ class TestDirectTransactionPolicy:
 
         wallet.sign_input.assert_not_called()
 
+    def test_rejects_input_leased_after_selection_before_signing(self) -> None:
+        wallet = self._wallet()
+        utxo = _make_utxo(value=50_000)
+        wallet.get_locked_input_outpoints.return_value = {(utxo.txid, utxo.vout)}
+
+        with pytest.raises(ValueError, match="locked/reserved by an in-flight CoinJoin"):
+            build_and_sign_direct_tx(
+                wallet=wallet,
+                utxos=[utxo],
+                outputs=[self._output()],
+                locktime=840_000,
+            )
+
+        wallet.sign_input.assert_not_called()
+
     @pytest.mark.anyio
     async def test_resolves_height_locktime_for_regular_inputs(self) -> None:
         backend = _make_mock_backend(block_height=840_000)
@@ -426,6 +442,7 @@ def _make_mock_wallet(utxos: list[UTXOInfo], change_addr: str = REGTEST_P2WPKH_A
     # Raise ValueError so direct_send falls back to get_utxos for coin selection
     wallet.select_utxos = MagicMock(side_effect=ValueError("no coin selection in tests"))
     wallet.get_key_for_address = MagicMock(return_value=_make_mock_key())
+    wallet.get_locked_input_outpoints = MagicMock(return_value=set())
     wallet.get_new_internal_address = MagicMock(return_value=change_addr)
     wallet.sign_input.return_value = MagicMock(witness=[b"signature", b"pubkey"])
     return wallet
@@ -1056,6 +1073,30 @@ class TestPrepareDirectSend:
         assert result.source_addresses == ["bcrt1qinput"]
         backend.broadcast_transaction.assert_not_awaited()
 
+    @pytest.mark.anyio
+    async def test_prepare_sweep_excludes_leased_script_cluster(self) -> None:
+        leased = _make_utxo(txid="aa" * 32, vout=0, value=100_000)
+        sibling = _make_utxo(txid="bb" * 32, vout=1, value=100_000)
+        alternative = _make_utxo(
+            txid="cc" * 32,
+            vout=2,
+            value=100_000,
+            scriptpubkey="0014" + "cc" * 20,
+        )
+        wallet = _make_mock_wallet([leased, sibling, alternative])
+        wallet.get_locked_input_outpoints.return_value = {(leased.txid, leased.vout)}
+
+        result = await prepare_direct_send(
+            wallet=wallet,
+            backend=_make_mock_backend(),
+            mixdepth=0,
+            amount_sats=0,
+            destination=REGTEST_P2WPKH_ADDR,
+            fee_rate=1.0,
+        )
+
+        assert result.selected_utxos == [(alternative.txid, alternative.vout)]
+
 
 # ---------------------------------------------------------------------------
 # parse_outpoint
@@ -1181,6 +1222,7 @@ class TestResolveConflictedInputs:
         wallet.root_path = "m/84'/1'"
         wallet.address_cache = {address: (0, 0, 7)}
         wallet.get_utxos = AsyncMock(return_value=[])
+        wallet.get_locked_input_outpoints.return_value = set()
         wallet.is_utxo_frozen.return_value = False
         wallet.get_key_for_address.return_value = key
         backend = MagicMock()
@@ -1329,6 +1371,26 @@ class TestResolveConflictedInputs:
                 input_utxos=[regular.outpoint],
                 allow_conflicts=True,
             )
+
+    @pytest.mark.anyio
+    async def test_rejects_leased_input_before_conflict_reconstruction(self) -> None:
+        txid = "aa" * 32
+        wallet, backend, _script, _address = self._wallet_and_parent()
+        wallet.get_locked_input_outpoints.return_value = {(txid, 0)}
+
+        with pytest.raises(
+            ValueError,
+            match=f"Input UTXO {txid}:0 is locked/reserved by an in-flight CoinJoin",
+        ):
+            await resolve_input_utxos(
+                wallet=wallet,
+                backend=backend,
+                mixdepth=0,
+                input_utxos=[f"{txid}:0"],
+                allow_conflicts=True,
+            )
+
+        backend.get_mempool_spender.assert_not_awaited()
 
     @pytest.mark.anyio
     async def test_empty_list_is_an_error(self) -> None:
@@ -1548,12 +1610,37 @@ class TestResolveConflictedInputs:
 
 class TestAutomaticDirectSendSource:
     @pytest.mark.anyio
+    async def test_excludes_leased_input_in_favor_of_unleased_alternative(self) -> None:
+        leased = _make_utxo(txid="cc" * 32, value=100_000, scriptpubkey="0014" + "cc" * 20)
+        alternative = _make_utxo(
+            txid="bb" * 32,
+            value=100_000,
+            scriptpubkey="0014" + "bb" * 20,
+        )
+        wallet = MagicMock()
+        wallet.mixdepth_count = 1
+        wallet.get_utxos = AsyncMock(return_value=[leased, alternative])
+        wallet.get_locked_input_outpoints.return_value = {(leased.txid, leased.vout)}
+
+        selection, mixdepth = await select_automatic_direct_send_inputs(
+            wallet=wallet,
+            amount_sats=50_000,
+            destination=REGTEST_P2WPKH_ADDR,
+            fee_rate=1.0,
+            mixdepth=0,
+        )
+
+        assert mixdepth == 0
+        assert selection.utxos == [alternative]
+
+    @pytest.mark.anyio
     async def test_uses_highest_sufficient_mixdepth(self) -> None:
         high = _make_utxo(txid="cc" * 32, value=100_000, mixdepth=2)
         lower = _make_utxo(txid="bb" * 32, value=500_000, mixdepth=1)
         wallet = MagicMock()
         wallet.mixdepth_count = 3
         wallet.get_utxos = AsyncMock(side_effect=lambda md: {2: [high], 1: [lower]}[md])
+        wallet.get_locked_input_outpoints.return_value = set()
 
         selection, mixdepth = await select_automatic_direct_send_inputs(
             wallet=wallet,
@@ -1574,6 +1661,7 @@ class TestAutomaticDirectSendSource:
         wallet = MagicMock()
         wallet.mixdepth_count = 3
         wallet.get_utxos = AsyncMock(side_effect=lambda md: {2: [high], 1: [middle]}[md])
+        wallet.get_locked_input_outpoints.return_value = set()
 
         selection, mixdepth = await select_automatic_direct_send_inputs(
             wallet=wallet,
@@ -1592,6 +1680,7 @@ class TestAutomaticDirectSendSource:
         wallet = MagicMock()
         wallet.mixdepth_count = 3
         wallet.get_utxos = AsyncMock(return_value=[_make_utxo(value=1_000, mixdepth=2)])
+        wallet.get_locked_input_outpoints.return_value = set()
 
         with pytest.raises(ValueError, match="mixdepth 2"):
             await select_automatic_direct_send_inputs(
@@ -1609,6 +1698,7 @@ class TestAutomaticDirectSendSource:
         wallet = MagicMock()
         wallet.mixdepth_count = 3
         wallet.get_utxos = AsyncMock(return_value=[])
+        wallet.get_locked_input_outpoints.return_value = set()
 
         with (
             patch(

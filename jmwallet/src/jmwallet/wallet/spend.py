@@ -300,6 +300,17 @@ def _find_owning_mixdepth(wallet: WalletService, txid: str, vout: int) -> int | 
     return None
 
 
+def _ensure_direct_send_outpoints_unlocked(
+    wallet: WalletService, outpoints: list[tuple[str, int]]
+) -> None:
+    """Reject inputs currently reserved by an in-flight CoinJoin."""
+    locked_outpoints = {(txid.lower(), vout) for txid, vout in wallet.get_locked_input_outpoints()}
+    for txid, vout in outpoints:
+        if (txid.lower(), vout) in locked_outpoints:
+            msg = f"Input UTXO {txid}:{vout} is locked/reserved by an in-flight CoinJoin"
+            raise ValueError(msg)
+
+
 async def resolve_input_utxos(
     *,
     wallet: WalletService,
@@ -338,6 +349,7 @@ async def resolve_input_utxos(
         seen.add(outpoint)
         outpoints.append(outpoint)
 
+    _ensure_direct_send_outpoints_unlocked(wallet, outpoints)
     available = {(u.txid, u.vout): u for u in await wallet.get_utxos(mixdepth)}
 
     utxos: list[UTXOInfo] = []
@@ -588,6 +600,7 @@ async def select_automatic_direct_send_inputs(
     failures: list[str] = []
     for candidate_mixdepth in mixdepths:
         raw_utxos = await wallet.get_utxos(candidate_mixdepth)
+        locked_outpoints = wallet.get_locked_input_outpoints()
         try:
             selection = select_direct_send_utxos(
                 raw_utxos,
@@ -595,6 +608,7 @@ async def select_automatic_direct_send_inputs(
                 destination,
                 fee_rate,
                 mixdepth=candidate_mixdepth,
+                excluded_outpoints=locked_outpoints,
             )
         except DirectSendSearchLimitError:
             # The highest-priority source remains unresolved, so do not skip it.
@@ -666,6 +680,7 @@ def build_and_sign_direct_tx(
     if sum(output.value_sats for output in outputs) > sum(utxo.value for utxo in utxos):
         raise ValueError("Direct transaction outputs exceed its input value")
 
+    _ensure_direct_send_outpoints_unlocked(wallet, outpoints)
     ordered_utxos = list(utxos)
     ordered_outputs = list(outputs)
     secure_random.shuffle(ordered_utxos)
@@ -769,11 +784,25 @@ async def prepare_direct_send(
         # freeze every other coin without making bonds part of normal
         # auto-selection or linking them to unrelated funds.
         raw_utxos = await wallet.get_utxos(mixdepth)
-        utxos = select_spendable_utxos(raw_utxos)
-        if not utxos and any(u.is_fidelity_bond and not u.frozen for u in raw_utxos):
+        locked_outpoints = {
+            (txid.lower(), vout) for txid, vout in wallet.get_locked_input_outpoints()
+        }
+        blocked_regular_scripts = {
+            utxo.scriptpubkey
+            for utxo in raw_utxos
+            if not utxo.is_fidelity_bond and (utxo.txid, utxo.vout) in locked_outpoints
+        }
+        sweep_candidates = [
+            utxo
+            for utxo in raw_utxos
+            if (utxo.txid, utxo.vout) not in locked_outpoints
+            and (utxo.is_fidelity_bond or utxo.scriptpubkey not in blocked_regular_scripts)
+        ]
+        utxos = select_spendable_utxos(sweep_candidates)
+        if not utxos and any(u.is_fidelity_bond and not u.frozen for u in sweep_candidates):
             locktime_cutoff = await backend.get_median_time_past()
             bond_candidates = select_spendable_utxos(
-                raw_utxos,
+                sweep_candidates,
                 include_fidelity_bonds=True,
                 locktime_cutoff=locktime_cutoff,
             )
