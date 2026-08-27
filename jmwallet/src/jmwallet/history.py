@@ -284,13 +284,17 @@ def _history_lock_path(history_path: Path) -> Path:
 
 
 @contextmanager
-def _history_lock(history_path: Path) -> Iterator[None]:
-    """Serialize history mutations through a stable owner-only sidecar lock."""
+def _history_lock(history_path: Path, *, shared: bool = False) -> Iterator[None]:
+    """Serialize history access through a stable owner-only sidecar lock.
+
+    Readers pass ``shared=True`` so they do not queue behind each other. Only
+    POSIX supports a shared mode; the Windows fallback stays exclusive.
+    """
     lock_fd = _open_owner_only_regular(_history_lock_path(history_path), os.O_RDWR | os.O_CREAT)
     locked = False
     try:
         if fcntl is not None:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            fcntl.flock(lock_fd, fcntl.LOCK_SH if shared else fcntl.LOCK_EX)
         elif msvcrt is not None:  # pragma: no cover - Windows
             if os.fstat(lock_fd).st_size == 0:
                 os.write(lock_fd, b"\0")
@@ -330,11 +334,24 @@ def _resolve_history_path_unlocked(history_path: Path) -> Path:
 
 
 @contextmanager
-def _locked_history_path(data_dir: Path | None = None) -> Iterator[Path]:
-    """Yield the active history path while holding the exclusive advisory lock."""
+def _locked_history_path(data_dir: Path | None = None, *, shared: bool = False) -> Iterator[Path]:
+    """Yield the active history path while holding the advisory lock."""
     canonical_path = _get_history_path(data_dir)
-    with _history_lock(canonical_path):
+    with _history_lock(canonical_path, shared=shared):
         yield _resolve_history_path_unlocked(canonical_path)
+
+
+def _history_header_is_stale(data_dir: Path | None = None) -> bool:
+    """Return whether the on-disk history header needs migrating."""
+    try:
+        canonical_path = _get_history_path(data_dir)
+        history_path = _resolve_history_path_unlocked(canonical_path)
+        if not history_path.exists():
+            return False
+        actual = _read_csv_header(history_path)
+    except Exception:
+        return False
+    return actual is not None and actual != _get_fieldnames()
 
 
 def _get_fieldnames() -> list[str]:
@@ -751,13 +768,19 @@ def read_history(
         List of TransactionHistoryEntry objects
     """
     try:
-        with _locked_history_path(data_dir) as history_path:
+        # Header migration rewrites the file, so it needs the exclusive lock.
+        # Taking it only when the header is actually stale lets the common
+        # read path use a shared lock instead of serializing every reader.
+        if _history_header_is_stale(data_dir):
+            with _locked_history_path(data_dir) as history_path:
+                try:
+                    _ensure_history_header_current(history_path)
+                except HistoryWriteError as exc:
+                    logger.warning(f"History header migration failed during read: {exc}")
+
+        with _locked_history_path(data_dir, shared=True) as history_path:
             if not history_path.exists():
                 return []
-            try:
-                _ensure_history_header_current(history_path)
-            except HistoryWriteError as exc:
-                logger.warning(f"History header migration failed during read: {exc}")
             entries = _read_history_entries_unlocked(history_path)
     except Exception as e:
         logger.error(f"Failed to read history: {e}")
