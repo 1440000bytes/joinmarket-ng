@@ -1434,7 +1434,7 @@ async def test_neutrino_style_maker_warns_and_skips_minimum_fee_policy():
 async def test_full_node_maker_refreshes_minimum_fee_policy_before_new_sessions():
     from unittest.mock import AsyncMock, MagicMock
 
-    from maker.bot import MakerBot
+    from maker.bot import MIN_FEE_POLICY_TTL_SEC, MakerBot
 
     bot = MakerBot.__new__(MakerBot)
     bot.minimum_fee_rate_sat_vb = 1.0
@@ -1449,12 +1449,20 @@ async def test_full_node_maker_refreshes_minimum_fee_policy_before_new_sessions(
     bot.backend.can_estimate_fee.return_value = True
     bot.backend.get_mempool_min_fee = AsyncMock(return_value=None)
     bot.backend.estimate_fee = AsyncMock(side_effect=[2.0, 3.0])
+    bot._minimum_fee_policy_resolved_at = None
 
     await bot._initialize_minimum_fee_policy(announce=False)
     first_threshold = bot.minimum_fee_rate_sat_vb
+    # A second call inside the TTL reuses the resolved floor, so !fill cannot
+    # drive one backend round trip per message.
+    await bot._initialize_minimum_fee_policy(announce=False)
+    assert first_threshold == 2.0
+    assert bot.minimum_fee_rate_sat_vb == 2.0
+    assert bot.backend.estimate_fee.await_args_list == [((10,), {})]
+
+    bot._minimum_fee_policy_resolved_at -= MIN_FEE_POLICY_TTL_SEC
     await bot._initialize_minimum_fee_policy(announce=False)
 
-    assert first_threshold == 2.0
     assert bot.minimum_fee_rate_sat_vb == 3.0
     assert bot.backend.estimate_fee.await_args_list == [((10,), {}), ((10,), {})]
 
