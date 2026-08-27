@@ -90,7 +90,7 @@ class TestTakerConfig:
         assert config.minimum_makers == 4
         assert config.min_fee_rate_sat_vb == 1.0
         assert config.min_fee_block_target == 10
-        assert config.round_up_cj_fees is True
+        assert config.round_up_cj_fees is False
         assert config.require_quantized_cj_fees is False
         assert config.bondless_makers_allowance == 0.05
         assert config.bondless_makers_allowance_require_zero_fee is True
@@ -520,3 +520,17 @@ class TestSchedule:
         schedule.advance()
         assert schedule.is_complete()
         assert schedule.current_entry() is None
+
+
+class TestDefaultCjFeeRounding:
+    def test_taker_config_round_up_cj_fees_defaults_off(self) -> None:
+        from jmcore.models import NetworkType
+
+        from taker.config import TakerConfig
+
+        config = TakerConfig(
+            mnemonic="test " * 12,
+            directory_servers=["localhost:5222"],
+            network=NetworkType.REGTEST,
+        )
+        assert config.round_up_cj_fees is False

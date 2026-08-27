@@ -261,7 +261,7 @@ class TestSettingsDefaults:
         assert settings.taker.max_cj_fee_abs == 500
         assert settings.taker.max_cj_fee_rel == "0.001"
         assert settings.taker.max_sweep_fee_change == 0.8
-        assert settings.taker.round_up_cj_fees is True
+        assert settings.taker.round_up_cj_fees is False
         assert settings.taker.require_quantized_cj_fees is False
         assert settings.taker.bondless_makers_allowance == 0.05
         assert settings.taker.bondless_require_zero_fee is True
@@ -1399,3 +1399,21 @@ class TestEnsureConfigFile:
         assert result == config_file
         assert config_file.exists()
         assert not (data_dir / "config.toml").exists()
+
+
+class TestDefaultCjFeeRounding:
+    """Defaults must pay the exact advertised fee for reference-maker interop."""
+
+    def test_round_up_cj_fees_defaults_off(self) -> None:
+        from jmcore.settings import TakerSettings
+
+        assert TakerSettings().round_up_cj_fees is False
+
+    def test_default_pair_does_not_overpay_off_grid_offers(self) -> None:
+        from jmcore.settings import TakerSettings
+
+        settings = TakerSettings()
+        # Rounding an off-grid offer up is what older makers reject, so it must
+        # not happen unless the operator opts in.
+        assert settings.require_quantized_cj_fees is False
+        assert settings.round_up_cj_fees is False
