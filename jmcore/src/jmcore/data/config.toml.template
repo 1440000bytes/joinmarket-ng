@@ -502,12 +502,11 @@
 # max_cj_fee_rel = "0.001"    # Relative fee (0.001 = 0.1%)
 # max_sweep_fee_change = 0.8  # Relative fee tolerance for sweep transactions
 # Round each selected maker fee up to the closest same-type public quantum.
-# Disable temporarily for exact-fee compatibility with older makers that reject
-# any overpayment.
-# round_up_cj_fees = true
+# Off by default: older makers exact-match their change and reject any
+# overpayment, so rounding an off-grid offer up makes them refuse to sign.
+# round_up_cj_fees = false
 # Only consider offers already on the public fee grid. This remains effective
-# when rounding is disabled. Recommended future policy (planned default):
-# require_quantized_cj_fees = true with round_up_cj_fees = false.
+# when rounding is disabled.
 # require_quantized_cj_fees = false
 
 # Maximum inputs a single maker may contribute to the CoinJoin.

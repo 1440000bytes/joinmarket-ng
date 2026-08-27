@@ -114,7 +114,7 @@ class TakerConfig(WalletConfig):
         description="Only consider offers whose advertised CoinJoin fee is on the public grid",
     )
     round_up_cj_fees: bool = Field(
-        default=True,
+        default=False,
         description="Round each selected maker fee up to the next public fee quantum",
     )
     max_sweep_fee_change: float = Field(
