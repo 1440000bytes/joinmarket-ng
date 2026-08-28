@@ -57,6 +57,7 @@ class TestNotificationConfig:
         assert config.include_nick is True
         assert config.notify_fill is True
         assert config.notify_rejection is True
+        assert config.notify_nick_change is False  # Disabled by default (noisy)
         assert config.notify_peer_events is False  # Disabled by default
         assert config.notify_disconnect is False  # Disabled by default (noisy)
         assert config.notify_all_disconnect is True  # Enabled by default (critical)
@@ -251,6 +252,7 @@ class TestLoadNotificationConfig:
             "NOTIFICATIONS__URLS": '["gotify://host/token"]',
             "NOTIFICATIONS__NOTIFY_FILL": "false",
             "NOTIFICATIONS__NOTIFY_SIGNING": "false",
+            "NOTIFICATIONS__NOTIFY_NICK_CHANGE": "true",
             "NOTIFICATIONS__NOTIFY_PEER_EVENTS": "true",
             "NOTIFICATIONS__NOTIFY_STARTUP": "false",
         }
@@ -260,6 +262,7 @@ class TestLoadNotificationConfig:
 
         assert config.notify_fill is False
         assert config.notify_signing is False
+        assert config.notify_nick_change is True
         assert config.notify_peer_events is True
         assert config.notify_startup is False
         # Defaults should remain
@@ -540,6 +543,34 @@ class TestNotifier:
         result = await notifier.notify_peer_connected("alice", "onion", 10)
 
         assert result is False
+
+    @pytest.mark.asyncio
+    async def test_notify_nick_change_disabled_by_default(self) -> None:
+        """Test that nick change notifications are opt-in."""
+        config = NotificationConfig(enabled=True, urls=["test://"])
+        notifier = Notifier(config)
+        notifier._send = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+        result = await notifier.notify_nick_change("old-nick", "new-nick")
+
+        assert result is False
+        notifier._send.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_notify_nick_change_enabled(self) -> None:
+        """Test that nick change notifications can be explicitly enabled."""
+        config = NotificationConfig(
+            enabled=True,
+            urls=["test://"],
+            notify_nick_change=True,
+        )
+        notifier = Notifier(config)
+        notifier._send = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+        result = await notifier.notify_nick_change("old-nick", "new-nick")
+
+        assert result is True
+        notifier._send.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_notify_directory_disconnect_disabled_by_default(self) -> None:

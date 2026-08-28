@@ -504,13 +504,13 @@ class NotificationConfig(BaseModel):
         ),
     )
 
-    # Event type toggles (all enabled by default if notifications are enabled)
+    # Event type toggles
     notify_fill: bool = Field(default=True, description="Notify on !fill requests")
     notify_rejection: bool = Field(default=True, description="Notify on rejections")
     notify_signing: bool = Field(default=True, description="Notify on tx signing")
     notify_mempool: bool = Field(default=True, description="Notify on mempool detection")
     notify_confirmed: bool = Field(default=True, description="Notify on confirmation")
-    notify_nick_change: bool = Field(default=True, description="Notify on nick change")
+    notify_nick_change: bool = Field(default=False, description="Notify on nick change")
     notify_disconnect: bool = Field(
         default=False,
         description="Notify on individual directory server disconnect/reconnect (noisy)",

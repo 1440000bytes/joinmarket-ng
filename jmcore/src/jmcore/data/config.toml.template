@@ -321,7 +321,7 @@
 # notify_signing = true
 # notify_mempool = true
 # notify_confirmed = true
-# notify_nick_change = true
+# notify_nick_change = false  # Nick changes are frequent and disabled by default
 # notify_disconnect = false  # Individual directory disconnect/reconnect (noisy)
 # notify_all_disconnect = true  # All directories disconnected (critical)
 # notify_coinjoin_start = true

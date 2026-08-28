@@ -89,6 +89,7 @@ class TestConfigTemplate:
         assert "# socks_host = " in template
         assert "# socks_port = " in template
         assert "# rpc_url = " in template
+        assert "# notify_nick_change = false" in template
 
     def test_nested_template_keys_define_environment_variables(self) -> None:
         """Every canonical nested template key maps to SECTION__KEY."""
@@ -215,6 +216,11 @@ class TestSettingsDefaults:
         assert settings.wallet.mixdepth_count == 5
         assert settings.wallet.gap_limit == 20
         assert settings.wallet.dust_threshold == 27300
+
+    def test_nick_change_notifications_are_disabled_by_default(self) -> None:
+        settings = JoinMarketSettings()
+
+        assert settings.notifications.notify_nick_change is False
 
     def test_maker_change_threshold_is_fixed(self) -> None:
         with pytest.raises(ValidationError):
