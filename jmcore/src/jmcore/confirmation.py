@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import sys
+import unicodedata
 from typing import Any
 
 
@@ -25,6 +27,18 @@ def is_interactive_mode() -> bool:
 _COINJOIN_WIDTH = 96
 _LABEL_WIDTH = 16  # Width for labels like "CoinJoin Amount:"
 _SEND_WIDTH = 80  # Display width for standard send confirmation
+_MAX_DISPLAY_FIELD_LENGTH = 256
+_ANSI_ESCAPE_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\)|[@-_])")
+
+
+def _sanitize_terminal_text(value: Any, max_length: int = _MAX_DISPLAY_FIELD_LENGTH) -> str:
+    """Render untrusted text without terminal controls or unbounded fields."""
+    text = _ANSI_ESCAPE_RE.sub("", str(value))
+    text = "".join(" " if unicodedata.category(char) in {"Cc", "Cf"} else char for char in text)
+    text = " ".join(text.split())
+    if len(text) > max_length:
+        return text[: max_length - 3] + "..."
+    return text
 
 
 def _format_fee_percentage(fee: int, amount: int) -> str:
@@ -61,14 +75,14 @@ def _display_coinjoin_send_confirmation(
 
     # Source Mixdepth
     if source_mixdepth is not None:
-        print(f"{'Source Mixdepth:':<{_LABEL_WIDTH}}  {source_mixdepth}")
+        print(f"{'Source Mixdepth:':<{_LABEL_WIDTH}}  {_sanitize_terminal_text(source_mixdepth)}")
 
     # Destination
     if destination:
         if destination == "INTERNAL":
             print(f"{'Destination:':<{_LABEL_WIDTH}}  INTERNAL (next mixdepth)")
         else:
-            print(f"{'Destination:':<{_LABEL_WIDTH}}  {destination}")
+            print(f"{'Destination:':<{_LABEL_WIDTH}}  {_sanitize_terminal_text(destination)}")
 
     # CoinJoin Amount
     if amount == 0:
@@ -82,9 +96,9 @@ def _display_coinjoin_send_confirmation(
         label = f"Makers ({len(makers)}):"
         for i, maker_str in enumerate(makers):
             if i == 0:
-                print(f"{label:<{_LABEL_WIDTH}}  {i + 1}. {maker_str}")
+                print(f"{label:<{_LABEL_WIDTH}}  {i + 1}. {_sanitize_terminal_text(maker_str)}")
             else:
-                print(f"{'':<{_LABEL_WIDTH}}  {i + 1}. {maker_str}")
+                print(f"{'':<{_LABEL_WIDTH}}  {i + 1}. {_sanitize_terminal_text(maker_str)}")
 
     # Total Maker Fee
     if makers:
@@ -132,7 +146,8 @@ def _display_standard_send_confirmation(
     from jmcore.bitcoin import format_amount
 
     print("\n" + "=" * _SEND_WIDTH)
-    print(f"Expected {operation.upper()} Transaction")
+    operation_text = _sanitize_terminal_text(operation)
+    print(f"Expected {operation_text.upper()} Transaction")
     print("=" * _SEND_WIDTH)
 
     # Consume known keys from additional_info; any remaining keys are
@@ -151,14 +166,14 @@ def _display_standard_send_confirmation(
 
     # Source Mixdepth
     if source_mixdepth is not None:
-        print(f"{'Source Mixdepth:':<{_LABEL_WIDTH}}  {source_mixdepth}")
+        print(f"{'Source Mixdepth:':<{_LABEL_WIDTH}}  {_sanitize_terminal_text(source_mixdepth)}")
 
     # Destination
     if destination:
         if destination == "INTERNAL":
             print(f"{'Destination:':<{_LABEL_WIDTH}}  INTERNAL (next mixdepth)")
         else:
-            print(f"{'Destination:':<{_LABEL_WIDTH}}  {destination}")
+            print(f"{'Destination:':<{_LABEL_WIDTH}}  {_sanitize_terminal_text(destination)}")
 
     # Amount
     if amount == 0:
@@ -168,12 +183,12 @@ def _display_standard_send_confirmation(
 
     # Change
     if change is not None:
-        print(f"{'Change:':<{_LABEL_WIDTH}}  {change}")
+        print(f"{'Change:':<{_LABEL_WIDTH}}  {_sanitize_terminal_text(change)}")
 
     # Miner Fee Rate (renamed from "Fee Rate" for clarity since SEND has no
     # maker fees, only network/miner fees)
     if fee_rate is not None:
-        print(f"{'Miner Fee Rate:':<{_LABEL_WIDTH}}  {fee_rate}")
+        print(f"{'Miner Fee Rate:':<{_LABEL_WIDTH}}  {_sanitize_terminal_text(fee_rate)}")
 
     # Miner Fee: prefer mining_fee, fall back to the legacy fee argument.
     effective_mining_fee = mining_fee if mining_fee is not None else fee
@@ -182,14 +197,15 @@ def _display_standard_send_confirmation(
 
     # Render any remaining custom keys for forward compatibility.
     for key, value in info.items():
-        if isinstance(value, int) and key.lower().endswith(("fee", "amount", "value")):
-            print(f"{key + ':':<{_LABEL_WIDTH}}  {format_amount(value)}")
+        key_text = _sanitize_terminal_text(key, max_length=64)
+        if isinstance(value, int) and str(key).lower().endswith(("fee", "amount", "value")):
+            print(f"{key_text + ':':<{_LABEL_WIDTH}}  {format_amount(value)}")
         elif isinstance(value, list):
-            print(f"{key + ':':<{_LABEL_WIDTH}}  {len(value)} item(s)")
+            print(f"{key_text + ':':<{_LABEL_WIDTH}}  {len(value)} item(s)")
             for i, item in enumerate(value, 1):
-                print(f"  {i}. {item}")
+                print(f"  {i}. {_sanitize_terminal_text(item)}")
         else:
-            print(f"{key + ':':<{_LABEL_WIDTH}}  {value}")
+            print(f"{key_text + ':':<{_LABEL_WIDTH}}  {_sanitize_terminal_text(value)}")
 
     print("=" * _SEND_WIDTH)
 
@@ -365,10 +381,11 @@ def format_maker_summary(
 
     maker_details = []
     for m in makers:
-        nick = m.get("nick", "unknown")
+        nick = _sanitize_terminal_text(m.get("nick", "unknown"))
         fee = m.get("fee", 0)
         bond_value = m.get("bond_value", 0)
-        location = m.get("location")
+        raw_location = m.get("location")
+        location = _sanitize_terminal_text(raw_location) if raw_location else None
 
         # Right-align fee and bond values
         fee_str = f"{fee:>{max_fee_width},}"

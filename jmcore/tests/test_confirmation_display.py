@@ -112,6 +112,49 @@ def test_unknown_additional_info_keys_still_render(
     assert "hello world" in out
 
 
+def test_standard_confirmation_sanitizes_untrusted_text(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _display_standard_send_confirmation(
+        operation="send\x1b[2J\nforged",
+        amount=1_000,
+        destination="bc1qreal\x1b[2J\nDestination: bc1qforged",
+        fee=50,
+        mining_fee=None,
+        additional_info={
+            "Note\nAmount": "safe\r\nProceed with this transaction? yes",
+            "Items": ["first\titem", "second\x9b31mitem"],
+        },
+    )
+    out = capsys.readouterr().out
+
+    assert "\x1b" not in out
+    assert "\x9b" not in out
+    assert "Expected SEND FORGED Transaction" in out
+    assert "bc1qreal Destination: bc1qforged" in out
+    assert "Note Amount:" in out
+    assert "safe Proceed with this transaction? yes" in out
+    assert "first item" in out
+
+
+def test_confirmation_truncates_untrusted_fields(capsys: pytest.CaptureFixture[str]) -> None:
+    long_value = "x" * 1_000
+    _display_standard_send_confirmation(
+        operation="send",
+        amount=1_000,
+        destination=long_value,
+        fee=50,
+        mining_fee=None,
+        additional_info=None,
+    )
+
+    destination_line = next(
+        line for line in capsys.readouterr().out.splitlines() if line.startswith("Destination:")
+    )
+    assert destination_line.endswith("...")
+    assert len(destination_line.split(maxsplit=1)[1]) == 256
+
+
 def test_coinjoin_fee_amounts_include_percentages(capsys: pytest.CaptureFixture[str]) -> None:
     """CoinJoin fees are shown relative to the CoinJoin amount."""
     makers = format_maker_summary(
@@ -179,3 +222,23 @@ def test_format_maker_summary_without_amount_remains_compatible() -> None:
 
     assert summary["Makers"] == ["maker: 232 sats [no bond]"]
     assert summary["Fee Rate"] == 1.5
+
+
+def test_maker_summary_sanitizes_remote_identity_fields() -> None:
+    summary = format_maker_summary(
+        [
+            {
+                "nick": "maker\x1b[2J\nDestination: forged",
+                "fee": 232,
+                "bond_value": 0,
+                "location": "test.onion:5222\r\nAmount: 0",
+            }
+        ]
+    )
+
+    maker_line = summary["Makers"][0]
+    assert "\x1b" not in maker_line
+    assert "\n" not in maker_line
+    assert "\r" not in maker_line
+    assert "maker Destination: forged" in maker_line
+    assert "test.onion:5222 Amount: 0" in maker_line
