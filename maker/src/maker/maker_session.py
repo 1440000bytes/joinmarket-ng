@@ -48,6 +48,10 @@ if TYPE_CHECKING:
     from maker.protocols import MakerBotProtocol
 
 
+MAX_UNSIGNED_TRANSACTION_SIZE = 1_000_000
+MAX_UNSIGNED_TRANSACTION_B64_SIZE = ((MAX_UNSIGNED_TRANSACTION_SIZE + 2) // 3) * 4
+
+
 @dataclass(frozen=True, slots=True)
 class PendingSignedRound:
     """Minimal post-sign state required to authenticate a later ``!push``."""
@@ -539,7 +543,13 @@ class MakerSession:
                 return
 
             try:
-                tx_bytes = base64.b64decode(decrypted)
+                if len(decrypted) > MAX_UNSIGNED_TRANSACTION_B64_SIZE:
+                    logger.warning("Encoded transaction exceeds maximum size")
+                    return
+                tx_bytes = base64.b64decode(decrypted, validate=True)
+                if len(tx_bytes) > MAX_UNSIGNED_TRANSACTION_SIZE:
+                    logger.warning("Decoded transaction exceeds maximum size")
+                    return
                 tx_hex = tx_bytes.hex()
                 logger.bind(sensitive=True).debug(
                     f"Decoded transaction hex ({len(tx_bytes)} bytes): {tx_hex}"

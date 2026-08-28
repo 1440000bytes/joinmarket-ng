@@ -1671,5 +1671,53 @@ async def test_decoded_transaction_log_is_sensitive():
     assert raw_transaction_records[0][1]["sensitive"] is True
 
 
+@pytest.mark.asyncio
+async def test_on_tx_rejects_decoded_transaction_over_size_limit():
+    """Oversized decoded transactions must not reach transaction verification."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from maker.coinjoin import CoinJoinState
+    from maker.maker_session import MakerSession
+
+    taker_nick = "J5OversizedTxTaker"
+    inner = MagicMock()
+    inner.taker_nick = taker_nick
+    inner.state = CoinJoinState.IOAUTH_SENT
+    inner.crypto.is_encrypted = True
+    inner.crypto.decrypt.return_value = base64.b64encode(b"x" * 1_000_001).decode("ascii")
+    inner.handle_tx = AsyncMock()
+    session = MakerSession(inner)
+    bot = MagicMock()
+    bot.active_sessions = {_session_key(taker_nick): session}
+
+    await session.on_tx(bot, "tx ciphertext", "dir:test")
+
+    inner.handle_tx.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_on_tx_rejects_noncanonical_transaction_base64():
+    """Transaction payloads with ignored base64 junk must be rejected."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from maker.coinjoin import CoinJoinState
+    from maker.maker_session import MakerSession
+
+    taker_nick = "J5InvalidTxTaker"
+    inner = MagicMock()
+    inner.taker_nick = taker_nick
+    inner.state = CoinJoinState.IOAUTH_SENT
+    inner.crypto.is_encrypted = True
+    inner.crypto.decrypt.return_value = "eA== ignored"
+    inner.handle_tx = AsyncMock()
+    session = MakerSession(inner)
+    bot = MagicMock()
+    bot.active_sessions = {_session_key(taker_nick): session}
+
+    await session.on_tx(bot, "tx ciphertext", "dir:test")
+
+    inner.handle_tx.assert_not_awaited()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
