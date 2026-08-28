@@ -9,7 +9,6 @@ from typing import Any, cast
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from loguru import logger
-from pydantic import SecretStr
 
 from jmcore.paths import remove_nick_state, write_nick_state
 from jmcore.settings import get_settings
@@ -305,9 +304,8 @@ async def start_maker(
 
     try:
         from jmwalletd._backend import get_backend
+        from jmwalletd.maker_config import build_daemon_maker_config
         from maker.bot import MakerBot
-        from maker.config import MakerConfig
-        from maker.mixdepth_selection import MixdepthSelectionPolicy
 
         state.activate_coinjoin_state(CoinjoinState.MAKER_RUNNING)
 
@@ -322,43 +320,15 @@ async def start_maker(
                     wallet_service=ws,
                 )
                 jm_settings = get_settings()
-                config = MakerConfig(
-                    mnemonic=SecretStr(state.wallet_mnemonic),
-                    offer_type=body.ordertype,  # type: ignore[arg-type]
+                config = build_daemon_maker_config(
+                    jm_settings,
+                    state.wallet_mnemonic,
+                    state.data_dir,
+                    offer_type=body.ordertype,
                     min_size=minsize,
                     cj_fee_relative=cjfee_r,
                     cj_fee_absolute=cjfee_a,
                     tx_fee_contribution=txfee,
-                    network=jm_settings.network_config.network,
-                    directory_servers=jm_settings.get_directory_servers(),
-                    allow_clearnet_connections=(
-                        jm_settings.network_config.allow_clearnet_connections
-                    ),
-                    nick_auth_mode=jm_settings.network_config.nick_auth_mode,
-                    nick_auth_directory_ids=jm_settings.network_config.nick_auth_directory_ids,
-                    socks_host=jm_settings.tor.socks_host,
-                    socks_port=jm_settings.tor.socks_port,
-                    stream_isolation=jm_settings.tor.stream_isolation,
-                    mixdepth_selection_policy=MixdepthSelectionPolicy(
-                        jm_settings.maker.mixdepth_selection_policy
-                    ),
-                    min_fee_rate_sat_vb=jm_settings.maker.min_fee_rate_sat_vb,
-                    min_fee_block_target=jm_settings.maker.min_fee_block_target,
-                    max_fee_rate_sat_vb=jm_settings.wallet.max_fee_rate_sat_vb,
-                    pre_sign_timeout_sec=jm_settings.maker.pre_sign_timeout_sec,
-                    identity_renewal_min_sec=jm_settings.maker.identity_renewal_min_sec,
-                    identity_renewal_max_sec=jm_settings.maker.identity_renewal_max_sec,
-                    identity_grace_sec=jm_settings.maker.identity_grace_sec,
-                    identity_rotation_quiet_min_sec=(
-                        jm_settings.maker.identity_rotation_quiet_min_sec
-                    ),
-                    identity_rotation_quiet_max_sec=(
-                        jm_settings.maker.identity_rotation_quiet_max_sec
-                    ),
-                    # Log maker history into the daemon's data dir so the
-                    # yieldgen/report endpoint (which reads from state.data_dir)
-                    # reflects this maker's earnings (#531).
-                    data_dir=state.data_dir,
                 )
                 maker = MakerBot(
                     wallet=ws,

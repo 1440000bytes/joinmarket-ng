@@ -603,19 +603,60 @@ class TestStartPlan:
         settings = JoinMarketSettings(
             network_config=NetworkSettings(
                 network=NetworkType.SIGNET,
+                bitcoin_network=NetworkType.REGTEST,
                 directory_servers=[directory_server],
                 allow_clearnet_connections=allow_clearnet_connections,
             ),
+            tor={
+                "socks_host": "127.0.0.2",
+                "socks_port": 9052,
+                "stream_isolation": False,
+                "connection_timeout": 45.0,
+                "control_host": "127.0.0.3",
+                "control_port": 9053,
+                "cookie_path": "/tmp/tumbler-control.cookie",
+                "target_host": "maker-service",
+            },
             maker={
+                "min_size": 200_000,
+                "cj_fee_relative": "0.003",
+                "cj_fee_absolute": 700,
+                "tx_fee_contribution": 800,
+                "cjfee_factor": 0.15,
+                "txfee_contribution_factor": 0.45,
+                "size_factor": 0.25,
+                "min_confirmations": 7,
+                "allow_mixdepth_zero_merge": True,
+                "merge_algorithm": "gradual",
                 "mixdepth_selection_policy": "concentrated",
                 "min_fee_rate_sat_vb": 2.5,
                 "min_fee_block_target": 12,
+                "session_timeout_sec": 600,
                 "pre_sign_timeout_sec": 120,
                 "identity_renewal_min_sec": 61,
                 "identity_renewal_max_sec": 121,
                 "identity_grace_sec": 90,
                 "identity_rotation_quiet_min_sec": 17,
                 "identity_rotation_quiet_max_sec": 29,
+                "pending_tx_timeout_min": 15,
+                "pending_tx_abandon_hours": 96,
+                "rescan_interval_sec": 780,
+                "onion_host": "tumbler-maker.example.onion",
+                "onion_serving_host": "0.0.0.0",
+                "onion_serving_port": 5223,
+                "message_rate_limit": 11,
+                "message_burst_limit": 111,
+                "offer_reannounce_delay_max": 432,
+                "directory_reconnect_interval": 75,
+                "directory_reconnect_max_retries": 8,
+                "directory_startup_timeout": 180,
+                "orderbook_rate_limit": 2,
+                "orderbook_rate_interval": 15.0,
+                "orderbook_violation_ban_threshold": 101,
+                "orderbook_violation_warning_threshold": 11,
+                "orderbook_violation_severe_threshold": 51,
+                "orderbook_ban_duration": 7200.0,
+                "dual_offers": True,
             },
             wallet={"max_fee_rate_sat_vb": 777.0},
         )
@@ -645,20 +686,59 @@ class TestStartPlan:
         asyncio.run(CapturingRunner.context.maker_factory(MagicMock()))
         maker_config = maker_bot_cls.call_args.kwargs["config"]
         assert isinstance(maker_config, MakerConfig)
+        assert maker_config.network == NetworkType.SIGNET
+        assert maker_config.bitcoin_network == NetworkType.REGTEST
+        assert maker_config.data_dir == get_daemon_state().data_dir
+        assert maker_config.directory_servers == [directory_server]
         assert maker_config.allow_clearnet_connections is allow_clearnet_connections
+        assert maker_config.socks_host == "127.0.0.2"
+        assert maker_config.socks_port == 9052
+        assert maker_config.stream_isolation is False
+        assert maker_config.connection_timeout == 45.0
+        assert maker_config.tor_control.host == "127.0.0.3"
+        assert maker_config.tor_control.port == 9053
+        assert maker_config.tor_control.cookie_path == Path("/tmp/tumbler-control.cookie")
+        assert maker_config.tor_target_host == "maker-service"
+        assert maker_config.onion_host == "tumbler-maker.example.onion"
+        assert maker_config.onion_serving_host == "0.0.0.0"
+        assert maker_config.onion_serving_port == 5223
+        assert maker_config.min_size == 200_000
+        assert maker_config.cjfee_factor == 0.15
+        assert maker_config.txfee_contribution_factor == 0.45
+        assert maker_config.size_factor == 0.25
+        assert maker_config.min_confirmations == 7
+        assert maker_config.allow_mixdepth_zero_merge is True
+        assert maker_config.merge_algorithm.value == "gradual"
         assert str(maker_config.mixdepth_selection_policy) == "concentrated"
         assert maker_config.min_fee_rate_sat_vb == 2.5
         assert maker_config.min_fee_block_target == 12
         assert maker_config.max_fee_rate_sat_vb == 777.0
+        assert maker_config.session_timeout_sec == 600
         assert maker_config.pre_sign_timeout_sec == 120
         assert maker_config.identity_renewal_min_sec == 61
         assert maker_config.identity_renewal_max_sec == 121
         assert maker_config.identity_grace_sec == 90
         assert maker_config.identity_rotation_quiet_min_sec == 17
         assert maker_config.identity_rotation_quiet_max_sec == 29
+        assert maker_config.pending_tx_timeout_min == 15
+        assert maker_config.pending_tx_abandon_hours == 96
+        assert maker_config.rescan_interval_sec == 780
+        assert maker_config.message_rate_limit == 11
+        assert maker_config.message_burst_limit == 111
+        assert maker_config.offer_reannounce_delay_max == 432
+        assert maker_config.directory_reconnect_interval == 75
+        assert maker_config.directory_reconnect_max_retries == 8
+        assert maker_config.directory_startup_timeout == 180
+        assert maker_config.orderbook_rate_limit == 2
+        assert maker_config.orderbook_rate_interval == 15.0
+        assert maker_config.orderbook_violation_ban_threshold == 101
+        assert maker_config.orderbook_violation_warning_threshold == 11
+        assert maker_config.orderbook_violation_severe_threshold == 51
+        assert maker_config.orderbook_ban_duration == 7200.0
         assert maker_config.offer_type is OfferType.SW0_ABSOLUTE
         assert maker_config.cj_fee_absolute == 0
         assert maker_config.no_fidelity_bond is True
+        assert maker_config.offer_configs == []
 
 
 # ----------------------------------------------------------------------------

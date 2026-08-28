@@ -32,7 +32,6 @@ from typing import Any, cast
 from fastapi import APIRouter, Depends, Response
 from fastapi.responses import JSONResponse
 from loguru import logger
-from pydantic import SecretStr
 from tumbler.builder import PlanBuilder, TumbleParameters
 from tumbler.persistence import (
     PlanCorruptError,
@@ -434,9 +433,8 @@ async def start_plan(
     jm_settings = get_settings()
 
     from jmwalletd._backend import get_backend
+    from jmwalletd.maker_config import build_daemon_maker_config
     from maker.bot import MakerBot
-    from maker.config import MakerConfig
-    from maker.mixdepth_selection import MixdepthSelectionPolicy
     from taker.config import TakerConfig
     from taker.taker import Taker
 
@@ -461,31 +459,7 @@ async def start_plan(
             force_new=True,
             wallet_service=ws,
         )
-        config = MakerConfig(
-            mnemonic=SecretStr(state.wallet_mnemonic),
-            network=jm_settings.network_config.network,
-            directory_servers=jm_settings.get_directory_servers(),
-            allow_clearnet_connections=jm_settings.network_config.allow_clearnet_connections,
-            nick_auth_mode=jm_settings.network_config.nick_auth_mode,
-            nick_auth_directory_ids=jm_settings.network_config.nick_auth_directory_ids,
-            socks_host=jm_settings.tor.socks_host,
-            socks_port=jm_settings.tor.socks_port,
-            stream_isolation=jm_settings.tor.stream_isolation,
-            mixdepth_selection_policy=MixdepthSelectionPolicy(
-                jm_settings.maker.mixdepth_selection_policy
-            ),
-            min_fee_rate_sat_vb=jm_settings.maker.min_fee_rate_sat_vb,
-            min_fee_block_target=jm_settings.maker.min_fee_block_target,
-            max_fee_rate_sat_vb=jm_settings.wallet.max_fee_rate_sat_vb,
-            pre_sign_timeout_sec=jm_settings.maker.pre_sign_timeout_sec,
-            identity_renewal_min_sec=jm_settings.maker.identity_renewal_min_sec,
-            identity_renewal_max_sec=jm_settings.maker.identity_renewal_max_sec,
-            identity_grace_sec=jm_settings.maker.identity_grace_sec,
-            identity_rotation_quiet_min_sec=jm_settings.maker.identity_rotation_quiet_min_sec,
-            identity_rotation_quiet_max_sec=jm_settings.maker.identity_rotation_quiet_max_sec,
-            # Log maker history into the daemon's data dir (#531).
-            data_dir=state.data_dir,
-        )
+        config = build_daemon_maker_config(jm_settings, state.wallet_mnemonic, state.data_dir)
         # Tumbler maker sessions must run as 0-fee sw0absoffer with no
         # fidelity bond. See ``tumbler.maker_policy`` for the rationale.
         from tumbler.maker_policy import apply_tumbler_maker_policy
