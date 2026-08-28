@@ -21,6 +21,7 @@ def _utxo(
     script: str,
     *,
     index: int,
+    scriptpubkey: str | None = None,
     mixdepth: int = 1,
     confirmations: int = 6,
     frozen: bool = False,
@@ -33,7 +34,7 @@ def _utxo(
         value=value,
         address=DESTINATION,
         confirmations=confirmations,
-        scriptpubkey=f"0014{script * 20}",
+        scriptpubkey=scriptpubkey or f"0014{script * 20}",
         path=f"m/84'/1'/{mixdepth}'/0/{index}",
         mixdepth=mixdepth,
         frozen=frozen,
@@ -264,6 +265,11 @@ class TestSingleFeeEstimator:
     def test_p2wsh_inputs_are_sized_larger_than_p2wpkh(self) -> None:
         from jmwallet.wallet.spend import estimate_fee
 
-        p2wpkh = [_utxo(200_000, "a", index=1)]
-        _, small = estimate_fee(p2wpkh, DESTINATION, 1.0, has_change=True)
-        assert small > 0
+        p2wpkh = _utxo(200_000, "a", index=1)
+        p2wsh = _utxo(200_000, "a", index=1, scriptpubkey="0020" + "aa" * 32)
+
+        p2wpkh_fee, p2wpkh_vsize = estimate_fee([p2wpkh], DESTINATION, 1.0, has_change=True)
+        p2wsh_fee, p2wsh_vsize = estimate_fee([p2wsh], DESTINATION, 1.0, has_change=True)
+
+        assert p2wsh_vsize > p2wpkh_vsize
+        assert p2wsh_fee > p2wpkh_fee
