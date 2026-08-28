@@ -134,6 +134,15 @@ def test_message_envelope_nesting_depth_limit():
     assert result.message_type == 793
 
 
+def test_message_envelope_excessive_parser_nesting_is_bounded():
+    """Parser recursion failures are normalized to MessageParsingError."""
+    depth = 2_000
+    data = b'{"type":793,"line":' + b"[" * depth + b"0" + b"]" * depth + b"}"
+
+    with pytest.raises(MessageParsingError, match="nesting depth"):
+        MessageEnvelope.from_bytes(data)
+
+
 def test_validate_json_nesting_depth_dict():
     """Test nesting depth validation for dictionaries."""
     # Shallow structure (3 levels) - should pass

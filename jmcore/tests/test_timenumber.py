@@ -189,6 +189,13 @@ class TestGetNearestValidLocktime:
         jan_1_2026 = int(datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC).timestamp())
         assert get_nearest_valid_locktime(dec_15_2025, round_up=True) == jan_1_2026
 
+    def test_round_up_past_era_raises(self):
+        """Rounding past December 2099 must not produce an invalid locktime."""
+        dec_15_2099 = int(datetime(2099, 12, 15, 0, 0, 0, tzinfo=UTC).timestamp())
+
+        with pytest.raises(ValueError, match="after maximum"):
+            get_nearest_valid_locktime(dec_15_2099, round_up=True)
+
 
 class TestParseLocktime:
     """Tests for parse_locktime_date."""

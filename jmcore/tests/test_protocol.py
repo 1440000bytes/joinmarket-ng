@@ -231,6 +231,22 @@ class TestUTXOMetadata:
         with pytest.raises(ValueError, match="4294967295"):
             UTXOMetadata(txid=txid_valid, vout=2**32)
 
+        with pytest.raises(ValueError, match="Invalid scriptpubkey"):
+            UTXOMetadata(txid=txid_valid, vout=0, scriptpubkey="not-hex")
+
+        with pytest.raises(ValueError, match="Invalid scriptpubkey"):
+            UTXOMetadata.from_str(f"{txid_valid}:0:not-hex:1")
+
+        with pytest.raises(ValueError, match="Invalid scriptpubkey"):
+            UTXOMetadata(txid=txid_valid, vout=0, scriptpubkey="abcde")
+
+        oversized_scriptpubkey = "a" * 201
+        with pytest.raises(ValueError, match="Invalid scriptpubkey"):
+            UTXOMetadata(txid=txid_valid, vout=0, scriptpubkey=oversized_scriptpubkey)
+
+        with pytest.raises(ValueError, match="Invalid scriptpubkey"):
+            UTXOMetadata.from_str(f"{txid_valid}:0:{oversized_scriptpubkey}:1")
+
     def test_scriptpubkey_validation(self):
         """Validate scriptPubKey format."""
         # Valid P2WPKH (22 bytes = 44 hex chars)
@@ -294,18 +310,18 @@ class TestParseUtxoList:
         txid2 = "7" * 64
         txid3 = "8" * 64
         utxos = parse_utxo_list(
-            f"{txid1}:0:0014aaa:100,{txid2}:1:0014bbb:200,{txid3}:2:0014ccc:300"
+            f"{txid1}:0:0014aaaa:100,{txid2}:1:0014bbbb:200,{txid3}:2:0014cccc:300"
         )
         assert len(utxos) == 3
         assert all(u.has_neutrino_metadata() for u in utxos)
         assert utxos[0].blockheight == 100
-        assert utxos[2].scriptpubkey == "0014ccc"
+        assert utxos[2].scriptpubkey == "0014cccc"
 
     def test_mixed_formats(self):
         """Parse mixed legacy and extended UTXOs."""
         txid1 = "9" * 64
         txid2 = "a" * 64
-        utxos = parse_utxo_list(f"{txid1}:0,{txid2}:1:0014bbb:200")
+        utxos = parse_utxo_list(f"{txid1}:0,{txid2}:1:0014bbbb:200")
         assert len(utxos) == 2
         assert not utxos[0].has_neutrino_metadata()
         assert utxos[1].has_neutrino_metadata()
@@ -315,7 +331,7 @@ class TestParseUtxoList:
         txid1 = "b" * 64
         txid2 = "c" * 64
         utxos = parse_utxo_list(
-            f"{txid1}:0:0014aaa:100,{txid2}:1:0014bbb:200", require_metadata=True
+            f"{txid1}:0:0014aaaa:100,{txid2}:1:0014bbbb:200", require_metadata=True
         )
         assert len(utxos) == 2
 
@@ -324,7 +340,7 @@ class TestParseUtxoList:
         txid1 = "d" * 64
         txid2 = "e" * 64
         with pytest.raises(ValueError, match="missing Neutrino metadata"):
-            parse_utxo_list(f"{txid1}:0,{txid2}:1:0014bbb:200", require_metadata=True)
+            parse_utxo_list(f"{txid1}:0,{txid2}:1:0014bbbb:200", require_metadata=True)
 
 
 class TestFormatUtxoList:
@@ -335,8 +351,8 @@ class TestFormatUtxoList:
         txid1 = "f" * 64
         txid2 = "0" * 64
         utxos = [
-            UTXOMetadata(txid=txid1, vout=0, scriptpubkey="0014aaa", blockheight=100),
-            UTXOMetadata(txid=txid2, vout=1, scriptpubkey="0014bbb", blockheight=200),
+            UTXOMetadata(txid=txid1, vout=0, scriptpubkey="0014aaaa", blockheight=100),
+            UTXOMetadata(txid=txid2, vout=1, scriptpubkey="0014bbbb", blockheight=200),
         ]
         result = format_utxo_list(utxos, extended=False)
         assert result == f"{txid1}:0,{txid2}:1"
@@ -346,11 +362,11 @@ class TestFormatUtxoList:
         txid1 = "f" * 64
         txid2 = "0" * 64
         utxos = [
-            UTXOMetadata(txid=txid1, vout=0, scriptpubkey="0014aaa", blockheight=100),
-            UTXOMetadata(txid=txid2, vout=1, scriptpubkey="0014bbb", blockheight=200),
+            UTXOMetadata(txid=txid1, vout=0, scriptpubkey="0014aaaa", blockheight=100),
+            UTXOMetadata(txid=txid2, vout=1, scriptpubkey="0014bbbb", blockheight=200),
         ]
         result = format_utxo_list(utxos, extended=True)
-        assert result == f"{txid1}:0:0014aaa:100,{txid2}:1:0014bbb:200"
+        assert result == f"{txid1}:0:0014aaaa:100,{txid2}:1:0014bbbb:200"
 
 
 # ==============================================================================

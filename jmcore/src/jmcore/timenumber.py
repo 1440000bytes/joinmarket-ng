@@ -209,7 +209,9 @@ def get_nearest_valid_locktime(locktime: int, round_up: bool = True) -> int:
         month = dt.month
 
     result_dt = datetime(year, month, 1, 0, 0, 0, tzinfo=UTC)
-    return int(result_dt.timestamp())
+    result = int(result_dt.timestamp())
+    timestamp_to_timenumber(result)
+    return result
 
 
 def parse_locktime_date(date_str: str) -> int:

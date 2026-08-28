@@ -1404,6 +1404,30 @@ class TestVarintAllBranches:
             assert decoded == val
             assert offset == 9
 
+    @pytest.mark.parametrize(
+        "data",
+        [
+            b"",
+            b"\xfd",
+            b"\xfd\x00",
+            b"\xfe",
+            b"\xfe\x00",
+            b"\xfe\x00\x00",
+            b"\xfe\x00\x00\x00",
+            b"\xff",
+            b"\xff\x00",
+            b"\xff\x00\x00",
+            b"\xff\x00\x00\x00",
+            b"\xff\x00\x00\x00\x00",
+            b"\xff\x00\x00\x00\x00\x00",
+            b"\xff\x00\x00\x00\x00\x00\x00",
+            b"\xff\x00\x00\x00\x00\x00\x00\x00",
+        ],
+    )
+    def test_truncated_varint_raises_value_error(self, data: bytes) -> None:
+        with pytest.raises(ValueError, match="Truncated varint"):
+            decode_varint(data)
+
 
 # =============================================================================
 # More address / script coverage

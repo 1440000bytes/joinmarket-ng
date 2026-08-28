@@ -974,6 +974,39 @@ class TestParsePodleRevelationExtended:
         parsed = parse_podle_revelation(revelation)
         assert parsed is None
 
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("P", "02" + "aa" * 33),
+            ("P2", "03" + "bb" * 31),
+            ("sig", "cc" * 33),
+            ("e", "dd" * 31),
+        ],
+    )
+    def test_parse_invalid_hex_field_lengths_returns_none(self, field: str, value: str) -> None:
+        """Wrong-sized fields are rejected before hex decoding."""
+        revelation = {
+            "P": "02" + "aa" * 32,
+            "P2": "03" + "bb" * 32,
+            "sig": "cc" * 32,
+            "e": "dd" * 32,
+            "utxo": "ee" * 32 + ":0",
+        }
+        revelation[field] = value
+
+        assert parse_podle_revelation(revelation) is None
+
+    def test_parse_oversized_utxo_returns_none(self) -> None:
+        revelation = {
+            "P": "02" + "aa" * 32,
+            "P2": "03" + "bb" * 32,
+            "sig": "cc" * 32,
+            "e": "dd" * 32,
+            "utxo": "a" * 321,
+        }
+
+        assert parse_podle_revelation(revelation) is None
+
     def test_parse_short_txid_rejected(self) -> None:
         """TXID shorter than 64 hex chars is rejected."""
         revelation = {
@@ -1032,6 +1065,22 @@ class TestDeserializeRevelationEdgeCases:
         wire = "a|b|c|d|e|f"
         parsed = deserialize_revelation(wire)
         assert parsed is None
+
+    def test_oversized_serialized_revelation_returns_none(self) -> None:
+        assert deserialize_revelation("a" * 641) is None
+
+    def test_wrong_sized_field_returns_none(self) -> None:
+        wire = "|".join(
+            [
+                "ee" * 32 + ":0",
+                "02" + "aa" * 32,
+                "03" + "bb" * 32,
+                "cc" * 33,
+                "dd" * 32,
+            ]
+        )
+
+        assert deserialize_revelation(wire) is None
 
 
 class TestVerifyPodleBinding:

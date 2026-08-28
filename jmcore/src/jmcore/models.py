@@ -176,11 +176,12 @@ class MessageEnvelope(BaseModel):
                 f"Message line length {len(data)} exceeds maximum of {max_line_length} bytes"
             )
 
-        # Parse JSON
-        obj = json.loads(data)
-
-        # Validate nesting depth BEFORE creating model
-        validate_json_nesting_depth(obj, max_json_nesting_depth)
+        try:
+            # Parse and validate nesting depth before creating the model.
+            obj = json.loads(data)
+            validate_json_nesting_depth(obj, max_json_nesting_depth)
+        except RecursionError as exc:
+            raise MessageParsingError("JSON nesting depth exceeds parser limits") from exc
 
         return cls(message_type=obj["type"], payload=obj["line"])
 

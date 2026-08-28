@@ -341,15 +341,20 @@ def decode_varint(data: bytes, offset: int = 0) -> tuple[int, int]:
     Returns:
         (value, new_offset) tuple
     """
-    first = data[offset]
+    try:
+        first = data[offset]
+    except IndexError as exc:
+        raise ValueError("Truncated varint") from exc
+
     if first < 0xFD:
         return first, offset + 1
-    elif first == 0xFD:
-        return struct.unpack("<H", data[offset + 1 : offset + 3])[0], offset + 3
-    elif first == 0xFE:
-        return struct.unpack("<I", data[offset + 1 : offset + 5])[0], offset + 5
-    else:
-        return struct.unpack("<Q", data[offset + 1 : offset + 9])[0], offset + 9
+
+    payload_length = {0xFD: 2, 0xFE: 4, 0xFF: 8}[first]
+    end_offset = offset + 1 + payload_length
+    if end_offset > len(data):
+        raise ValueError("Truncated varint")
+
+    return int.from_bytes(data[offset + 1 : end_offset], "little"), end_offset
 
 
 # =============================================================================

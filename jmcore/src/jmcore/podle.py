@@ -76,6 +76,34 @@ class PoDLEError(Exception):
     pass
 
 
+_PODLE_POINT_HEX_LENGTH = 66
+_PODLE_SCALAR_HEX_LENGTH = 64
+_MAX_PODLE_UTXO_LENGTH = 320
+_MAX_PODLE_REVELATION_LENGTH = 640
+
+
+def _has_valid_revelation_field_lengths(revelation: dict[str, Any]) -> bool:
+    """Check bounds before decoding untrusted PoDLE revelation fields."""
+    expected_lengths = {
+        "P": _PODLE_POINT_HEX_LENGTH,
+        "P2": _PODLE_POINT_HEX_LENGTH,
+        "sig": _PODLE_SCALAR_HEX_LENGTH,
+        "e": _PODLE_SCALAR_HEX_LENGTH,
+    }
+    for field, expected_length in expected_lengths.items():
+        value = revelation[field]
+        if not isinstance(value, str) or len(value) != expected_length:
+            logger.warning(f"Invalid PoDLE revelation {field} length")
+            return False
+
+    utxo = revelation["utxo"]
+    if not isinstance(utxo, str) or len(utxo) > _MAX_PODLE_UTXO_LENGTH:
+        logger.warning("Invalid PoDLE revelation UTXO length")
+        return False
+
+    return True
+
+
 # Cache for generated NUMS points to avoid recomputation
 _nums_cache: dict[int, PublicKey] = {}
 
@@ -562,6 +590,9 @@ def parse_podle_revelation(revelation: dict[str, Any]) -> dict[str, Any] | None:
                 logger.warning(f"Missing required field in PoDLE revelation: {field}")
                 return None
 
+        if not _has_valid_revelation_field_lengths(revelation):
+            return None
+
         p_bytes = bytes.fromhex(revelation["P"])
         p2_bytes = bytes.fromhex(revelation["P2"])
         sig_bytes = bytes.fromhex(revelation["sig"])
@@ -614,18 +645,26 @@ def deserialize_revelation(revelation_str: str) -> dict[str, Any] | None:
     Format: utxo|P|P2|sig|e (pipe-separated strings)
     """
     try:
+        if len(revelation_str) > _MAX_PODLE_REVELATION_LENGTH:
+            logger.warning("PoDLE revelation exceeds maximum length")
+            return None
+
         parts = revelation_str.split("|")
         if len(parts) != 5:
             logger.warning(f"Invalid revelation format: expected 5 parts, got {len(parts)}")
             return None
 
-        return {
+        revelation = {
             "utxo": parts[0],
             "P": parts[1],
             "P2": parts[2],
             "sig": parts[3],
             "e": parts[4],
         }
+        if not _has_valid_revelation_field_lengths(revelation):
+            return None
+
+        return revelation
 
     except Exception as e:
         logger.error("Failed to deserialize PoDLE revelation")

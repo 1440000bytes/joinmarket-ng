@@ -285,6 +285,9 @@ class UTXOMetadata:
         if self.vout > 0xFFFFFFFF:
             raise ValueError(f"Invalid vout (overflow, max 4294967295): {self.vout}")
 
+        if self.scriptpubkey is not None and not self.is_valid_scriptpubkey(self.scriptpubkey):
+            raise ValueError("Invalid scriptpubkey")
+
         # Optional blockheight validation
         if self.blockheight is not None and self.blockheight < 0:
             raise ValueError(f"Invalid blockheight (must be non-negative): {self.blockheight}")
@@ -341,10 +344,12 @@ class UTXOMetadata:
     @staticmethod
     def is_valid_scriptpubkey(scriptpubkey: str) -> bool:
         """Validate scriptPubKey format (hex string)."""
-        if not scriptpubkey:
+        if not isinstance(scriptpubkey, str) or not scriptpubkey:
             return False
         # Must be valid hex
         if not re.match(r"^[0-9a-fA-F]+$", scriptpubkey):
+            return False
+        if len(scriptpubkey) % 2 != 0:
             return False
         # Common scriptPubKey lengths (in hex chars):
         # P2PKH: 50 (25 bytes), P2SH: 46 (23 bytes)
