@@ -1814,7 +1814,14 @@ class Taker(TakerMonitoringMixin):
             session_size_before_fill = len(self._session.maker_sessions)
             fill_result = await self._session._phase_fill()
 
-            if fill_result.blacklist_makers and self._session.podle_commitment is not None:
+            n_blacklisted = len(fill_result.blacklist_makers)
+            majority_blacklist = (
+                fill_result.blacklist_error
+                and session_size_before_fill > 0
+                and n_blacklisted * 2 >= session_size_before_fill
+            )
+
+            if majority_blacklist and self._session.podle_commitment is not None:
                 commitment_hex = self._session.podle_commitment.commitment.commitment.hex()
                 try:
                     from jmcore.commitment_blacklist import add_commitment
@@ -1822,15 +1829,8 @@ class Taker(TakerMonitoringMixin):
                     add_commitment(commitment_hex)
                 except Exception as exc:  # pragma: no cover - defensive
                     logger.warning(
-                        f"Could not persist remotely-reported blacklisted commitment: {exc}"
+                        f"Could not persist majority-reported blacklisted commitment: {exc}"
                     )
-
-            n_blacklisted = len(fill_result.blacklist_makers)
-            majority_blacklist = (
-                fill_result.blacklist_error
-                and session_size_before_fill > 0
-                and n_blacklisted * 2 >= session_size_before_fill
-            )
 
             if fill_result.blacklist_error and not majority_blacklist:
                 logger.warning(

@@ -3563,7 +3563,7 @@ class TestReplacementTargetRestoration:
         notifier.notify_coinjoin_start = AsyncMock()
         with (
             patch("taker.taker.get_notifier", return_value=notifier),
-            patch("jmcore.commitment_blacklist.add_commitment"),
+            patch("jmcore.commitment_blacklist.add_commitment") as add_commitment,
         ):
             ok = await taker._run_fill_with_replacements(
                 destination="bcrt1qdest",
@@ -3577,6 +3577,43 @@ class TestReplacementTargetRestoration:
         assert ok is True
         assert taker._session._phase_fill.await_count == 2
         taker.podle_manager.generate_fresh_commitment.assert_called_once()
+        add_commitment.assert_called_once_with("ab" * 32)
+
+    @pytest.mark.asyncio
+    async def test_minority_blacklist_does_not_persist_commitment(self):
+        taker = self._make_taker(minimum_makers=7, target_makers=8, current_makers=8)
+        selected_offers = {
+            nick: session.offer for nick, session in taker._session.maker_sessions.items()
+        }
+        taker._session.podle_commitment = MagicMock()
+        taker._session.podle_commitment.commitment.commitment.hex.return_value = "ab" * 32
+        blacklisted = [next(iter(taker._session.maker_sessions))]
+        taker._session._phase_fill = AsyncMock(
+            return_value=PhaseResult(
+                success=True,
+                failed_makers=blacklisted,
+                blacklist_error=True,
+                blacklist_makers=blacklisted,
+            )
+        )
+
+        notifier = MagicMock()
+        notifier.notify_coinjoin_start = AsyncMock()
+        with (
+            patch("taker.taker.get_notifier", return_value=notifier),
+            patch("jmcore.commitment_blacklist.add_commitment") as add_commitment,
+        ):
+            ok = await taker._run_fill_with_replacements(
+                destination="bcrt1qdest",
+                selected_offers=selected_offers,
+                required_features=None,
+                mixdepth=0,
+                get_private_key=MagicMock(),
+                max_replacement_attempts=0,
+            )
+
+        assert ok is True
+        add_commitment.assert_not_called()
 
 
 class TestIncrementalPhaseTopUp:
