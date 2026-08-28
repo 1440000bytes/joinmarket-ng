@@ -106,6 +106,11 @@ uses up to `taker.max_maker_replacement_attempts` (default `3`) to restore that 
 maker fails. `taker.minimum_makers` is only the final floor after those attempts are exhausted
 or no candidates remain; a round below that floor fails.
 
+The initial maker and fee preview expires after
+`taker.initial_confirmation_timeout_sec` seconds (default `300`). An expired preview is
+cancelled before the taker creates a PoDLE commitment or contacts makers; start a fresh run to
+fetch current offers. Set the value to `0` only when an unbounded confirmation wait is required.
+
 For all option details, use the auto-generated `jm-taker coinjoin --help` below. Tumbler
 commands are documented in [JoinMarket Tumbler](README-tumbler.md).
 

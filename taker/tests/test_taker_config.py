@@ -94,6 +94,7 @@ class TestTakerConfig:
         assert config.require_quantized_cj_fees is False
         assert config.bondless_makers_allowance == 0.05
         assert config.bondless_makers_allowance_require_zero_fee is True
+        assert config.initial_confirmation_timeout_sec == 300
 
     def test_direct_config_rejects_production_clearnet_directory(
         self, sample_mnemonic: str
@@ -126,6 +127,7 @@ class TestTakerConfig:
         ("field", "value"),
         [
             ("maker_timeout_sec", 3601),
+            ("initial_confirmation_timeout_sec", 3601),
             ("order_wait_time", 3600.1),
             ("broadcast_timeout_sec", 3601),
         ],
@@ -145,11 +147,12 @@ class TestTakerConfig:
 
         session = CoinJoinSession()
         session.attach(MagicMock(config=TakerConfig(mnemonic=sample_mnemonic)))
-        assert session.input_lock_ttl_sec() == 87_870
+        assert session.input_lock_ttl_sec() == 88_170
 
         max_config = TakerConfig(
             mnemonic=sample_mnemonic,
             maker_timeout_sec=3600,
+            initial_confirmation_timeout_sec=3600,
             order_wait_time=3600,
             broadcast_timeout_sec=3600,
             taker_utxo_retries=10,
@@ -157,7 +160,7 @@ class TestTakerConfig:
             pending_tx_abandon_hours=336,
         )
         session.attach(MagicMock(config=max_config))
-        assert session.input_lock_ttl_sec() == 1_407_600
+        assert session.input_lock_ttl_sec() == 1_411_200
         assert session.input_lock_ttl_sec() <= MAX_COINJOIN_LOCK_TTL
 
     def test_full_config(self, sample_mnemonic: str) -> None:

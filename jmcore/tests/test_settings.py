@@ -271,6 +271,7 @@ class TestSettingsDefaults:
         assert settings.taker.require_quantized_cj_fees is False
         assert settings.taker.bondless_makers_allowance == 0.05
         assert settings.taker.bondless_require_zero_fee is True
+        assert settings.taker.initial_confirmation_timeout_sec == 300
         assert settings.taker.tx_broadcast == "random-peer"
 
 
@@ -699,6 +700,8 @@ def test_settings_bound_fields_used_by_derived_lock_ttls() -> None:
         MakerSettings(session_timeout_sec=86_401)
     with pytest.raises(ValueError):
         TakerSettings(maker_timeout_sec=3601)
+    with pytest.raises(ValueError):
+        TakerSettings(initial_confirmation_timeout_sec=3601)
     with pytest.raises(ValueError):
         TakerSettings(order_wait_time=3600.1)
 

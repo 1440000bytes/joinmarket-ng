@@ -10,6 +10,8 @@ tumbler retry loop hits when a phase fails mid-negotiation.
 
 from __future__ import annotations
 
+import asyncio
+import time
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -93,6 +95,69 @@ async def test_failure_after_reservation_releases_persisted_locks() -> None:
         {(utxo.txid, utxo.vout)}, owner=taker._session.input_lock_owner
     )
     assert taker._session.reserved_inputs == set()
+
+
+@pytest.mark.asyncio
+async def test_initial_confirmation_timeout_stops_before_podle_and_releases_locks() -> None:
+    utxo = make_utxo(txid_char="a", value=25_000_000, confirmations=10)
+    wallet = _make_wallet([utxo])
+    config = make_taker_config(
+        counterparty_count=2,
+        minimum_makers=2,
+        taker_utxo_age=5,
+        taker_utxo_amtpercent=20,
+        fee_rate=1.0,
+    )
+    config.initial_confirmation_timeout_sec = 0.01  # type: ignore[assignment]
+
+    async def wait_forever(**kwargs: object) -> bool:
+        await asyncio.Event().wait()
+        return True
+
+    taker = Taker(wallet, _backend(), config, confirmation_callback=wait_forever)
+    offers = [_offer("J5maker1"), _offer("J5maker2")]
+    taker.directory_client.fetch_orderbook = AsyncMock(return_value=offers)
+    taker._update_offers_with_bond_values = AsyncMock()  # type: ignore[method-assign]
+    taker.orderbook_manager.update_offers = Mock()  # type: ignore[method-assign]
+    taker.orderbook_manager.select_makers = Mock(  # type: ignore[method-assign]
+        return_value=({o.counterparty: o for o in offers}, 1_000)
+    )
+    taker.podle_manager.generate_fresh_commitment = Mock()  # type: ignore[method-assign]
+    taker._run_fill_with_replacements = AsyncMock()  # type: ignore[method-assign]
+
+    result = await taker.do_coinjoin(
+        amount=5_000_000,
+        destination="bcrt1qxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        mixdepth=0,
+    )
+
+    assert result is None
+    assert taker.state == TakerState.CANCELLED
+    assert taker.last_failure_reason is not None
+    assert "confirmation expired" in taker.last_failure_reason
+    taker.podle_manager.generate_fresh_commitment.assert_not_called()
+    taker._run_fill_with_replacements.assert_not_awaited()
+    wallet.release_coinjoin_inputs.assert_called_once_with(
+        {(utxo.txid, utxo.vout)}, owner=taker._session.input_lock_owner
+    )
+    assert taker._session.reserved_inputs == set()
+
+
+@pytest.mark.asyncio
+async def test_late_synchronous_confirmation_is_rejected() -> None:
+    def confirm_after_timeout(**kwargs: object) -> bool:
+        time.sleep(0.02)
+        return True
+
+    taker = Taker(
+        _make_wallet([]),
+        _backend(),
+        make_taker_config(),
+        confirmation_callback=confirm_after_timeout,
+    )
+
+    with pytest.raises(TimeoutError):
+        await taker._request_confirmation(timeout=0.01, stage="initial")
 
 
 @pytest.mark.asyncio

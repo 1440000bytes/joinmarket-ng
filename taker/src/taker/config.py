@@ -208,6 +208,15 @@ class TakerConfig(WalletConfig):
     maker_timeout_sec: int = Field(
         default=60, ge=10, le=3600, description="Timeout for maker responses"
     )
+    initial_confirmation_timeout_sec: int = Field(
+        default=300,
+        ge=0,
+        le=3600,
+        description=(
+            "Maximum seconds to approve the initial maker and fee preview before the "
+            "prepared CoinJoin expires. 0 disables expiry."
+        ),
+    )
     order_wait_time: float = Field(
         default=120.0,
         ge=1.0,

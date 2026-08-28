@@ -619,8 +619,9 @@ class TestTakerBroadcast:
     async def test_final_confirmation_decline_retains_signed_input_lease(self, taker) -> None:
         taker.confirmation_callback = MagicMock(return_value=False)
         taker._session.signing_boundary_crossed = True
-        taker._session.selected_utxos = []
+        taker._session.selected_utxos = [MagicMock(value=10_000)]
         taker._session.maker_sessions = {}
+        taker._session._minimum_fee_rate_sat_vb = 0.1
 
         result = await taker._finalize_and_broadcast("bcrt1qdestination")
         taker.release_input_locks()
@@ -629,9 +630,24 @@ class TestTakerBroadcast:
         assert taker.state.value == "failed"
         assert taker.last_used_nicks == set()
         assert taker.last_used_maker_keys == set()
+        taker.confirmation_callback.assert_called_once()
         taker.backend.broadcast_transaction.assert_not_awaited()
         taker.wallet.release_coinjoin_inputs.assert_not_called()
         taker.wallet.renew_coinjoin_inputs.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_final_confirmation_accepts_awaitable_callback(self, taker) -> None:
+        taker.confirmation_callback = AsyncMock(return_value=False)
+        taker._session.signing_boundary_crossed = True
+        taker._session.selected_utxos = [MagicMock(value=10_000)]
+        taker._session.maker_sessions = {}
+        taker._session._minimum_fee_rate_sat_vb = 0.1
+
+        result = await taker._finalize_and_broadcast("bcrt1qdestination")
+
+        assert result is None
+        taker.confirmation_callback.assert_awaited_once()
+        taker.backend.broadcast_transaction.assert_not_awaited()
 
     def test_manual_broadcast_entry_separates_policy_from_method(self, taker) -> None:
         taker.config.tx_broadcast = BroadcastPolicy.NOT_SELF

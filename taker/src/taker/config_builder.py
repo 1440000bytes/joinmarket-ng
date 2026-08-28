@@ -276,6 +276,7 @@ def build_taker_config_kwargs(
         "bond_value_exponent": effective_bond_exp,
         "bondless_makers_allowance_require_zero_fee": effective_bondless_zero_fee,
         "maker_timeout_sec": settings.taker.maker_timeout_sec,
+        "initial_confirmation_timeout_sec": settings.taker.initial_confirmation_timeout_sec,
         "order_wait_time": settings.taker.order_wait_time,
         "orderbook_min_wait": settings.taker.orderbook_min_wait,
         "orderbook_quiet_period": settings.taker.orderbook_quiet_period,

@@ -15,9 +15,11 @@ Reference: Original joinmarket-clientserver/src/jmclient/taker.py
 from __future__ import annotations
 
 import asyncio
+import inspect
 import math
 import time
-from typing import Any
+from collections.abc import Awaitable, Callable
+from typing import Any, cast
 
 from jmcore.bitcoin import calculate_tx_vsize, get_address_type
 from jmcore.bond_calc import calculate_timelocked_fidelity_bond_value
@@ -71,6 +73,7 @@ __all__ = [
 # mixes script types in the CoinJoin output and acts as a fingerprint linking
 # the taker output back to its inputs.
 _WALLET_OUTPUT_SCRIPT_TYPE = "p2wpkh"
+ConfirmationCallback = Callable[..., bool | Awaitable[bool]]
 
 
 def _append_confirmation_hint(message: str, taker_utxo_age: int) -> str:
@@ -157,7 +160,7 @@ class Taker(TakerMonitoringMixin):
         wallet: WalletService,
         backend: BlockchainBackend,
         config: TakerConfig,
-        confirmation_callback: Any | None = None,
+        confirmation_callback: ConfirmationCallback | None = None,
     ):
         """
         Initialize the Taker.
@@ -238,6 +241,36 @@ class Taker(TakerMonitoringMixin):
         # Background task tracking
         self.running = False
         self._background_tasks: list[asyncio.Task[None]] = []
+
+    async def _request_confirmation(
+        self,
+        *,
+        timeout: float | None = None,
+        **kwargs: Any,
+    ) -> bool:
+        """Run a synchronous or awaitable confirmation callback with freshness enforcement."""
+        callback = self.confirmation_callback
+        if callback is None:
+            return True
+
+        loop = asyncio.get_running_loop()
+        started_at = loop.time()
+        result = callback(**kwargs)
+        if inspect.isawaitable(result):
+            awaitable = cast(Awaitable[bool], result)
+            confirmed = (
+                await asyncio.wait_for(awaitable, timeout=timeout)
+                if timeout is not None and timeout > 0
+                else await awaitable
+            )
+        else:
+            confirmed = result
+
+        # Synchronous callbacks cannot be interrupted portably. Reject their
+        # answer after return if the prepared preview has already expired.
+        if timeout is not None and timeout > 0 and loop.time() - started_at >= timeout:
+            raise TimeoutError
+        return bool(confirmed)
 
     def _activate_coinjoin_log_context(self) -> str | None:
         """Replace this task's CoinJoin log context after a commitment rotation."""
@@ -1291,7 +1324,9 @@ class Taker(TakerMonitoringMixin):
                             }
                         )
 
-                    confirmed = self.confirmation_callback(
+                    confirmation_timeout = float(self.config.initial_confirmation_timeout_sec)
+                    confirmed = await self._request_confirmation(
+                        timeout=confirmation_timeout if confirmation_timeout > 0 else None,
                         maker_details=maker_details,
                         cj_amount=self._session.cj_amount,
                         total_fee=total_fee + estimated_tx_fee,
@@ -1304,6 +1339,16 @@ class Taker(TakerMonitoringMixin):
                         logger.info("CoinJoin cancelled by user")
                         self.state = TakerState.CANCELLED
                         return None
+                except TimeoutError:
+                    reason = (
+                        "Initial CoinJoin confirmation expired after "
+                        f"{self.config.initial_confirmation_timeout_sec} seconds; "
+                        "start a fresh CoinJoin to fetch current offers."
+                    )
+                    logger.warning(reason)
+                    self._session.last_failure_reason = reason
+                    self.state = TakerState.CANCELLED
+                    return None
                 except Exception as e:
                     logger.error("CoinJoin confirmation failed")
                     logger.bind(sensitive=True).error("CoinJoin confirmation error detail: {}", e)
@@ -2047,7 +2092,7 @@ class Taker(TakerMonitoringMixin):
                         }
                     )
 
-                confirmed = self.confirmation_callback(
+                confirmed = await self._request_confirmation(
                     maker_details=maker_details,
                     cj_amount=self._session.cj_amount,
                     total_fee=total_cost,

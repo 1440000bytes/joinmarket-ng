@@ -414,7 +414,7 @@ async def _run_coinjoin(
     )
 
     # Create confirmation callback
-    def confirmation_callback(
+    async def confirmation_callback(
         maker_details: list[dict[str, Any]],
         cj_amount: int,
         total_fee: int,
@@ -424,7 +424,7 @@ async def _run_coinjoin(
         stage: str = "",
     ) -> bool:
         """Callback for user confirmation after maker selection."""
-        from jmcore.confirmation import confirm_transaction, format_maker_summary
+        from jmcore.confirmation import confirm_transaction_async, format_maker_summary
 
         additional_info = format_maker_summary(
             maker_details,
@@ -439,7 +439,7 @@ async def _run_coinjoin(
             source_mixdepth = mixdepth if mixdepth is not None else 0
         additional_info["Source Mixdepth"] = source_mixdepth
 
-        return confirm_transaction(
+        return await confirm_transaction_async(
             operation="coinjoin",
             amount=cj_amount,
             destination=destination,

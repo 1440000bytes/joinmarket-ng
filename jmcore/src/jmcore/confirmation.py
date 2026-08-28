@@ -4,6 +4,7 @@ User confirmation prompts for fund-moving operations.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 from typing import Any
@@ -193,7 +194,7 @@ def _display_standard_send_confirmation(
     print("=" * _SEND_WIDTH)
 
 
-def confirm_transaction(
+def _prepare_confirmation(
     operation: str,
     amount: int,
     destination: str | None = None,
@@ -203,32 +204,10 @@ def confirm_transaction(
     skip_confirmation: bool = False,
     stage: str = "",
 ) -> bool:
-    """
-    Prompt user to confirm a transaction that moves funds.
-
-    Args:
-        operation: Type of operation (e.g., "send", "coinjoin")
-        amount: Amount in satoshis (0 for sweep)
-        destination: Destination address (optional)
-        fee: Total fee in satoshis (optional, for CoinJoin this is maker fees + mining fee)
-        mining_fee: Mining/transaction fee in satoshis (optional)
-        additional_info: Additional details to show (e.g., maker fees, counterparties)
-        skip_confirmation: If True, skip prompt (from --yes flag)
-        stage: Prompt stage identifier.  Pass "initial" for the maker-selection
-            estimate and "broadcast" for the final pre-broadcast confirmation.
-            Shown in the section header so users can tell the two prompts apart.
-
-    Returns:
-        True if user confirms, False otherwise
-
-    Raises:
-        RuntimeError: If in non-interactive mode without skip_confirmation
-    """
-    # Skip if confirmation disabled
+    """Validate interactivity, display transaction details, and prepare stdin."""
     if skip_confirmation:
-        return True
+        return False
 
-    # Error if non-interactive without --yes
     if not is_interactive_mode():
         raise RuntimeError(
             "Cannot prompt for confirmation in non-interactive mode. "
@@ -254,28 +233,114 @@ def confirm_transaction(
             additional_info=additional_info,
         )
 
-    # Prompt for confirmation - flush stdout and clear any buffered stdin
+    sys.stdout.flush()
     try:
-        sys.stdout.flush()
-        # Drain any pending input to ensure we get fresh user input
-        # (important when running in asyncio context with logging)
-        try:
-            import termios
+        import termios
 
-            # Flush input buffer to discard any stale data
-            termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
-        except ImportError:
-            # Not Unix
-            pass
-        except (OSError, ValueError):
-            # Not a TTY or no terminal settings available
-            pass
+        termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+    except ImportError:
+        pass
+    except (OSError, ValueError):
+        pass
+    return True
 
+
+def _read_confirmation_response() -> bool:
+    """Read a synchronous y/N response from stdin."""
+    try:
         response = input("\nProceed with this transaction? [y/N]: ").strip().lower()
         return response in ("y", "yes")
     except (KeyboardInterrupt, EOFError):
         print("\n\nTransaction cancelled by user.")
         return False
+
+
+def confirm_transaction(
+    operation: str,
+    amount: int,
+    destination: str | None = None,
+    fee: int | None = None,
+    mining_fee: int | None = None,
+    additional_info: dict[str, Any] | None = None,
+    skip_confirmation: bool = False,
+    stage: str = "",
+) -> bool:
+    """Prompt synchronously for confirmation of a fund-moving transaction."""
+    should_prompt = _prepare_confirmation(
+        operation=operation,
+        amount=amount,
+        destination=destination,
+        fee=fee,
+        mining_fee=mining_fee,
+        additional_info=additional_info,
+        skip_confirmation=skip_confirmation,
+        stage=stage,
+    )
+    return _read_confirmation_response() if should_prompt else True
+
+
+async def confirm_transaction_async(
+    operation: str,
+    amount: int,
+    destination: str | None = None,
+    fee: int | None = None,
+    mining_fee: int | None = None,
+    additional_info: dict[str, Any] | None = None,
+    skip_confirmation: bool = False,
+    stage: str = "",
+) -> bool:
+    """Prompt without blocking the event loop when stdin readers are supported.
+
+    Cancellation removes the registered reader, so a timed-out initial CoinJoin
+    prompt cannot consume input intended for a later operation. Event loops that
+    cannot watch stdin fall back to the synchronous prompt; callers must still
+    enforce freshness after it returns.
+    """
+    should_prompt = _prepare_confirmation(
+        operation=operation,
+        amount=amount,
+        destination=destination,
+        fee=fee,
+        mining_fee=mining_fee,
+        additional_info=additional_info,
+        skip_confirmation=skip_confirmation,
+        stage=stage,
+    )
+    if not should_prompt:
+        return True
+
+    loop = asyncio.get_running_loop()
+    response_future: asyncio.Future[str] = loop.create_future()
+    reader_registered = False
+
+    def read_ready() -> None:
+        if response_future.done():
+            return
+        try:
+            response_future.set_result(sys.stdin.readline())
+        except Exception as exc:
+            response_future.set_exception(exc)
+
+    try:
+        try:
+            loop.add_reader(sys.stdin.fileno(), read_ready)
+            reader_registered = True
+        except (AttributeError, NotImplementedError):
+            return _read_confirmation_response()
+
+        print("\nProceed with this transaction? [y/N]: ", end="", flush=True)
+        try:
+            response = await response_future
+        except asyncio.CancelledError:
+            print()
+            raise
+        if response == "":
+            print("\n\nTransaction cancelled by user.")
+            return False
+        return response.strip().lower() in ("y", "yes")
+    finally:
+        if reader_registered:
+            loop.remove_reader(sys.stdin.fileno())
 
 
 def format_maker_summary(

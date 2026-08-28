@@ -236,6 +236,7 @@ class CoinJoinSession:
         """Cover the remaining protocol plus the pending-broadcast window."""
         protocol_window = (
             float(self.config.order_wait_time)
+            + float(self.config.initial_confirmation_timeout_sec)
             + float(self.config.maker_timeout_sec)
             * (self.config.taker_utxo_retries + 2 * self.config.max_maker_replacement_attempts + 3)
             + float(self.config.broadcast_timeout_sec) * 21

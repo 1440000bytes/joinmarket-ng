@@ -262,6 +262,7 @@ class TestBuildTakerConfig:
         settings.taker.max_maker_replacement_attempts = 3
         settings.taker.tx_fee_factor = 0.2
         settings.taker.maker_timeout_sec = 60
+        settings.taker.initial_confirmation_timeout_sec = 300
         settings.taker.order_wait_time = 10.0
         settings.taker.orderbook_min_wait = 30.0
         settings.taker.orderbook_quiet_period = 15.0
@@ -823,6 +824,22 @@ class TestBuildTakerConfig:
         assert config.taker_utxo_age == 7
         assert config.taker_utxo_retries == 5
         assert config.taker_utxo_amtpercent == 25
+
+    def test_initial_confirmation_timeout_flows_into_config(
+        self, sample_mnemonic: str, mock_settings: MagicMock
+    ) -> None:
+        mock_settings.taker.initial_confirmation_timeout_sec = 900
+
+        config = build_taker_config(
+            settings=mock_settings,
+            mnemonic=sample_mnemonic,
+            passphrase="",
+            destination="bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
+            amount=100000,
+            mixdepth=0,
+        )
+
+        assert config.initial_confirmation_timeout_sec == 900
 
     def test_gap_limit_flows_into_config(
         self, sample_mnemonic: str, mock_settings: MagicMock
