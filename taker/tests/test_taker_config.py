@@ -74,6 +74,34 @@ class TestMaxCjFee:
         assert fee.rel_fee == "0.00001"
         assert "e" not in fee.rel_fee.lower()
 
+    def test_zero_rel_fee_allowed(self) -> None:
+        """A zero relative limit remains valid for free-maker-only policies."""
+        fee = MaxCjFee(rel_fee="0")
+        assert fee.rel_fee == "0"
+
+    @pytest.mark.parametrize("rel_fee", ["NaN", "sNaN", "Infinity", "-Infinity"])
+    def test_rel_fee_nonfinite_values_rejected(self, rel_fee: str) -> None:
+        """Relative fee limits must be finite."""
+        with pytest.raises(ValidationError, match="rel_fee must be finite"):
+            MaxCjFee(rel_fee=rel_fee)
+
+    @pytest.mark.parametrize("rel_fee", ["-0.001", "1", "1.0"])
+    def test_rel_fee_outside_offer_policy_rejected(self, rel_fee: str) -> None:
+        """Relative fee limits follow the same [0, 1) policy as offers."""
+        with pytest.raises(ValidationError):
+            MaxCjFee(rel_fee=rel_fee)
+
+    @pytest.mark.parametrize("rel_fee", ["1e-1000000", "1e1000000"])
+    def test_rel_fee_huge_exponent_rejected_without_formatting(self, rel_fee: str) -> None:
+        """Exponent bounds prevent unbounded fixed-point normalization."""
+        with pytest.raises(ValidationError, match="exponent must be between"):
+            MaxCjFee(rel_fee=rel_fee)
+
+    def test_rel_fee_overlong_mantissa_rejected(self) -> None:
+        """Relative fee limits have bounded decimal precision."""
+        with pytest.raises(ValidationError, match="too many significant digits"):
+            MaxCjFee(rel_fee="0.1234567890123456789")
+
 
 class TestTakerConfig:
     """Tests for TakerConfig model."""

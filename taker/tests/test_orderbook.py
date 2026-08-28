@@ -286,6 +286,20 @@ class TestIsFeeWithinLimits:
         )
         assert is_fee_within_limits(offer, 100_000, max_fee) is False
 
+    def test_zero_relative_limit_allows_zero_fee_offer(self) -> None:
+        """A zero relative fee limit admits a free relative offer."""
+        max_fee = MaxCjFee(abs_fee=50_000, rel_fee="0")
+        offer = Offer(
+            counterparty="maker",
+            oid=0,
+            ordertype=OfferType.SW0_RELATIVE,
+            minsize=10_000,
+            maxsize=1_000_000,
+            txfee=1000,
+            cjfee="0",
+        )
+        assert is_fee_within_limits(offer, 100_000, max_fee) is True
+
     def test_absolute_within_abs_limit_even_if_high_for_amount(self) -> None:
         """Test that absolute offers are only checked against abs limit, not amount."""
         max_fee = MaxCjFee(abs_fee=10_000, rel_fee="0.001")  # 0.1%

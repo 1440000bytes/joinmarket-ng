@@ -4,11 +4,10 @@ Configuration for JoinMarket Taker.
 
 from __future__ import annotations
 
-from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 
 from jmcore.config import WalletConfig
-from jmcore.models import OfferType
+from jmcore.models import OfferType, normalize_relative_fee
 from jmcore.randomness import secure_random
 from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 
@@ -66,15 +65,8 @@ class MaxCjFee(BaseModel):
     @field_validator("rel_fee", mode="before")
     @classmethod
     def normalize_rel_fee(cls, v: str | float | int) -> str:
-        """Normalize to avoid scientific notation for very small fee values."""
-        if isinstance(v, (int, float)):
-            return format(Decimal(str(v)), "f")
-        if isinstance(v, str) and "e" in v.lower():
-            try:
-                return format(Decimal(v), "f")
-            except InvalidOperation:
-                pass
-        return v
+        """Validate and normalize the serialized relative-fee limit."""
+        return normalize_relative_fee(v, "rel_fee")
 
 
 class TakerConfig(WalletConfig):
