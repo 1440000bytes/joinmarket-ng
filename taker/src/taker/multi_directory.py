@@ -15,7 +15,7 @@ from typing import Any
 
 from jmcore.crypto import NickIdentity, verify_signed_privmsg
 from jmcore.deduplication import ResponseDeduplicator
-from jmcore.directory_client import DirectoryClient
+from jmcore.directory_client import DirectoryClient, DirectoryClientError
 from jmcore.directory_pool import DirectoryClientPool
 from jmcore.models import Offer
 from jmcore.network import ONION_HOSTID, OnionPeer
@@ -778,8 +778,8 @@ class MultiDirectoryClient(DirectoryClientPool):
         seen_sig_data: dict[str, set[str]] = {}
         loop = asyncio.get_event_loop()
         start_time = loop.time()
-        # Servers whose listen failures were already reported at warning level;
-        # subsequent failures are logged at debug to avoid flooding the log.
+        # Servers whose unexpected listen failures were already reported at warning
+        # level; subsequent failures are logged at debug to avoid flooding the log.
         listen_errors_reported: set[str] = set()
 
         def is_complete() -> bool:
@@ -910,6 +910,17 @@ class MultiDirectoryClient(DirectoryClientPool):
                 try:
                     messages = await client.listen_for_messages(duration=listen_duration)
                     return [(server, msg) for msg in messages]
+                except DirectoryClientError as e:
+                    logger.warning(f"Error listening to {server}: {e}")
+                    # A reconnect may replace this client while its listener is
+                    # still unwinding. Only tear down the object that failed.
+                    if self.clients.get(server) is client:
+                        self.clients.pop(server)
+                    try:
+                        await client.close()
+                    except Exception as close_error:
+                        logger.debug(f"Error closing failed directory {server}: {close_error}")
+                    return []
                 except Exception as e:
                     if server not in listen_errors_reported:
                         listen_errors_reported.add(server)

@@ -13,7 +13,10 @@ from typing import Any
 
 import pytest
 from _taker_test_helpers import make_directory_client
+from jmcore.crypto import NickIdentity
 from jmcore.directory_client import DirectoryClientError
+from jmcore.network import ONION_HOSTID
+from loguru import logger
 
 
 class DeadClient:
@@ -21,10 +24,60 @@ class DeadClient:
 
     def __init__(self) -> None:
         self.calls = 0
+        self.close_calls = 0
 
     async def listen_for_messages(self, duration: float) -> list[dict[str, Any]]:
         self.calls += 1
         raise DirectoryClientError("Connection closed")
+
+    async def close(self) -> None:
+        self.close_calls += 1
+
+
+class HealthyClient:
+    """Simulates a directory client that returns a predetermined response."""
+
+    def __init__(self, messages: list[dict[str, Any]]) -> None:
+        self.calls = 0
+        self.messages = messages
+
+    async def listen_for_messages(self, duration: float) -> list[dict[str, Any]]:
+        self.calls += 1
+        return self.messages
+
+
+class ReplacingDeadClient(DeadClient):
+    """Simulates a stale listener replaced before it reports its failure."""
+
+    def __init__(self, clients: dict[str, Any], server: str, replacement: Any) -> None:
+        super().__init__()
+        self.clients = clients
+        self.server = server
+        self.replacement = replacement
+
+    async def listen_for_messages(self, duration: float) -> list[dict[str, Any]]:
+        self.calls += 1
+        self.clients[self.server] = self.replacement
+        raise DirectoryClientError("Connection closed")
+
+
+class DirectMessageDeadClient(DeadClient):
+    """Queues a direct response before its terminal listener failure."""
+
+    def __init__(self, queue: asyncio.Queue[dict[str, Any]], message: dict[str, Any]) -> None:
+        super().__init__()
+        self.queue = queue
+        self.message = message
+
+    async def listen_for_messages(self, duration: float) -> list[dict[str, Any]]:
+        self.calls += 1
+        await self.queue.put(self.message)
+        raise DirectoryClientError("Connection closed")
+
+
+def signed_line(identity: NickIdentity, recipient: str, command: str, data: str) -> str:
+    """Build a signed private message returned by a directory listener."""
+    return f"{identity.nick}!{recipient}!{command} {identity.sign_message(data, ONION_HOSTID)}"
 
 
 @pytest.mark.asyncio
@@ -33,19 +86,27 @@ async def test_dead_directory_does_not_busy_loop() -> None:
     dead = DeadClient()
     client.clients = {"dead.onion:5222": dead}
 
+    warnings: list[dict[str, Any]] = []
+    handler_id = logger.add(lambda message: warnings.append(message.record), level="WARNING")
     loop = asyncio.get_event_loop()
     start = loop.time()
-    responses = await client.wait_for_responses(
-        expected_nicks=["J5NeverResponds"],
-        expected_command="!pubkey",
-        timeout=0.6,
-    )
-    elapsed = loop.time() - start
+    try:
+        responses = await client.wait_for_responses(
+            expected_nicks=["J5NeverResponds"],
+            expected_command="!pubkey",
+            timeout=0.6,
+        )
+        elapsed = loop.time() - start
+    finally:
+        logger.remove(handler_id)
 
     assert responses == {}
-    # The loop must be paced at roughly one listen window per iteration, not
-    # spin freely: a busy loop would produce thousands of calls in 0.6s.
-    assert dead.calls <= 3
+    assert dead.calls == 1
+    assert dead.close_calls == 1
+    assert client.clients == {}
+    assert [
+        record["message"] for record in warnings if record["message"].startswith("Error listening")
+    ] == ["Error listening to dead.onion:5222: Connection closed"]
     # It must still wait out (roughly) the full timeout for direct messages.
     assert 0.5 <= elapsed < 5.0
 
@@ -66,3 +127,74 @@ async def test_no_directory_clients_does_not_busy_loop() -> None:
 
     assert responses == {}
     assert 0.4 <= elapsed < 5.0
+
+
+@pytest.mark.asyncio
+async def test_terminal_listener_keeps_newer_replacement_client() -> None:
+    client = make_directory_client()
+    server = "directory.onion:5222"
+    replacement = HealthyClient([])
+    stale = ReplacingDeadClient({}, server, replacement)
+    client.clients = {server: stale}
+    stale.clients = client.clients
+
+    await client.wait_for_responses(
+        expected_nicks=["J5NeverResponds"],
+        expected_command="!pubkey",
+        timeout=0.1,
+    )
+
+    assert stale.calls == 1
+    assert stale.close_calls == 1
+    assert client.clients[server] is replacement
+
+
+@pytest.mark.asyncio
+async def test_terminal_listener_does_not_block_healthy_directory_response() -> None:
+    client = make_directory_client()
+    maker = NickIdentity(5)
+    dead = DeadClient()
+    healthy = HealthyClient(
+        [
+            {
+                "line": signed_line(
+                    maker,
+                    client.nick_identity.nick,
+                    "pubkey",
+                    "MAKER_NACL",
+                )
+            }
+        ]
+    )
+    client.clients = {"dead.onion:5222": dead, "healthy.onion:5222": healthy}
+
+    responses = await client.wait_for_responses(
+        expected_nicks=[maker.nick],
+        expected_command="!pubkey",
+        timeout=0.5,
+    )
+
+    assert responses[maker.nick]["data"].split()[0] == "MAKER_NACL"
+    assert dead.calls == 1
+    assert dead.close_calls == 1
+    assert healthy.calls == 1
+    assert list(client.clients.values()) == [healthy]
+
+
+@pytest.mark.asyncio
+async def test_direct_response_arriving_after_eviction_is_processed() -> None:
+    client = make_directory_client()
+    maker = NickIdentity(5)
+    direct_message = {"line": signed_line(maker, client.nick_identity.nick, "pubkey", "MAKER_NACL")}
+    dead = DirectMessageDeadClient(client._direct_message_queue, direct_message)
+    client.clients = {"dead.onion:5222": dead}
+
+    responses = await client.wait_for_responses(
+        expected_nicks=[maker.nick],
+        expected_command="!pubkey",
+        timeout=1.2,
+    )
+
+    assert responses[maker.nick]["data"].split()[0] == "MAKER_NACL"
+    assert dead.close_calls == 1
+    assert client.clients == {}
