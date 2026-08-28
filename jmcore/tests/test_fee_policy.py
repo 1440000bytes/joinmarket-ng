@@ -4,21 +4,56 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from jmcore.fee_policy import fee_rate_meets_minimum, resolve_min_fee_rate
+from jmcore.fee_policy import (
+    MinimumFeeRateExceedsCapError,
+    fee_rate_meets_minimum,
+    resolve_min_fee_rate,
+)
 
 
 @pytest.mark.asyncio
-async def test_resolve_min_fee_rate_uses_highest_valid_source_and_cap() -> None:
+async def test_resolve_min_fee_rate_uses_highest_valid_source_within_cap() -> None:
     backend = MagicMock()
     backend.get_mempool_min_fee = AsyncMock(return_value=2.0)
     backend.can_estimate_fee.return_value = True
     backend.estimate_fee = AsyncMock(return_value=4.0)
 
     assert (
-        await resolve_min_fee_rate(backend, static_floor=1.0, block_target=10, max_fee_rate=3.0)
-        == 3.0
+        await resolve_min_fee_rate(backend, static_floor=1.0, block_target=10, max_fee_rate=5.0)
+        == 4.0
     )
     backend.estimate_fee.assert_awaited_once_with(10)
+
+
+@pytest.mark.asyncio
+async def test_resolve_min_fee_rate_rejects_mempool_floor_above_cap() -> None:
+    backend = MagicMock()
+    backend.get_mempool_min_fee = AsyncMock(return_value=4.0)
+    backend.can_estimate_fee.return_value = False
+
+    with pytest.raises(
+        MinimumFeeRateExceedsCapError, match="exceeds the configured maximum"
+    ) as exc_info:
+        await resolve_min_fee_rate(backend, static_floor=1.0, block_target=10, max_fee_rate=3.0)
+
+    assert exc_info.value.source == "mempool minimum"
+    assert exc_info.value.fee_rate == 4.0
+
+
+@pytest.mark.asyncio
+async def test_resolve_min_fee_rate_rejects_estimate_above_cap() -> None:
+    backend = MagicMock()
+    backend.get_mempool_min_fee = AsyncMock(return_value=2.0)
+    backend.can_estimate_fee.return_value = True
+    backend.estimate_fee = AsyncMock(return_value=4.0)
+
+    with pytest.raises(
+        MinimumFeeRateExceedsCapError, match="exceeds the configured maximum"
+    ) as exc_info:
+        await resolve_min_fee_rate(backend, static_floor=1.0, block_target=10, max_fee_rate=3.0)
+
+    assert exc_info.value.source == "backend estimate"
+    assert exc_info.value.fee_rate == 4.0
 
 
 @pytest.mark.asyncio

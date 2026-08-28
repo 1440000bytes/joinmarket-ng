@@ -27,6 +27,7 @@ from jmcore.bitcoin import get_txid, pubkey_to_p2wpkh_script
 from jmcore.constants import BITCOIN_DUST_THRESHOLD, DUST_THRESHOLD
 from jmcore.encryption import CryptoSession
 from jmcore.fee_policy import (
+    MinimumFeeRateExceedsCapError,
     estimate_p2wpkh_vsize,
     fee_rate_meets_minimum,
     resolve_min_fee_rate,
@@ -1476,12 +1477,21 @@ class CoinJoinSession:
         if self._fee_rate is not None:
             return self._fee_rate
 
-        self._minimum_fee_rate_sat_vb = await resolve_min_fee_rate(
-            self.backend,
-            static_floor=self.config.min_fee_rate_sat_vb,
-            block_target=self.config.min_fee_block_target,
-            max_fee_rate=self.config.max_fee_rate_sat_vb,
-        )
+        try:
+            minimum_fee_rate = await resolve_min_fee_rate(
+                self.backend,
+                static_floor=self.config.min_fee_rate_sat_vb,
+                block_target=self.config.min_fee_block_target,
+                max_fee_rate=self.config.max_fee_rate_sat_vb,
+            )
+        except MinimumFeeRateExceedsCapError as exc:
+            enforce_fee_rate_cap(
+                exc.fee_rate,
+                self.config.max_fee_rate_sat_vb,
+                source=exc.source,
+            )
+            raise
+        self._minimum_fee_rate_sat_vb = minimum_fee_rate
         logger.bind(sensitive=True).info(
             f"Resolved minimum CoinJoin miner fee rate: {self._minimum_fee_rate_sat_vb:.2f} sat/vB"
         )

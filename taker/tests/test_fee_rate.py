@@ -239,9 +239,12 @@ class TestResolveFeeRateCap:
         assert taker._session._randomized_fee_rate is None
 
     @pytest.mark.asyncio
-    async def test_static_fallback_is_capped(self) -> None:
+    async def test_static_fallback_above_cap_is_rejected(self) -> None:
+        from jmwallet.wallet.spend import ExcessiveFeeRateError
+
         taker = _make_taker(can_estimate_fee=False, max_fee_rate_sat_vb=0.5)
-        assert await taker._session._resolve_fee_rate() == 0.5
+        with pytest.raises(ExcessiveFeeRateError, match="static floor"):
+            await taker._session._resolve_fee_rate()
 
     @pytest.mark.asyncio
     async def test_manual_fee_rate_at_cap_passes(self) -> None:

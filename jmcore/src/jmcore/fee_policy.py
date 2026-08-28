@@ -9,6 +9,15 @@ from typing import Any
 from loguru import logger
 
 
+class MinimumFeeRateExceedsCapError(ValueError):
+    """Raised when a required minimum fee rate exceeds the configured cap."""
+
+    def __init__(self, *, source: str, fee_rate: float) -> None:
+        self.source = source
+        self.fee_rate = fee_rate
+        super().__init__(f"Minimum fee rate from {source} exceeds the configured maximum fee rate")
+
+
 def estimate_p2wpkh_vsize(num_inputs: int, num_outputs: int) -> int:
     """Return the conservative P2WPKH virtual-size estimate used by CoinJoin."""
     return num_inputs * 68 + num_outputs * 31 + 11
@@ -36,18 +45,18 @@ async def resolve_min_fee_rate(
     block_target: int,
     max_fee_rate: float,
 ) -> float:
-    """Resolve the bounded maximum of static, mempool, and estimate fee floors."""
+    """Resolve the maximum of static, mempool, and estimate fee floors within the cap."""
     if not _is_finite_positive(static_floor):
         raise ValueError("Minimum fee static floor must be a finite positive sat/vB value")
     if not _is_finite_positive(max_fee_rate):
         raise ValueError("Maximum fee rate must be a finite positive sat/vB value")
-    sources = [static_floor]
+    sources: list[tuple[str, float]] = [("static floor", static_floor)]
 
     try:
         mempool_minimum = await backend.get_mempool_min_fee()
         if mempool_minimum is not None:
             if _is_finite_positive(mempool_minimum):
-                sources.append(mempool_minimum)
+                sources.append(("mempool minimum", mempool_minimum))
             else:
                 logger.warning("Ignoring invalid local mempool minimum fee rate")
     except Exception as exc:
@@ -60,10 +69,13 @@ async def resolve_min_fee_rate(
         if can_estimate:
             estimate = await backend.estimate_fee(block_target)
             if _is_finite_positive(estimate):
-                sources.append(estimate)
+                sources.append(("backend estimate", estimate))
             else:
                 logger.warning("Ignoring invalid fee estimate for minimum miner-fee policy")
     except Exception as exc:
         logger.warning(f"Could not resolve fee estimate for minimum miner-fee policy: {exc}")
 
-    return min(max(sources), max_fee_rate)
+    source, minimum_fee_rate = max(sources, key=lambda source_and_rate: source_and_rate[1])
+    if minimum_fee_rate > max_fee_rate:
+        raise MinimumFeeRateExceedsCapError(source=source, fee_rate=minimum_fee_rate)
+    return minimum_fee_rate
