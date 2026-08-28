@@ -7,6 +7,8 @@ itself. Test PSBTs are hardcoded from known BIP84 test vectors.
 from __future__ import annotations
 
 import base64
+import hashlib
+import io
 import struct
 import sys
 from pathlib import Path
@@ -18,11 +20,17 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "scripts"))
 
 from sign_bond_mnemonic import (
+    MAX_BIP32_PATH_DEPTH,
+    MAX_MONEY,
+    MAX_PSBT_BASE64_SIZE,
+    MAX_PSBT_SIZE,
     SECP256K1_N,
     _encode_varint,
+    _parse_derivation_path,
     _path_to_string,
     _read_varint,
     derive_key_from_mnemonic,
+    main,
     parse_psbt,
     sign_bond_transaction,
 )
@@ -61,7 +69,7 @@ TEST_PSBT_B64 = (
     "AAEBK6CGAQAAAAAAIgAgG15M3/mFQhRrS/nVEhPu1StoJSuBCk8VquAtQsl/BK4BBSoE"
     "gJd+abF1IQMw1U/Q3UIKbl+NNiT180gsrjUPedXwdTv1vu+cLZGvPKwBAwQBAAAAIgYD"
     "MNVP0N1CCm5fjTYk9fNILK41D3nV8HU79b7vnC2RrzwYzhoNFFQAAIAAAACAAAAAgAAA"
-    "AAAAAAAAAA=="
+    "AAAAAAAAAAA="
 )
 
 # Same PSBT but without BIP32 derivation data
@@ -69,8 +77,76 @@ TEST_PSBT_NO_BIP32_B64 = (
     "cHNidP8BAF4CAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD+"
     "////AbiCAQAAAAAAIgAgG15M3/mFQhRrS/nVEhPu1StoJSuBCk8VquAtQsl/BK6Al35p"
     "AAEBK6CGAQAAAAAAIgAgG15M3/mFQhRrS/nVEhPu1StoJSuBCk8VquAtQsl/BK4BBSoE"
-    "gJd+abF1IQMw1U/Q3UIKbl+NNiT180gsrjUPedXwdTv1vu+cLZGvPKwBAwQBAAAAAAAA"
+    "gJd+abF1IQMw1U/Q3UIKbl+NNiT180gsrjUPedXwdTv1vu+cLZGvPKwBAwQBAAAAAAA="
 )
+
+
+def _psbt_pair(key: bytes, value: bytes) -> bytes:
+    return _encode_varint(len(key)) + key + _encode_varint(len(value)) + value
+
+
+def _bond_script(pubkey: bytes, locktime: int = 1_769_904_000) -> bytes:
+    encoded_locktime = locktime.to_bytes((locktime.bit_length() + 7) // 8, "little")
+    if encoded_locktime[-1] & 0x80:
+        encoded_locktime += b"\x00"
+    return bytes([len(encoded_locktime)]) + encoded_locktime + b"\xb1\x75\x21" + pubkey + b"\xac"
+
+
+def _build_test_psbt(
+    *,
+    witness_script: bytes = bytes.fromhex(WITNESS_SCRIPT_HEX),
+    utxo_value: int = 100_000,
+    utxo_script: bytes | None = None,
+    locktime: int = 1_769_904_000,
+    sequence: int = 0xFFFFFFFE,
+    outputs: list[tuple[int, bytes]] | None = None,
+    include_bip32: bool = True,
+    bip32_value: bytes | None = None,
+    input_count: int = 1,
+    extra_input_records: list[tuple[bytes, bytes]] | None = None,
+) -> str:
+    if outputs is None:
+        outputs = [(99_000, bytes.fromhex("0014") + bytes.fromhex("11" * 20))]
+    if utxo_script is None:
+        utxo_script = b"\x00\x20" + hashlib.sha256(witness_script).digest()
+
+    tx = struct.pack("<I", 2) + _encode_varint(input_count)
+    for _ in range(input_count):
+        tx += bytes(32) + struct.pack("<I", 0) + b"\x00" + struct.pack("<I", sequence)
+    tx += _encode_varint(len(outputs))
+    for value, script in outputs:
+        tx += struct.pack("<Q", value) + _encode_varint(len(script)) + script
+    tx += struct.pack("<I", locktime)
+
+    witness_utxo = struct.pack("<Q", utxo_value) + _encode_varint(len(utxo_script)) + utxo_script
+    input_records = [
+        (b"\x01", witness_utxo),
+        (b"\x05", witness_script),
+    ]
+    if include_bip32:
+        pubkey = witness_script[-34:-1]
+        path = [0x80000054, 0x80000000, 0x80000000, 0, 0]
+        input_records.append(
+            (
+                b"\x06" + pubkey,
+                bip32_value
+                if bip32_value is not None
+                else bytes.fromhex("ce1a0d14")
+                + b"".join(struct.pack("<I", index) for index in path),
+            )
+        )
+    if extra_input_records:
+        input_records.extend(extra_input_records)
+
+    psbt = b"psbt\xff" + _psbt_pair(b"\x00", tx) + b"\x00"
+    psbt += b"".join(_psbt_pair(key, value) for key, value in input_records) + b"\x00"
+    psbt += b"\x00" * len(outputs)
+    return base64.b64encode(psbt).decode()
+
+
+class _InteractiveStdin(io.StringIO):
+    def isatty(self) -> bool:
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -193,6 +269,76 @@ class TestParsePSBT:
         with pytest.raises(ValueError, match="[Ii]nvalid PSBT"):
             parse_psbt(bad)
 
+    def test_rejects_witness_script_hash_mismatch(self) -> None:
+        psbt = _build_test_psbt(utxo_script=b"\x00\x20" + bytes(32))
+        with pytest.raises(ValueError, match="does not match"):
+            parse_psbt(psbt)
+
+    @pytest.mark.parametrize(
+        ("locktime", "sequence", "error"),
+        [
+            (1_769_903_999, 0xFFFFFFFE, "below bond locktime"),
+            (1_769_904_000, 0xFFFFFFFF, "final sequence"),
+        ],
+    )
+    def test_rejects_unsatisfied_cltv(self, locktime: int, sequence: int, error: str) -> None:
+        with pytest.raises(ValueError, match=error):
+            parse_psbt(_build_test_psbt(locktime=locktime, sequence=sequence))
+
+    def test_parses_every_output_and_computes_fee(self) -> None:
+        outputs = [
+            (60_000, bytes.fromhex("0014") + bytes.fromhex("11" * 20)),
+            (30_000, bytes.fromhex("0014") + bytes.fromhex("22" * 20)),
+        ]
+        result = parse_psbt(_build_test_psbt(outputs=outputs))
+
+        assert [output.value for output in result["transaction"].outputs] == [60_000, 30_000]
+        assert result["total_output_value"] == 90_000
+        assert result["fee"] == 10_000
+
+    @pytest.mark.parametrize(
+        ("utxo_value", "outputs", "error"),
+        [
+            (MAX_MONEY + 1, None, "Witness UTXO value exceeds MAX_MONEY"),
+            (MAX_MONEY, [(MAX_MONEY + 1, b"")], "output value exceeds MAX_MONEY"),
+            (100_000, [(100_001, b"")], "outputs exceed"),
+        ],
+    )
+    def test_rejects_invalid_amounts_and_negative_fee(
+        self,
+        utxo_value: int,
+        outputs: list[tuple[int, bytes]] | None,
+        error: str,
+    ) -> None:
+        with pytest.raises(ValueError, match=error):
+            parse_psbt(_build_test_psbt(utxo_value=utxo_value, outputs=outputs))
+
+    def test_rejects_truncated_and_extra_psbt_maps(self) -> None:
+        raw = base64.b64decode(_build_test_psbt())
+        with pytest.raises(ValueError, match="Truncated"):
+            parse_psbt(base64.b64encode(raw[:-1]).decode())
+        with pytest.raises(ValueError, match="extra input or output maps"):
+            parse_psbt(base64.b64encode(raw + b"\x00").decode())
+
+    def test_rejects_oversized_psbt_and_bip32_path(self) -> None:
+        oversized = base64.b64encode(b"psbt\xff" + bytes(MAX_PSBT_SIZE)).decode()
+        with pytest.raises(ValueError, match="exceeds size limit"):
+            parse_psbt(oversized)
+
+        oversized_encoded = "A" * (MAX_PSBT_BASE64_SIZE + 1)
+        with pytest.raises(ValueError, match="Base64 PSBT input exceeds size limit"):
+            parse_psbt(oversized_encoded)
+
+        path = bytes.fromhex("ce1a0d14") + bytes(4 * (MAX_BIP32_PATH_DEPTH + 1))
+        with pytest.raises(ValueError, match="path exceeds depth limit"):
+            parse_psbt(_build_test_psbt(bip32_value=path))
+
+    def test_rejects_multiple_unsigned_inputs_and_malformed_field_keys(self) -> None:
+        with pytest.raises(ValueError, match="exactly one unsigned transaction input"):
+            parse_psbt(_build_test_psbt(input_count=2))
+        with pytest.raises(ValueError, match="unexpected key data"):
+            parse_psbt(_build_test_psbt(extra_input_records=[(b"\x05\x00", b"")]))
+
 
 # ---------------------------------------------------------------------------
 # Tests: derive_key_from_mnemonic
@@ -255,8 +401,21 @@ class TestDeriveKeyFromMnemonic:
             derive_key_from_mnemonic(TEST_MNEMONIC, [0])
 
     def test_invalid_path(self) -> None:
-        with pytest.raises((ValueError, IndexError)):
+        with pytest.raises(ValueError):
             derive_key_from_mnemonic(TEST_MNEMONIC, "not/a/path")
+
+    @pytest.mark.parametrize(
+        "path",
+        ["m/", "m/-1", "m/2147483648", "m/1hh", "m/" + "9" * 100_000],
+    )
+    def test_malformed_path_is_a_clean_value_error(self, path: str) -> None:
+        with pytest.raises(ValueError):
+            _parse_derivation_path(path)
+
+    def test_path_depth_is_bounded(self) -> None:
+        deep_path = "m/" + "/".join("0" for _ in range(MAX_BIP32_PATH_DEPTH + 1))
+        with pytest.raises(ValueError, match="depth limit"):
+            _parse_derivation_path(deep_path)
 
     def test_hardened_h_notation(self) -> None:
         """Verify h notation works same as apostrophe."""
@@ -391,3 +550,86 @@ class TestMainFlow:
         assert "bip32_path_str" not in result
         # The main() function would require --derivation-path in this case
         # We just verify the parse correctly reports no BIP32 data
+
+    def test_displays_destination_and_declines_before_mnemonic(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        destination_script = bytes.fromhex("0014") + bytes.fromhex("42" * 20)
+        psbt = _build_test_psbt(outputs=[(99_000, destination_script)])
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "sign_bond_mnemonic.py",
+                    psbt,
+                    "--derivation-path",
+                    "m/84'/0'/0'/0/0",
+                ],
+            ),
+            patch.object(sys, "stdin", _InteractiveStdin("no\n")),
+            patch("sign_bond_mnemonic.getpass.getpass") as getpass_mock,
+            pytest.raises(SystemExit),
+        ):
+            main()
+
+        assert getpass_mock.call_count == 0
+        stderr = capsys.readouterr().err
+        assert destination_script.hex() in stderr
+        assert "Fee: 1000 sats" in stderr
+
+    def test_noninteractive_confirmation_fails_closed_before_mnemonic(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with (
+            patch.object(sys, "argv", ["sign_bond_mnemonic.py", TEST_PSBT_B64]),
+            patch.object(sys, "stdin", io.StringIO()),
+            patch("sign_bond_mnemonic.getpass.getpass") as getpass_mock,
+            pytest.raises(SystemExit),
+        ):
+            main()
+
+        assert getpass_mock.call_count == 0
+        assert "Refusing to sign without an interactive confirmation" in capsys.readouterr().err
+
+    def test_force_allows_automation_but_checks_witness_pubkey(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        wrong_witness_script = _bond_script(bytes.fromhex(EXPECTED_PUBKEY_0_1))
+        psbt = _build_test_psbt(witness_script=wrong_witness_script, include_bip32=False)
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "sign_bond_mnemonic.py",
+                    psbt,
+                    "--force",
+                    "--derivation-path",
+                    "m/84'/0'/0'/0/0",
+                ],
+            ),
+            patch("sign_bond_mnemonic.getpass.getpass", return_value=TEST_MNEMONIC) as getpass_mock,
+            pytest.raises(SystemExit),
+        ):
+            main()
+
+        assert getpass_mock.call_count == 1
+        assert "does not match bond witness script" in capsys.readouterr().err
+
+    def test_force_prints_raw_hex_without_broadcast_command(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with (
+            patch.object(
+                sys,
+                "argv",
+                ["sign_bond_mnemonic.py", TEST_PSBT_B64, "--force"],
+            ),
+            patch("sign_bond_mnemonic.getpass.getpass", return_value=TEST_MNEMONIC),
+        ):
+            main()
+
+        captured = capsys.readouterr()
+        assert bytes.fromhex(captured.out.strip())
+        assert "sendrawtransaction" not in captured.err

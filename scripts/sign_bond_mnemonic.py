@@ -8,7 +8,7 @@ dependencies are ``coincurve`` and ``mnemonic``.
 This script is for users who have their bond wallet seed phrase (e.g., from
 Sparrow) but do NOT have a hardware wallet. It derives the private key from
 the mnemonic and derivation path, signs the bond spending transaction, and
-outputs a fully signed raw transaction ready to broadcast.
+outputs a fully signed raw transaction.
 
 SECURITY NOTES:
   - The mnemonic is read interactively (never as a CLI argument)
@@ -18,22 +18,22 @@ SECURITY NOTES:
 USAGE:
   python scripts/sign_bond_mnemonic.py <psbt_base64>
   python scripts/sign_bond_mnemonic.py --file psbt.txt
+  python scripts/sign_bond_mnemonic.py --file psbt.txt --derivation-path "m/..."
 
-The PSBT must contain BIP32 derivation info (generated with --master-fingerprint
-and --derivation-path in the spend-bond command). The script extracts the
-derivation path from the PSBT automatically.
+The PSBT may contain BIP32 derivation information, which supplies the default
+derivation path. An explicit --derivation-path also works without BIP32 PSBT
+metadata.
 
 REQUIREMENTS:
   pip install coincurve mnemonic
 
-BROADCAST:
-  bitcoin-cli sendrawtransaction <signed_tx_hex>
 """
 
 from __future__ import annotations
 
 import argparse
 import base64
+import binascii
 import getpass
 import hashlib
 import hmac
@@ -48,6 +48,17 @@ SECP256K1_N = int(
     "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141", 16
 )
 
+MAX_MONEY = 21_000_000 * 100_000_000
+MAX_PSBT_SIZE = 4_000_000
+MAX_PSBT_BASE64_SIZE = ((MAX_PSBT_SIZE + 2) // 3) * 4
+MAX_PSBT_TEXT_SIZE = MAX_PSBT_BASE64_SIZE * 2
+MAX_TX_OUTPUTS = 100_000
+MAX_SCRIPT_SIZE = 10_000
+MAX_PSBT_MAP_ENTRIES = 1_000
+MAX_BIP32_PATH_DEPTH = 255
+UINT32_MAX = 0xFFFFFFFF
+LOCKTIME_THRESHOLD = 500_000_000
+
 
 # ---------------------------------------------------------------------------
 # Bitcoin primitives (inline to avoid pydantic dependency)
@@ -59,17 +70,36 @@ def _hash256(data: bytes) -> bytes:
     return hashlib.sha256(hashlib.sha256(data).digest()).digest()
 
 
-def _read_varint(data: bytes, pos: int) -> tuple[int, int]:
+def _require_bytes(data: bytes, pos: int, length: int, field: str) -> None:
+    """Ensure a bounded read is entirely contained in data."""
+    if pos < 0 or length < 0 or pos > len(data) or length > len(data) - pos:
+        raise ValueError(f"Truncated {field}")
+
+
+def _read_varint(data: bytes, pos: int, field: str = "compact size") -> tuple[int, int]:
     """Read a Bitcoin compact size varint. Returns (value, new_position)."""
+    _require_bytes(data, pos, 1, field)
     first = data[pos]
     if first < 0xFD:
         return first, pos + 1
-    elif first == 0xFD:
-        return struct.unpack("<H", data[pos + 1 : pos + 3])[0], pos + 3
-    elif first == 0xFE:
-        return struct.unpack("<I", data[pos + 1 : pos + 5])[0], pos + 5
-    else:
-        return struct.unpack("<Q", data[pos + 1 : pos + 9])[0], pos + 9
+    if first == 0xFD:
+        _require_bytes(data, pos + 1, 2, field)
+        value = struct.unpack_from("<H", data, pos + 1)[0]
+        if value < 0xFD:
+            raise ValueError(f"Non-canonical {field}")
+        return value, pos + 3
+    if first == 0xFE:
+        _require_bytes(data, pos + 1, 4, field)
+        value = struct.unpack_from("<I", data, pos + 1)[0]
+        if value <= 0xFFFF:
+            raise ValueError(f"Non-canonical {field}")
+        return value, pos + 5
+
+    _require_bytes(data, pos + 1, 8, field)
+    value = struct.unpack_from("<Q", data, pos + 1)[0]
+    if value <= 0xFFFFFFFF:
+        raise ValueError(f"Non-canonical {field}")
+    return value, pos + 9
 
 
 def _encode_varint(n: int) -> bytes:
@@ -149,57 +179,68 @@ class _ParsedTx:
 
 
 def _parse_tx(data: bytes) -> _ParsedTx:
-    """Parse raw transaction bytes into a _ParsedTx."""
+    """Strictly parse a non-witness unsigned transaction."""
+    if len(data) > MAX_PSBT_SIZE:
+        raise ValueError("Unsigned transaction exceeds size limit")
     pos = 0
-    version = struct.unpack("<I", data[pos : pos + 4])[0]
+    _require_bytes(data, pos, 4, "transaction version")
+    version = struct.unpack_from("<I", data, pos)[0]
     pos += 4
 
-    # Check for segwit marker
-    has_witness = False
-    if data[pos] == 0x00 and data[pos + 1] != 0x00:
-        has_witness = True
-        pos += 2  # skip marker (0x00) and flag (0x01)
+    _require_bytes(data, pos, 1, "transaction input count")
+    if data[pos] == 0x00:
+        _require_bytes(data, pos, 2, "transaction marker and flag")
+        if data[pos + 1] != 0x00:
+            raise ValueError("PSBT unsigned transaction must not contain witness data")
 
-    # Inputs
-    in_count, pos = _read_varint(data, pos)
+    in_count, pos = _read_varint(data, pos, "transaction input count")
+    if in_count != 1:
+        raise ValueError(
+            f"Expected exactly one unsigned transaction input, got {in_count}"
+        )
     inputs: list[_TxInput] = []
     for _ in range(in_count):
+        _require_bytes(data, pos, 32, "transaction input txid")
         txid_le = data[pos : pos + 32]
         pos += 32
-        vout = struct.unpack("<I", data[pos : pos + 4])[0]
+        _require_bytes(data, pos, 4, "transaction input index")
+        vout = struct.unpack_from("<I", data, pos)[0]
         pos += 4
-        ss_len, pos = _read_varint(data, pos)
+        ss_len, pos = _read_varint(data, pos, "transaction input script length")
+        if ss_len != 0:
+            raise ValueError("PSBT unsigned transaction input scriptSig must be empty")
+        _require_bytes(data, pos, ss_len, "transaction input scriptSig")
         scriptsig = data[pos : pos + ss_len]
         pos += ss_len
-        sequence = struct.unpack("<I", data[pos : pos + 4])[0]
+        _require_bytes(data, pos, 4, "transaction input sequence")
+        sequence = struct.unpack_from("<I", data, pos)[0]
         pos += 4
         inputs.append(_TxInput(txid_le, vout, scriptsig, sequence))
 
-    # Outputs
-    out_count, pos = _read_varint(data, pos)
+    out_count, pos = _read_varint(data, pos, "transaction output count")
+    if out_count > MAX_TX_OUTPUTS:
+        raise ValueError(f"Transaction output count exceeds limit: {out_count}")
     outputs: list[_TxOutput] = []
     for _ in range(out_count):
-        value = struct.unpack("<Q", data[pos : pos + 8])[0]
+        _require_bytes(data, pos, 8, "transaction output value")
+        value = struct.unpack_from("<Q", data, pos)[0]
         pos += 8
-        sc_len, pos = _read_varint(data, pos)
+        if value > MAX_MONEY:
+            raise ValueError(f"Transaction output value exceeds MAX_MONEY: {value}")
+        sc_len, pos = _read_varint(data, pos, "transaction output script length")
+        if sc_len > MAX_SCRIPT_SIZE:
+            raise ValueError(f"Transaction output script exceeds size limit: {sc_len}")
+        _require_bytes(data, pos, sc_len, "transaction output script")
         script = data[pos : pos + sc_len]
         pos += sc_len
         outputs.append(_TxOutput(value, script))
 
-    # Witnesses
-    witnesses: list[list[bytes]] = []
-    if has_witness:
-        for _ in range(in_count):
-            stack_items, pos = _read_varint(data, pos)
-            stack: list[bytes] = []
-            for _ in range(stack_items):
-                item_len, pos = _read_varint(data, pos)
-                stack.append(data[pos : pos + item_len])
-                pos += item_len
-            witnesses.append(stack)
-
-    locktime = struct.unpack("<I", data[pos : pos + 4])[0]
-    return _ParsedTx(version, inputs, outputs, witnesses, locktime)
+    _require_bytes(data, pos, 4, "transaction locktime")
+    locktime = struct.unpack_from("<I", data, pos)[0]
+    pos += 4
+    if pos != len(data):
+        raise ValueError("Unsigned transaction has trailing bytes")
+    return _ParsedTx(version, inputs, outputs, [], locktime)
 
 
 def _serialize_tx(
@@ -303,12 +344,142 @@ def _compute_sighash_segwit(
 # ---------------------------------------------------------------------------
 
 
-def parse_psbt(psbt_b64: str) -> dict:
-    """Parse a PSBT and extract the fields needed for signing.
+def _parse_psbt_map(
+    raw: bytes, pos: int, map_name: str
+) -> tuple[list[tuple[bytes, bytes]], int]:
+    """Parse one PSBT key-value map with explicit size and count bounds."""
+    records: list[tuple[bytes, bytes]] = []
+    seen_keys: set[bytes] = set()
 
-    Implements a minimal BIP-174 PSBT parser that extracts only the fields
-    we need: the unsigned transaction, witness UTXO, witness script, and
-    BIP32 derivation info.
+    while True:
+        _require_bytes(raw, pos, 1, f"{map_name} map")
+        if raw[pos] == 0:
+            return records, pos + 1
+        if len(records) >= MAX_PSBT_MAP_ENTRIES:
+            raise ValueError(f"{map_name} map has too many records")
+
+        key_len, pos = _read_varint(raw, pos, f"{map_name} key length")
+        if key_len == 0:
+            raise ValueError(f"{map_name} map has an empty key")
+        _require_bytes(raw, pos, key_len, f"{map_name} key")
+        key = raw[pos : pos + key_len]
+        pos += key_len
+
+        value_len, pos = _read_varint(raw, pos, f"{map_name} value length")
+        _require_bytes(raw, pos, value_len, f"{map_name} value")
+        value = raw[pos : pos + value_len]
+        pos += value_len
+
+        if key in seen_keys:
+            raise ValueError(f"{map_name} map has a duplicate key")
+        seen_keys.add(key)
+        records.append((key, value))
+
+
+def _parse_witness_utxo(value: bytes) -> tuple[int, bytes]:
+    """Parse a witness UTXO value exactly."""
+    _require_bytes(value, 0, 8, "witness UTXO value")
+    utxo_value = struct.unpack_from("<Q", value, 0)[0]
+    if utxo_value > MAX_MONEY:
+        raise ValueError(f"Witness UTXO value exceeds MAX_MONEY: {utxo_value}")
+    script_len, pos = _read_varint(value, 8, "witness UTXO script length")
+    if script_len > MAX_SCRIPT_SIZE:
+        raise ValueError(f"Witness UTXO script exceeds size limit: {script_len}")
+    _require_bytes(value, pos, script_len, "witness UTXO script")
+    script = value[pos : pos + script_len]
+    pos += script_len
+    if pos != len(value):
+        raise ValueError("Witness UTXO has trailing bytes")
+    return utxo_value, script
+
+
+def _decode_minimal_script_number(data: bytes) -> int:
+    """Decode a minimally encoded non-negative CLTV script number."""
+    if len(data) > 5:
+        raise ValueError("Bond locktime script number is too large")
+    if data and (data[-1] & 0x7F) == 0 and (len(data) == 1 or not (data[-2] & 0x80)):
+        raise ValueError("Bond locktime script number is not minimally encoded")
+
+    value = int.from_bytes(data, "little")
+    if data and data[-1] & 0x80:
+        value &= ~(0x80 << (8 * (len(data) - 1)))
+        value = -value
+    return value
+
+
+def _parse_canonical_bond_script(witness_script: bytes) -> tuple[int, bytes]:
+    """Parse ``<locktime> CLTV DROP <pubkey> CHECKSIG`` without extensions."""
+    if not witness_script:
+        raise ValueError("Bond witness script is empty")
+
+    opcode = witness_script[0]
+    pos = 1
+    if opcode == 0x00:  # OP_0
+        locktime = 0
+    elif 0x51 <= opcode <= 0x60:  # OP_1 through OP_16
+        locktime = opcode - 0x50
+    elif 1 <= opcode <= 5:
+        _require_bytes(witness_script, pos, opcode, "bond locktime push")
+        encoded_locktime = witness_script[pos : pos + opcode]
+        pos += opcode
+        if encoded_locktime == b"\x00" or (
+            len(encoded_locktime) == 1 and 1 <= encoded_locktime[0] <= 16
+        ):
+            raise ValueError("Bond locktime uses a non-minimal push")
+        locktime = _decode_minimal_script_number(encoded_locktime)
+    else:
+        raise ValueError("Bond witness script has a non-canonical locktime push")
+
+    if locktime <= 0 or locktime > UINT32_MAX:
+        raise ValueError("Bond locktime must be a positive uint32")
+    _require_bytes(witness_script, pos, 2, "bond CLTV opcodes")
+    if witness_script[pos : pos + 2] != b"\xb1\x75":
+        raise ValueError("Bond witness script is not canonical CLTV")
+    pos += 2
+    _require_bytes(witness_script, pos, 1, "bond public key push")
+    if witness_script[pos] != 33:
+        raise ValueError("Bond witness script must use a 33-byte public key push")
+    pos += 1
+    _require_bytes(witness_script, pos, 33, "bond public key")
+    pubkey = witness_script[pos : pos + 33]
+    pos += 33
+    if pubkey[0] not in (0x02, 0x03):
+        raise ValueError("Bond witness script has an invalid compressed public key")
+    _require_bytes(witness_script, pos, 1, "bond CHECKSIG opcode")
+    if witness_script[pos] != 0xAC:
+        raise ValueError("Bond witness script is missing CHECKSIG")
+    pos += 1
+    if pos != len(witness_script):
+        raise ValueError("Bond witness script has trailing opcodes")
+    return locktime, pubkey
+
+
+def _parse_bip32_derivation(key: bytes, value: bytes) -> tuple[bytes, bytes, list[int]]:
+    """Parse one standard BIP32 derivation record."""
+    if len(key) != 34 or key[0] != 0x06:
+        raise ValueError("Invalid BIP32 derivation key")
+    pubkey = key[1:]
+    if pubkey[0] not in (0x02, 0x03):
+        raise ValueError("BIP32 derivation has an invalid compressed public key")
+    if len(value) < 4 or (len(value) - 4) % 4:
+        raise ValueError("BIP32 derivation has an invalid path length")
+
+    fingerprint = value[:4]
+    depth = (len(value) - 4) // 4
+    if depth > MAX_BIP32_PATH_DEPTH:
+        raise ValueError(f"BIP32 derivation path exceeds depth limit: {depth}")
+    path_indices = [
+        struct.unpack_from("<I", value, offset)[0] for offset in range(4, len(value), 4)
+    ]
+    return pubkey, fingerprint, path_indices
+
+
+def parse_psbt(psbt_b64: str) -> dict:
+    """Strictly parse and validate a one-input v0 fidelity-bond PSBT.
+
+    The standalone signer deliberately supports only the transaction shape it
+    can fully review and sign. All lengths, maps, and transaction fields are
+    bounded before secret material is requested.
 
     Returns:
         Dict with keys:
@@ -321,83 +492,103 @@ def parse_psbt(psbt_b64: str) -> dict:
           - bip32_path: Derivation path as list of uint32 indices
           - bip32_path_str: Human-readable derivation path string
     """
-    raw = base64.b64decode(psbt_b64)
+    if not isinstance(psbt_b64, str):
+        raise ValueError("PSBT must be a Base64 string")
+    if len(psbt_b64) > MAX_PSBT_TEXT_SIZE:
+        raise ValueError("Base64 PSBT input exceeds size limit")
+    encoded_psbt = "".join(psbt_b64.split())
+    if len(encoded_psbt) > MAX_PSBT_BASE64_SIZE:
+        raise ValueError("Base64 PSBT input exceeds size limit")
+    try:
+        raw = base64.b64decode(encoded_psbt, validate=True)
+    except (AttributeError, UnicodeEncodeError, binascii.Error) as exc:
+        raise ValueError("Invalid PSBT base64") from exc
+    if len(raw) > MAX_PSBT_SIZE:
+        raise ValueError("PSBT exceeds size limit")
 
     # Verify magic
     if raw[:5] != b"psbt\xff":
         raise ValueError("Invalid PSBT: missing magic bytes")
 
     pos = 5
-    result: dict = {}
+    global_records, pos = _parse_psbt_map(raw, pos, "global")
+    unsigned_transactions = [value for key, value in global_records if key == b"\x00"]
+    if len(unsigned_transactions) != 1:
+        raise ValueError("PSBT must contain exactly one unsigned transaction")
+    for key, _ in global_records:
+        if key[0] == 0x00 and key != b"\x00":
+            raise ValueError("PSBT unsigned transaction field has key data")
 
-    # --- Parse global map ---
-    while pos < len(raw):
-        if raw[pos] == 0x00:  # Separator
-            pos += 1
-            break
+    unsigned_tx_bytes = unsigned_transactions[0]
+    tx = _parse_tx(unsigned_tx_bytes)
+    input_records, pos = _parse_psbt_map(raw, pos, "input 0")
+    for output_index in range(len(tx.outputs)):
+        _, pos = _parse_psbt_map(raw, pos, f"output {output_index}")
+    if pos != len(raw):
+        raise ValueError("PSBT has extra input or output maps")
 
-        # Read key
-        key_len, pos = _read_varint(raw, pos)
-        key = raw[pos : pos + key_len]
-        pos += key_len
+    witness_utxo_records = [value for key, value in input_records if key == b"\x01"]
+    if len(witness_utxo_records) != 1:
+        raise ValueError("PSBT missing required field: witness_utxo")
+    witness_script_records = [value for key, value in input_records if key == b"\x05"]
+    if len(witness_script_records) != 1:
+        raise ValueError("PSBT missing required field: witness_script")
+    for key, _ in input_records:
+        if key[0] in (0x01, 0x05) and len(key) != 1:
+            raise ValueError("PSBT input field has unexpected key data")
 
-        # Read value
-        val_len, pos = _read_varint(raw, pos)
-        value = raw[pos : pos + val_len]
-        pos += val_len
+    derivation_records = [
+        (key, value) for key, value in input_records if key[0] == 0x06
+    ]
+    if len(derivation_records) > 1:
+        raise ValueError("PSBT has ambiguous BIP32 derivation records")
 
-        key_type = key[0]
-        if key_type == 0x00:  # PSBT_GLOBAL_UNSIGNED_TX
-            result["unsigned_tx_bytes"] = value
+    utxo_value, utxo_script = _parse_witness_utxo(witness_utxo_records[0])
+    witness_script = witness_script_records[0]
+    expected_script = b"\x00\x20" + hashlib.sha256(witness_script).digest()
+    if utxo_script != expected_script:
+        raise ValueError("Witness UTXO scriptPubKey does not match witness script")
+    bond_locktime, bond_pubkey = _parse_canonical_bond_script(witness_script)
 
-    # --- Parse per-input maps (we only handle one input) ---
-    while pos < len(raw):
-        if raw[pos] == 0x00:  # Separator (end of input map)
-            pos += 1
-            break
+    if tx.locktime < bond_locktime:
+        raise ValueError(
+            f"Transaction locktime {tx.locktime} is below bond locktime {bond_locktime}"
+        )
+    if (tx.locktime < LOCKTIME_THRESHOLD) != (bond_locktime < LOCKTIME_THRESHOLD):
+        raise ValueError("Transaction and bond locktimes use different locktime types")
+    if tx.inputs[0].sequence == UINT32_MAX:
+        raise ValueError("Bond input has a final sequence and cannot satisfy CLTV")
 
-        # Read key
-        key_len, pos = _read_varint(raw, pos)
-        key = raw[pos : pos + key_len]
-        pos += key_len
+    total_output_value = 0
+    for output in tx.outputs:
+        total_output_value += output.value
+        if total_output_value > utxo_value:
+            raise ValueError("Transaction outputs exceed witness UTXO value")
+    fee = utxo_value - total_output_value
 
-        # Read value
-        val_len, pos = _read_varint(raw, pos)
-        value = raw[pos : pos + val_len]
-        pos += val_len
-
-        key_type = key[0]
-
-        if key_type == 0x01:  # PSBT_IN_WITNESS_UTXO
-            utxo_value = struct.unpack("<Q", value[:8])[0]
-            script_len, spos = _read_varint(value, 8)
-            utxo_script = value[spos : spos + script_len]
-            result["witness_utxo_value"] = utxo_value
-            result["witness_utxo_script"] = utxo_script
-
-        elif key_type == 0x05:  # PSBT_IN_WITNESS_SCRIPT
-            result["witness_script"] = value
-
-        elif key_type == 0x06:  # PSBT_IN_BIP32_DERIVATION
-            # Key = 0x06 + <33-byte pubkey>
-            pubkey = key[1:]  # Skip key type byte
-            # Value = <4-byte fingerprint> + <4-byte LE index>...
-            fingerprint = value[:4]
-            path_indices = []
-            for i in range(4, len(value), 4):
-                idx = struct.unpack("<I", value[i : i + 4])[0]
-                path_indices.append(idx)
-            result["bip32_pubkey"] = pubkey
-            result["bip32_fingerprint"] = fingerprint
-            result["bip32_path"] = path_indices
-            result["bip32_path_str"] = _path_to_string(path_indices)
-
-    # Validate we got everything we need
-    required = ["unsigned_tx_bytes", "witness_script", "witness_utxo_value"]
-    for field in required:
-        if field not in result:
-            raise ValueError(f"PSBT missing required field: {field}")
-
+    result: dict = {
+        "unsigned_tx_bytes": unsigned_tx_bytes,
+        "witness_utxo_value": utxo_value,
+        "witness_utxo_script": utxo_script,
+        "witness_script": witness_script,
+        "transaction": tx,
+        "bond_locktime": bond_locktime,
+        "bond_pubkey": bond_pubkey,
+        "total_output_value": total_output_value,
+        "fee": fee,
+    }
+    if derivation_records:
+        pubkey, fingerprint, path_indices = _parse_bip32_derivation(
+            *derivation_records[0]
+        )
+        if pubkey != bond_pubkey:
+            raise ValueError(
+                "BIP32 derivation public key does not match bond witness script"
+            )
+        result["bip32_pubkey"] = pubkey
+        result["bip32_fingerprint"] = fingerprint
+        result["bip32_path"] = path_indices
+        result["bip32_path_str"] = _path_to_string(path_indices)
     return result
 
 
@@ -411,18 +602,44 @@ def _parse_derivation_path(path: str) -> list[int]:
 
     Accepts: m/84'/0'/0'/0/0 or m/84h/0h/0h/0/0
     """
+    if not isinstance(path, str):
+        raise ValueError("Derivation path must be a string")
     parts = path.strip().split("/")
     if parts[0] != "m":
         raise ValueError(f"Path must start with 'm': {path}")
+    if len(parts) - 1 > MAX_BIP32_PATH_DEPTH:
+        raise ValueError(f"Derivation path exceeds depth limit: {len(parts) - 1}")
 
     indices: list[int] = []
     for part in parts[1:]:
+        if not part:
+            raise ValueError("Derivation path contains an empty component")
         hardened = part.endswith("'") or part.endswith("h")
-        idx = int(part.rstrip("'h"))
+        index_text = part[:-1] if hardened else part
+        if not index_text or not index_text.isascii() or not index_text.isdecimal():
+            raise ValueError(f"Invalid derivation path component: {part}")
+        if len(index_text) > 10:
+            raise ValueError(f"Derivation path component is out of range: {part}")
+        idx = int(index_text)
+        if idx >= 0x80000000:
+            raise ValueError(f"Derivation path component is out of range: {part}")
         if hardened:
             idx += 0x80000000
         indices.append(idx)
     return indices
+
+
+def _validate_derivation_indices(indices: list[int]) -> None:
+    """Validate BIP32 uint32 child indices before deriving with them."""
+    if len(indices) > MAX_BIP32_PATH_DEPTH:
+        raise ValueError(f"Derivation path exceeds depth limit: {len(indices)}")
+    for index in indices:
+        if (
+            isinstance(index, bool)
+            or not isinstance(index, int)
+            or not 0 <= index <= UINT32_MAX
+        ):
+            raise ValueError(f"Invalid BIP32 child index: {index!r}")
 
 
 def derive_key_from_mnemonic(
@@ -464,6 +681,7 @@ def derive_key_from_mnemonic(
         indices = path
     else:
         indices = _parse_derivation_path(path)
+    _validate_derivation_indices(indices)
 
     key_bytes = master_key_bytes
     chain_code = master_chain_code
@@ -523,6 +741,8 @@ def sign_bond_transaction(
 
     # Parse the unsigned transaction
     tx = _parse_tx(unsigned_tx_bytes)
+    if len(tx.inputs) != 1:
+        raise ValueError("Expected exactly one unsigned transaction input")
 
     # Compute the BIP143 segwit sighash
     sighash_type = 1  # SIGHASH_ALL
@@ -563,8 +783,7 @@ def main() -> None:
         description="Sign a fidelity bond spending PSBT with a BIP39 mnemonic.",
         epilog=(
             "The mnemonic is read interactively (never as a CLI argument). "
-            "After signing, the signed raw transaction hex is printed to stdout. "
-            "Broadcast with: bitcoin-cli sendrawtransaction <hex>"
+            "After signing, the signed raw transaction hex is printed to stdout."
         ),
     )
     parser.add_argument(
@@ -589,6 +808,11 @@ def main() -> None:
         action="store_true",
         help="Prompt for a BIP39 passphrase (default: no passphrase)",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Skip interactive transaction confirmation for controlled automation",
+    )
     args = parser.parse_args()
 
     # Read PSBT
@@ -609,13 +833,21 @@ def main() -> None:
 
     # Determine derivation path
     if args.derivation_path:
-        deriv_path = args.derivation_path
-        print(f"Using provided derivation path: {deriv_path}", file=sys.stderr)
+        try:
+            deriv_path = _parse_derivation_path(args.derivation_path)
+        except ValueError as e:
+            print(f"ERROR: Invalid derivation path: {e}", file=sys.stderr)
+            sys.exit(1)
+        print(
+            f"Using provided derivation path: {_path_to_string(deriv_path)}",
+            file=sys.stderr,
+        )
     elif "bip32_path" in psbt_data:
-        deriv_path = psbt_data["bip32_path_str"]
+        deriv_path = psbt_data["bip32_path"]
+        assert isinstance(deriv_path, list)
         fingerprint_hex = psbt_data["bip32_fingerprint"].hex()
         print(
-            f"Found BIP32 derivation in PSBT: {deriv_path} "
+            f"Found BIP32 derivation in PSBT: {_path_to_string(deriv_path)} "
             f"(fingerprint: {fingerprint_hex})",
             file=sys.stderr,
         )
@@ -629,11 +861,40 @@ def main() -> None:
         )
         sys.exit(1)
 
-    # Show transaction details
+    # Show every committed transaction field before prompting for secret material.
     witness_script = psbt_data["witness_script"]
     utxo_value = psbt_data["witness_utxo_value"]
+    tx = psbt_data["transaction"]
+    assert isinstance(witness_script, bytes)
+    assert isinstance(utxo_value, int)
+    assert isinstance(tx, _ParsedTx)
     print(f"Witness script: {witness_script.hex()}", file=sys.stderr)
     print(f"UTXO value: {utxo_value} sats", file=sys.stderr)
+    print(f"Transaction locktime: {tx.locktime}", file=sys.stderr)
+    for output_index, output in enumerate(tx.outputs):
+        print(f"Output {output_index}: {output.value} sats", file=sys.stderr)
+        print(f"  scriptPubKey: {output.script.hex()}", file=sys.stderr)
+    print(f"Total output: {psbt_data['total_output_value']} sats", file=sys.stderr)
+    print(f"Fee: {psbt_data['fee']} sats", file=sys.stderr)
+
+    if args.force:
+        print("WARNING: --force skips transaction confirmation", file=sys.stderr)
+    elif not sys.stdin.isatty():
+        print(
+            "ERROR: Refusing to sign without an interactive confirmation "
+            "(use --force only for controlled automation)",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    else:
+        try:
+            confirmation = input("Sign this transaction? [y/N] ")
+        except EOFError:
+            print("ERROR: Transaction confirmation was not received", file=sys.stderr)
+            sys.exit(1)
+        if confirmation.strip().lower() not in {"y", "yes"}:
+            print("Signing cancelled", file=sys.stderr)
+            sys.exit(1)
 
     # Read mnemonic securely
     print(file=sys.stderr)
@@ -663,7 +924,7 @@ def main() -> None:
         passphrase = getpass.getpass(prompt="BIP39 passphrase: ")
 
     # Derive key
-    print(f"\nDeriving key from path {deriv_path}...", file=sys.stderr)
+    print(f"\nDeriving key from path {_path_to_string(deriv_path)}...", file=sys.stderr)
     try:
         privkey_bytes, pubkey_bytes = derive_key_from_mnemonic(
             mnemonic.strip(), deriv_path, passphrase
@@ -676,25 +937,19 @@ def main() -> None:
     mnemonic = "x" * len(mnemonic)  # noqa: F841
     del mnemonic
 
-    # Verify pubkey matches
-    if "bip32_pubkey" in psbt_data:
-        expected_pubkey = psbt_data["bip32_pubkey"]
-        if pubkey_bytes != expected_pubkey:
-            print(
-                f"ERROR: Derived pubkey does not match PSBT!\n"
-                f"  Derived:  {pubkey_bytes.hex()}\n"
-                f"  Expected: {expected_pubkey.hex()}\n"
-                f"  Check: mnemonic, passphrase, and derivation path",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        print("Pubkey verified: matches PSBT", file=sys.stderr)
-    else:
+    # The canonical witness script, not optional PSBT metadata, identifies the signing key.
+    expected_pubkey = psbt_data["bond_pubkey"]
+    assert isinstance(expected_pubkey, bytes)
+    if pubkey_bytes != expected_pubkey:
         print(
-            f"WARNING: Cannot verify pubkey (no BIP32 derivation in PSBT)\n"
-            f"  Derived pubkey: {pubkey_bytes.hex()}",
+            f"ERROR: Derived pubkey does not match bond witness script!\n"
+            f"  Derived:  {pubkey_bytes.hex()}\n"
+            f"  Expected: {expected_pubkey.hex()}\n"
+            f"  Check: mnemonic, passphrase, and derivation path",
             file=sys.stderr,
         )
+        sys.exit(1)
+    print("Pubkey verified: matches bond witness script", file=sys.stderr)
 
     # Sign
     print("Signing transaction...", file=sys.stderr)
@@ -719,11 +974,6 @@ def main() -> None:
     print("=" * 80, file=sys.stderr)
     print(signed_tx_hex)  # stdout -- can be piped
     print("=" * 80, file=sys.stderr)
-    print(file=sys.stderr)
-    print("Broadcast with:", file=sys.stderr)
-    print(f"  bitcoin-cli sendrawtransaction {signed_tx_hex}", file=sys.stderr)
-    print(file=sys.stderr)
-    print("VERIFY FIRST: bitcoin-cli decoderawtransaction <hex>", file=sys.stderr)
 
 
 if __name__ == "__main__":

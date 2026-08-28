@@ -252,8 +252,14 @@ python scripts/sign_bond_mnemonic.py --file unsigned-bond-test.psbt
 ```
 
 Add `--passphrase` only to `sign_bond_mnemonic.py` when the external seed uses a
-BIP39 passphrase. The mnemonic signer verifies the signature and prints final
-transaction hex directly.
+BIP39 passphrase. Before requesting the mnemonic, the signer displays the
+locktime, every output script and amount, total output, and fee. Review those
+values and explicitly confirm the transaction. It then prints final transaction
+hex directly.
+
+The signer refuses noninteractive use unless `--force` is supplied for
+controlled automation. This bypasses only the confirmation prompt, not the
+PSBT, CLTV, amount, or key validation.
 
 The test input does not exist and cannot be broadcast. Success means the signer
 derived the intended key and produced a signature that verifies against the
@@ -349,6 +355,10 @@ python scripts/sign_bond_mnemonic.py \
   --file unsigned-bond.psbt \
   --derivation-path "<external-key-path>"
 ```
+
+The explicit derivation path is sufficient when the external PSBT does not
+include BIP32 derivation metadata. Review and confirm the transaction details
+shown by the signer before entering the mnemonic.
 
 Inspect the finalized transaction before broadcasting it:
 
