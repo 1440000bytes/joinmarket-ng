@@ -5,9 +5,11 @@ Tests for transaction history tracking.
 from __future__ import annotations
 
 import csv
+import os
 import stat
 import struct
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import fields
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -18,6 +20,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from jmcore.bitcoin import analyze_coinjoin_outputs
 from loguru import logger as loguru_logger
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - non-POSIX platforms
+    fcntl = None  # type: ignore[assignment]
 
 from jmwallet.backends.base import Transaction
 from jmwallet.history import (
@@ -4203,9 +4210,8 @@ class TestYieldGeneratorReport:
 class TestHistoryReadLockIsShared:
     """Readers must not queue behind each other on the history lock."""
 
+    @pytest.mark.skipif(fcntl is None, reason="fcntl is unavailable")
     def test_read_history_proceeds_while_a_shared_lock_is_held(self, tmp_path) -> None:
-        import fcntl
-        import os
         import threading
 
         from jmwallet.history import (
@@ -4216,6 +4222,7 @@ class TestHistoryReadLockIsShared:
             read_history,
         )
 
+        assert fcntl is not None
         append_history_entry(
             TransactionHistoryEntry(
                 timestamp="2026-01-01T00:00:00Z",
@@ -4244,3 +4251,66 @@ class TestHistoryReadLockIsShared:
 
         assert len(result) == 1
         assert len(result[0]) == 1
+
+    @pytest.mark.skipif(fcntl is None, reason="fcntl is unavailable")
+    def test_read_waits_to_migrate_legacy_filename_under_exclusive_lock(
+        self, tmp_path: Path
+    ) -> None:
+        """A shared reader cannot rename legacy history before the sidecar unlocks."""
+        from jmwallet.history import _get_fieldnames, _locked_history_path
+
+        assert fcntl is not None
+        legacy_path = tmp_path / "coinjoin_history.csv"
+        canonical_path = tmp_path / "history.csv"
+        legacy_entry = TransactionHistoryEntry(
+            timestamp="2026-01-01T00:00:00Z",
+            txid="legacy" * 11,
+            role="taker",
+            cj_amount=100_000,
+        )
+        with open(legacy_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=_get_fieldnames())
+            writer.writeheader()
+            writer.writerow({name: getattr(legacy_entry, name) for name in _get_fieldnames()})
+
+        lock_path = canonical_path.with_name(f"{canonical_path.name}.lock")
+        holder = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        attempted_lock = Event()
+
+        @contextmanager
+        def observe_locked_history_path(*args: Any, **kwargs: Any):
+            attempted_lock.set()
+            with _locked_history_path(*args, **kwargs) as history_path:
+                yield history_path
+
+        try:
+            fcntl.flock(holder, fcntl.LOCK_EX)
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                with patch("jmwallet.history._locked_history_path", observe_locked_history_path):
+                    reader = executor.submit(read_history, tmp_path)
+                    assert attempted_lock.wait(timeout=2)
+                    assert legacy_path.exists()
+                    assert not canonical_path.exists()
+                    assert not reader.done()
+
+                    fcntl.flock(holder, fcntl.LOCK_UN)
+                    rows = reader.result(timeout=5)
+        finally:
+            os.close(holder)
+
+        assert {entry.txid for entry in rows} == {legacy_entry.txid}
+        assert canonical_path.exists()
+        assert not legacy_path.exists()
+
+        appended_entry = TransactionHistoryEntry(
+            timestamp="2026-01-02T00:00:00Z",
+            txid="canonical" * 9,
+            role="maker",
+            cj_amount=200_000,
+        )
+        append_history_entry(appended_entry, tmp_path)
+
+        assert {entry.txid for entry in read_history(tmp_path)} == {
+            legacy_entry.txid,
+            appended_entry.txid,
+        }

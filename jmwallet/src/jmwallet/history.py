@@ -333,25 +333,50 @@ def _resolve_history_path_unlocked(history_path: Path) -> Path:
     return history_path
 
 
+def _resolve_history_path_read_only(history_path: Path) -> Path:
+    """Validate the canonical history path without migrating a legacy filename."""
+    _ensure_regular_owner_only(history_path)
+    return history_path
+
+
 @contextmanager
 def _locked_history_path(data_dir: Path | None = None, *, shared: bool = False) -> Iterator[Path]:
     """Yield the active history path while holding the advisory lock."""
     canonical_path = _get_history_path(data_dir)
     with _history_lock(canonical_path, shared=shared):
-        yield _resolve_history_path_unlocked(canonical_path)
+        if shared:
+            yield _resolve_history_path_read_only(canonical_path)
+        else:
+            yield _resolve_history_path_unlocked(canonical_path)
+
+
+def _legacy_history_filename_needs_migration(canonical_path: Path) -> bool:
+    """Return whether only the legacy history filename is currently present."""
+    legacy_path = canonical_path.with_name(LEGACY_HISTORY_FILENAME)
+    return legacy_path.exists() and not canonical_path.exists()
 
 
 def _history_header_is_stale(data_dir: Path | None = None) -> bool:
     """Return whether the on-disk history header needs migrating."""
     try:
         canonical_path = _get_history_path(data_dir)
-        history_path = _resolve_history_path_unlocked(canonical_path)
-        if not history_path.exists():
+        if not canonical_path.exists():
             return False
-        actual = _read_csv_header(history_path)
+        actual = _read_csv_header(canonical_path)
     except Exception:
         return False
     return actual is not None and actual != _get_fieldnames()
+
+
+def _history_needs_migration(data_dir: Path | None = None) -> bool:
+    """Return whether a read must first take the exclusive migration lock."""
+    try:
+        canonical_path = _get_history_path(data_dir)
+        return _legacy_history_filename_needs_migration(canonical_path) or _history_header_is_stale(
+            data_dir
+        )
+    except Exception:
+        return False
 
 
 def _get_fieldnames() -> list[str]:
@@ -768,20 +793,31 @@ def read_history(
         List of TransactionHistoryEntry objects
     """
     try:
+        entries: list[TransactionHistoryEntry] | None = None
         # Header migration rewrites the file, so it needs the exclusive lock.
         # Taking it only when the header is actually stale lets the common
         # read path use a shared lock instead of serializing every reader.
-        if _history_header_is_stale(data_dir):
+        if _history_needs_migration(data_dir):
             with _locked_history_path(data_dir) as history_path:
+                # Recheck after acquiring the exclusive sidecar lock because
+                # another process may have migrated the filename or header
+                # after the initial read-only probe.
                 try:
                     _ensure_history_header_current(history_path)
                 except HistoryWriteError as exc:
                     logger.warning(f"History header migration failed during read: {exc}")
 
-        with _locked_history_path(data_dir, shared=True) as history_path:
-            if not history_path.exists():
-                return []
-            entries = _read_history_entries_unlocked(history_path)
+                # If a filesystem error prevented the legacy rename, preserve
+                # the established fallback by reading that file under the
+                # exclusive lock. Shared readers only ever select canonical.
+                if history_path.name == LEGACY_HISTORY_FILENAME:
+                    entries = _read_history_entries_unlocked(history_path)
+
+        if entries is None:
+            with _locked_history_path(data_dir, shared=True) as history_path:
+                if not history_path.exists():
+                    return []
+                entries = _read_history_entries_unlocked(history_path)
     except Exception as e:
         logger.error(f"Failed to read history: {e}")
         return []
