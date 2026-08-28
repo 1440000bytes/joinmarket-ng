@@ -1606,13 +1606,14 @@ class TestConfirmationGate:
         result = await runner.run()
         assert result.status == PlanStatus.COMPLETED
 
-    async def test_unknown_txid_falls_back_after_timeout(
+    async def test_evicted_txid_falls_back_after_timeout(
         self, tmp_path: Path, monkeypatch: Any
     ) -> None:
-        """Light-client backends (e.g. neutrino) cannot resolve arbitrary
-        txids, so ``get_confirmations`` returns ``None`` indefinitely. The
-        gate must fall back to the inter-phase wait after
-        ``confirmation_unknown_timeout`` instead of stalling forever.
+        """An evicted txid has no live matching UTXO and remains unresolved.
+
+        The confirmation-history resolver returns ``None`` in this case. The
+        runner must use ``confirmation_unknown_timeout`` rather than polling
+        forever.
         """
         from datetime import UTC, datetime, timedelta
 
@@ -1629,7 +1630,7 @@ class TestConfirmationGate:
         async def get_confirmations(_txid: str) -> int | None:
             nonlocal polls
             polls += 1
-            return None  # backend never resolves the txid
+            return None  # History has no matching live UTXO for this txid.
 
         # Drive a virtual clock so the timeout triggers without real waits.
         base = datetime(2026, 1, 1, tzinfo=UTC)

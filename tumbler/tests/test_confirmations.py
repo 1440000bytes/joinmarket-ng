@@ -127,6 +127,18 @@ class TestConfirmationsFromHistory:
         # Both addresses were submitted to the backend's filter scan.
         assert backend.get_utxos_calls == [[dest, change]]
 
+    async def test_returns_zero_for_matching_unconfirmed_utxo(self, tmp_path: Path) -> None:
+        txid = "b" * 64
+        _write_history(
+            tmp_path,
+            [{"txid": txid, "destination_address": "tb1qdest", "change_address": ""}],
+        )
+        backend = _FakeBackend(utxos=[_FakeUTXO(txid=txid, confirmations=0)])
+
+        result = await confirmations_from_history(txid, backend, tmp_path)
+
+        assert result == 0
+
     async def test_unknown_txid_returns_none(self, tmp_path: Path) -> None:
         # No history file at all.
         backend = _FakeBackend()
@@ -134,18 +146,20 @@ class TestConfirmationsFromHistory:
         assert result is None
         assert backend.get_utxos_calls == []
 
-    async def test_history_known_but_no_matching_utxo_returns_zero(self, tmp_path: Path) -> None:
-        """Watched addresses exist but the broadcast hasn't materialised
-        as a confirmed UTXO yet. Returning 0 keeps the runner polling
-        instead of triggering the unknown-txid fallback."""
+    async def test_history_known_but_no_matching_live_utxo_returns_none(
+        self, tmp_path: Path
+    ) -> None:
+        """An evicted or never-confirmed txid must remain unresolved."""
         txid = "c" * 64
         _write_history(
             tmp_path,
             [{"txid": txid, "destination_address": "tb1qdest", "change_address": ""}],
         )
-        backend = _FakeBackend(utxos=[])
+        backend = _FakeBackend(utxos=[_FakeUTXO(txid="d" * 64, confirmations=2)])
+
         result = await confirmations_from_history(txid, backend, tmp_path)
-        assert result == 0
+
+        assert result is None
 
     async def test_get_utxos_failure_returns_none(self, tmp_path: Path) -> None:
         txid = "d" * 64

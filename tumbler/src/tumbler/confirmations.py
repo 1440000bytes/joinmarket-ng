@@ -48,15 +48,9 @@ async def confirmations_from_history(
 
     Returns:
         - confirmations (>= 0) if a matching UTXO is found.
-        - ``0`` if we *do* have a history entry (so we know the
-          broadcast happened) but the backend has not yet seen any
-          UTXO with that txid -- typical for neutrino while a block
-          is still propagating, or for the brief window before BIP158
-          filters catch up. Reporting ``0`` keeps the runner polling
-          instead of treating the txid as "unresolved" and triggering
-          the unknown-txid fallback timeout.
-        - ``None`` when there is no history entry to consult (caller
-          should fall back to the runner's strict-unknown-timeout path).
+        - ``None`` when there is no history entry to consult, or no live
+          UTXO matches the txid (caller should fall back to the runner's
+          strict-unknown-timeout path).
 
     The function never raises: backend / history I/O failures are
     logged at debug level and reported as ``None`` so the runner can
@@ -98,13 +92,11 @@ async def confirmations_from_history(
         if getattr(utxo, "txid", None) == txid:
             confirmations = int(getattr(utxo, "confirmations", 0) or 0)
             return confirmations
-    # Addresses are known but no UTXO with this txid is currently live.
-    # Two innocent cases: (a) tx is in the mempool / waiting for the
-    # next neutrino rescan, (b) tx was spent already by a later phase
-    # (deeply confirmed by definition). Returning 0 keeps the runner
-    # polling on case (a); case (b) is unreachable here because the
-    # gate runs before the next phase starts.
-    return 0
+    # The history entry identifies addresses to inspect, not a currently
+    # resolvable transaction. An evicted or never-confirmed broadcast has no
+    # live matching UTXO, so let the runner's unknown-confirmation timeout
+    # bound the wait rather than treating it as a known zero-confirmation tx.
+    return None
 
 
 async def resolve_confirmations(
