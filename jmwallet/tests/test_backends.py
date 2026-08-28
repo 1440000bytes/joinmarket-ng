@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
+from jmcore.secure_files import atomic_write_private as secure_atomic_write_private
 
 from jmwallet.backends.base import BlockchainBackend, BondVerificationRequest, Transaction
 from jmwallet.backends.neutrino import (
@@ -14,6 +15,7 @@ from jmwallet.backends.neutrino import (
     NeutrinoBackend,
     NeutrinoConfig,
     NeutrinoNetworkMismatchError,
+    NeutrinoTOFUPinningError,
 )
 from jmwallet.backends.offline import OfflineBackend
 
@@ -2903,7 +2905,7 @@ class TestNeutrinoTofuPinning:
 
     @pytest.mark.asyncio
     async def test_tofu_persists_cert_to_path(self, tmp_path):
-        """When tls_cert_path is set, TOFU writes the fetched cert there."""
+        """When tls_cert_path is set, TOFU atomically persists the fetched cert."""
         import ssl
 
         cert_path = tmp_path / "neutrino" / "tls.cert"
@@ -2922,11 +2924,16 @@ class TestNeutrinoTofuPinning:
                 "jmwallet.backends.neutrino.ssl.create_default_context",
                 return_value=MagicMock(spec=ssl.SSLContext),
             ),
+            patch(
+                "jmwallet.backends.neutrino.atomic_write_private",
+                wraps=secure_atomic_write_private,
+            ) as mock_write_private,
         ):
             await backend._maybe_pin_certificate()
 
             assert cert_path.is_file()
             assert cert_path.read_text() == "PEMDATA"
+            mock_write_private.assert_called_once_with(cert_path, b"PEMDATA")
             assert backend._tofu_pending is False
             assert backend._pinned_cert_pem is None
             await backend.close()
@@ -2959,20 +2966,103 @@ class TestNeutrinoTofuPinning:
             await backend.close()
 
     @pytest.mark.asyncio
-    async def test_tofu_fetch_failure_leaves_pending(self):
-        """If the cert cannot be fetched, TOFU stays pending for a later retry."""
+    async def test_tofu_fetch_failure_blocks_api_request_and_bearer_auth(self):
+        """A failed certificate fetch prevents the request carrying bearer auth."""
         backend = NeutrinoBackend(
             neutrino_url="https://localhost:8334",
             tls_cert_path="",
+            auth_token="secret-token",
         )
+        backend.client.get = AsyncMock()
         with patch(
             "jmwallet.backends.neutrino.ssl.get_server_certificate",
             side_effect=OSError("connection refused"),
         ):
-            await backend._maybe_pin_certificate()
+            with pytest.raises(NeutrinoTOFUPinningError, match="refusing the HTTPS API request"):
+                await backend._api_call("GET", "v1/status")
+        backend.client.get.assert_not_awaited()
         assert backend._tofu_pending is True
         assert backend._pinned_cert_pem is None
         await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_tofu_persistence_failure_blocks_api_request(self, tmp_path):
+        """A configured path may not fall back to an in-memory pin on write failure."""
+        backend = NeutrinoBackend(
+            neutrino_url="https://localhost:8334",
+            tls_cert_path=str(tmp_path / "tls.cert"),
+        )
+        backend.client.get = AsyncMock()
+
+        with (
+            patch(
+                "jmwallet.backends.neutrino.ssl.get_server_certificate",
+                return_value="PEMDATA",
+            ),
+            patch(
+                "jmwallet.backends.neutrino.atomic_write_private",
+                side_effect=OSError("permission denied"),
+            ),
+        ):
+            with pytest.raises(NeutrinoTOFUPinningError, match="refusing the HTTPS API request"):
+                await backend._api_call("GET", "v1/status")
+
+        backend.client.get.assert_not_awaited()
+        assert backend._tofu_pending is True
+        assert backend._pinned_cert_pem is None
+        await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_concurrent_first_api_calls_pin_once_before_requests(self):
+        """Concurrent initial calls share one fetch and use the rebuilt pinned client."""
+        import ssl
+
+        original_client = MagicMock()
+        original_client.aclose = AsyncMock()
+        pinned_client = MagicMock()
+        pinned_client.aclose = AsyncMock()
+        reopened_client = MagicMock()
+        reopened_client.aclose = AsyncMock()
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        response.json.return_value = {"ok": True}
+        pinned_client.get = AsyncMock(return_value=response)
+
+        with (
+            patch(
+                "jmwallet.backends.neutrino.httpx.AsyncClient",
+                side_effect=[original_client, pinned_client, reopened_client],
+            ) as mock_async_client,
+            patch(
+                "jmwallet.backends.neutrino.ssl.get_server_certificate",
+                return_value="PEMDATA",
+            ) as mock_get_certificate,
+            patch(
+                "jmwallet.backends.neutrino.ssl.create_default_context",
+                return_value=MagicMock(spec=ssl.SSLContext),
+            ) as mock_create_context,
+        ):
+            backend = NeutrinoBackend(
+                neutrino_url="https://localhost:8334",
+                auth_token="secret-token",
+            )
+            try:
+                results = await asyncio.gather(
+                    backend._api_call("GET", "v1/status"),
+                    backend._api_call("GET", "v1/status"),
+                )
+            finally:
+                await backend.close()
+
+        assert results == [{"ok": True}, {"ok": True}]
+        assert mock_get_certificate.call_count == 1
+        assert mock_create_context.call_args_list[0].kwargs == {"cafile": None, "cadata": "PEMDATA"}
+        original_client.aclose.assert_awaited_once()
+        assert pinned_client.get.await_count == 2
+        assert mock_async_client.call_count == 3
+        assert mock_async_client.call_args_list[1].kwargs["headers"] == {
+            "Authorization": "Bearer secret-token"
+        }
 
 
 class TestNeutrinoNetworkVerification:

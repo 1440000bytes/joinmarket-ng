@@ -30,6 +30,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
+from jmcore.secure_files import atomic_write_private
 from loguru import logger
 
 from jmwallet.backends.base import (
@@ -57,6 +58,10 @@ _HASH_TO_NETWORK: dict[str, str] = {h: n for n, h in GENESIS_BLOCK_HASHES.items(
 
 class NeutrinoNetworkMismatchError(Exception):
     """Raised when the neutrino server is serving a different network."""
+
+
+class NeutrinoTOFUPinningError(Exception):
+    """Raised when HTTPS certificate trust-on-first-use pinning fails."""
 
 
 class _UTXOVerificationUnavailableError(Exception):
@@ -327,7 +332,9 @@ class NeutrinoBackend(BlockchainBackend):
 
         Runs at most once. When ``tls_cert_path`` is configured the fetched
         certificate is persisted there so future connections verify against it;
-        otherwise it is pinned in memory for the current session only.
+        otherwise it is pinned in memory for the current session only. A failed
+        fetch or configured-path write raises before the API client can make an
+        HTTPS request.
         """
         if not self._tofu_pending:
             return
@@ -345,28 +352,40 @@ class NeutrinoBackend(BlockchainBackend):
                     f"Could not fetch neutrino TLS certificate from {host}:{port} "
                     f"for trust-on-first-use pinning: {exc}"
                 )
-                return
+                raise NeutrinoTOFUPinningError(
+                    f"Could not pin the neutrino TLS certificate from {host}:{port}; "
+                    "refusing the HTTPS API request."
+                ) from exc
 
             persisted_to: str | None = None
             if self._tls_cert_path:
                 cert_path = Path(self._tls_cert_path).expanduser()
                 try:
-                    cert_path.parent.mkdir(parents=True, exist_ok=True)
-                    cert_path.write_text(pem)
+                    atomic_write_private(cert_path, pem.encode("ascii"))
                     persisted_to = str(cert_path)
-                except OSError as exc:
+                except (OSError, UnicodeError, ValueError) as exc:
                     logger.warning(
                         f"Could not persist pinned neutrino certificate to {cert_path}: {exc}"
                     )
+                    raise NeutrinoTOFUPinningError(
+                        f"Could not persist the neutrino TLS certificate to {cert_path}; "
+                        "refusing the HTTPS API request."
+                    ) from exc
 
             if persisted_to is None:
                 self._pinned_cert_pem = pem
 
-            self._tofu_pending = False
-
             # Rebuild the client so subsequent requests use the pinned cert.
             old_client = self.client
-            self.client = self._build_http_client()
+            try:
+                self.client = self._build_http_client()
+            except Exception as exc:
+                if persisted_to is None:
+                    self._pinned_cert_pem = None
+                raise NeutrinoTOFUPinningError(
+                    "Could not create a pinned Neutrino HTTPS client; refusing the API request."
+                ) from exc
+            self._tofu_pending = False
             await old_client.aclose()
 
             if persisted_to:
