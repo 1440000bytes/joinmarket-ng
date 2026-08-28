@@ -596,8 +596,9 @@ class TestStartPlan:
         directory_server: str,
     ) -> None:
         """Tumbler maker phases preserve network and maker policy settings."""
-        from jmcore.models import NetworkType
+        from jmcore.models import NetworkType, OfferType
         from jmcore.settings import JoinMarketSettings, NetworkSettings
+        from maker.config import MakerConfig
 
         settings = JoinMarketSettings(
             network_config=NetworkSettings(
@@ -605,9 +606,19 @@ class TestStartPlan:
                 directory_servers=[directory_server],
                 allow_clearnet_connections=allow_clearnet_connections,
             ),
-            maker={"mixdepth_selection_policy": "concentrated"},
+            maker={
+                "mixdepth_selection_policy": "concentrated",
+                "min_fee_rate_sat_vb": 2.5,
+                "min_fee_block_target": 12,
+                "pre_sign_timeout_sec": 120,
+                "identity_renewal_min_sec": 61,
+                "identity_renewal_max_sec": 121,
+                "identity_grace_sec": 90,
+                "identity_rotation_quiet_min_sec": 17,
+                "identity_rotation_quiet_max_sec": 29,
+            },
+            wallet={"max_fee_rate_sat_vb": 777.0},
         )
-        captured_config: dict[str, Any] = {}
 
         class CapturingRunner:
             context: Any
@@ -619,15 +630,11 @@ class TestStartPlan:
             async def run(self) -> Plan:
                 return self.plan
 
-        def capture_maker_config(**kwargs: Any) -> MagicMock:
-            captured_config.update(kwargs)
-            return MagicMock()
-
         monkeypatch.setattr("jmwalletd.routers.tumbler.get_settings", lambda: settings)
         monkeypatch.setattr("jmwalletd.routers.tumbler.TumbleRunner", CapturingRunner)
         monkeypatch.setattr("jmwalletd._backend.get_backend", AsyncMock())
-        monkeypatch.setattr("maker.bot.MakerBot", MagicMock())
-        monkeypatch.setattr("maker.config.MakerConfig", capture_maker_config)
+        maker_bot_cls = MagicMock()
+        monkeypatch.setattr("maker.bot.MakerBot", maker_bot_cls)
 
         response = app_with_wallet.post(
             f"/api/v1/wallet/{WALLET}/tumbler/start",
@@ -636,8 +643,22 @@ class TestStartPlan:
 
         assert response.status_code == 202, response.text
         asyncio.run(CapturingRunner.context.maker_factory(MagicMock()))
-        assert captured_config["allow_clearnet_connections"] is allow_clearnet_connections
-        assert captured_config["mixdepth_selection_policy"] == "concentrated"
+        maker_config = maker_bot_cls.call_args.kwargs["config"]
+        assert isinstance(maker_config, MakerConfig)
+        assert maker_config.allow_clearnet_connections is allow_clearnet_connections
+        assert str(maker_config.mixdepth_selection_policy) == "concentrated"
+        assert maker_config.min_fee_rate_sat_vb == 2.5
+        assert maker_config.min_fee_block_target == 12
+        assert maker_config.max_fee_rate_sat_vb == 777.0
+        assert maker_config.pre_sign_timeout_sec == 120
+        assert maker_config.identity_renewal_min_sec == 61
+        assert maker_config.identity_renewal_max_sec == 121
+        assert maker_config.identity_grace_sec == 90
+        assert maker_config.identity_rotation_quiet_min_sec == 17
+        assert maker_config.identity_rotation_quiet_max_sec == 29
+        assert maker_config.offer_type is OfferType.SW0_ABSOLUTE
+        assert maker_config.cj_fee_absolute == 0
+        assert maker_config.no_fidelity_bond is True
 
 
 # ----------------------------------------------------------------------------

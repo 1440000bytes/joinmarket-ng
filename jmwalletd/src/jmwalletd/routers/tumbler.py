@@ -32,6 +32,7 @@ from typing import Any, cast
 from fastapi import APIRouter, Depends, Response
 from fastapi.responses import JSONResponse
 from loguru import logger
+from pydantic import SecretStr
 from tumbler.builder import PlanBuilder, TumbleParameters
 from tumbler.persistence import (
     PlanCorruptError,
@@ -435,6 +436,7 @@ async def start_plan(
     from jmwalletd._backend import get_backend
     from maker.bot import MakerBot
     from maker.config import MakerConfig
+    from maker.mixdepth_selection import MixdepthSelectionPolicy
     from taker.config import TakerConfig
     from taker.taker import Taker
 
@@ -453,14 +455,14 @@ async def start_plan(
         )
         return Taker(wallet=ws, backend=backend, config=config)
 
-    async def _maker_factory(_phase: Any) -> Any:
+    async def _maker_factory(phase: Any) -> Any:
         backend = await get_backend(
             state.data_dir,
             force_new=True,
             wallet_service=ws,
         )
         config = MakerConfig(
-            mnemonic=state.wallet_mnemonic,
+            mnemonic=SecretStr(state.wallet_mnemonic),
             network=jm_settings.network_config.network,
             directory_servers=jm_settings.get_directory_servers(),
             allow_clearnet_connections=jm_settings.network_config.allow_clearnet_connections,
@@ -469,7 +471,9 @@ async def start_plan(
             socks_host=jm_settings.tor.socks_host,
             socks_port=jm_settings.tor.socks_port,
             stream_isolation=jm_settings.tor.stream_isolation,
-            mixdepth_selection_policy=jm_settings.maker.mixdepth_selection_policy,
+            mixdepth_selection_policy=MixdepthSelectionPolicy(
+                jm_settings.maker.mixdepth_selection_policy
+            ),
             min_fee_rate_sat_vb=jm_settings.maker.min_fee_rate_sat_vb,
             min_fee_block_target=jm_settings.maker.min_fee_block_target,
             max_fee_rate_sat_vb=jm_settings.wallet.max_fee_rate_sat_vb,
@@ -477,6 +481,8 @@ async def start_plan(
             identity_renewal_min_sec=jm_settings.maker.identity_renewal_min_sec,
             identity_renewal_max_sec=jm_settings.maker.identity_renewal_max_sec,
             identity_grace_sec=jm_settings.maker.identity_grace_sec,
+            identity_rotation_quiet_min_sec=jm_settings.maker.identity_rotation_quiet_min_sec,
+            identity_rotation_quiet_max_sec=jm_settings.maker.identity_rotation_quiet_max_sec,
             # Log maker history into the daemon's data dir (#531).
             data_dir=state.data_dir,
         )
@@ -629,8 +635,7 @@ async def delete_plan_endpoint(
 
 # The ``plan_path`` import is kept public here so tests that want to assert
 # the schedules directory layout can do so without pulling tumbler directly.
-_ = plan_path
+_ = plan_path, BackendNotReady
 # ``BackendNotReady`` is kept imported because factories that import taker/
 # maker modules at call time may fail with it; the import site lives inside
 # start_plan's closures so mypy sees the name as used.
-_ = BackendNotReady

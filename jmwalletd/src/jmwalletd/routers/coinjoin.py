@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from loguru import logger
+from pydantic import SecretStr
 
 from jmcore.paths import remove_nick_state, write_nick_state
 from jmcore.settings import get_settings
@@ -306,6 +307,7 @@ async def start_maker(
         from jmwalletd._backend import get_backend
         from maker.bot import MakerBot
         from maker.config import MakerConfig
+        from maker.mixdepth_selection import MixdepthSelectionPolicy
 
         state.activate_coinjoin_state(CoinjoinState.MAKER_RUNNING)
 
@@ -321,7 +323,7 @@ async def start_maker(
                 )
                 jm_settings = get_settings()
                 config = MakerConfig(
-                    mnemonic=state.wallet_mnemonic,
+                    mnemonic=SecretStr(state.wallet_mnemonic),
                     offer_type=body.ordertype,  # type: ignore[arg-type]
                     min_size=minsize,
                     cj_fee_relative=cjfee_r,
@@ -337,7 +339,9 @@ async def start_maker(
                     socks_host=jm_settings.tor.socks_host,
                     socks_port=jm_settings.tor.socks_port,
                     stream_isolation=jm_settings.tor.stream_isolation,
-                    mixdepth_selection_policy=jm_settings.maker.mixdepth_selection_policy,
+                    mixdepth_selection_policy=MixdepthSelectionPolicy(
+                        jm_settings.maker.mixdepth_selection_policy
+                    ),
                     min_fee_rate_sat_vb=jm_settings.maker.min_fee_rate_sat_vb,
                     min_fee_block_target=jm_settings.maker.min_fee_block_target,
                     max_fee_rate_sat_vb=jm_settings.wallet.max_fee_rate_sat_vb,
@@ -345,6 +349,12 @@ async def start_maker(
                     identity_renewal_min_sec=jm_settings.maker.identity_renewal_min_sec,
                     identity_renewal_max_sec=jm_settings.maker.identity_renewal_max_sec,
                     identity_grace_sec=jm_settings.maker.identity_grace_sec,
+                    identity_rotation_quiet_min_sec=(
+                        jm_settings.maker.identity_rotation_quiet_min_sec
+                    ),
+                    identity_rotation_quiet_max_sec=(
+                        jm_settings.maker.identity_rotation_quiet_max_sec
+                    ),
                     # Log maker history into the daemon's data dir so the
                     # yieldgen/report endpoint (which reads from state.data_dir)
                     # reflects this maker's earnings (#531).
@@ -483,7 +493,7 @@ def _build_txinfo(tx_result: Any) -> TxInfo:
     ]
 
     return TxInfo(
-        hex=tx_hex,
+        hex=cast(str, tx_hex),
         inputs=inputs,
         outputs=outputs,
         txid=getattr(tx_result, "txid", ""),
