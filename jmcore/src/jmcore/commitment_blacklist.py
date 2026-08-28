@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 import threading
+from collections import OrderedDict
 from pathlib import Path
 
 from loguru import logger
@@ -22,6 +23,7 @@ from jmcore.secure_files import atomic_write_private
 # PoDLE commitments are SHA256 hashes of an EC point, encoded as hex.
 # That means exactly 64 hex characters (32 bytes).
 COMMITMENT_HEX_LENGTH = 64
+DEFAULT_REMOTE_COMMITMENT_CACHE_CAPACITY = 100_000
 
 _HEX_RE = re.compile(r"^[0-9a-fA-F]+$")
 
@@ -53,6 +55,13 @@ def validate_commitment_hex(commitment: str) -> tuple[bool, str]:
     return True, ""
 
 
+def _normalize_commitment(commitment: str) -> str | None:
+    """Return a normalized commitment only when it is valid protocol input."""
+    normalized = commitment.strip().lower()
+    valid, _ = validate_commitment_hex(normalized)
+    return normalized if valid else None
+
+
 class CommitmentBlacklist:
     """
     Thread-safe commitment blacklist with file persistence.
@@ -61,21 +70,33 @@ class CommitmentBlacklist:
     This matches the reference implementation's format for compatibility.
     """
 
-    def __init__(self, blacklist_path: Path | None = None, data_dir: Path | None = None):
+    def __init__(
+        self,
+        blacklist_path: Path | None = None,
+        data_dir: Path | None = None,
+        remote_cache_capacity: int = DEFAULT_REMOTE_COMMITMENT_CACHE_CAPACITY,
+    ):
         """
         Initialize the commitment blacklist.
 
         Args:
             blacklist_path: Path to the blacklist file. If None, uses data_dir.
             data_dir: Data directory for JoinMarket (defaults to get_default_data_dir()).
-                     Only used if blacklist_path is None.
+                      Only used if blacklist_path is None.
+            remote_cache_capacity: Maximum number of untrusted remote commitments
+                retained in memory.
         """
+        if remote_cache_capacity < 0:
+            raise ValueError("remote_cache_capacity must be non-negative")
         if blacklist_path is None:
             blacklist_path = get_commitment_blacklist_path(data_dir)
         self.blacklist_path = blacklist_path
+        self.remote_cache_capacity = remote_cache_capacity
 
-        # In-memory cache of blacklisted commitments
+        # Locally verified commitments are durable and never evicted. Remote
+        # gossip is kept separately so it cannot grow the persistent blacklist.
         self._commitments: set[str] = set()
+        self._remote_commitments: OrderedDict[str, None] = OrderedDict()
         self._lock = threading.Lock()
 
         # Load existing blacklist from disk
@@ -96,11 +117,17 @@ class CommitmentBlacklist:
 
         try:
             with open(self.blacklist_path, encoding="ascii") as f:
+                skipped = 0
                 for line in f:
-                    commitment = line.strip().lower()
-                    if commitment:
-                        self._commitments.add(commitment)
+                    commitment = _normalize_commitment(line)
+                    if commitment is None:
+                        if line.strip():
+                            skipped += 1
+                        continue
+                    self._commitments.add(commitment)
             logger.info(f"Loaded {len(self._commitments)} commitments from blacklist")
+            if skipped:
+                logger.warning(f"Skipped {skipped} malformed commitment blacklist entries")
         except Exception as e:
             logger.error(f"Failed to load blacklist from {self.blacklist_path}: {e}")
 
@@ -123,11 +150,11 @@ class CommitmentBlacklist:
         Returns:
             True if the commitment is blacklisted, False otherwise
         """
-        # Normalize commitment (strip whitespace, lowercase)
-        commitment = commitment.strip().lower()
-
+        normalized = _normalize_commitment(commitment)
+        if normalized is None:
+            return False
         with self._lock:
-            return commitment in self._commitments
+            return normalized in self._commitments or normalized in self._remote_commitments
 
     def add(self, commitment: str, persist: bool = True) -> bool:
         """
@@ -140,27 +167,49 @@ class CommitmentBlacklist:
         Returns:
             True if the commitment was newly added, False if already present
         """
-        # Normalize commitment
-        commitment = commitment.strip().lower()
-
-        if not commitment:
-            logger.warning("Attempted to add empty commitment to blacklist")
+        normalized = _normalize_commitment(commitment)
+        if normalized is None:
+            logger.warning("Attempted to add invalid commitment to blacklist")
             return False
 
         with self._lock:
-            if commitment in self._commitments:
+            if normalized in self._commitments:
                 return False
 
-            self._commitments.add(commitment)
+            self._commitments.add(normalized)
 
             if persist:
                 try:
                     self._save_to_disk()
                 except Exception:
-                    self._commitments.remove(commitment)
+                    self._commitments.remove(normalized)
                     raise
 
-            logger.debug(f"Added commitment to blacklist: {commitment[:16]}...")
+            self._remote_commitments.pop(normalized, None)
+            logger.debug(f"Added commitment to blacklist: {normalized[:16]}...")
+            return True
+
+    def add_remote(self, commitment: str) -> bool:
+        """Cache an untrusted remote commitment without writing it to disk.
+
+        Remote entries are intentionally bounded and evicted in first-seen
+        order. Locally persisted entries always take precedence and are never
+        evicted by this cache.
+        """
+        normalized = _normalize_commitment(commitment)
+        if normalized is None:
+            logger.warning("Attempted to add invalid remote commitment to blacklist")
+            return False
+
+        with self._lock:
+            if normalized in self._commitments or normalized in self._remote_commitments:
+                return False
+            if self.remote_cache_capacity == 0:
+                return False
+            if len(self._remote_commitments) >= self.remote_cache_capacity:
+                self._remote_commitments.popitem(last=False)
+            self._remote_commitments[normalized] = None
+            logger.debug(f"Cached remote commitment: {normalized[:16]}...")
             return True
 
     def check_and_add(self, commitment: str, persist: bool = True) -> bool:
@@ -177,34 +226,32 @@ class CommitmentBlacklist:
         Returns:
             True if the commitment is NEW (allowed), False if already blacklisted
         """
-        # Normalize commitment
-        commitment = commitment.strip().lower()
-
-        if not commitment:
-            logger.warning("Attempted to check empty commitment")
+        normalized = _normalize_commitment(commitment)
+        if normalized is None:
+            logger.warning("Attempted to check invalid commitment")
             return False
 
         with self._lock:
-            if commitment in self._commitments:
-                logger.info(f"Commitment already blacklisted: {commitment[:16]}...")
+            if normalized in self._commitments or normalized in self._remote_commitments:
+                logger.info(f"Commitment already blacklisted: {normalized[:16]}...")
                 return False
 
-            self._commitments.add(commitment)
+            self._commitments.add(normalized)
 
             if persist:
                 try:
                     self._save_to_disk()
                 except Exception:
-                    self._commitments.remove(commitment)
+                    self._commitments.remove(normalized)
                     raise
 
-            logger.debug(f"Added commitment to blacklist: {commitment[:16]}...")
+            logger.debug(f"Added commitment to blacklist: {normalized[:16]}...")
             return True
 
     def __len__(self) -> int:
         """Return the number of blacklisted commitments."""
         with self._lock:
-            return len(self._commitments)
+            return len(self._commitments) + len(self._remote_commitments)
 
     def __contains__(self, commitment: str) -> bool:
         """Check if a commitment is blacklisted using 'in' operator."""
@@ -286,6 +333,15 @@ def add_commitment(commitment: str, persist: bool = True) -> bool:
         True if the commitment was newly added, False if already present
     """
     return get_blacklist().add(commitment, persist=persist)
+
+
+def add_remote_commitment(commitment: str) -> bool:
+    """Cache an untrusted remote commitment in the global blacklist instance.
+
+    Remote commitments influence in-process blacklist checks but are never
+    persisted to the local commitment blacklist file.
+    """
+    return get_blacklist().add_remote(commitment)
 
 
 def check_and_add_commitment(commitment: str, persist: bool = True) -> bool:

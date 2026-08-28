@@ -157,7 +157,7 @@ class TestCommitmentBlacklist:
         """Test that whitespace is stripped from commitments."""
         blacklist = CommitmentBlacklist(tmp_path / "commitmentlist")
 
-        commitment = "g" * 64
+        commitment = "a" * 64
         commitment_with_space = f"  {commitment}  "
 
         blacklist.add(commitment_with_space)
@@ -200,7 +200,7 @@ class TestCommitmentBlacklist:
         assert not blacklist_path.parent.exists()
 
         blacklist = CommitmentBlacklist(blacklist_path)
-        blacklist.add("h" * 64)
+        blacklist.add("b" * 64)
 
         # Now the file should exist
         assert blacklist_path.exists()
@@ -209,14 +209,18 @@ class TestCommitmentBlacklist:
         """Test that corrupted files are handled gracefully."""
         blacklist_path = tmp_path / "commitmentlist"
 
-        # Create a file with some valid and some empty lines
-        blacklist_path.write_text("valid_commitment\n\n  \nanother_valid\n")
+        valid_commitment = "a" * 64
+        another_valid = "b" * 64
+        blacklist_path.write_text(
+            f"{valid_commitment}\n\n  \nnot-a-commitment\n{'c' * 63}\n{another_valid}\n"
+        )
 
         blacklist = CommitmentBlacklist(blacklist_path)
 
-        # Should load valid commitments only
-        assert "valid_commitment" in blacklist
-        assert "another_valid" in blacklist
+        # Only well-formed commitments may be loaded.
+        assert valid_commitment in blacklist
+        assert another_valid in blacklist
+        assert len(blacklist) == 2
 
     def test_load_mixed_case_from_disk(self, tmp_path: Path) -> None:
         """Test that commitments loaded from disk are normalized to lowercase.
@@ -277,7 +281,7 @@ class TestGlobalBlacklist:
         # Set custom path
         commitment_blacklist.set_blacklist_path(tmp_path / "commitmentlist")
 
-        commitment = "i" * 64
+        commitment = "1" * 64
 
         # Initially allowed
         assert commitment_blacklist.check_commitment(commitment) is True
@@ -290,7 +294,7 @@ class TestGlobalBlacklist:
         assert commitment_blacklist.check_commitment(commitment) is False
 
         # Try check_and_add on a new commitment
-        new_commitment = "j" * 64
+        new_commitment = "2" * 64
         assert commitment_blacklist.check_and_add_commitment(new_commitment) is True
         assert commitment_blacklist.check_and_add_commitment(new_commitment) is False
 
@@ -323,6 +327,17 @@ class TestCommitmentBlacklistDataDir:
         assert result is False
         assert len(blacklist) == 0
 
+    @pytest.mark.parametrize("method_name", ["add", "check_and_add", "add_remote"])
+    @pytest.mark.parametrize("commitment", ["a" * 63, "a" * 65, "g" * 64])
+    def test_invalid_commitments_are_not_stored(
+        self, tmp_path: Path, method_name: str, commitment: str
+    ) -> None:
+        blacklist = CommitmentBlacklist(tmp_path / "commitmentlist")
+
+        assert getattr(blacklist, method_name)(commitment) is False
+        assert len(blacklist) == 0
+        assert not blacklist.blacklist_path.exists()
+
     def test_get_blacklist_with_data_dir(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -334,6 +349,62 @@ class TestCommitmentBlacklistDataDir:
         bl = commitment_blacklist.get_blacklist(data_dir=tmp_path)
         assert bl is not None
         assert "cmtdata" in str(bl.blacklist_path)
+
+
+class TestRemoteCommitmentCache:
+    """Tests for bounded, non-persistent remote HP2 gossip."""
+
+    def test_remote_entries_are_not_persisted(self, tmp_path: Path) -> None:
+        blacklist_path = tmp_path / "commitmentlist"
+        commitment = "a" * 64
+        blacklist = CommitmentBlacklist(blacklist_path)
+
+        assert blacklist.add_remote(commitment.upper()) is True
+        assert blacklist.is_blacklisted(commitment) is True
+        assert not blacklist_path.exists()
+
+        reloaded = CommitmentBlacklist(blacklist_path)
+        assert reloaded.is_blacklisted(commitment) is False
+
+    def test_remote_cache_evicts_oldest_entry(self, tmp_path: Path) -> None:
+        blacklist = CommitmentBlacklist(tmp_path / "commitmentlist", remote_cache_capacity=2)
+        first = "1" * 64
+        second = "2" * 64
+        third = "3" * 64
+
+        assert blacklist.add_remote(first) is True
+        assert blacklist.add_remote(second) is True
+        assert blacklist.add_remote(third) is True
+
+        assert blacklist.is_blacklisted(first) is False
+        assert blacklist.is_blacklisted(second) is True
+        assert blacklist.is_blacklisted(third) is True
+        assert len(blacklist) == 2
+
+    def test_local_add_promotes_remote_entry_to_persistent_storage(self, tmp_path: Path) -> None:
+        blacklist_path = tmp_path / "commitmentlist"
+        commitment = "aB" * 32
+        blacklist = CommitmentBlacklist(blacklist_path)
+
+        assert blacklist.add_remote(commitment) is True
+        assert blacklist.add(commitment.lower()) is True
+        assert blacklist_path.read_text() == f"{commitment.lower()}\n"
+
+        reloaded = CommitmentBlacklist(blacklist_path)
+        assert reloaded.is_blacklisted(commitment) is True
+
+    def test_global_remote_convenience_function(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from jmcore import commitment_blacklist
+
+        monkeypatch.setattr(commitment_blacklist, "_global_blacklist", None)
+        commitment_blacklist.set_blacklist_path(tmp_path / "commitmentlist")
+        commitment = "4" * 64
+
+        assert commitment_blacklist.add_remote_commitment(commitment) is True
+        assert commitment_blacklist.check_commitment(commitment) is False
+        assert not (tmp_path / "commitmentlist").exists()
 
 
 class TestValidateCommitmentHex:
