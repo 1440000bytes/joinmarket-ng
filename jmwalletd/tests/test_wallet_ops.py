@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from mnemonic import Mnemonic
 
+import jmwalletd.wallet_ops as wallet_ops
 from jmwalletd.wallet_ops import (
     _get_network,
     _load_wallet_file,
@@ -205,6 +206,43 @@ class TestWalletFileIO:
         wallet_path.write_bytes(b"JMNG" + bytes([1, 1]) + b"\x00" * 3)
         with pytest.raises(ValueError, match="truncated"):
             _load_wallet_file(wallet_path=wallet_path, password="anything")
+
+    @pytest.mark.parametrize(
+        ("memory_cost", "time_cost", "parallelism"),
+        [
+            (8 * 1024 - 1, 2, 1),
+            (256 * 1024 + 1, 2, 1),
+            (19_456, 0, 1),
+            (19_456, 2, 0),
+            (128 * 1024, 9, 1),
+        ],
+    )
+    def test_load_rejects_unsupported_argon2id_header_before_derivation(
+        self,
+        tmp_path: Path,
+        memory_cost: int,
+        time_cost: int,
+        parallelism: int,
+    ) -> None:
+        """Hostile KDF headers must not reach the Argon2 implementation."""
+        wallet_path = tmp_path / "hostile.jmdat"
+        wallet_path.write_bytes(
+            b"JMNG"
+            + bytes([1, 1])
+            + memory_cost.to_bytes(4, "big")
+            + time_cost.to_bytes(4, "big")
+            + bytes([parallelism])
+            + b"\x00" * 16
+            + b"not-a-fernet-token"
+        )
+
+        with (
+            patch.object(wallet_ops, "_derive_key_argon2id") as derive_key,
+            pytest.raises(ValueError, match="Unsupported Argon2id"),
+        ):
+            _load_wallet_file(wallet_path=wallet_path, password="anything")
+
+        derive_key.assert_not_called()
 
     def test_load_argon2id_wrong_password(self, tmp_path: Path) -> None:
         """Argon2id files also raise ValueError on a bad password."""

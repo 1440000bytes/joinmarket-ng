@@ -39,6 +39,13 @@ class InvalidCredentials(JMWalletDaemonError):
     detail = "Invalid credentials."
 
 
+class UnlockBackoff(JMWalletDaemonError):
+    """429 - Password retry delay is active for this wallet file."""
+
+    status_code = 429
+    detail = "Too many failed unlock attempts. Please try again later."
+
+
 class InvalidToken(JMWalletDaemonError):
     """401 - Bearer token is invalid, expired, or missing."""
 

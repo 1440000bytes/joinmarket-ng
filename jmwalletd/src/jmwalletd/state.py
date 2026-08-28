@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import enum
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -62,6 +63,24 @@ class WebSocketClient:
     generation: int | None = None
 
 
+@dataclass
+class UnlockFailure:
+    """State for bounded password retry delays for one wallet file."""
+
+    failures: int
+    retry_after: float
+
+
+_UNLOCK_BACKOFF_BASE_SECONDS = 1.0
+_UNLOCK_BACKOFF_MAX_SECONDS = 30.0
+_UNLOCK_BACKOFF_MAX_FAILURES = 6
+_MAX_PREAUTH_WS_CLIENTS = 32
+
+
+class WebSocketRegistrationLimit(Exception):
+    """Raised when pending WebSocket authentications reach their cap."""
+
+
 class DaemonState:
     """Mutable singleton holding all daemon runtime state.
 
@@ -78,6 +97,8 @@ class DaemonState:
         self.wallet_mnemonic: str = ""
         self.wallet_name: str = ""
         self.wallet_password: str = ""  # kept for re-unlock verification
+        self.wallet_lifecycle_lock = asyncio.Lock()
+        self._unlock_failures: dict[str, UnlockFailure] = {}
 
         # Coinjoin state
         self.coinjoin_state = CoinjoinState.NOT_RUNNING
@@ -186,7 +207,14 @@ class DaemonState:
         return sorted(f.name for f in d.iterdir() if f.suffix == ".jmdat")
 
     async def lock_wallet(self) -> bool:
+        """Serialize and lock the current wallet."""
+        async with self.wallet_lifecycle_lock:
+            return await self._lock_wallet()
+
+    async def _lock_wallet(self) -> bool:
         """Lock the current wallet, stopping any running maker/taker first.
+
+        The caller must hold :attr:`wallet_lifecycle_lock`.
 
         Returns whether the wallet was already locked.
         """
@@ -403,11 +431,43 @@ class DaemonState:
         return ready.is_set()
 
     def register_ws_client(self) -> WebSocketClient:
-        """Register an unauthenticated WebSocket client."""
+        """Register an unauthenticated WebSocket client when capacity permits."""
+        preauth_clients = sum(client.generation is None for client in self._ws_clients)
+        if preauth_clients >= _MAX_PREAUTH_WS_CLIENTS:
+            logger.warning("WebSocket pre-auth client limit reached")
+            raise WebSocketRegistrationLimit()
         client = WebSocketClient(queue=asyncio.Queue(maxsize=256))
         self._ws_clients.add(client)
         logger.debug("WebSocket client registered (total: {})", len(self._ws_clients))
         return client
+
+    def unlock_retry_delay(self, wallet_name: str) -> float:
+        """Return the remaining password retry delay for a wallet file."""
+        failure = self._unlock_failures.get(wallet_name)
+        if failure is None:
+            return 0.0
+        return max(0.0, failure.retry_after - time.monotonic())
+
+    def record_unlock_failure(self, wallet_name: str) -> float:
+        """Record a failed password attempt and return its retry delay."""
+        previous = self._unlock_failures.get(wallet_name)
+        failures = min(
+            (previous.failures if previous is not None else 0) + 1,
+            _UNLOCK_BACKOFF_MAX_FAILURES,
+        )
+        delay = min(
+            _UNLOCK_BACKOFF_BASE_SECONDS * (2 ** (failures - 1)),
+            _UNLOCK_BACKOFF_MAX_SECONDS,
+        )
+        self._unlock_failures[wallet_name] = UnlockFailure(
+            failures=failures,
+            retry_after=time.monotonic() + delay,
+        )
+        return delay
+
+    def reset_unlock_failures(self, wallet_name: str) -> None:
+        """Clear password retry state after a successful unlock."""
+        self._unlock_failures.pop(wallet_name, None)
 
     def authenticate_ws_client(self, client: WebSocketClient) -> bool:
         """Bind a registered client to the current wallet generation."""

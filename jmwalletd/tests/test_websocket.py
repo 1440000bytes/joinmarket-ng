@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -12,6 +13,7 @@ from starlette.websockets import WebSocketDisconnect
 from jmwalletd.app import create_app
 from jmwalletd.deps import get_daemon_state, set_daemon_state
 from jmwalletd.state import CoinjoinState, DaemonState
+from jmwalletd.websocket import websocket_endpoint
 
 
 @pytest.fixture
@@ -77,6 +79,21 @@ class TestWebSocketAuth:
             assert response.status_code == 200
             with pytest.raises(WebSocketDisconnect):
                 ws.receive_text()
+
+    async def test_excess_preauth_connections_are_closed(self, daemon_state: DaemonState) -> None:
+        for _ in range(32):
+            daemon_state.register_ws_client()
+        websocket = MagicMock()
+        websocket.close = AsyncMock()
+
+        with patch("jmwalletd.websocket.get_daemon_state", return_value=daemon_state):
+            await websocket_endpoint(websocket)
+
+        websocket.close.assert_awaited_once_with(
+            code=1013,
+            reason="Too many pending authentication requests",
+        )
+        assert len(daemon_state._ws_clients) == 32
 
 
 class TestWebSocketNotifications:
@@ -195,4 +212,19 @@ class TestWebSocketCleanup:
             assert len(state._ws_clients) == 1
 
         # After the context manager exits, client should be unregistered
+        assert len(state._ws_clients) == 0
+
+    def test_client_unregistered_after_auth_timeout(
+        self, ws_client: tuple[TestClient, str]
+    ) -> None:
+        client, _ = ws_client
+        state = get_daemon_state()
+
+        with (
+            patch("jmwalletd.websocket._AUTH_TIMEOUT_SECONDS", 0.01),
+            pytest.raises(WebSocketDisconnect),
+            client.websocket_connect("/api/v1/ws") as ws,
+        ):
+            ws.receive_text()
+
         assert len(state._ws_clients) == 0

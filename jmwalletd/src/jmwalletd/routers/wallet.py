@@ -26,6 +26,7 @@ from jmwalletd.errors import (
     InvalidRequestFormat,
     InvalidToken,
     LockExists,
+    UnlockBackoff,
     WalletAlreadyExists,
     WalletAlreadyUnlocked,
     WalletNotFound,
@@ -50,6 +51,7 @@ from jmwalletd.wallet_ops import (
     create_wallet,
     open_wallet_with_mnemonic,
     recover_wallet,
+    verify_wallet_password,
 )
 
 
@@ -119,7 +121,7 @@ async def _require_tx_monitor_ready(state: DaemonState, *, lock_on_failure: bool
     """Reject lifecycle completion while transaction history is unbaselined."""
     if not await state.wait_tx_monitor_ready():
         if lock_on_failure:
-            await state.lock_wallet()
+            await state._lock_wallet()
         raise BackendNotReady("Transaction monitor baseline is not ready.")
 
 
@@ -260,38 +262,39 @@ async def wallet_create(
     state: DaemonState = Depends(get_daemon_state),
 ) -> CreateWalletResponse:
     """Create a new wallet."""
-    if state.wallet_loaded:
-        raise WalletAlreadyUnlocked()
+    async with state.wallet_lifecycle_lock:
+        if state.wallet_loaded:
+            raise WalletAlreadyUnlocked()
 
-    wallet_path = state.wallets_dir / body.walletname
-    if wallet_path.exists():
-        raise WalletAlreadyExists()
+        wallet_path = state.wallets_dir / body.walletname
+        if wallet_path.exists():
+            raise WalletAlreadyExists()
 
-    try:
-        wallet_service, seedphrase = await create_wallet(
-            wallet_path=wallet_path,
-            password=body.password,
-            wallet_type=body.wallettype,
-            data_dir=state.data_dir,
-        )
-    except FileExistsError as exc:
-        raise WalletAlreadyExists() from exc
-    except OSError as exc:
-        raise LockExists(str(exc)) from exc
-    except ValueError as exc:
-        raise InvalidRequestFormat(str(exc)) from exc
+        try:
+            wallet_service, seedphrase = await create_wallet(
+                wallet_path=wallet_path,
+                password=body.password,
+                wallet_type=body.wallettype,
+                data_dir=state.data_dir,
+            )
+        except FileExistsError as exc:
+            raise WalletAlreadyExists() from exc
+        except OSError as exc:
+            raise LockExists(str(exc)) from exc
+        except ValueError as exc:
+            raise InvalidRequestFormat(str(exc)) from exc
 
-    state.wallet_service = wallet_service
-    state.wallet_mnemonic = seedphrase
-    state.wallet_name = body.walletname
-    state.wallet_password = body.password
+        state.wallet_service = wallet_service
+        state.wallet_mnemonic = seedphrase
+        state.wallet_name = body.walletname
+        state.wallet_password = body.password
 
-    # A generated wallet has no pre-existing history to suppress, so monitoring
-    # can become live without risking a readiness error after seed generation.
-    state.start_tx_monitor(baseline_existing=False)
-    await _require_tx_monitor_ready(state)
+        # A generated wallet has no pre-existing history to suppress, so monitoring
+        # can become live without risking a readiness error after seed generation.
+        state.start_tx_monitor(baseline_existing=False)
+        await _require_tx_monitor_ready(state)
 
-    tokens = state.token_authority.issue(body.walletname)
+        tokens = state.token_authority.issue(body.walletname)
 
     return CreateWalletResponse(
         walletname=body.walletname,
@@ -313,50 +316,51 @@ async def wallet_recover(
     state: DaemonState = Depends(get_daemon_state),
 ) -> CreateWalletResponse:
     """Recover a wallet from a seed phrase."""
-    if state.wallet_loaded:
-        raise WalletAlreadyUnlocked()
+    async with state.wallet_lifecycle_lock:
+        if state.wallet_loaded:
+            raise WalletAlreadyUnlocked()
 
-    wallet_path = state.wallets_dir / body.walletname
-    if wallet_path.exists():
-        raise WalletAlreadyExists()
+        wallet_path = state.wallets_dir / body.walletname
+        if wallet_path.exists():
+            raise WalletAlreadyExists()
 
-    try:
-        wallet_service = await recover_wallet(
-            wallet_path=wallet_path,
-            password=body.password,
-            wallet_type=body.wallettype,
-            seedphrase=body.seedphrase,
-            data_dir=state.data_dir,
-            scan_range=body.scan_range,
-        )
-    except FileExistsError as exc:
-        raise WalletAlreadyExists() from exc
-    except OSError as exc:
-        raise LockExists(str(exc)) from exc
-    except ValueError as exc:
-        raise InvalidRequestFormat(str(exc)) from exc
-
-    state.wallet_service = wallet_service
-    state.wallet_mnemonic = body.seedphrase
-    state.wallet_name = body.walletname
-    state.wallet_password = body.password
-
-    state.start_tx_monitor()
-    try:
-        await _require_tx_monitor_ready(state, lock_on_failure=True)
-    except BackendNotReady:
-        # Recovery is a create operation. Remove the encrypted file so the
-        # caller can retry the same request after a transient backend outage.
         try:
-            wallet_path.unlink(missing_ok=True)
-        except OSError:
-            logger.error("Failed to roll back wallet recovery")
-            logger.bind(sensitive=True).exception(
-                "Failed to roll back wallet recovery for {}", body.walletname
+            wallet_service = await recover_wallet(
+                wallet_path=wallet_path,
+                password=body.password,
+                wallet_type=body.wallettype,
+                seedphrase=body.seedphrase,
+                data_dir=state.data_dir,
+                scan_range=body.scan_range,
             )
-        raise
+        except FileExistsError as exc:
+            raise WalletAlreadyExists() from exc
+        except OSError as exc:
+            raise LockExists(str(exc)) from exc
+        except ValueError as exc:
+            raise InvalidRequestFormat(str(exc)) from exc
 
-    tokens = state.token_authority.issue(body.walletname)
+        state.wallet_service = wallet_service
+        state.wallet_mnemonic = body.seedphrase
+        state.wallet_name = body.walletname
+        state.wallet_password = body.password
+
+        state.start_tx_monitor()
+        try:
+            await _require_tx_monitor_ready(state, lock_on_failure=True)
+        except BackendNotReady:
+            # Recovery is a create operation. Remove the encrypted file so the
+            # caller can retry the same request after a transient backend outage.
+            try:
+                wallet_path.unlink(missing_ok=True)
+            except OSError:
+                logger.error("Failed to roll back wallet recovery")
+                logger.bind(sensitive=True).exception(
+                    "Failed to roll back wallet recovery for {}", body.walletname
+                )
+            raise
+
+        tokens = state.token_authority.issue(body.walletname)
 
     return CreateWalletResponse(
         walletname=body.walletname,
@@ -379,59 +383,74 @@ async def wallet_unlock(
     state: DaemonState = Depends(get_daemon_state),
 ) -> UnlockWalletResponse:
     """Unlock (decrypt) a wallet."""
-    wallet_path = state.wallets_dir / walletname
-    if not wallet_path.exists():
-        raise WalletNotFound()
+    async with state.wallet_lifecycle_lock:
+        wallet_path = state.wallets_dir / walletname
+        if not wallet_path.exists():
+            raise WalletNotFound()
 
-    # If the same wallet is already unlocked, just verify password and re-issue tokens.
-    if state.wallet_loaded and state.wallet_name == walletname:
-        if body.password != state.wallet_password:
-            raise InvalidCredentials()
+        if state.unlock_retry_delay(walletname) > 0:
+            raise UnlockBackoff()
+
+        # If the same wallet is already unlocked, just verify password and re-issue tokens.
+        if state.wallet_loaded and state.wallet_name == walletname:
+            if body.password != state.wallet_password:
+                state.record_unlock_failure(walletname)
+                raise InvalidCredentials()
+            state.reset_unlock_failures(walletname)
+            await _require_tx_monitor_ready(state, lock_on_failure=True)
+            # ``rotate_refresh=False``: a second unlock of the same wallet (another
+            # tab/device, or a client re-running its unlock flow) must not
+            # invalidate the refresh token already held by the first client.
+            tokens = state.token_authority.issue(walletname, rotate_refresh=False)
+            return UnlockWalletResponse(
+                walletname=walletname,
+                token=tokens.token,
+                token_type=tokens.token_type,
+                expires_in=tokens.expires_in,
+                scope=tokens.scope,
+                refresh_token=tokens.refresh_token,
+            )
+
+        # Authenticate a target wallet before mutating a different active
+        # session. Opening a service early can conflict with its backend, so
+        # verification deliberately only decrypts the wallet file here.
+        if state.wallet_loaded:
+            try:
+                await verify_wallet_password(wallet_path=wallet_path, password=body.password)
+            except ValueError as exc:
+                state.record_unlock_failure(walletname)
+                raise InvalidCredentials(str(exc)) from exc
+            await state._lock_wallet()
+
+        try:
+            wallet_service, seedphrase = await open_wallet_with_mnemonic(
+                wallet_path=wallet_path,
+                password=body.password,
+                data_dir=state.data_dir,
+                sync_on_open=False,
+            )
+        except OSError as exc:
+            raise LockExists(str(exc)) from exc
+        except ValueError as exc:
+            state.record_unlock_failure(walletname)
+            raise InvalidCredentials(str(exc)) from exc
+
+        state.reset_unlock_failures(walletname)
+        state.wallet_service = wallet_service
+        state.wallet_mnemonic = seedphrase
+        state.wallet_name = walletname
+        state.wallet_password = body.password
+
+        # Kick off sync asynchronously so unlock returns immediately.
+        if state._wallet_sync_task is not None and not state._wallet_sync_task.done():
+            state._wallet_sync_task.cancel()
+        state._wallet_sync_task = asyncio.create_task(_background_wallet_sync(state, walletname))
+
+        # Start pushing WebSocket notifications for wallet transactions (issue #560).
+        state.start_tx_monitor()
         await _require_tx_monitor_ready(state, lock_on_failure=True)
-        # ``rotate_refresh=False``: a second unlock of the same wallet (another
-        # tab/device, or a client re-running its unlock flow) must not
-        # invalidate the refresh token already held by the first client.
-        tokens = state.token_authority.issue(walletname, rotate_refresh=False)
-        return UnlockWalletResponse(
-            walletname=walletname,
-            token=tokens.token,
-            token_type=tokens.token_type,
-            expires_in=tokens.expires_in,
-            scope=tokens.scope,
-            refresh_token=tokens.refresh_token,
-        )
 
-    # If a different wallet is loaded, lock it first.
-    if state.wallet_loaded:
-        await state.lock_wallet()
-
-    try:
-        wallet_service, seedphrase = await open_wallet_with_mnemonic(
-            wallet_path=wallet_path,
-            password=body.password,
-            data_dir=state.data_dir,
-            sync_on_open=False,
-        )
-    except OSError as exc:
-        raise LockExists(str(exc)) from exc
-    except ValueError as exc:
-        raise InvalidCredentials(str(exc)) from exc
-
-    state.wallet_service = wallet_service
-    state.wallet_mnemonic = seedphrase
-    state.wallet_name = walletname
-    state.wallet_password = body.password
-
-    # Kick off sync asynchronously so unlock returns immediately.
-    if state._wallet_sync_task is not None and not state._wallet_sync_task.done():
-        state._wallet_sync_task.cancel()
-    state._wallet_sync_task = asyncio.create_task(_background_wallet_sync(state, walletname))
-
-    # Start pushing WebSocket notifications for wallet transactions (issue #560).
-    state.start_tx_monitor()
-    await _require_tx_monitor_ready(state, lock_on_failure=True)
-
-    tokens = state.token_authority.issue(walletname)
+        tokens = state.token_authority.issue(walletname)
 
     return UnlockWalletResponse(
         walletname=walletname,
@@ -454,7 +473,8 @@ async def wallet_lock(
     state: DaemonState = Depends(get_daemon_state),
 ) -> LockWalletResponse:
     """Lock the current wallet and stop all services."""
-    already_locked = await state.lock_wallet()
+    async with state.wallet_lifecycle_lock:
+        already_locked = await state._lock_wallet()
     return LockWalletResponse(walletname=walletname, already_locked=already_locked)
 
 

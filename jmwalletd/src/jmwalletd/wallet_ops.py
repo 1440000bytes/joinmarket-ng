@@ -364,6 +364,17 @@ async def open_wallet_with_mnemonic(
     return ws, seedphrase
 
 
+async def verify_wallet_password(*, wallet_path: Path, password: str) -> None:
+    """Verify a wallet password without initializing a backend service.
+
+    This lets a cross-wallet unlock authenticate its target before it tears
+    down the currently active backend and its associated daemon state.
+    """
+    if not wallet_path.exists():
+        raise FileNotFoundError(f"Wallet file not found: {wallet_path}")
+    _load_wallet_file(wallet_path=wallet_path, password=password)
+
+
 async def open_wallet(
     *,
     wallet_path: Path,
@@ -527,6 +538,17 @@ _ARGON2ID_MEMORY_COST = 19_456  # KiB (~19 MiB)
 _ARGON2ID_TIME_COST = 2
 _ARGON2ID_PARALLELISM = 1
 
+# Wallet-file headers are attacker-controlled input. Keep enough room for
+# compatible parameter upgrades while bounding the memory, CPU, and threading
+# work that a malformed file can request before password verification fails.
+_ARGON2ID_MIN_MEMORY_COST = 8 * 1024  # KiB
+_ARGON2ID_MAX_MEMORY_COST = 256 * 1024  # KiB
+_ARGON2ID_MIN_TIME_COST = 1
+_ARGON2ID_MAX_TIME_COST = 10
+_ARGON2ID_MIN_PARALLELISM = 1
+_ARGON2ID_MAX_PARALLELISM = 4
+_ARGON2ID_MAX_COMBINED_WORK = 1_048_576  # KiB-rounds across lanes
+
 # Legacy PBKDF2 parameters. Kept fixed; we only need to *read* these files.
 _LEGACY_PBKDF2_ITERATIONS = 600_000
 
@@ -551,6 +573,20 @@ def _derive_key_argon2id(
         hash_len=_KEY_LEN,
         type=Type.ID,
     )
+
+
+def _validate_argon2id_parameters(*, memory_cost: int, time_cost: int, parallelism: int) -> None:
+    """Reject unsupported Argon2id header parameters before deriving a key."""
+    if not _ARGON2ID_MIN_MEMORY_COST <= memory_cost <= _ARGON2ID_MAX_MEMORY_COST:
+        raise ValueError("Unsupported Argon2id memory cost in wallet file.")
+    if not _ARGON2ID_MIN_TIME_COST <= time_cost <= _ARGON2ID_MAX_TIME_COST:
+        raise ValueError("Unsupported Argon2id time cost in wallet file.")
+    if not _ARGON2ID_MIN_PARALLELISM <= parallelism <= _ARGON2ID_MAX_PARALLELISM:
+        raise ValueError("Unsupported Argon2id parallelism in wallet file.")
+    if memory_cost < 8 * parallelism:
+        raise ValueError("Unsupported Argon2id memory cost for parallelism in wallet file.")
+    if memory_cost * time_cost * parallelism > _ARGON2ID_MAX_COMBINED_WORK:
+        raise ValueError("Unsupported Argon2id combined work in wallet file.")
 
 
 def _pack_argon2id_header(
@@ -595,6 +631,14 @@ def _derive_key_from_header(raw: bytes, *, password: str) -> tuple[bytes, bytes]
     parallelism = raw[14]
     salt = raw[15 : 15 + _SALT_LEN]
     ciphertext = raw[header_len:]
+
+    _validate_argon2id_parameters(
+        memory_cost=memory_cost,
+        time_cost=time_cost,
+        parallelism=parallelism,
+    )
+    if not ciphertext:
+        raise ValueError("Wallet file is truncated (ciphertext missing).")
 
     key = _derive_key_argon2id(
         password=password,

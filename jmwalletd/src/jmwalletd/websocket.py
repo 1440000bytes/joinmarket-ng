@@ -26,12 +26,13 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from loguru import logger
 
 from jmwalletd.deps import get_daemon_state
-from jmwalletd.state import WebSocketControl, WebSocketNotification
+from jmwalletd.state import WebSocketControl, WebSocketNotification, WebSocketRegistrationLimit
 
 router = APIRouter()
 
 # Mounted at /ws, /jmws, and /api/v1/ws in app.py.
 _WS_PATH = ""
+_AUTH_TIMEOUT_SECONDS = 30.0
 
 
 @router.websocket(_WS_PATH)
@@ -41,7 +42,11 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     # Register before accepting so lock can terminate a socket while it waits
     # for authentication. The client receives no notifications until the token
     # is verified and it is bound to the current wallet generation.
-    client = state.register_ws_client()
+    try:
+        client = state.register_ws_client()
+    except WebSocketRegistrationLimit:
+        await websocket.close(code=1013, reason="Too many pending authentication requests")
+        return
 
     try:
         await websocket.accept()
@@ -50,16 +55,18 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         # while this socket is registered but not yet authenticated.
         auth_task = asyncio.create_task(websocket.receive_text())
         control_task = asyncio.create_task(client.queue.get())
-        done, pending = await asyncio.wait(
-            [auth_task, control_task], timeout=30.0, return_when=asyncio.FIRST_COMPLETED
+        auth_done, auth_pending = await asyncio.wait(
+            [auth_task, control_task],
+            timeout=_AUTH_TIMEOUT_SECONDS,
+            return_when=asyncio.FIRST_COMPLETED,
         )
-        if not done:
-            for task in pending:
-                task.cancel()
+        if not auth_done:
+            for auth_pending_task in auth_pending:
+                auth_pending_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
-                await asyncio.gather(*pending)
+                await asyncio.gather(*auth_pending)
             raise TimeoutError
-        if control_task in done:
+        if control_task in auth_done:
             auth_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await auth_task
@@ -120,13 +127,13 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         reader_task = asyncio.create_task(_reader())
         writer_task = asyncio.create_task(_writer())
 
-        done, pending = await asyncio.wait(
+        _done, worker_pending = await asyncio.wait(
             [reader_task, writer_task],
             return_when=asyncio.FIRST_COMPLETED,
         )
 
-        for task in pending:
-            task.cancel()
+        for worker_task in worker_pending:
+            worker_task.cancel()
 
     except TimeoutError:
         logger.debug("WebSocket auth timeout")

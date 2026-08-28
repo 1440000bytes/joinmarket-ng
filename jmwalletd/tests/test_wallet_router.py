@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -10,6 +11,9 @@ from fastapi.testclient import TestClient
 
 from jmwalletd.app import create_app
 from jmwalletd.deps import get_daemon_state, set_daemon_state
+from jmwalletd.errors import InvalidCredentials, UnlockBackoff, WalletAlreadyUnlocked
+from jmwalletd.models import CreateWalletRequest, UnlockWalletRequest
+from jmwalletd.routers import wallet as wallet_router
 from jmwalletd.state import CoinjoinState, DaemonState
 
 
@@ -290,6 +294,43 @@ class TestWalletCreate:
         )
         assert resp.status_code == 409  # WalletAlreadyExists
 
+    async def test_concurrent_create_requests_serialize_lifecycle(
+        self, daemon_state: DaemonState
+    ) -> None:
+        started = asyncio.Event()
+        release = asyncio.Event()
+        wallet_service = MagicMock()
+        wallet_service.backend.supports_tx_enumeration = False
+
+        async def create(**_kwargs: Any) -> tuple[MagicMock, str]:
+            started.set()
+            await release.wait()
+            return wallet_service, "abandon " * 11 + "about"
+
+        with patch.object(
+            wallet_router, "create_wallet", new=AsyncMock(side_effect=create)
+        ) as mock_create:
+            first = asyncio.create_task(
+                wallet_router.wallet_create(
+                    CreateWalletRequest(walletname="first.jmdat", password="secret"),
+                    daemon_state,
+                )
+            )
+            await started.wait()
+            second = asyncio.create_task(
+                wallet_router.wallet_create(
+                    CreateWalletRequest(walletname="second.jmdat", password="secret"),
+                    daemon_state,
+                )
+            )
+            await asyncio.sleep(0)
+            assert mock_create.await_count == 1
+
+            release.set()
+            await first
+            with pytest.raises(WalletAlreadyUnlocked):
+                await second
+
 
 class TestWalletRecover:
     @patch("jmwalletd.routers.wallet.recover_wallet", new_callable=AsyncMock)
@@ -425,6 +466,86 @@ class TestWalletUnlock:
         assert resp.json()["message"] == "Transaction monitor baseline is not ready."
         wait_ready.assert_awaited_once()
         assert state.wallet_loaded is False
+
+    def test_wrong_cross_wallet_password_preserves_active_session(
+        self, authed_client: tuple[TestClient, str]
+    ) -> None:
+        client, _ = authed_client
+        state = get_daemon_state()
+        target = "target.jmdat"
+        (state.wallets_dir / target).touch()
+        state.wallet_password = "active-password"
+        active_service = state.wallet_service
+        active_mnemonic = state.wallet_mnemonic
+        active_name = state.wallet_name
+        active_generation = state._wallet_generation
+        active_sync_task = MagicMock()
+        state._wallet_sync_task = active_sync_task
+        tokens = state.token_authority.issue(active_name)
+
+        with (
+            patch(
+                "jmwalletd.routers.wallet.verify_wallet_password",
+                new_callable=AsyncMock,
+                side_effect=ValueError("Wrong password"),
+            ) as verify_password,
+            patch(
+                "jmwalletd.routers.wallet.open_wallet_with_mnemonic",
+                new_callable=AsyncMock,
+            ) as open_wallet,
+        ):
+            response = client.post(
+                f"/api/v1/wallet/{target}/unlock",
+                json={"password": "wrong"},
+            )
+
+        assert response.status_code == 401
+        verify_password.assert_awaited_once()
+        open_wallet.assert_not_awaited()
+        assert state.wallet_service is active_service
+        assert state.wallet_mnemonic == active_mnemonic
+        assert state.wallet_name == active_name
+        assert state._wallet_generation == active_generation
+        assert state._wallet_sync_task is active_sync_task
+        state.token_authority.verify_access(tokens.token)
+
+    async def test_unlock_backoff_grows_and_success_resets(self, daemon_state: DaemonState) -> None:
+        wallet_name = "backoff.jmdat"
+        (daemon_state.wallets_dir / wallet_name).touch()
+        request = UnlockWalletRequest(password="wrong")
+        open_wallet = AsyncMock(side_effect=ValueError("Wrong password"))
+
+        with patch.object(wallet_router, "open_wallet_with_mnemonic", new=open_wallet):
+            with pytest.raises(InvalidCredentials):
+                await wallet_router.wallet_unlock(wallet_name, request, daemon_state)
+            first_delay = daemon_state.unlock_retry_delay(wallet_name)
+
+            with pytest.raises(UnlockBackoff):
+                await wallet_router.wallet_unlock(wallet_name, request, daemon_state)
+            assert open_wallet.await_count == 1
+
+            daemon_state._unlock_failures[wallet_name].retry_after = 0.0
+            with pytest.raises(InvalidCredentials):
+                await wallet_router.wallet_unlock(wallet_name, request, daemon_state)
+            assert daemon_state.unlock_retry_delay(wallet_name) > first_delay
+
+            daemon_state._unlock_failures[wallet_name].retry_after = 0.0
+            wallet_service = MagicMock()
+            wallet_service.backend.supports_tx_enumeration = False
+            wallet_service.sync = AsyncMock()
+            open_wallet.side_effect = None
+            open_wallet.return_value = (wallet_service, "abandon " * 11 + "about")
+
+            response = await wallet_router.wallet_unlock(
+                wallet_name,
+                UnlockWalletRequest(password="correct"),
+                daemon_state,
+            )
+
+        assert response.walletname == wallet_name
+        assert wallet_name not in daemon_state._unlock_failures
+        assert daemon_state._wallet_sync_task is not None
+        await daemon_state._wallet_sync_task
 
 
 class TestWalletLock:

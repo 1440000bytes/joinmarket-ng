@@ -9,7 +9,13 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from jmwalletd.log_buffer import get_log_buffer
-from jmwalletd.state import CoinjoinState, DaemonState, WebSocketControl, WebSocketNotification
+from jmwalletd.state import (
+    CoinjoinState,
+    DaemonState,
+    WebSocketControl,
+    WebSocketNotification,
+    WebSocketRegistrationLimit,
+)
 
 
 class TestCoinjoinState:
@@ -155,6 +161,18 @@ class TestDaemonState:
         assert client in daemon_state._ws_clients
         daemon_state.unregister_ws_client(client)
         assert client not in daemon_state._ws_clients
+
+    def test_ws_preauth_registration_is_bounded_and_reclaimed(
+        self, daemon_state: DaemonState
+    ) -> None:
+        clients = [daemon_state.register_ws_client() for _ in range(32)]
+
+        with pytest.raises(WebSocketRegistrationLimit):
+            daemon_state.register_ws_client()
+
+        daemon_state.unregister_ws_client(clients[0])
+        replacement = daemon_state.register_ws_client()
+        assert replacement in daemon_state._ws_clients
 
     def test_broadcast_ws(self, daemon_state: DaemonState) -> None:
         daemon_state.wallet_service = MagicMock()
