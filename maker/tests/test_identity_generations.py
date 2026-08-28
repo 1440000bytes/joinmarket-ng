@@ -155,16 +155,19 @@ async def test_cutover_silently_disconnects_before_replacement(bot: MakerBot, bo
     old.hidden_service_listener = MagicMock()
     old.hidden_service_listener.stop = AsyncMock()
     replacement = _generation(bot, 1)
-    replacement.directory_pool.connect_all_with_retry = AsyncMock()
+    replacement.directory_pool.connect_all_with_retry = AsyncMock(return_value=1)
     new_connection = MagicMock()
     replacement.direct_connections["J5SameTaker"] = new_connection
     bot.running = True
     bot.fidelity_bond = MagicMock() if bonded else None
     events: list[str] = []
     old_client.close.side_effect = lambda: events.append("old-close")
-    replacement.directory_pool.connect_all_with_retry.side_effect = lambda **_kwargs: events.append(
-        "new-connect"
-    )
+
+    async def connect_replacement(**_kwargs: object) -> int:
+        events.append("new-connect")
+        return 1
+
+    replacement.directory_pool.connect_all_with_retry.side_effect = connect_replacement
 
     async def announce(_generation: MakerGeneration) -> None:
         events.append("new-announce")
@@ -198,7 +201,7 @@ async def test_cutover_waits_quietly_after_old_disconnect(bot: MakerBot) -> None
     old_client.close = AsyncMock()
     old.directory_clients["directory:5222"] = old_client
     replacement = _generation(bot, 1)
-    replacement.directory_pool.connect_all_with_retry = AsyncMock()
+    replacement.directory_pool.connect_all_with_retry = AsyncMock(return_value=1)
     bot.config.identity_rotation_quiet_min_sec = 60
     bot.config.identity_rotation_quiet_max_sec = 600
     bot.running = True
@@ -208,9 +211,11 @@ async def test_cutover_waits_quietly_after_old_disconnect(bot: MakerBot) -> None
     async def sleep(delay: float) -> None:
         events.append(f"sleep:{delay}")
 
-    replacement.directory_pool.connect_all_with_retry.side_effect = lambda **_kwargs: events.append(
-        "new-connect"
-    )
+    async def connect_replacement(**_kwargs: object) -> int:
+        events.append("new-connect")
+        return 1
+
+    replacement.directory_pool.connect_all_with_retry.side_effect = connect_replacement
     with (
         patch.object(
             bot, "_create_replacement_generation", new=AsyncMock(return_value=replacement)
@@ -237,7 +242,7 @@ async def test_rotation_drains_generation_pinned_session_before_disconnect(bot: 
     old.directory_clients["directory:5222"] = old_client
     bot.active_sessions[(0, "J5Active")] = MagicMock()
     replacement = _generation(bot, 1)
-    replacement.directory_pool.connect_all_with_retry = AsyncMock()
+    replacement.directory_pool.connect_all_with_retry = AsyncMock(return_value=1)
     bot.running = True
     sleeps = 0
 
@@ -270,6 +275,16 @@ async def test_replacement_connect_failure_closes_prepared_generation(bot: Maker
     old_client = MagicMock()
     old_client.close = AsyncMock()
     old.directory_clients["directory:5222"] = old_client
+    old.hidden_service_listener = MagicMock(running=True, port=0)
+    old.hidden_service_listener.stop = AsyncMock(
+        side_effect=lambda: setattr(old.hidden_service_listener, "running", False)
+    )
+    old.hidden_service_listener.start = AsyncMock(
+        side_effect=lambda: setattr(old.hidden_service_listener, "running", True)
+    )
+    old.hidden_service_listener.serve_forever = AsyncMock()
+    old.listener_port = 49152
+    old.directory_pool.connect_all_with_retry = AsyncMock(return_value=1)
     replacement = _generation(bot, 1)
     replacement.directory_pool.connect_all_with_retry = AsyncMock(
         side_effect=RuntimeError("connect failed")
@@ -282,15 +297,38 @@ async def test_replacement_connect_failure_closes_prepared_generation(bot: Maker
         assert await bot._rotate_generation() is False
 
     assert bot.current_generation_id == 0
-    assert old.state is GenerationState.CLOSED
+    assert old.state is GenerationState.ACCEPTING
     assert replacement.state is GenerationState.CLOSED
-    assert bot.generations == {}
+    assert bot.generations == {0: old}
     old_client.close.assert_awaited_once_with()
+    old.hidden_service_listener.start.assert_awaited_once_with()
+    assert old.hidden_service_listener.port == old.listener_port
+    old.directory_pool.connect_all_with_retry.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_zero_directory_replacement_rolls_back_current_generation(bot: MakerBot) -> None:
+    old = bot.generations[0]
+    old.directory_pool.connect_all_with_retry = AsyncMock(return_value=0)
+    replacement = _generation(bot, 1)
+    replacement.directory_pool.connect_all_with_retry = AsyncMock(return_value=0)
+    bot.running = True
+
+    with patch.object(
+        bot, "_create_replacement_generation", new=AsyncMock(return_value=replacement)
+    ):
+        assert await bot._rotate_generation() is False
+
+    assert bot.current_generation_id == 0
+    assert bot.generations == {0: old}
+    assert old.state is GenerationState.ACCEPTING
+    assert replacement.state is GenerationState.CLOSED
 
 
 @pytest.mark.asyncio
 async def test_rotation_cancellation_closes_unregistered_replacement(bot: MakerBot) -> None:
     old = bot.generations[0]
+    old.directory_pool.connect_all_with_retry = AsyncMock(return_value=1)
     replacement = _generation(bot, 1)
     replacement_client = MagicMock()
     replacement_client.close = AsyncMock()
@@ -315,16 +353,16 @@ async def test_rotation_cancellation_closes_unregistered_replacement(bot: MakerB
         await bot._rotate_generation()
 
     assert replacement.state is GenerationState.CLOSED
+    assert old.state is GenerationState.ACCEPTING
+    assert bot.generations == {0: old}
     replacement_client.close.assert_awaited_once_with()
-    for task in old.tasks:
-        task.cancel()
-    await asyncio.gather(*old.tasks, return_exceptions=True)
 
 
 @pytest.mark.asyncio
-async def test_grace_retirement_starts_before_quiet_interval(bot: MakerBot) -> None:
+async def test_grace_retirement_starts_only_after_cutover(bot: MakerBot) -> None:
     old = bot.generations[0]
     replacement = _generation(bot, 1)
+    replacement.directory_pool.connect_all_with_retry = AsyncMock(return_value=1)
     bot.config.identity_rotation_quiet_min_sec = 60
     bot.config.identity_rotation_quiet_max_sec = 60
     bot.running = True
@@ -335,21 +373,37 @@ async def test_grace_retirement_starts_before_quiet_interval(bot: MakerBot) -> N
         observed_retirement_task = any(
             task.get_name() == "maker-generation-retire-0" for task in old.tasks
         )
-        raise asyncio.CancelledError
+        return None
 
     with (
         patch.object(
             bot, "_create_replacement_generation", new=AsyncMock(return_value=replacement)
         ),
         patch("maker.bot.asyncio.sleep", side_effect=sleep),
-        pytest.raises(asyncio.CancelledError),
+        patch.object(bot, "_announce_generation_offers", new=AsyncMock()),
+        patch.object(bot, "_start_generation_listeners"),
+        patch("maker.bot.spawn_task", side_effect=lambda coroutine: coroutine.close()),
     ):
-        await bot._rotate_generation()
+        assert await bot._rotate_generation() is True
 
-    assert observed_retirement_task is True
+    assert observed_retirement_task is False
+    assert any(task.get_name() == "maker-generation-retire-0" for task in old.tasks)
     for task in old.tasks:
         task.cancel()
     await asyncio.gather(*old.tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_grace_retirement_never_removes_current_generation(bot: MakerBot) -> None:
+    old = bot.generations[0]
+    old.state = GenerationState.GRACE
+    old.grace_deadline = time.monotonic()
+
+    with patch("maker.bot.asyncio.sleep", new=AsyncMock()):
+        await bot._retire_generation_after_grace(0, old.grace_deadline)
+
+    assert bot.generations == {0: old}
+    assert old.state is GenerationState.GRACE
 
 
 @pytest.mark.asyncio

@@ -640,7 +640,11 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
     async def _retire_generation_after_grace(self, generation_id: int, deadline: float) -> None:
         await asyncio.sleep(max(0.0, deadline - time.monotonic()))
         generation = self.generations.get(generation_id)
-        if generation is None or generation.grace_deadline != deadline:
+        if (
+            generation is None
+            or generation.grace_deadline != deadline
+            or generation_id == self.current_generation_id
+        ):
             return
         for key, session in list(self.active_sessions.items()):
             if key[0] == generation_id:
@@ -655,6 +659,49 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
                 self._pending_signed_rounds.pop(pending_key, None)
         await self._close_generation(generation)
         self.generations.pop(generation_id, None)
+
+    async def _rollback_generation_rotation(
+        self, old: MakerGeneration, replacement: MakerGeneration
+    ) -> None:
+        """Discard a replacement and restore the current generation's serving state."""
+        await self._close_generation(replacement)
+        if not self.running:
+            return
+
+        async with self._generation_lock:
+            current = self._generation()
+            if old.state is GenerationState.CLOSED or (current is not None and current is not old):
+                return
+            if self.generations.get(old.generation_id) is not old:
+                self.generations[old.generation_id] = old
+            self._activate_generation(old)
+            old.state = GenerationState.ACCEPTING
+            old.grace_deadline = None
+
+        listener = old.hidden_service_listener
+        if listener is not None and not listener.running:
+            try:
+                if old.listener_port is not None:
+                    listener.port = old.listener_port
+                await listener.start()
+            except Exception as exc:
+                logger.warning(f"Failed to restore maker listener after identity rollback: {exc}")
+
+        if old.directory_clients:
+            return
+        try:
+            connected = await old.directory_pool.connect_all_with_retry(
+                timeout=self.config.directory_startup_timeout,
+                initial_delay=5.0,
+                max_delay=30.0,
+                backoff=1.5,
+            )
+        except Exception as exc:
+            logger.warning(f"Failed to restore maker directories after identity rollback: {exc}")
+            return
+        if connected > 0:
+            await self._announce_generation_offers(old)
+            self._start_generation_listeners(old)
 
     async def _rotate_generation(self) -> bool:
         """Retire one identity, wait quietly, then publish its replacement."""
@@ -675,11 +722,6 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
                 # handlers remain alive for generation-pinned continuations.
                 await old.hidden_service_listener.stop()
             deadline = old.grace_deadline
-            retirement_task = asyncio.create_task(
-                self._retire_generation_after_grace(old.generation_id, deadline),
-                name=f"maker-generation-retire-{old.generation_id}",
-            )
-            old.tasks.append(retirement_task)
 
         try:
             await self._wait_for_generation_sessions(old.generation_id, deadline)
@@ -691,19 +733,19 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
             if quiet_delay > 0:
                 await asyncio.sleep(quiet_delay)
 
-            await replacement.directory_pool.connect_all_with_retry(
+            connected = await replacement.directory_pool.connect_all_with_retry(
                 timeout=self.config.directory_startup_timeout,
                 initial_delay=5.0,
                 max_delay=30.0,
                 backoff=1.5,
             )
+            if connected <= 0:
+                raise RuntimeError("Replacement generation could not connect to a directory")
         except asyncio.CancelledError:
-            await asyncio.shield(self._close_generation(replacement))
+            await asyncio.shield(self._rollback_generation_rotation(old, replacement))
             raise
         except Exception:
-            await self._close_generation(replacement)
-            await self._close_generation(old)
-            self.generations.pop(old.generation_id, None)
+            await self._rollback_generation_rotation(old, replacement)
             return False
 
         async with self._generation_lock:
@@ -726,6 +768,11 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
                 )
             except Exception as exc:
                 logger.warning(f"Could not schedule maker nick-change notification: {exc}")
+            retirement_task = asyncio.create_task(
+                self._retire_generation_after_grace(old.generation_id, deadline),
+                name=f"maker-generation-retire-{old.generation_id}",
+            )
+            old.tasks.append(retirement_task)
         return True
 
     async def _wait_for_generation_sessions(self, generation_id: int, deadline: float) -> None:
