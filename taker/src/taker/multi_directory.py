@@ -772,7 +772,13 @@ class MultiDirectoryClient(DirectoryClientPool):
                 for nick, expected in expected_counts.items():
                     if nick not in responses:
                         return False
-                    received = len(responses[nick].get("data", []))
+                    response = responses[nick]
+                    if response.get("error"):
+                        continue
+                    data = response.get("data", [])
+                    if not isinstance(data, list):
+                        return False
+                    received = len(data)
                     if received < expected:
                         return False
             return True
@@ -805,6 +811,11 @@ class MultiDirectoryClient(DirectoryClientPool):
             if command == "error":
                 if not deduplicator.add_response(from_nick, "error", line, source):
                     return
+                if from_nick in responses:
+                    logger.warning(
+                        f"Ignoring late !error from {from_nick} after an earlier response"
+                    )
+                    return
                 responses[from_nick] = {"error": True, "data": _data or "Unknown error"}
                 remaining_nicks.discard(from_nick)
                 logger.warning("Received error from peer")
@@ -812,6 +823,10 @@ class MultiDirectoryClient(DirectoryClientPool):
                 return
 
             if command != expected_command.lstrip("!"):
+                return
+
+            if responses.get(from_nick, {}).get("error"):
+                logger.warning(f"Ignoring late {expected_command} from {from_nick} after !error")
                 return
 
             if not accumulate_responses:

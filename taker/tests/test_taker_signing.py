@@ -906,6 +906,7 @@ class TestPhaseCollectSignaturesCompleteness:
             "_phase_collect_signatures must fail when maker signatures "
             "fail cryptographic verification"
         )
+        assert taker.failed_signer_nicks == {"maker1", "maker2"}
 
     @pytest.mark.asyncio
     async def test_minimum_makers_is_irrelevant_after_tx_built(

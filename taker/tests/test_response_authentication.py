@@ -7,6 +7,8 @@ without its signing key.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from _taker_test_helpers import make_directory_client
 from jmcore.crypto import NickIdentity
@@ -98,3 +100,41 @@ async def test_genuine_error_from_maker_recorded():
     responses = await run(client, [maker.nick], "!pubkey", [line])
     assert responses[maker.nick]["error"] is True
     assert "commitment-blacklisted" in responses[maker.nick]["data"]
+
+
+@pytest.mark.asyncio
+async def test_signature_then_error_keeps_signature_response():
+    client = make_directory_client()
+    maker = NickIdentity(5)
+    sig = signed_line(maker, client.nick_identity.nick, "sig", "invalid-signature")
+    error = signed_line(maker, client.nick_identity.nick, "error", "declined")
+
+    responses = await run(client, [maker.nick], "!sig", [sig, error], {maker.nick: 2})
+
+    assert responses[maker.nick] == {"data": [sig.split("!sig ", 1)[1]]}
+
+
+@pytest.mark.asyncio
+async def test_error_then_signature_keeps_terminal_error():
+    client = make_directory_client()
+    maker = NickIdentity(5)
+    error = signed_line(maker, client.nick_identity.nick, "error", "declined")
+    sig = signed_line(maker, client.nick_identity.nick, "sig", "late-signature")
+
+    responses = await run(client, [maker.nick], "!sig", [error, sig], {maker.nick: 2})
+
+    assert responses[maker.nick]["error"] is True
+    assert "declined" in responses[maker.nick]["data"]
+
+
+@pytest.mark.asyncio
+async def test_signature_error_completes_independent_of_message_length():
+    client = make_directory_client()
+    maker = NickIdentity(5)
+    error = signed_line(maker, client.nick_identity.nick, "error", "x")
+
+    responses = await asyncio.wait_for(
+        run(client, [maker.nick], "!sig", [error], {maker.nick: 100}), timeout=0.2
+    )
+
+    assert responses[maker.nick]["error"] is True
