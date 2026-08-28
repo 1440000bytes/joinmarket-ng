@@ -100,6 +100,7 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
         self._static_onion_configured = config.onion_host is not None
         self.minimum_fee_rate_sat_vb = config.min_fee_rate_sat_vb
         self._minimum_fee_policy_resolved_at: float | None = None
+        self._minimum_fee_policy_lock = asyncio.Lock()
         self._minimum_fee_policy_warning_emitted = False
 
         # Create nick identity for signing messages
@@ -453,18 +454,23 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
         resolved_at = self._minimum_fee_policy_resolved_at
         if resolved_at is not None and now - resolved_at < MIN_FEE_POLICY_TTL_SEC:
             return
-        self.minimum_fee_rate_sat_vb = await resolve_min_fee_rate(
-            self.backend,
-            static_floor=self.config.min_fee_rate_sat_vb,
-            block_target=self.config.min_fee_block_target,
-            max_fee_rate=self.config.max_fee_rate_sat_vb,
-        )
-        self._minimum_fee_policy_resolved_at = now
-        if announce:
-            logger.info(
-                "Resolved minimum CoinJoin miner fee rate: "
-                f"{self.minimum_fee_rate_sat_vb:.2f} sat/vB"
+        async with self._minimum_fee_policy_lock:
+            now = time.monotonic()
+            resolved_at = self._minimum_fee_policy_resolved_at
+            if resolved_at is not None and now - resolved_at < MIN_FEE_POLICY_TTL_SEC:
+                return
+            self.minimum_fee_rate_sat_vb = await resolve_min_fee_rate(
+                self.backend,
+                static_floor=self.config.min_fee_rate_sat_vb,
+                block_target=self.config.min_fee_block_target,
+                max_fee_rate=self.config.max_fee_rate_sat_vb,
             )
+            self._minimum_fee_policy_resolved_at = time.monotonic()
+            if announce:
+                logger.info(
+                    "Resolved minimum CoinJoin miner fee rate: "
+                    f"{self.minimum_fee_rate_sat_vb:.2f} sat/vB"
+                )
 
     async def _create_replacement_generation(self) -> MakerGeneration | None:
         """Prepare independent identity, offer, directory, and Tor resources."""

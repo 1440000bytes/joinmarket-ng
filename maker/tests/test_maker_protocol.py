@@ -9,6 +9,7 @@ Tests:
 
 from __future__ import annotations
 
+import asyncio
 import base64
 
 import pytest
@@ -1450,6 +1451,7 @@ async def test_full_node_maker_refreshes_minimum_fee_policy_before_new_sessions(
     bot.backend.get_mempool_min_fee = AsyncMock(return_value=None)
     bot.backend.estimate_fee = AsyncMock(side_effect=[2.0, 3.0])
     bot._minimum_fee_policy_resolved_at = None
+    bot._minimum_fee_policy_lock = asyncio.Lock()
 
     await bot._initialize_minimum_fee_policy(announce=False)
     first_threshold = bot.minimum_fee_rate_sat_vb
@@ -1465,6 +1467,48 @@ async def test_full_node_maker_refreshes_minimum_fee_policy_before_new_sessions(
 
     assert bot.minimum_fee_rate_sat_vb == 3.0
     assert bot.backend.estimate_fee.await_args_list == [((10,), {}), ((10,), {})]
+
+
+@pytest.mark.asyncio
+async def test_full_node_maker_coalesces_concurrent_minimum_fee_policy_refreshes():
+    from unittest.mock import AsyncMock, MagicMock
+
+    from maker.bot import MakerBot
+
+    estimate_started = asyncio.Event()
+    release_estimate = asyncio.Event()
+
+    async def blocked_estimate(_: int) -> float:
+        estimate_started.set()
+        await release_estimate.wait()
+        return 2.0
+
+    bot = MakerBot.__new__(MakerBot)
+    bot.minimum_fee_rate_sat_vb = 1.0
+    bot.config = MagicMock(
+        min_fee_rate_sat_vb=1.0,
+        min_fee_block_target=10,
+        max_fee_rate_sat_vb=1_000.0,
+    )
+    bot.backend = MagicMock()
+    bot.backend.can_lookup_arbitrary_utxos.return_value = True
+    bot.backend.can_estimate_fee.return_value = True
+    bot.backend.get_mempool_min_fee = AsyncMock(return_value=None)
+    bot.backend.estimate_fee = AsyncMock(side_effect=blocked_estimate)
+    bot._minimum_fee_policy_resolved_at = None
+    bot._minimum_fee_policy_lock = asyncio.Lock()
+
+    refreshes = [
+        asyncio.create_task(bot._initialize_minimum_fee_policy(announce=False)) for _ in range(3)
+    ]
+    await estimate_started.wait()
+    await asyncio.sleep(0)
+    release_estimate.set()
+    await asyncio.gather(*refreshes)
+
+    assert bot.minimum_fee_rate_sat_vb == 2.0
+    bot.backend.get_mempool_min_fee.assert_awaited_once()
+    bot.backend.estimate_fee.assert_awaited_once_with(10)
 
 
 @pytest.mark.asyncio
