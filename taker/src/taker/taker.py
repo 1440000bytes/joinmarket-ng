@@ -687,6 +687,66 @@ class Taker(TakerMonitoringMixin):
         self.last_source_mixdepth = resolved_mixdepth
         return explicitly_selected, manually_selected, resolved_mixdepth
 
+    def _select_coinjoin_utxos_with_podle(
+        self,
+        mixdepth: int,
+        target_amount: int,
+        private_key_getter: Callable[[str], bytes | None],
+        excluded_outpoints: set[tuple[str, int]],
+    ) -> list[UTXOInfo]:
+        """Select funding inputs containing at least one fresh PoDLE UTXO."""
+        available = self.wallet.get_all_utxos(
+            mixdepth,
+            self.config.taker_utxo_age,
+            exclude=excluded_outpoints,
+        )
+        fresh_utxos = self.podle_manager.get_fresh_commitment_utxos(
+            wallet_utxos=available,
+            cj_amount=self._session.cj_amount,
+            private_key_getter=private_key_getter,
+            min_confirmations=self.config.taker_utxo_age,
+            min_percent=self.config.taker_utxo_amtpercent,
+            max_retries=self.config.taker_utxo_retries,
+        )
+        if not fresh_utxos:
+            raise ValueError(
+                f"No fresh PoDLE commitments remain on eligible UTXOs in mixdepth {mixdepth}"
+            )
+
+        selected = self.wallet.select_utxos(
+            mixdepth,
+            target_amount,
+            self.config.taker_utxo_age,
+            exclude=excluded_outpoints,
+        )
+        fresh_outpoints = {(utxo.txid, utxo.vout) for utxo in fresh_utxos}
+        if any((utxo.txid, utxo.vout) in fresh_outpoints for utxo in selected):
+            return selected
+
+        # Prefer the largest fresh UTXO so the replacement is least likely to
+        # increase the input count. The wallet selector still enforces its own
+        # mixdepth and merge policy around the mandatory input.
+        selection_error: ValueError | None = None
+        for podle_utxo in sorted(
+            fresh_utxos,
+            key=lambda utxo: (utxo.value, utxo.confirmations),
+            reverse=True,
+        ):
+            try:
+                return self.wallet.select_utxos(
+                    mixdepth,
+                    target_amount,
+                    self.config.taker_utxo_age,
+                    include_utxos=[podle_utxo],
+                    exclude=excluded_outpoints,
+                )
+            except ValueError as exc:
+                selection_error = exc
+
+        if selection_error is not None:
+            raise selection_error
+        raise ValueError(f"Unable to select a PoDLE-capable UTXO in mixdepth {mixdepth}")
+
     async def stop(self, *, close_wallet: bool = True) -> None:
         """Stop the taker and close connections.
 
@@ -1086,6 +1146,12 @@ class Taker(TakerMonitoringMixin):
 
             self.state = TakerState.SELECTING_MAKERS
 
+            def get_private_key(addr: str) -> bytes | None:
+                key = self.wallet.get_key_for_address(addr)
+                if key is None:
+                    return None
+                return key.get_private_key_bytes()
+
             if self._session.is_sweep:
                 # SWEEP MODE: Select ALL UTXOs and calculate exact cj_amount for zero change
                 logger.info("Sweep mode: selecting UTXOs from mixdepth")
@@ -1224,11 +1290,11 @@ class Taker(TakerMonitoringMixin):
                     # on the same wallet) so we don't build a conflicting tx.
                     locked_inputs = self.wallet.get_locked_input_outpoints()
                     try:
-                        self._session.preselected_utxos = self.wallet.select_utxos(
+                        self._session.preselected_utxos = self._select_coinjoin_utxos_with_podle(
                             mixdepth,
                             estimated_required,
-                            self.config.taker_utxo_age,
-                            exclude=locked_inputs,
+                            get_private_key,
+                            locked_inputs,
                         )
                         preselected = self._session.preselected_utxos
                         logger.bind(sensitive=True).info(
@@ -1354,12 +1420,6 @@ class Taker(TakerMonitoringMixin):
                     logger.bind(sensitive=True).error("CoinJoin confirmation error detail: {}", e)
                     self.state = TakerState.FAILED
                     return None
-
-            def get_private_key(addr: str) -> bytes | None:
-                key = self.wallet.get_key_for_address(addr)
-                if key is None:
-                    return None
-                return key.get_private_key_bytes()
 
             # Generate PoDLE from pre-selected UTXOs only
             # This ensures the commitment is from a UTXO that will be in the transaction

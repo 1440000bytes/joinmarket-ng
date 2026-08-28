@@ -121,7 +121,12 @@ the relayed blacklist in `cmtdata/commitmentlist`.
 
 By default, a PoDLE UTXO needs five confirmations and value of at least 20% of
 the CoinJoin amount. Eligible coins are prioritized by confirmations and then
-value.
+value. Automatic taker coin selection also requires at least one selected input
+to have an unused, non-blacklisted commitment index. If the normal funding
+choice is exhausted, the taker reselects with a fresh eligible UTXO and spends
+that UTXO in the CoinJoin rather than revealing a separate unspent coin. Manual
+and explicit input selection remain authoritative and can fail when the chosen
+set has no fresh commitment.
 
 ## Fidelity Bonds
 

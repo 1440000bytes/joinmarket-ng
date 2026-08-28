@@ -25,6 +25,7 @@ def _make_wallet(utxos: list) -> AsyncMock:
     wallet = AsyncMock()
     wallet.mixdepth_count = 5
     wallet.get_utxos = AsyncMock(return_value=utxos)
+    wallet.get_all_utxos = Mock(return_value=list(utxos))
     wallet.get_locked_input_outpoints = Mock(return_value=set())
     wallet.select_utxos = Mock(return_value=list(utxos))
     wallet.reserve_coinjoin_inputs = Mock(return_value=True)
@@ -76,6 +77,7 @@ async def test_failure_after_reservation_releases_persisted_locks() -> None:
         return_value=({o.counterparty: o for o in offers}, 1_000)
     )
     # Fail the round right after the reservation: no PoDLE commitment.
+    taker.podle_manager.get_fresh_commitment_utxos = Mock(return_value=[utxo])  # type: ignore[method-assign]
     taker.podle_manager.generate_fresh_commitment = Mock(return_value=None)  # type: ignore[method-assign]
 
     result = await taker.do_coinjoin(
@@ -122,6 +124,7 @@ async def test_initial_confirmation_timeout_stops_before_podle_and_releases_lock
     taker.orderbook_manager.select_makers = Mock(  # type: ignore[method-assign]
         return_value=({o.counterparty: o for o in offers}, 1_000)
     )
+    taker.podle_manager.get_fresh_commitment_utxos = Mock(return_value=[utxo])  # type: ignore[method-assign]
     taker.podle_manager.generate_fresh_commitment = Mock()  # type: ignore[method-assign]
     taker._run_fill_with_replacements = AsyncMock()  # type: ignore[method-assign]
 
