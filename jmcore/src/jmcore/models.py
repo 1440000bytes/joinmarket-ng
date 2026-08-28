@@ -5,13 +5,15 @@ Core data models using Pydantic for validation and serialization.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from functools import cached_property
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from jmcore.bitcoin import calculate_relative_fee
+from jmcore.constants import MAX_MONEY
 
 
 class MessageParsingError(Exception):
@@ -212,6 +214,49 @@ class OfferType(StrEnum):
     SWA_RELATIVE = "swreloffer"
 
 
+MAX_RELATIVE_FEE_INPUT_LENGTH = 128
+MAX_RELATIVE_FEE_PRECISION = 18
+MAX_RELATIVE_FEE_EXPONENT = 64
+
+
+def normalize_relative_fee(value: str | int | float | Decimal, field_name: str) -> str:
+    """Validate and normalize a relative fee without unbounded fixed-point formatting."""
+    text = str(value)
+    if len(text) > MAX_RELATIVE_FEE_INPUT_LENGTH:
+        raise ValueError(
+            f"{field_name} input exceeds maximum length of {MAX_RELATIVE_FEE_INPUT_LENGTH}"
+        )
+
+    try:
+        fee = Decimal(text)
+    except InvalidOperation as exc:
+        raise ValueError(f"{field_name} is not a valid decimal: {text!r}") from exc
+
+    if not fee.is_finite():
+        raise ValueError(f"{field_name} must be finite")
+
+    decimal_tuple = fee.as_tuple()
+    if len(decimal_tuple.digits) > MAX_RELATIVE_FEE_PRECISION:
+        raise ValueError(
+            f"{field_name} has too many significant digits (maximum {MAX_RELATIVE_FEE_PRECISION})"
+        )
+
+    exponent = decimal_tuple.exponent
+    if not isinstance(exponent, int):  # Defensive, non-finite values were rejected above.
+        raise ValueError(f"{field_name} must be finite")
+    if not -MAX_RELATIVE_FEE_EXPONENT <= exponent <= MAX_RELATIVE_FEE_EXPONENT:
+        raise ValueError(
+            f"{field_name} exponent must be between "
+            f"{-MAX_RELATIVE_FEE_EXPONENT} and {MAX_RELATIVE_FEE_EXPONENT}"
+        )
+
+    if fee < 0:
+        raise ValueError(f"{field_name} must be non-negative")
+    if fee >= 1:
+        raise ValueError(f"{field_name} must be less than 1")
+    return format(fee, "f")
+
+
 def is_absolute_offer_type(offer_type: OfferType) -> bool:
     """Check if an offer type uses absolute fees."""
     return offer_type in (OfferType.SW0_ABSOLUTE, OfferType.SWA_ABSOLUTE)
@@ -241,9 +286,9 @@ class Offer(BaseModel):
     counterparty: str = Field(..., min_length=1)
     oid: int = Field(..., ge=0)
     ordertype: OfferType
-    minsize: int = Field(..., ge=0)
-    maxsize: int = Field(..., ge=0)
-    txfee: int = Field(..., ge=0)
+    minsize: int = Field(..., ge=0, le=MAX_MONEY)
+    maxsize: int = Field(..., ge=0, le=MAX_MONEY)
+    txfee: int = Field(..., ge=0, le=MAX_MONEY)
     cjfee: str | int
     fidelity_bond_value: int = Field(default=0, ge=0)
     fidelity_bond_verified: bool | None = Field(
@@ -276,8 +321,6 @@ class Offer(BaseModel):
     @field_validator("cjfee")
     @classmethod
     def validate_cjfee(cls, v: str | int, info) -> str | int:
-        from decimal import Decimal, InvalidOperation
-
         ordertype = info.data.get("ordertype")
         if ordertype in (OfferType.SW0_ABSOLUTE, OfferType.SWA_ABSOLUTE):
             # Absolute fees are integer satoshis; reject negatives and absurdly
@@ -287,23 +330,17 @@ class Offer(BaseModel):
                 raise ValueError("absolute cjfee must be non-negative")
             # 21M BTC in satoshis - any single-offer fee above this is nonsense
             # and could be used to trick takers into oversized fee calculations.
-            if iv > 2_100_000_000_000_000:
+            if iv > MAX_MONEY:
                 raise ValueError("absolute cjfee exceeds maximum money supply")
             return iv
-        # Relative fees are decimal fractions in [0, 1).
-        # Normalize scientific notation to fixed-point decimal (e.g., "1E-9" -> "0.000000001")
-        s = str(v)
-        try:
-            d = Decimal(s)
-        except (InvalidOperation, ValueError) as exc:
-            raise ValueError(f"relative cjfee is not a valid decimal: {s!r}") from exc
-        if d < 0:
-            raise ValueError("relative cjfee must be non-negative")
-        if d >= 1:
-            raise ValueError("relative cjfee must be less than 1")
-        if "e" in s.lower():
-            s = format(d, "f")
-        return s
+        return normalize_relative_fee(v, "relative cjfee")
+
+    @model_validator(mode="after")
+    def validate_size_range(self) -> Offer:
+        """Reject offers whose advertised minimum exceeds their maximum."""
+        if self.minsize > self.maxsize:
+            raise ValueError("minsize must be less than or equal to maxsize")
+        return self
 
     def is_absolute_fee(self) -> bool:
         return is_absolute_offer_type(self.ordertype)

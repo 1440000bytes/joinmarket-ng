@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from jmcore.constants import MAX_MONEY
 from jmcore.models import (
     DIRECTORY_NODES_MAINNET,
     DIRECTORY_NODES_SIGNET,
@@ -400,7 +401,54 @@ class TestOffer:
                 minsize=100_000,
                 maxsize=10_000_000,
                 txfee=0,
-                cjfee=2_100_000_000_000_001,
+                cjfee=MAX_MONEY + 1,
+            )
+
+    def test_money_bounds_accept_max_money(self) -> None:
+        """Offer monetary fields accept Bitcoin's maximum valid amount."""
+        offer = Offer(
+            counterparty="J5TestMaker",
+            oid=0,
+            ordertype=OfferType.SW0_ABSOLUTE,
+            minsize=MAX_MONEY,
+            maxsize=MAX_MONEY,
+            txfee=MAX_MONEY,
+            cjfee=MAX_MONEY,
+        )
+        assert offer.minsize == MAX_MONEY
+        assert offer.maxsize == MAX_MONEY
+        assert offer.txfee == MAX_MONEY
+        assert offer.cjfee == MAX_MONEY
+
+    @pytest.mark.parametrize("field", ["minsize", "maxsize", "txfee"])
+    def test_money_fields_above_max_money_rejected(self, field: str) -> None:
+        """Offer amount fields cannot exceed Bitcoin's maximum money supply."""
+        values = {
+            "minsize": 100_000,
+            "maxsize": 10_000_000,
+            "txfee": 0,
+        }
+        values[field] = MAX_MONEY + 1
+        with pytest.raises(ValueError):
+            Offer(
+                counterparty="J5TestMaker",
+                oid=0,
+                ordertype=OfferType.SW0_ABSOLUTE,
+                cjfee=0,
+                **values,
+            )
+
+    def test_reversed_size_range_rejected(self) -> None:
+        """Offers cannot advertise a minimum CoinJoin size above their maximum."""
+        with pytest.raises(ValueError, match="minsize must be less than or equal to maxsize"):
+            Offer(
+                counterparty="J5TestMaker",
+                oid=0,
+                ordertype=OfferType.SW0_ABSOLUTE,
+                minsize=10_000_000,
+                maxsize=100_000,
+                txfee=0,
+                cjfee=0,
             )
 
     def test_negative_relative_cjfee_rejected(self):
@@ -441,6 +489,73 @@ class TestOffer:
                 txfee=0,
                 cjfee="not-a-number",
             )
+
+    @pytest.mark.parametrize("cjfee", ["NaN", "sNaN", "Infinity", "-Infinity"])
+    def test_relative_cjfee_nonfinite_values_rejected(self, cjfee: str) -> None:
+        """Relative offer fees must be finite before they are compared or formatted."""
+        with pytest.raises(ValueError, match="relative cjfee must be finite"):
+            Offer(
+                counterparty="J5TestMaker",
+                oid=0,
+                ordertype=OfferType.SW0_RELATIVE,
+                minsize=100_000,
+                maxsize=10_000_000,
+                txfee=0,
+                cjfee=cjfee,
+            )
+
+    @pytest.mark.parametrize("cjfee", ["1e-1000000", "1e1000000"])
+    def test_relative_cjfee_huge_exponent_rejected_without_formatting(self, cjfee: str) -> None:
+        """Exponent bounds prevent huge fixed-point allocations during normalization."""
+        with pytest.raises(ValueError, match="exponent must be between"):
+            Offer(
+                counterparty="J5TestMaker",
+                oid=0,
+                ordertype=OfferType.SW0_RELATIVE,
+                minsize=100_000,
+                maxsize=10_000_000,
+                txfee=0,
+                cjfee=cjfee,
+            )
+
+    def test_relative_cjfee_overlong_mantissa_rejected(self) -> None:
+        """Relative offer fees have a bounded significant-digit precision."""
+        with pytest.raises(ValueError, match="too many significant digits"):
+            Offer(
+                counterparty="J5TestMaker",
+                oid=0,
+                ordertype=OfferType.SW0_RELATIVE,
+                minsize=100_000,
+                maxsize=10_000_000,
+                txfee=0,
+                cjfee="0.1234567890123456789",
+            )
+
+    def test_relative_cjfee_overlong_input_rejected(self) -> None:
+        """Relative offer fees reject oversized wire values before decimal parsing."""
+        with pytest.raises(ValueError, match="input exceeds maximum length"):
+            Offer(
+                counterparty="J5TestMaker",
+                oid=0,
+                ordertype=OfferType.SW0_RELATIVE,
+                minsize=100_000,
+                maxsize=10_000_000,
+                txfee=0,
+                cjfee="0." + "1" * 127,
+            )
+
+    def test_zero_relative_cjfee_allowed(self) -> None:
+        """A zero relative fee remains a valid free-maker offer."""
+        offer = Offer(
+            counterparty="J5TestMaker",
+            oid=0,
+            ordertype=OfferType.SW0_RELATIVE,
+            minsize=100_000,
+            maxsize=10_000_000,
+            txfee=0,
+            cjfee="0",
+        )
+        assert offer.cjfee == "0"
 
 
 # ==============================================================================
