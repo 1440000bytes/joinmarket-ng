@@ -288,6 +288,7 @@ _jm_wallet() {
             '--rpc-url=[]: :' \
             '--neutrino-url=[]: :' \
             '--broadcast[Broadcast the transaction (use --no-broadcast to skip)]' \
+            '--rbf[Signal BIP125 replace-by-fee (enabled by default)]' \
             '--yes[Skip confirmation prompt]' \
             '--select-utxos[Interactively select UTXOs (fzf-like TUI)]' \
             '--input-utxo=[Explicit input UTXO as txid\:vout (repeatable). Spends exactly the given UTXOs (also for sweeps) instead of auto-selecting; every UTXO must already be unfrozen and belong to --mixdepth. Mutually exclusive with --select-utxos.]: :' \

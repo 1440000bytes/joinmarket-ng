@@ -69,7 +69,7 @@ _jm_wallet_completion() {
         COMPREPLY=( $(compgen -W "--help --mnemonic-file -f --prompt-bip39-passphrase --network -n --rpc-url --start-height --scan-depth --data-dir --config-file --log-level -l" -- "$cur") )
         ;;
       send)
-        COMPREPLY=( $(compgen -W "--help --amount -a --mnemonic-file -f --prompt-bip39-passphrase --mixdepth -m --fee-rate --block-target --network -n --backend -b --rpc-url --neutrino-url --broadcast --yes -y --select-utxos -s --input-utxo --allow-conflicts --data-dir --config-file --log-level -l" -- "$cur") )
+        COMPREPLY=( $(compgen -W "--help --amount -a --mnemonic-file -f --prompt-bip39-passphrase --mixdepth -m --fee-rate --block-target --network -n --backend -b --rpc-url --neutrino-url --broadcast --rbf --yes -y --select-utxos -s --input-utxo --allow-conflicts --data-dir --config-file --log-level -l" -- "$cur") )
         ;;
       showseed)
         COMPREPLY=( $(compgen -W "--help --mnemonic-file -f --password -p --numbered --yes -y" -- "$cur") )
