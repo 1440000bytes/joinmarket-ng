@@ -122,6 +122,38 @@ class TestMakerHealthChecker:
         assert status.consecutive_failures == 1
 
     @pytest.mark.asyncio
+    async def test_non_onion_location_rejected_by_default(
+        self,
+    ) -> None:
+        health_checker = MakerHealthChecker(network="mainnet")
+        with patch("orderbook_watcher.health_checker.connect_via_tor") as connect_mock:
+            status = await health_checker.check_maker("J5test", "127.0.0.1:80")
+
+        assert not status.reachable
+        assert status.error is not None and "Non-onion" in status.error
+        connect_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_clearnet_location_requires_explicit_opt_in(
+        self, mock_connection: MagicMock
+    ) -> None:
+        checker = MakerHealthChecker(network="mainnet", allow_clearnet_connections=True)
+        mock_connection.receive.return_value = create_peer_handshake_response()
+
+        with patch(
+            "orderbook_watcher.health_checker.connect_via_tor", return_value=mock_connection
+        ) as connect_mock:
+            status = await checker.check_maker("J5test", "127.0.0.1:80")
+
+        assert status.reachable
+        assert connect_mock.call_args.args[:2] == ("127.0.0.1", 80)
+
+    def test_regtest_enables_clearnet_development_mode(self) -> None:
+        checker = MakerHealthChecker(network="regtest")
+
+        assert checker.allow_clearnet_connections
+
+    @pytest.mark.asyncio
     async def test_successful_health_check(
         self, health_checker: MakerHealthChecker, mock_connection: MagicMock
     ) -> None:
@@ -292,6 +324,43 @@ class TestMakerHealthChecker:
         # Third maker: success without neutrino
         assert results[makers[2][1]].reachable
         assert FEATURE_NEUTRINO_COMPAT not in results[makers[2][1]].features
+
+    @pytest.mark.asyncio
+    async def test_batch_check_enforces_global_budget(self) -> None:
+        checker = MakerHealthChecker(network="regtest", max_checks_per_batch=2)
+        checked: list[str] = []
+
+        async def mock_check(nick: str, location: str, force: bool = False) -> MagicMock:
+            del nick, force
+            checked.append(location)
+            return MagicMock(reachable=True)
+
+        checker.check_maker = mock_check  # type: ignore[assignment]
+        makers = [(f"J5maker{i}", f"maker{i}.onion:5222") for i in range(4)]
+
+        results = await checker.check_makers_batch(makers, force=True)
+
+        assert checked == [makers[0][1], makers[1][1]]
+        assert set(results) == set(checked)
+
+    @pytest.mark.asyncio
+    async def test_health_status_cache_evicts_oldest_location(self) -> None:
+        checker = MakerHealthChecker(network="regtest", max_status_entries=2)
+
+        with patch("orderbook_watcher.health_checker.connect_via_tor", side_effect=TimeoutError):
+            for location in ("one.onion:1", "two.onion:2", "three.onion:3"):
+                await checker.check_maker("J5test", location)
+
+        assert list(checker.health_status) == ["two.onion:2", "three.onion:3"]
+
+    @pytest.mark.asyncio
+    async def test_invalid_location_is_not_retained(self) -> None:
+        checker = MakerHealthChecker(network="regtest", max_status_entries=2)
+
+        status = await checker.check_maker("J5test", "x" * 10_000)
+
+        assert not status.reachable
+        assert checker.health_status == {}
 
     @pytest.mark.asyncio
     async def test_concurrent_check_limit(

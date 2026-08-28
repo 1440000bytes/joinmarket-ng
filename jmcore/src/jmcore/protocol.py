@@ -50,6 +50,7 @@ Note: Plus separator is used because the peerlist itself uses commas to separate
 from __future__ import annotations
 
 import binascii
+import ipaddress
 import json
 import re
 from enum import IntEnum
@@ -72,6 +73,8 @@ NOT_SERVING_ONION_HOSTNAME = "NOT-SERVING-ONION"
 NICK_HASH_LENGTH = 10
 NICK_MAX_ENCODED = 14
 _NICK_RE = re.compile(rf"J[0-9][1-9A-HJ-NP-Za-km-zO]{{{NICK_MAX_ENCODED}}}")
+_HOSTNAME_LABEL_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
+_MAX_HOSTNAME_LENGTH = 253
 
 # Feature flag constants
 FEATURE_NEUTRINO_COMPAT = "neutrino_compat"
@@ -531,18 +534,36 @@ def parse_peer_location(location: str) -> tuple[str, int]:
     if location == NOT_SERVING_ONION_HOSTNAME:
         return (location, -1)
     try:
+        if not isinstance(location, str):
+            raise ValueError("Location must be a string")
         host, port_str = location.split(":")
+        if not port_str.isascii() or not port_str.isdigit():
+            raise ValueError("Port must contain only ASCII digits")
         port = int(port_str)
         if port <= 0 or port > 65535:
             raise ValueError(f"Invalid port: {port}")
+        if not is_valid_peer_hostname(host):
+            raise ValueError("Invalid hostname")
         return (host, port)
-    except (ValueError, AttributeError) as e:
-        raise ValueError(f"Invalid location string: {location}") from e
+    except (TypeError, ValueError, AttributeError) as e:
+        raise ValueError("Invalid location string") from e
+
+
+def is_valid_peer_hostname(hostname: str) -> bool:
+    """Return whether a peer hostname is a valid IP address or DNS name."""
+    if not hostname or len(hostname) > _MAX_HOSTNAME_LENGTH or not hostname.isascii():
+        return False
+    try:
+        ipaddress.ip_address(hostname)
+    except ValueError:
+        labels = hostname.split(".")
+        return all(_HOSTNAME_LABEL_RE.fullmatch(label) for label in labels)
+    return True
 
 
 def is_onion_hostname(hostname: str) -> bool:
     """Return whether a hostname is an onion service address."""
-    return hostname.lower().endswith(".onion")
+    return is_valid_peer_hostname(hostname) and hostname.lower().endswith(".onion")
 
 
 def is_onion_peer_location(location: str) -> bool:

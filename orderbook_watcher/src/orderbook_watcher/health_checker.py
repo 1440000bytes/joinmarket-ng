@@ -19,8 +19,11 @@ from jmcore.network import connect_via_tor
 from jmcore.protocol import (
     FEATURE_PEERLIST_FEATURES,
     JM_VERSION,
+    NOT_SERVING_ONION_HOSTNAME,
     FeatureSet,
     create_handshake_request,
+    is_onion_hostname,
+    parse_peer_location,
 )
 from loguru import logger
 
@@ -64,6 +67,9 @@ class MakerHealthChecker:
         timeout: float = 15.0,
         check_interval: float = 600.0,  # 10 minutes
         max_concurrent_checks: int = 10,
+        max_checks_per_batch: int = 256,
+        max_status_entries: int = 4096,
+        allow_clearnet_connections: bool = False,
         socks_username: str | None = None,
         socks_password: str | None = None,
     ) -> None:
@@ -77,6 +83,9 @@ class MakerHealthChecker:
             timeout: Connection timeout in seconds
             check_interval: Minimum seconds between checks for same maker
             max_concurrent_checks: Maximum concurrent health checks
+            max_checks_per_batch: Maximum connection attempts scheduled by one batch
+            max_status_entries: Maximum retained maker health statuses
+            allow_clearnet_connections: Permit non-onion health-check destinations
             socks_username: SOCKS5 username for Tor stream isolation (optional)
             socks_password: SOCKS5 password for Tor stream isolation (optional)
         """
@@ -88,6 +97,13 @@ class MakerHealthChecker:
         self.timeout = timeout
         self.check_interval = check_interval
         self.max_concurrent_checks = max_concurrent_checks
+        if max_checks_per_batch <= 0:
+            raise ValueError("max_checks_per_batch must be positive")
+        if max_status_entries <= 0:
+            raise ValueError("max_status_entries must be positive")
+        self.max_checks_per_batch = max_checks_per_batch
+        self.max_status_entries = max_status_entries
+        self.allow_clearnet_connections = network == "regtest" or allow_clearnet_connections
 
         # Health status tracking: location -> status
         self.health_status: dict[str, MakerHealthStatus] = {}
@@ -97,6 +113,14 @@ class MakerHealthChecker:
 
         # Nick identity for handshake (ephemeral)
         self.nick_identity = NickIdentity(JM_VERSION)
+
+    def _store_status(self, status: MakerHealthStatus) -> None:
+        """Store a status while bounding attacker-controlled location state."""
+        self.health_status.pop(status.location, None)
+        self.health_status[status.location] = status
+        while len(self.health_status) > self.max_status_entries:
+            oldest_location = next(iter(self.health_status))
+            self.health_status.pop(oldest_location)
 
     async def check_maker(self, nick: str, location: str, force: bool = False) -> MakerHealthStatus:
         """
@@ -129,7 +153,7 @@ class MakerHealthChecker:
     ) -> MakerHealthStatus:
         """Internal implementation of maker health check."""
         # Parse location
-        if location == "NOT-SERVING-ONION":
+        if location == NOT_SERVING_ONION_HOSTNAME:
             # Cannot check makers that don't serve onion
             status = MakerHealthStatus(
                 location=location,
@@ -141,16 +165,17 @@ class MakerHealthChecker:
                 features=FeatureSet(),
                 error="NOT-SERVING-ONION",
             )
-            self.health_status[location] = status
+            self._store_status(status)
             return status
 
         try:
-            host, port_str = location.split(":")
-            port = int(port_str)
-        except (ValueError, AttributeError) as e:
+            host, port = parse_peer_location(location)
+            if not self.allow_clearnet_connections and not is_onion_hostname(host):
+                raise ValueError("Non-onion maker location is not allowed")
+        except (TypeError, ValueError) as e:
             logger.warning("Invalid maker location format")
             logger.bind(sensitive=True).warning(f"Invalid location format: {location}: {e}")
-            status = MakerHealthStatus(
+            return MakerHealthStatus(
                 location=location,
                 nick=nick,
                 reachable=False,
@@ -172,8 +197,6 @@ class MakerHealthChecker:
                 features=FeatureSet(),
                 error=f"Invalid location: {e}",
             )
-            self.health_status[location] = status
-            return status
 
         # Try to connect and perform handshake
         logger.bind(sensitive=True).debug(f"Health check: connecting to {nick} at {location}")
@@ -241,7 +264,7 @@ class MakerHealthChecker:
                 features=features,
                 error=None,
             )
-            self.health_status[location] = status
+            self._store_status(status)
             # DEBUG: with hundreds of makers this fires constantly; the
             # interesting transitions are failures (logged at WARNING below).
             logger.bind(sensitive=True).debug(
@@ -277,7 +300,7 @@ class MakerHealthChecker:
             features=old_status.features if old_status else FeatureSet(),
             error=error,
         )
-        self.health_status[location] = status
+        self._store_status(status)
 
         if consecutive_failures >= 3:
             logger.bind(sensitive=True).warning(
@@ -310,8 +333,22 @@ class MakerHealthChecker:
         status_map: dict[str, MakerHealthStatus] = {}
         chunk_size = self.max_concurrent_checks
 
-        for chunk_start in range(0, len(makers), chunk_size):
-            chunk = makers[chunk_start : chunk_start + chunk_size]
+        bounded_makers: list[tuple[str, str]] = []
+        seen_locations: set[str] = set()
+        for maker in makers:
+            if maker[1] in seen_locations:
+                continue
+            seen_locations.add(maker[1])
+            bounded_makers.append(maker)
+            if len(bounded_makers) == self.max_checks_per_batch:
+                break
+        if len(seen_locations) < len({location for _nick, location in makers}):
+            logger.warning(
+                f"Health-check batch limited to {self.max_checks_per_batch} of {len(makers)} makers"
+            )
+
+        for chunk_start in range(0, len(bounded_makers), chunk_size):
+            chunk = bounded_makers[chunk_start : chunk_start + chunk_size]
             tasks = [self.check_maker(nick, location, force) for nick, location in chunk]
             results = await asyncio.gather(*tasks, return_exceptions=True)
 

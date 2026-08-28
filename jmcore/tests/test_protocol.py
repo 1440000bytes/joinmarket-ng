@@ -85,6 +85,28 @@ def test_parse_peer_location_invalid():
         parse_peer_location("test.onion:99999")
 
 
+@pytest.mark.parametrize(
+    "location",
+    [
+        ":5222",
+        "test.onion:+5222",
+        "test.onion: 5222",
+        "test.onion:\u0665\u0662\u0662\u0662",
+        "test_onion.example:5222",
+        "test.onion\n.example:5222",
+        "test.onion:5222:80",
+    ],
+)
+def test_parse_peer_location_rejects_malformed_hosts_and_ports(location: str) -> None:
+    with pytest.raises(ValueError, match="Invalid location string"):
+        parse_peer_location(location)
+
+
+def test_parse_peer_location_accepts_valid_clearnet_hostname() -> None:
+    assert parse_peer_location("directory.example:443") == ("directory.example", 443)
+    assert parse_peer_location("localhost:5222") == ("localhost", 5222)
+
+
 def test_peerlist_entry_creation():
     entry = create_peerlist_entry("nick1", "test.onion:5222", disconnected=False)
     assert entry == "nick1;test.onion:5222"

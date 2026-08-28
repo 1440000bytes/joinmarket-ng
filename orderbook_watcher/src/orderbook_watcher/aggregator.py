@@ -239,6 +239,7 @@ class OrderbookAggregator:
             timeout=timeout,
             check_interval=600.0,  # Check each maker at most once per 10 minutes
             max_concurrent_checks=5,
+            allow_clearnet_connections=allow_clearnet_connections,
             socks_username=self._hc_username,
             socks_password=self._hc_password,
         )
