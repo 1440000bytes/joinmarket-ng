@@ -6,6 +6,7 @@ from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from loguru import logger
 
 from jmcore.crypto import NickIdentity
 from jmcore.directory_client import (
@@ -15,6 +16,7 @@ from jmcore.directory_client import (
     _fidelity_bond_claim_key,
 )
 from jmcore.models import Offer, OfferType
+from jmcore.network import ConnectionError as NetworkConnectionError
 from jmcore.nick_auth import (
     NickAuthChallenge,
     NickAuthMode,
@@ -22,7 +24,7 @@ from jmcore.nick_auth import (
     create_nick_auth_proof,
     directory_id_for_endpoint,
 )
-from jmcore.protocol import FEATURE_NICK_AUTH, FEATURE_PEERLIST_FEATURES
+from jmcore.protocol import FEATURE_NEUTRINO_COMPAT, FEATURE_NICK_AUTH, FEATURE_PEERLIST_FEATURES
 
 TEST_DIRECTORY_ID = "test:directory-a"
 VALID_MAKER_NICK = "J57wPBk1VfjSP5Te"
@@ -1026,6 +1028,48 @@ def test_update_offer_features_only_sets_true_values():
     assert "disabled_feature" not in offer.features
 
 
+def test_enrich_returned_offers_only_adds_positive_peer_features():
+    """Final peer evidence cannot downgrade an already positive offer feature."""
+    client = DirectoryClient("host", 1234, "mainnet")
+    offer = _bond_offer(VALID_MAKER_NICK, 0)
+    offer.features = {"already_true": True}
+    client.peer_features[VALID_MAKER_NICK] = {
+        "already_true": False,
+        "late_feature": True,
+    }
+
+    client._enrich_returned_offers_with_peer_features([offer])
+
+    assert offer.features == {"already_true": True, "late_feature": True}
+
+
+@pytest.mark.asyncio
+async def test_connect_failure_logs_only_sensitive_debug():
+    """Directory attempts defer public failure reporting to their pool owner."""
+    client = DirectoryClient("directory.onion", 5222, "mainnet")
+    records = []
+    sink_id = logger.add(lambda message: records.append(message.record), level="DEBUG")
+    try:
+        with (
+            patch(
+                "jmcore.directory_client.connect_via_tor",
+                new=AsyncMock(side_effect=NetworkConnectionError("connection refused")),
+            ),
+            pytest.raises(DirectoryClientError, match="Connection failed"),
+        ):
+            await client.connect()
+    finally:
+        logger.remove(sink_id)
+
+    assert not any(record["level"].name == "ERROR" for record in records)
+    assert any(
+        record["level"].name == "DEBUG"
+        and record["extra"].get("sensitive")
+        and "directory.onion:5222" in record["message"]
+        for record in records
+    )
+
+
 def test_peerlist_response_updates_cached_offer_features():
     """
     Integration test: verify that processing a peerlist response updates
@@ -1395,6 +1439,37 @@ def _make_non_offer_msg() -> dict[str, Any]:
         "type": MessageType.PEERLIST.value,
         "line": "nick1;loc1.onion:5222",
     }
+
+
+@pytest.mark.asyncio
+async def test_fetch_orderbooks_enriches_returned_offers_from_late_peerlist():
+    """A PEERLIST after an offer still enriches the returned offer object."""
+    client = DirectoryClient("host", 1234, "mainnet")
+    client.connection = AsyncMock()
+    client.get_peerlist_with_features = AsyncMock(return_value=[])
+
+    calls = 0
+
+    async def mock_listen(duration: float = 5.0) -> list[dict[str, Any]]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return [
+                _make_offer_msg(VALID_MAKER_NICK),
+                {
+                    "type": MessageType.PEERLIST.value,
+                    "line": f"{VALID_MAKER_NICK};maker.onion:5222;F:{FEATURE_NEUTRINO_COMPAT}",
+                },
+            ]
+        await asyncio.sleep(duration)
+        return []
+
+    client.listen_for_messages = mock_listen  # type: ignore[assignment]
+
+    offers, _bonds = await client.fetch_orderbooks(max_wait=0.01, min_wait=0.0, quiet_period=0.0)
+
+    assert len(offers) == 1
+    assert offers[0].features == {"neutrino_compat": True}
 
 
 @pytest.mark.asyncio

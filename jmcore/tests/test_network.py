@@ -1017,11 +1017,24 @@ class TestConnectViaTor:
         server.close()
         await server.wait_closed()
 
-        with pytest.raises(ConnectionError):
-            await connect_via_tor(
-                "test.onion",
-                5222,
-                socks_host="127.0.0.1",
-                socks_port=port,
-                timeout=2.0,
-            )
+        records = []
+        sink_id = logger.add(lambda message: records.append(message.record), level="DEBUG")
+        try:
+            with pytest.raises(ConnectionError):
+                await connect_via_tor(
+                    "test.onion",
+                    5222,
+                    socks_host="127.0.0.1",
+                    socks_port=port,
+                    timeout=2.0,
+                )
+        finally:
+            logger.remove(sink_id)
+
+        assert not any(record["level"].name == "ERROR" for record in records)
+        assert any(
+            record["level"].name == "DEBUG"
+            and record["extra"].get("sensitive")
+            and "test.onion:5222" in record["message"]
+            for record in records
+        )

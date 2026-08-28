@@ -25,10 +25,12 @@ from _taker_test_helpers import (
 from jmcore.bitcoin import parse_transaction_bytes
 from jmcore.constants import DUST_THRESHOLD
 from jmcore.crypto import NickIdentity
+from jmcore.directory_pool import DirectoryConnectionResult
 from jmcore.encryption import CryptoSession
 from jmcore.models import Offer, OfferType
 from jmcore.network import ONION_HOSTID
 from jmwallet.wallet.models import UTXOInfo
+from loguru import logger
 
 from taker.multi_directory import ChannelBinding
 from taker.podle_manager import PoDLEManager
@@ -132,6 +134,51 @@ def test_initial_tx_shape_matches_fee_budget_assumptions() -> None:
     """Initial confirmations use the same shapes as fee budgeting."""
     assert _estimate_initial_tx_shape(3, 9, is_sweep=True) == (26, 19)
     assert _estimate_initial_tx_shape(3, 9, is_sweep=False) == (14, 20)
+
+
+@pytest.mark.asyncio
+async def test_connect_reports_partial_directory_availability(
+    mock_wallet, mock_backend, mock_config
+) -> None:
+    taker = Taker(mock_wallet, mock_backend, mock_config)
+    directory_client = MagicMock()
+    directory_client.connect_all = AsyncMock(return_value=2)
+    directory_client.last_connection_result = DirectoryConnectionResult(connected=2, total=3)
+    taker.directory_client = directory_client
+    taker._monitor_pending_transactions = AsyncMock()
+    taker._periodic_rescan = AsyncMock()
+    taker._periodic_directory_connection_status = AsyncMock()
+
+    records = []
+    sink_id = logger.add(lambda message: records.append(message.record), level="INFO")
+    try:
+        await taker.connect()
+    finally:
+        logger.remove(sink_id)
+
+    assert any(
+        record["level"].name == "WARNING"
+        and record["message"] == "Connected to 2/3 directory servers (1 unavailable)"
+        for record in records
+    )
+    assert not any(record["level"].name == "ERROR" for record in records)
+    await asyncio.gather(*taker._background_tasks)
+
+
+@pytest.mark.asyncio
+async def test_connect_raises_when_no_directory_is_available(
+    mock_wallet, mock_backend, mock_config
+) -> None:
+    taker = Taker(mock_wallet, mock_backend, mock_config)
+    directory_client = MagicMock()
+    directory_client.connect_all = AsyncMock(return_value=0)
+    directory_client.last_connection_result = DirectoryConnectionResult(connected=0, total=3)
+    taker.directory_client = directory_client
+
+    with pytest.raises(RuntimeError, match="Failed to connect to any directory server"):
+        await taker.connect()
+
+    assert taker.running is False
 
 
 def test_initial_fee_confirmation_uses_committed_sweep_budget(

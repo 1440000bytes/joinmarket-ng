@@ -333,11 +333,22 @@ class Taker(TakerMonitoringMixin):
         # Connect to directory servers
         logger.info("Connecting to directory servers...")
         connected = await self.directory_client.connect_all()
+        connection_result = self.directory_client.last_connection_result
 
         if connected == 0:
             raise RuntimeError("Failed to connect to any directory server")
 
-        logger.info(f"Connected to {connected} directory servers")
+        if connection_result.failed:
+            logger.warning(
+                f"Connected to {connection_result.connected}/{connection_result.total} "
+                f"directory servers ({connection_result.failed} unavailable)"
+            )
+        else:
+            logger.info(
+                "Connected to {}/{} directory servers",
+                connection_result.connected,
+                connection_result.total,
+            )
 
         # Mark as running and start background tasks
         self.running = True

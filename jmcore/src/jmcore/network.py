@@ -226,8 +226,7 @@ async def connect_via_tor(
     except asyncio.CancelledError:
         raise
     except Exception as e:
-        logger.error("Tor connection failed")
-        logger.bind(sensitive=True).error(
+        logger.bind(sensitive=True).debug(
             f"Failed to connect to {onion_address}:{port} via Tor: {e}"
         )
         raise ConnectionError(f"Tor connection failed: {e}") from e

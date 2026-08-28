@@ -539,6 +539,8 @@ class MultiDirectoryClient(DirectoryClientPool):
             quiet_period: Seconds of silence before exiting early (default: 15s).
         """
         offers_by_key: dict[tuple[str, int], Offer] = {}
+        positive_features_by_key: dict[tuple[str, int], set[str]] = {}
+        neutrino_compat_by_key: dict[tuple[str, int], bool] = {}
 
         async def fetch_from_server(
             server: str, client: DirectoryClient
@@ -562,6 +564,12 @@ class MultiDirectoryClient(DirectoryClientPool):
         for server, offers in results:
             for offer in offers:
                 key = (offer.counterparty, offer.oid)
+                positive_features_by_key.setdefault(key, set()).update(
+                    feature for feature, supported in offer.features.items() if supported
+                )
+                neutrino_compat_by_key[key] = (
+                    neutrino_compat_by_key.get(key, False) or offer.neutrino_compat
+                )
                 existing = offers_by_key.get(key)
                 if existing is None:
                     offers_by_key[key] = offer
@@ -571,7 +579,18 @@ class MultiDirectoryClient(DirectoryClientPool):
                 if new_expiry > existing_expiry:
                     offers_by_key[key] = offer
 
-        return list(offers_by_key.values())
+        return [
+            offer.model_copy(
+                update={
+                    "features": {
+                        **offer.features,
+                        **{feature: True for feature in positive_features_by_key[key]},
+                    },
+                    "neutrino_compat": neutrino_compat_by_key[key],
+                }
+            )
+            for key, offer in offers_by_key.items()
+        ]
 
     async def send_privmsg(
         self,

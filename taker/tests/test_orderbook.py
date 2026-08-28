@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 from jmcore.bitcoin import calculate_sweep_amount
 from jmcore.models import Offer, OfferType
+from loguru import logger
 
 from taker.config import MaxCjFee
 from taker.orderbook import (
@@ -367,6 +368,58 @@ class TestFilterOffers:
         )
 
         assert [offer.counterparty for offer in eligible] == ["on-grid"]
+
+    def test_logs_non_sensitive_filter_exclusion_summary(self) -> None:
+        eligible = Offer(
+            counterparty="eligible",
+            oid=0,
+            ordertype=OfferType.SW0_ABSOLUTE,
+            minsize=10_000,
+            maxsize=1_000_000,
+            txfee=0,
+            cjfee=500,
+            features={"neutrino_compat": True},
+        )
+        offers = [
+            eligible,
+            eligible.model_copy(update={"counterparty": "selection-excluded"}),
+            eligible.model_copy(
+                update={"counterparty": "missing-feature", "features": {"neutrino_compat": False}}
+            ),
+            eligible.model_copy(
+                update={"counterparty": "wrong-type", "ordertype": OfferType.SWA_ABSOLUTE}
+            ),
+            eligible.model_copy(update={"counterparty": "non-quantized", "cjfee": 350}),
+            eligible.model_copy(update={"counterparty": "below-minsize", "minsize": 100_001}),
+            eligible.model_copy(update={"counterparty": "above-maxsize", "maxsize": 99_999}),
+            eligible.model_copy(update={"counterparty": "fee-limit", "cjfee": 2_000}),
+        ]
+        records: list[str] = []
+        handler_id = logger.add(
+            lambda message: records.append(message.record["message"]), level="DEBUG"
+        )
+        try:
+            filtered = filter_offers(
+                offers,
+                100_000,
+                MaxCjFee(abs_fee=1_000, rel_fee="0.01"),
+                ignored_makers={"selection-excluded"},
+                required_features={"neutrino_compat"},
+                require_quantized_cj_fees=True,
+            )
+        finally:
+            logger.remove(handler_id)
+
+        assert filtered == [eligible]
+        assert "Filtering offers: 1 maker excluded from this selection" in records
+        summary = next(record for record in records if record.startswith("Filtered "))
+        assert summary == (
+            "Filtered 8 offers to 1 eligible offer "
+            "(selection exclusion=1, known missing feature=1, offer type=1, "
+            "non-quantized fee=1, below minsize=1, above maxsize=1, fee limit=1)"
+        )
+        assert "selection-excluded" not in summary
+        assert "100000" not in summary
 
     def test_rounding_rejects_fee_above_grid_or_realized_limit(self) -> None:
         above_grid = Offer(
@@ -2176,8 +2229,20 @@ class TestPreferOffersWithConfirmedFeatures:
             self._offer("J5confirmed1OOOO", features={"neutrino_compat": True}),
             self._offer("J5unknown1OOOOOO"),
         ]
-        result = prefer_offers_with_confirmed_features(offers, 2, {"neutrino_compat"})
+        records: list[str] = []
+        handler_id = logger.add(
+            lambda message: records.append(message.record["message"]), level="INFO"
+        )
+        try:
+            result = prefer_offers_with_confirmed_features(offers, 2, {"neutrino_compat"})
+        finally:
+            logger.remove(handler_id)
+
         assert len(result) == 2
+        assert (
+            "Feature fallback: confirmed=1, requested=2, unknown=1; "
+            "retaining unknown-status offers as candidates"
+        ) in records
 
     def test_noop_without_required_features(self) -> None:
         offers = [

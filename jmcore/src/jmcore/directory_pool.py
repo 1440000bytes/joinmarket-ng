@@ -30,6 +30,7 @@ to live in the subclasses that own them.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from typing import Any
 
 from loguru import logger
@@ -39,6 +40,19 @@ from jmcore.directory_client import DirectoryClient
 from jmcore.nick_auth import NickAuthMode
 from jmcore.tasks import parse_directory_address
 from jmcore.tor_isolation import IsolationCategory, get_isolation_credentials
+
+
+@dataclass(frozen=True)
+class DirectoryConnectionResult:
+    """Aggregate outcome of one parallel directory connection pass."""
+
+    connected: int
+    total: int
+
+    @property
+    def failed(self) -> int:
+        """Return the number of configured directories that did not connect."""
+        return self.total - self.connected
 
 
 class DirectoryClientPool:
@@ -101,6 +115,9 @@ class DirectoryClientPool:
             self._peer_creds = (peer_c.username, peer_c.password)
 
         self.clients: dict[str, DirectoryClient] = {}
+        self.last_connection_result = DirectoryConnectionResult(
+            connected=0, total=len(directory_servers)
+        )
 
     # -- Hooks ----------------------------------------------------------
 
@@ -182,7 +199,9 @@ class DirectoryClientPool:
         that do not want a retry loop (e.g. taker, which only runs once
         per CoinJoin).
 
-        Returns the number of successful connections.
+        Returns the number of successful connections. The aggregate result,
+        including the configured total and failed count, is retained in
+        :attr:`last_connection_result`.
         """
         tasks = [self.connect_to_directory(server) for server in self.directory_servers]
         results = await asyncio.gather(*tasks)
@@ -195,6 +214,10 @@ class DirectoryClientPool:
             self.clients[node_id] = client
             await self._on_directory_connected(node_id, client)
             connected += 1
+        self.last_connection_result = DirectoryConnectionResult(
+            connected=connected,
+            total=len(self.directory_servers),
+        )
         return connected
 
     async def connect_all_with_retry(

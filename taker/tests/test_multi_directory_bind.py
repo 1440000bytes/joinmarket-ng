@@ -30,7 +30,12 @@ def _make_client(
     return mdc
 
 
-def _offer(cert_expiry: int) -> Offer:
+def _offer(
+    cert_expiry: int,
+    *,
+    features: dict[str, bool] | None = None,
+    neutrino_compat: bool = False,
+) -> Offer:
     return Offer(
         counterparty="J5maker",
         oid=0,
@@ -46,6 +51,8 @@ def _offer(cert_expiry: int) -> Offer:
             "utxo_pub": "02" + "11" * 32,
             "cert_expiry": cert_expiry,
         },
+        features=features or {},
+        neutrino_compat=neutrino_compat,
     )
 
 
@@ -62,6 +69,38 @@ async def test_fetch_orderbook_prefers_renewed_certificate_across_directories():
     assert len(offers) == 1
     assert offers[0].fidelity_bond_data is not None
     assert offers[0].fidelity_bond_data["cert_expiry"] == 903_168
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("directory_order", [("positive", "renewed"), ("renewed", "positive")])
+async def test_fetch_orderbook_merges_positive_feature_evidence(
+    directory_order: tuple[str, str],
+) -> None:
+    positive = _offer(
+        901_152,
+        features={"neutrino_compat": True, "peerlist_features": True},
+        neutrino_compat=True,
+    )
+    renewed = _offer(
+        903_168,
+        features={"neutrino_compat": False, "peerlist_features": False},
+    )
+    offers_by_name = {"positive": positive, "renewed": renewed}
+    clients: dict[str, MagicMock] = {}
+    for name in directory_order:
+        client = MagicMock()
+        client.fetch_orderbooks = AsyncMock(return_value=([offers_by_name[name]], []))
+        clients[name] = client
+    mdc = _make_client(clients=clients)
+
+    offers = await mdc.fetch_orderbook(max_wait=0, min_wait=0, quiet_period=0)
+
+    assert len(offers) == 1
+    assert offers[0].fidelity_bond_data is not None
+    assert offers[0].fidelity_bond_data["cert_expiry"] == 903_168
+    assert offers[0].features == {"neutrino_compat": True, "peerlist_features": True}
+    assert offers[0].neutrino_compat is True
+    assert renewed.features == {"neutrino_compat": False, "peerlist_features": False}
 
 
 def test_bind_session_returns_none_when_no_directories():

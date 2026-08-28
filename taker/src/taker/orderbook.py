@@ -211,16 +211,27 @@ def filter_offers(
         allowed_types = {OfferType.SW0_RELATIVE, OfferType.SW0_ABSOLUTE}
 
     if ignored_makers:
+        excluded_label = "maker" if len(ignored_makers) == 1 else "makers"
         logger.debug(
-            f"Filtering offers: {len(ignored_makers)} makers in ignored list: {ignored_makers}"
+            f"Filtering offers: {len(ignored_makers)} {excluded_label} excluded from this selection"
         )
 
     eligible = []
+    exclusion_counts = {
+        "selection exclusion": 0,
+        "nick version": 0,
+        "known missing feature": 0,
+        "offer type": 0,
+        "non-quantized fee": 0,
+        "below minsize": 0,
+        "above maxsize": 0,
+        "fee limit": 0,
+    }
 
     for offer in offers:
         # Filter by maker
         if offer.counterparty in ignored_makers:
-            logger.info(f"Ignoring offer from {offer.counterparty} (in ignored list)")
+            exclusion_counts["selection exclusion"] += 1
             continue
 
         # Filter by nick version (reserved for potential future reference compatibility)
@@ -228,6 +239,7 @@ def filter_offers(
         if min_nick_version is not None:
             nick_version = get_nick_version(offer.counterparty)
             if nick_version < min_nick_version:
+                exclusion_counts["nick version"] += 1
                 logger.debug(
                     f"Ignoring offer from {offer.counterparty}: "
                     f"nick version {nick_version} < required {min_nick_version}"
@@ -242,6 +254,7 @@ def filter_offers(
         if required_features and offer.features:
             missing = {f for f in required_features if not offer.features.get(f)}
             if missing:
+                exclusion_counts["known missing feature"] += 1
                 logger.debug(
                     f"Ignoring offer from {offer.counterparty}: missing required features {missing}"
                 )
@@ -249,6 +262,7 @@ def filter_offers(
 
         # Filter by offer type
         if offer.ordertype not in allowed_types:
+            exclusion_counts["offer type"] += 1
             logger.debug(
                 f"Ignoring offer from {offer.counterparty}: "
                 f"type {offer.ordertype} not in allowed types"
@@ -256,11 +270,13 @@ def filter_offers(
             continue
 
         if require_quantized_cj_fees and not is_quantized_cj_fee(offer):
+            exclusion_counts["non-quantized fee"] += 1
             logger.debug(f"Ignoring offer from {offer.counterparty}: fee is not on the public grid")
             continue
 
         # Filter by amount range
         if cj_amount < offer.minsize:
+            exclusion_counts["below minsize"] += 1
             logger.bind(sensitive=True).trace(
                 f"Ignoring offer from {offer.counterparty}: "
                 f"amount {cj_amount} < minsize {offer.minsize}"
@@ -268,6 +284,7 @@ def filter_offers(
             continue
 
         if cj_amount > offer.maxsize:
+            exclusion_counts["above maxsize"] += 1
             logger.bind(sensitive=True).debug(
                 f"Ignoring offer from {offer.counterparty}: "
                 f"amount {cj_amount} > maxsize {offer.maxsize}"
@@ -276,6 +293,7 @@ def filter_offers(
 
         # Filter by fee limits
         if not is_fee_within_limits(offer, cj_amount, max_cj_fee, round_up_cj_fees):
+            exclusion_counts["fee limit"] += 1
             policy = _paid_fee_policy(offer, round_up_cj_fees)
             fee = (
                 calculate_cj_fee(offer, cj_amount, round_up_cj_fees) if policy is not None else None
@@ -287,7 +305,12 @@ def filter_offers(
 
         eligible.append(offer)
 
-    logger.info(f"Filtered {len(offers)} offers to {len(eligible)} eligible offers")
+    exclusion_summary = ", ".join(
+        f"{reason}={count}" for reason, count in exclusion_counts.items() if count
+    )
+    offer_label = "offer" if len(eligible) == 1 else "offers"
+    summary = f"Filtered {len(offers)} offers to {len(eligible)} eligible {offer_label}"
+    logger.info(f"{summary} ({exclusion_summary})" if exclusion_summary else summary)
     return eligible
 
 
@@ -433,9 +456,9 @@ def prefer_offers_with_confirmed_features(
         )
         return confirmed
     if unknown_count:
-        logger.debug(
-            f"Only {len(confirmed)} offers confirm features {sorted(required_features)} "
-            f"(need {n}); keeping {unknown_count} unknown-status offers as candidates"
+        logger.info(
+            f"Feature fallback: confirmed={len(confirmed)}, requested={n}, "
+            f"unknown={unknown_count}; retaining unknown-status offers as candidates"
         )
     return offers
 

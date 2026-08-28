@@ -136,6 +136,9 @@ async def test_connect_all_parallel_fires_hook_for_each_success():
         connected = await pool.connect_all_parallel()
 
     assert connected == 2
+    assert pool.last_connection_result.connected == 2
+    assert pool.last_connection_result.total == 3
+    assert pool.last_connection_result.failed == 1
     assert set(pool.clients.keys()) == {"a.onion:5222", "c.onion:5222"}
     assert set(hook_calls) == {"a.onion:5222", "c.onion:5222"}
 

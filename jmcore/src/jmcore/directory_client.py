@@ -391,8 +391,7 @@ class DirectoryClient:
             await self._handshake()
             logger.debug("DirectoryClient.connect: handshake complete")
         except Exception as e:
-            logger.error("Directory connection failed")
-            logger.bind(sensitive=True).error(
+            logger.bind(sensitive=True).debug(
                 f"Failed to connect to {self.host}:{self.port}: {e}", exc_info=True
             )
             # Clean up connection if handshake failed
@@ -1279,6 +1278,8 @@ class DirectoryClient:
         # This prevents incorrectly rejecting valid offers from active makers
         # whose peerlist entry hasn't been received yet.
 
+        self._enrich_returned_offers_with_peer_features(offers)
+
         logger.debug(f"Fetched {len(offers)} offers and {len(bonds)} fidelity bonds")
         logger.bind(sensitive=True).debug(
             f"Fetched {len(offers)} offers and {len(bonds)} fidelity bonds from "
@@ -1895,6 +1896,13 @@ class DirectoryClient:
             )
 
         return updated
+
+    def _enrich_returned_offers_with_peer_features(self, offers: list[Offer]) -> None:
+        """Merge final positive peer feature evidence into returned offers."""
+        for offer in offers:
+            for feature, value in self.peer_features.get(offer.counterparty, {}).items():
+                if value:
+                    offer.features[feature] = True
 
     def _merge_peer_features(self, nick: str, new_features: dict[str, bool]) -> None:
         """
