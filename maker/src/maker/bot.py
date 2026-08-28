@@ -58,8 +58,15 @@ from maker.maker_session import MakerSession, PendingSignedRound
 from maker.offers import OfferManager
 from maker.protocol_handlers import ProtocolHandlersMixin
 from maker.rate_limiting import (
+    DEFAULT_HP2_ADMISSION_BURST,
+    DEFAULT_HP2_ADMISSION_REFILL_PER_SECOND,
+    DEFAULT_HP2_RELAY_WORK_BURST,
+    DEFAULT_HP2_RELAY_WORK_REFILL_PER_SECOND,
+    DEFAULT_ORDERBOOK_PROOF_WORK_BURST,
+    DEFAULT_ORDERBOOK_PROOF_WORK_REFILL_PER_SECOND,
     DirectConnectionRateLimiter,
     OrderbookRateLimiter,
+    ProcessWideTokenBucket,
 )
 
 # Approximately 64MB of memory for str->float mapping (including overhead)
@@ -182,6 +189,19 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
             orderbook_interval=30.0,  # Longer interval (30s vs 10s)
             orderbook_ban_threshold=10,  # Faster ban (10 violations vs 100)
             ban_duration=config.orderbook_ban_duration,
+        )
+
+        self._orderbook_proof_work_limiter = ProcessWideTokenBucket(
+            DEFAULT_ORDERBOOK_PROOF_WORK_BURST,
+            DEFAULT_ORDERBOOK_PROOF_WORK_REFILL_PER_SECOND,
+        )
+        self._hp2_admission_limiter = ProcessWideTokenBucket(
+            DEFAULT_HP2_ADMISSION_BURST,
+            DEFAULT_HP2_ADMISSION_REFILL_PER_SECOND,
+        )
+        self._hp2_relay_work_limiter = ProcessWideTokenBucket(
+            DEFAULT_HP2_RELAY_WORK_BURST,
+            DEFAULT_HP2_RELAY_WORK_REFILL_PER_SECOND,
         )
 
         # Message deduplicator to handle receiving same message from multiple directories

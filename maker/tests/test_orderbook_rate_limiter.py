@@ -8,13 +8,14 @@ Now includes exponential backoff and ban functionality.
 from __future__ import annotations
 
 import time
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from jmcore.models import NetworkType
+from jmcore.models import NetworkType, Offer, OfferType
 
 from maker.bot import DirectConnectionRateLimiter, MakerBot, OrderbookRateLimiter
 from maker.config import MakerConfig
+from maker.rate_limiting import ProcessWideTokenBucket
 
 
 class TestOrderbookRateLimiter:
@@ -332,6 +333,32 @@ class TestOrderbookRateLimiter:
         assert stats["banned_peers"] == []
         assert stats["top_violators"] == []
 
+    def test_identity_state_is_bounded_with_oldest_eviction(self):
+        limiter = OrderbookRateLimiter(max_tracked_identities=2)
+
+        assert limiter.check("J5first") is True
+        assert limiter.check("J5second") is True
+        assert limiter.check("J5third") is True
+
+        assert list(limiter._tracked_identities) == ["J5second", "J5third"]
+        assert "J5first" not in limiter._last_response
+        assert len(limiter._tracked_identities) == 2
+
+
+class TestProcessWideTokenBucket:
+    """Tests for aggregate maker work budgets."""
+
+    def test_burst_is_refilled_using_monotonic_time(self):
+        now = [0.0]
+        limiter = ProcessWideTokenBucket(2, 1.0, clock=lambda: now[0])
+
+        assert limiter.try_consume() is True
+        assert limiter.try_consume() is True
+        assert limiter.try_consume() is False
+
+        now[0] = 1.0
+        assert limiter.try_consume() is True
+
 
 class TestMakerBotRateLimiting:
     """Tests for rate limiting integration in MakerBot."""
@@ -377,6 +404,35 @@ class TestMakerBotRateLimiting:
     def test_bot_rate_limiter_uses_config(self, maker_bot):
         """Test that rate limiter uses config values."""
         assert maker_bot._orderbook_rate_limiter.interval == 5.0
+
+    @pytest.mark.asyncio
+    async def test_directory_and_direct_responses_share_proof_budget(self, maker_bot):
+        maker_bot.current_offers = [
+            Offer(
+                counterparty=maker_bot.nick,
+                ordertype=OfferType.SW0_RELATIVE,
+                oid=0,
+                minsize=10_000,
+                maxsize=100_000,
+                txfee=100,
+                cjfee="0.0001",
+            )
+        ]
+        maker_bot.fidelity_bond = MagicMock()
+        maker_bot._orderbook_proof_work_limiter = ProcessWideTokenBucket(1, 0.0)
+        directory_client = MagicMock(send_private_message=AsyncMock())
+        direct_connection = MagicMock(send=AsyncMock())
+        maker_bot.directory_clients["directory"] = directory_client
+
+        with patch(
+            "maker.protocol_handlers.create_fidelity_bond_proof", return_value="proof"
+        ) as create_proof:
+            await maker_bot._send_offers_to_taker("J5DirectoryTaker")
+            await maker_bot._send_offers_via_direct_connection("J5DirectTaker", direct_connection)
+
+        create_proof.assert_called_once()
+        directory_client.send_private_message.assert_awaited_once()
+        direct_connection.send.assert_not_awaited()
 
     def test_config_default_rate_limit_values(self, mock_wallet, mock_backend):
         """Test default rate limit values in MakerConfig."""
@@ -679,6 +735,17 @@ class TestDirectConnectionRateLimiter:
 
         assert "127.0.0.1:11111" not in limiter._message_last_update
         assert "127.0.0.1:22222" not in limiter._message_last_update
+
+    def test_identity_state_is_bounded_with_oldest_eviction(self):
+        limiter = DirectConnectionRateLimiter(max_tracked_identities=2)
+
+        assert limiter.check_message("127.0.0.1:11111") is True
+        assert limiter.check_orderbook("127.0.0.1:22222") is True
+        assert limiter.check_message("127.0.0.1:33333") is True
+
+        assert list(limiter._tracked_identities) == ["127.0.0.1:22222", "127.0.0.1:33333"]
+        assert "127.0.0.1:11111" not in limiter._message_tokens
+        assert len(limiter._tracked_identities) == 2
 
 
 class TestMakerBotDirectConnectionRateLimiting:

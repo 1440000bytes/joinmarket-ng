@@ -22,6 +22,7 @@ from jmcore.models import NetworkType
 
 from maker.bot import MakerBot
 from maker.config import MakerConfig
+from maker.rate_limiting import ProcessWideTokenBucket
 
 COMMITMENT = "efe182de0a45f10e1af4082c088d30efe36f03fe6dc2cea946c127dad831eb81"
 
@@ -290,18 +291,20 @@ class TestBroadcastCommitmentEphemeral:
 class TestHandleHp2Privmsg:
     """Tests for _handle_hp2_privmsg (relay requests from other makers)."""
 
-    async def test_blacklists_commitment_locally(self, maker_bot: MakerBot) -> None:
+    async def test_caches_commitment_locally_without_persistence(self, maker_bot: MakerBot) -> None:
         with (
-            patch("maker.protocol_handlers.add_commitment") as mock_add,
+            patch("maker.protocol_handlers.check_commitment", return_value=True),
+            patch("maker.protocol_handlers.add_remote_commitment") as mock_add_remote,
             patch.object(maker_bot, "_broadcast_commitment_ephemeral", new=AsyncMock()),
         ):
             await maker_bot._handle_hp2_privmsg("SomeMaker", f"hp2 {COMMITMENT}")
 
-        mock_add.assert_called_once_with(COMMITMENT)
+        mock_add_remote.assert_called_once_with(COMMITMENT)
 
     async def test_schedules_ephemeral_broadcast(self, maker_bot: MakerBot) -> None:
         with (
-            patch("maker.protocol_handlers.add_commitment"),
+            patch("maker.protocol_handlers.check_commitment", return_value=True),
+            patch("maker.protocol_handlers.add_remote_commitment", return_value=True),
             patch.object(
                 maker_bot, "_broadcast_commitment_ephemeral", new=AsyncMock()
             ) as mock_ephemeral,
@@ -314,12 +317,12 @@ class TestHandleHp2Privmsg:
 
     async def test_ignores_invalid_format(self, maker_bot: MakerBot) -> None:
         with (
-            patch("maker.protocol_handlers.add_commitment") as mock_add,
+            patch("maker.protocol_handlers.add_remote_commitment") as mock_add_remote,
             patch.object(maker_bot, "_broadcast_commitment_ephemeral", new=AsyncMock()),
         ):
             await maker_bot._handle_hp2_privmsg("SomeMaker", "hp2")
 
-        mock_add.assert_not_called()
+        mock_add_remote.assert_not_called()
 
     async def test_does_not_use_existing_connections(
         self, maker_bot: MakerBot, mock_directory_client: MagicMock
@@ -328,7 +331,8 @@ class TestHandleHp2Privmsg:
         maker_bot.directory_clients["dir1"] = mock_directory_client
 
         with (
-            patch("maker.protocol_handlers.add_commitment"),
+            patch("maker.protocol_handlers.check_commitment", return_value=True),
+            patch("maker.protocol_handlers.add_remote_commitment", return_value=True),
             patch.object(maker_bot, "_broadcast_commitment_ephemeral", new=AsyncMock()),
         ):
             await maker_bot._handle_hp2_privmsg("SomeMaker", f"hp2 {COMMITMENT}")
@@ -336,7 +340,13 @@ class TestHandleHp2Privmsg:
         mock_directory_client.send_public_message.assert_not_called()
 
     async def test_handles_errors_gracefully(self, maker_bot: MakerBot) -> None:
-        with patch("maker.protocol_handlers.add_commitment", side_effect=OSError("disk full")):
+        with (
+            patch("maker.protocol_handlers.check_commitment", return_value=True),
+            patch(
+                "maker.protocol_handlers.add_remote_commitment",
+                side_effect=OSError("cache failure"),
+            ),
+        ):
             # Should not raise
             await maker_bot._handle_hp2_privmsg("SomeMaker", f"hp2 {COMMITMENT}")
 
@@ -345,18 +355,70 @@ class TestHandleHp2Privmsg:
 class TestHandleHp2Pubmsg:
     """Tests for _handle_hp2_pubmsg (public channel blacklisting)."""
 
-    async def test_blacklists_commitment(self, maker_bot: MakerBot) -> None:
-        with patch("maker.protocol_handlers.add_commitment") as mock_add:
-            mock_add.return_value = True
+    async def test_caches_commitment_without_persistence(self, maker_bot: MakerBot) -> None:
+        with (
+            patch("maker.protocol_handlers.check_commitment", return_value=True),
+            patch(
+                "maker.protocol_handlers.add_remote_commitment", return_value=True
+            ) as mock_add_remote,
+        ):
             await maker_bot._handle_hp2_pubmsg("SomeMaker", f"hp2 {COMMITMENT}")
 
-        mock_add.assert_called_once_with(COMMITMENT)
+        mock_add_remote.assert_called_once_with(COMMITMENT)
 
     async def test_ignores_invalid_format(self, maker_bot: MakerBot) -> None:
-        with patch("maker.protocol_handlers.add_commitment") as mock_add:
+        with patch("maker.protocol_handlers.add_remote_commitment") as mock_add_remote:
             await maker_bot._handle_hp2_pubmsg("SomeMaker", "hp2")
 
-        mock_add.assert_not_called()
+        mock_add_remote.assert_not_called()
+
+    async def test_duplicate_commitment_does_not_consume_admission_budget(
+        self, maker_bot: MakerBot
+    ) -> None:
+        maker_bot._hp2_admission_limiter = MagicMock()
+
+        with (
+            patch("maker.protocol_handlers.check_commitment", return_value=False),
+            patch("maker.protocol_handlers.add_remote_commitment") as mock_add_remote,
+        ):
+            await maker_bot._handle_hp2_pubmsg("SomeMaker", f"hp2 {COMMITMENT}")
+
+        maker_bot._hp2_admission_limiter.try_consume.assert_not_called()
+        mock_add_remote.assert_not_called()
+
+    async def test_public_and_private_messages_share_admission_budget(
+        self, maker_bot: MakerBot
+    ) -> None:
+        maker_bot._hp2_admission_limiter = ProcessWideTokenBucket(1, 0.0)
+        second_commitment = "a" * 64
+
+        with (
+            patch("maker.protocol_handlers.check_commitment", return_value=True),
+            patch(
+                "maker.protocol_handlers.add_remote_commitment", return_value=True
+            ) as mock_add_remote,
+            patch("maker.protocol_handlers.spawn_task") as mock_spawn,
+        ):
+            await maker_bot._handle_hp2_pubmsg("PublicMaker", f"hp2 {COMMITMENT}")
+            await maker_bot._handle_hp2_privmsg("PrivateMaker", f"hp2 {second_commitment}")
+
+        mock_add_remote.assert_called_once_with(COMMITMENT)
+        mock_spawn.assert_not_called()
+
+    async def test_relay_work_budget_prevents_ephemeral_connection_spawning(
+        self, maker_bot: MakerBot
+    ) -> None:
+        maker_bot._hp2_relay_work_limiter = ProcessWideTokenBucket(1, 0.0)
+        assert maker_bot._hp2_relay_work_limiter.try_consume() is True
+
+        with (
+            patch("maker.protocol_handlers.check_commitment", return_value=True),
+            patch("maker.protocol_handlers.add_remote_commitment", return_value=True),
+            patch("maker.protocol_handlers.spawn_task") as mock_spawn,
+        ):
+            await maker_bot._handle_hp2_privmsg("SomeMaker", f"hp2 {COMMITMENT}")
+
+        mock_spawn.assert_not_called()
 
 
 @pytest.mark.asyncio

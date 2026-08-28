@@ -29,7 +29,11 @@ from maker.directory_pool import MakerDirectoryPool
 from maker.fidelity import FidelityBondInfo
 from maker.maker_session import MakerSession, PendingSignedRound
 from maker.offers import OfferManager
-from maker.rate_limiting import DirectConnectionRateLimiter, OrderbookRateLimiter
+from maker.rate_limiting import (
+    DirectConnectionRateLimiter,
+    OrderbookRateLimiter,
+    ProcessWideTokenBucket,
+)
 
 if TYPE_CHECKING:
     from jmwallet.history import TransactionHistoryEntry
@@ -66,6 +70,9 @@ class MakerBotProtocol(Protocol):
     _message_rate_limiter: RateLimiter
     _orderbook_rate_limiter: OrderbookRateLimiter
     _direct_connection_rate_limiter: DirectConnectionRateLimiter
+    _orderbook_proof_work_limiter: ProcessWideTokenBucket
+    _hp2_admission_limiter: ProcessWideTokenBucket
+    _hp2_relay_work_limiter: ProcessWideTokenBucket
     _directory_reconnect_attempts: dict[str, int]
     _all_directories_disconnected: bool
     _mempool_notified_txids: set[str]
@@ -203,9 +210,13 @@ class MakerBotProtocol(Protocol):
 
     async def _broadcast_commitment(self, commitment: str) -> bool: ...
 
-    async def _handle_privmsg(self, line: str, source: str = "unknown") -> None: ...
+    async def _handle_privmsg(
+        self, line: str, source: str = "unknown", generation_id: int | None = None
+    ) -> None: ...
 
-    async def _handle_pubmsg(self, line: str, source: str = "unknown") -> None: ...
+    async def _handle_pubmsg(
+        self, line: str, source: str = "unknown", generation_id: int | None = None
+    ) -> None: ...
 
     async def _handle_hp2_pubmsg(self, from_nick: str, msg: str) -> None: ...
 

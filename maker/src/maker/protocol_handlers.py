@@ -18,7 +18,12 @@ from contextlib import AbstractContextManager
 from typing import TYPE_CHECKING, Any
 
 from jmcore.bitcoin import get_txid
-from jmcore.commitment_blacklist import add_commitment, check_commitment, validate_commitment_hex
+from jmcore.commitment_blacklist import (
+    add_commitment,
+    add_remote_commitment,
+    check_commitment,
+    validate_commitment_hex,
+)
 from jmcore.crypto import NickIdentity, verify_signed_privmsg
 from jmcore.deduplication import MessageDeduplicator
 from jmcore.directory_client import DirectoryClient
@@ -40,7 +45,11 @@ from maker.generation import GenerationState
 from maker.maker_session import MakerSession, PendingSignedRound
 from maker.offers import OfferManager
 from maker.protocols import MakerBotProtocol
-from maker.rate_limiting import DirectConnectionRateLimiter, OrderbookRateLimiter
+from maker.rate_limiting import (
+    DirectConnectionRateLimiter,
+    OrderbookRateLimiter,
+    ProcessWideTokenBucket,
+)
 
 if TYPE_CHECKING:
     from jmcore.network import TCPConnection
@@ -78,6 +87,9 @@ class ProtocolHandlersMixin:
     _message_rate_limiter: RateLimiter
     _orderbook_rate_limiter: OrderbookRateLimiter
     _direct_connection_rate_limiter: DirectConnectionRateLimiter
+    _orderbook_proof_work_limiter: ProcessWideTokenBucket
+    _hp2_admission_limiter: ProcessWideTokenBucket
+    _hp2_relay_work_limiter: ProcessWideTokenBucket
     _own_wallet_nicks: set[str]
     _hp2_own_broadcast_semaphore: asyncio.Semaphore
     _hp2_relay_broadcast_semaphore: asyncio.Semaphore
@@ -324,6 +336,9 @@ class ProtocolHandlersMixin:
             generation = self._generation(generation_id)
             if generation is None or generation.state is not GenerationState.ACCEPTING:
                 return
+            if not self._orderbook_proof_work_limiter.try_consume():
+                logger.debug("Dropping orderbook response (global proof-work budget exhausted)")
+                return
             offers = (
                 self.current_offers
                 if generation_id == self.current_generation_id
@@ -386,6 +401,11 @@ class ProtocolHandlersMixin:
             generation_id = self.current_generation_id if generation_id is None else generation_id
             generation = self._generation(generation_id)
             if generation is None or generation.state is not GenerationState.ACCEPTING:
+                return
+            if not self._orderbook_proof_work_limiter.try_consume():
+                logger.debug(
+                    "Dropping direct orderbook response (global proof-work budget exhausted)"
+                )
                 return
             offers = (
                 self.current_offers
@@ -697,7 +717,7 @@ class ProtocolHandlersMixin:
         except Exception as e:
             if reservation_owned:
                 self._release_commitment_reservation(commitment)
-            if session is not None:
+            if session is not None and generation_id is not None:
                 if self.active_sessions.get((generation_id, taker_nick)) is session:
                     self.active_sessions.pop((generation_id, taker_nick), None)
                     self._release_podle_outpoint(session)
@@ -1066,11 +1086,8 @@ class ProtocolHandlersMixin:
         """Handle !hp2 commitment broadcast seen in public channel.
 
         When a maker sees a PoDLE commitment broadcast in public (via !hp2),
-        they should blacklist it. This prevents reuse of commitments that
-        may have been used in failed or malicious CoinJoin attempts.
-
-        There is no way to spoof commitments, so the only risk of accepting
-        them is disk usage from a growing blacklist file.
+        it is cached for this process lifetime. Remote gossip is not local
+        verification, so it is never written to the persistent blacklist.
 
         Format: hp2 <commitment_hex>
         """
@@ -1088,11 +1105,21 @@ class ProtocolHandlersMixin:
                 logger.debug(f"Ignoring invalid !hp2 commitment from {from_nick}: {error}")
                 return
 
-            # Add to blacklist (persists to disk)
-            if add_commitment(commitment):
+            commitment = commitment.lower()
+            if not check_commitment(commitment):
+                logger.debug(
+                    f"Received duplicate commitment broadcast from {from_nick}: "
+                    f"{commitment[:16]}..."
+                )
+                return
+            if not self._hp2_admission_limiter.try_consume():
+                logger.debug("Dropping hp2 broadcast (global admission budget exhausted)")
+                return
+
+            if add_remote_commitment(commitment):
                 logger.info(
                     f"Received commitment broadcast from {from_nick}, "
-                    f"added to blacklist: {commitment[:16]}..."
+                    f"cached for this process: {commitment[:16]}..."
                 )
             else:
                 logger.debug(
@@ -1113,7 +1140,8 @@ class ProtocolHandlersMixin:
         nick and unique Tor circuit, then broadcast there. This way neither the
         requesting maker nor we ourselves are linked to the public broadcast.
 
-        The commitment is also added to our own blacklist.
+        The commitment is cached locally for this process but is not persisted,
+        because the relay request is untrusted remote gossip.
 
         Format: hp2 <commitment_hex>
         """
@@ -1124,16 +1152,26 @@ class ProtocolHandlersMixin:
                 return
 
             commitment = parts[1]
-            logger.info(f"Received commitment relay request from {from_nick}: {commitment[:16]}...")
-
-            # Validate format before relaying or blacklisting
+            # Validate format before relaying or caching.
             valid, error = validate_commitment_hex(commitment)
             if not valid:
                 logger.debug(f"Ignoring invalid !hp2 relay from {from_nick}: {error}")
                 return
 
-            # Blacklist locally
-            add_commitment(commitment)
+            commitment = commitment.lower()
+            if not check_commitment(commitment):
+                logger.debug(
+                    f"Received duplicate commitment relay from {from_nick}: {commitment[:16]}..."
+                )
+                return
+            if not self._hp2_admission_limiter.try_consume():
+                logger.debug("Dropping hp2 relay (global admission budget exhausted)")
+                return
+            if not add_remote_commitment(commitment):
+                return
+            if not self._hp2_relay_work_limiter.try_consume():
+                logger.debug("Dropping hp2 relay (global relay-work budget exhausted)")
+                return
 
             # Broadcast via ephemeral identity (fire-and-forget)
             spawn_task(self._broadcast_commitment_ephemeral(commitment, is_relay=True))

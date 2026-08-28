@@ -9,6 +9,9 @@ Provides two rate limiters:
 from __future__ import annotations
 
 import time
+from collections import OrderedDict
+from collections.abc import Callable
+from threading import Lock
 from typing import Any
 
 from loguru import logger
@@ -26,6 +29,48 @@ DEFAULT_VIOLATION_BAN_THRESHOLD = 100  # Ban peer after this many violations
 DEFAULT_VIOLATION_WARNING_THRESHOLD = 10  # Start exponential backoff after this
 DEFAULT_VIOLATION_SEVERE_THRESHOLD = 50  # Severe backoff threshold
 DEFAULT_BAN_DURATION = 3600.0  # Ban duration in seconds (1 hour)
+DEFAULT_MAX_TRACKED_IDENTITIES = 10_000
+
+# Process-wide work budgets. These do not key state by remote identity.
+DEFAULT_ORDERBOOK_PROOF_WORK_BURST = 20
+DEFAULT_ORDERBOOK_PROOF_WORK_REFILL_PER_SECOND = 1.0
+DEFAULT_HP2_ADMISSION_BURST = 120
+DEFAULT_HP2_ADMISSION_REFILL_PER_SECOND = 2.0
+DEFAULT_HP2_RELAY_WORK_BURST = 2
+DEFAULT_HP2_RELAY_WORK_REFILL_PER_SECOND = 1.0 / 30.0
+
+
+class ProcessWideTokenBucket:
+    """A thread-safe monotonic token bucket for aggregate maker work."""
+
+    def __init__(
+        self,
+        burst: int,
+        refill_per_second: float,
+        clock: Callable[[], float] | None = None,
+    ) -> None:
+        if burst <= 0:
+            raise ValueError("burst must be positive")
+        if refill_per_second < 0:
+            raise ValueError("refill_per_second must be non-negative")
+        self.burst = burst
+        self.refill_per_second = refill_per_second
+        self._clock = time.monotonic if clock is None else clock
+        self._tokens = float(burst)
+        self._last_refill = self._clock()
+        self._lock = Lock()
+
+    def try_consume(self) -> bool:
+        """Consume one token immediately, returning False when depleted."""
+        with self._lock:
+            now = self._clock()
+            elapsed = max(0.0, now - self._last_refill)
+            self._tokens = min(self.burst, self._tokens + elapsed * self.refill_per_second)
+            self._last_refill = now
+            if self._tokens < 1.0:
+                return False
+            self._tokens -= 1.0
+            return True
 
 
 class OrderbookRateLimiter:
@@ -58,6 +103,7 @@ class OrderbookRateLimiter:
         violation_warning_threshold: int = DEFAULT_VIOLATION_WARNING_THRESHOLD,
         violation_severe_threshold: int = DEFAULT_VIOLATION_SEVERE_THRESHOLD,
         ban_duration: float = DEFAULT_BAN_DURATION,
+        max_tracked_identities: int = DEFAULT_MAX_TRACKED_IDENTITIES,
     ):
         """
         Initialize the rate limiter.
@@ -70,7 +116,10 @@ class OrderbookRateLimiter:
             violation_warning_threshold: Start exponential backoff after this
             violation_severe_threshold: Severe backoff threshold
             ban_duration: How long to ban peers (seconds)
+            max_tracked_identities: Maximum peer states retained in memory.
         """
+        if max_tracked_identities <= 0:
+            raise ValueError("max_tracked_identities must be positive")
         self.interval = interval
         self.violation_ban_threshold = violation_ban_threshold
         self.violation_warning_threshold = violation_warning_threshold
@@ -80,6 +129,19 @@ class OrderbookRateLimiter:
         self._last_response: dict[str, float] = {}
         self._violation_counts: dict[str, int] = {}
         self._banned_peers: dict[str, float] = {}  # peer_nick -> ban_timestamp
+        self.max_tracked_identities = max_tracked_identities
+        self._tracked_identities: OrderedDict[str, None] = OrderedDict()
+
+    def _track_identity(self, peer_nick: str) -> None:
+        """Retain bounded peer state, evicting the first-seen entry in O(1)."""
+        if peer_nick in self._tracked_identities:
+            return
+        if len(self._tracked_identities) >= self.max_tracked_identities:
+            oldest_peer, _ = self._tracked_identities.popitem(last=False)
+            self._last_response.pop(oldest_peer, None)
+            self._violation_counts.pop(oldest_peer, None)
+            self._banned_peers.pop(oldest_peer, None)
+        self._tracked_identities[peer_nick] = None
 
     def check(self, peer_nick: str) -> bool:
         """
@@ -88,6 +150,7 @@ class OrderbookRateLimiter:
         Returns True if allowed, False if rate limited or banned.
         """
         now = time.monotonic()
+        self._track_identity(peer_nick)
 
         # Check if peer is banned
         if peer_nick in self._banned_peers:
@@ -288,6 +351,7 @@ class DirectConnectionRateLimiter:
         orderbook_interval: float = 30.0,  # Longer interval for direct connections
         orderbook_ban_threshold: int = 10,  # Faster banning for direct attackers
         ban_duration: float = 3600.0,
+        max_tracked_identities: int = DEFAULT_MAX_TRACKED_IDENTITIES,
     ):
         """
         Initialize the direct connection rate limiter.
@@ -298,7 +362,10 @@ class DirectConnectionRateLimiter:
             orderbook_interval: Minimum interval between orderbook requests
             orderbook_ban_threshold: Ban after this many orderbook violations
             ban_duration: How long to ban connections (seconds)
+            max_tracked_identities: Maximum connection states retained in memory.
         """
+        if max_tracked_identities <= 0:
+            raise ValueError("max_tracked_identities must be positive")
         self.message_rate_per_sec = message_rate_per_sec
         self.message_burst = message_burst
         self.orderbook_interval = orderbook_interval
@@ -315,6 +382,21 @@ class DirectConnectionRateLimiter:
 
         # Banned connections
         self._banned: dict[str, float] = {}
+        self.max_tracked_identities = max_tracked_identities
+        self._tracked_identities: OrderedDict[str, None] = OrderedDict()
+
+    def _track_identity(self, conn_id: str) -> None:
+        """Retain bounded connection state, evicting the first-seen entry in O(1)."""
+        if conn_id in self._tracked_identities:
+            return
+        if len(self._tracked_identities) >= self.max_tracked_identities:
+            oldest_conn, _ = self._tracked_identities.popitem(last=False)
+            self._message_tokens.pop(oldest_conn, None)
+            self._message_last_update.pop(oldest_conn, None)
+            self._orderbook_last.pop(oldest_conn, None)
+            self._orderbook_violations.pop(oldest_conn, None)
+            self._banned.pop(oldest_conn, None)
+        self._tracked_identities[conn_id] = None
 
     def check_message(self, conn_id: str) -> bool:
         """
@@ -329,6 +411,7 @@ class DirectConnectionRateLimiter:
             True if allowed, False if rate limited
         """
         now = time.monotonic()
+        self._track_identity(conn_id)
 
         # Check if banned
         if conn_id in self._banned:
@@ -371,6 +454,7 @@ class DirectConnectionRateLimiter:
             True if allowed, False if rate limited or banned
         """
         now = time.monotonic()
+        self._track_identity(conn_id)
 
         # Check if banned
         if conn_id in self._banned:
