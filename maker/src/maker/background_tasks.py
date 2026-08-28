@@ -20,6 +20,7 @@ from loguru import logger
 
 from maker.config import MakerConfig
 from maker.fidelity import ExpiredFidelityBondCertificateError
+from maker.generation import GenerationState
 from maker.protocols import MakerBotProtocol
 from maker.rate_limiting import DirectConnectionRateLimiter, OrderbookRateLimiter
 
@@ -292,7 +293,7 @@ class BackgroundTasksMixin:
                 await asyncio.sleep(self.config.directory_reconnect_interval)
 
                 generation = self._generation()
-                if generation is None:
+                if generation is None or generation.state is not GenerationState.ACCEPTING:
                     continue
                 generation_id = generation.generation_id
                 directory_pool = generation.directory_pool
@@ -317,6 +318,9 @@ class BackgroundTasksMixin:
                 )
 
                 for dir_server, node_id in disconnected_servers:
+                    if generation.state is not GenerationState.ACCEPTING:
+                        break
+
                     # Check retry limit
                     max_retries = self.config.directory_reconnect_max_retries
                     attempts = reconnect_attempts.get(node_id, 0)
@@ -332,7 +336,8 @@ class BackgroundTasksMixin:
                     # established. Never install a client prepared for a stale
                     # identity into the new generation.
                     if (
-                        self.current_generation_id != generation_id
+                        generation.state is not GenerationState.ACCEPTING
+                        or self.current_generation_id != generation_id
                         or self._generation(generation_id) is not generation
                     ):
                         if result is not None:

@@ -655,6 +655,74 @@ async def test_stale_old_listener_cannot_remove_current_client(bot: MakerBot) ->
 
 
 @pytest.mark.asyncio
+async def test_reconnect_skips_grace_generation(bot: MakerBot) -> None:
+    generation = bot.generations[0]
+    generation.state = GenerationState.GRACE
+    generation.directory_pool.list_disconnected = MagicMock(
+        return_value=[("directory.onion:5222", "directory.onion:5222")]
+    )
+    client = MagicMock()
+    client.close = AsyncMock()
+    client.send_public_message = AsyncMock()
+    bot.current_offers = [MagicMock()]
+    bot.running = True
+    sleep_calls = 0
+
+    async def sleep(_delay: float) -> None:
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls == 2:
+            bot.running = False
+
+    with (
+        patch("maker.background_tasks.asyncio.sleep", side_effect=sleep),
+        patch.object(
+            bot,
+            "_connect_to_directory",
+            new=AsyncMock(return_value=("directory.onion:5222", client)),
+        ) as connect,
+        patch.object(bot, "_format_offer_announcement", return_value="offer") as format_offer,
+    ):
+        await bot._periodic_directory_reconnect()
+
+    connect.assert_not_awaited()
+    format_offer.assert_not_called()
+    client.send_public_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_closes_client_when_generation_enters_grace_during_dial(
+    bot: MakerBot,
+) -> None:
+    generation = bot.generations[0]
+    generation.directory_pool.list_disconnected = MagicMock(
+        return_value=[("directory.onion:5222", "directory.onion:5222")]
+    )
+    client = MagicMock()
+    client.close = AsyncMock()
+    client.send_public_message = AsyncMock()
+    bot.current_offers = [MagicMock()]
+    bot.running = True
+
+    async def connect(_server: str) -> tuple[str, MagicMock]:
+        generation.state = GenerationState.GRACE
+        bot.running = False
+        return "directory.onion:5222", client
+
+    with (
+        patch("maker.background_tasks.asyncio.sleep", new=AsyncMock()),
+        patch.object(bot, "_connect_to_directory", side_effect=connect),
+        patch.object(bot, "_format_offer_announcement", return_value="offer") as format_offer,
+    ):
+        await bot._periodic_directory_reconnect()
+
+    assert generation.directory_clients == {}
+    client.close.assert_awaited_once_with()
+    client.send_public_message.assert_not_awaited()
+    format_offer.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_reconnect_result_is_discarded_after_cutover(bot: MakerBot) -> None:
     old = bot.generations[0]
     old.directory_pool.list_disconnected = MagicMock(
