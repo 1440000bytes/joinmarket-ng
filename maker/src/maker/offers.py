@@ -7,10 +7,15 @@ Supports multiple simultaneous offers with different fee structures (relative/ab
 
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_EVEN, Decimal
 
 from jmcore.constants import DUST_THRESHOLD
-from jmcore.models import Offer, OfferType
+from jmcore.models import (
+    MAX_RELATIVE_FEE_EXPONENT,
+    MAX_RELATIVE_FEE_PRECISION,
+    Offer,
+    OfferType,
+)
 from jmcore.randomness import secure_random
 from jmwallet.wallet.service import WalletService
 from loguru import logger
@@ -47,6 +52,18 @@ def _format_relative_cjfee(value: Decimal) -> str:
     if "." in formatted:
         formatted = formatted.rstrip("0").rstrip(".")
     return formatted
+
+
+def _quantize_relative_cjfee(value: Decimal, rounding: str = ROUND_HALF_EVEN) -> Decimal:
+    """Limit a relative fee to the shared wire validator's Decimal bounds."""
+    if value.is_zero():
+        return value
+
+    exponent = max(
+        value.adjusted() - MAX_RELATIVE_FEE_PRECISION + 1,
+        -MAX_RELATIVE_FEE_EXPONENT,
+    )
+    return value.quantize(Decimal(1).scaleb(exponent), rounding=rounding)
 
 
 class OfferManager:
@@ -217,6 +234,8 @@ class OfferManager:
                 logger.error(f"Invalid cj_fee_relative: {offer_cfg.cj_fee_relative}. Must be > 0.")
                 return None
             factor = Decimal(str(offer_cfg.cjfee_factor))
+            lower = cj_fee
+            upper = cj_fee
             if factor <= 0:
                 randomized_cj_fee = cj_fee
             else:
@@ -227,6 +246,23 @@ class OfferManager:
                 # theoretically return zero, which is invalid on the wire.
                 if randomized_cj_fee <= 0 or randomized_cj_fee >= 1:
                     randomized_cj_fee = cj_fee
+
+            randomized_cj_fee = _quantize_relative_cjfee(randomized_cj_fee)
+
+            # Quantization can move a sampled value outside the configured
+            # interval. Round endpoints inward before clamping so advertised
+            # fees remain within the configured randomization bounds.
+            minimum_positive_fee = Decimal(1).scaleb(-MAX_RELATIVE_FEE_EXPONENT)
+            lower_bound = max(
+                _quantize_relative_cjfee(lower, ROUND_CEILING),
+                minimum_positive_fee,
+            )
+            upper_bound = _quantize_relative_cjfee(upper, ROUND_FLOOR)
+            if lower_bound <= upper_bound:
+                randomized_cj_fee = min(max(randomized_cj_fee, lower_bound), upper_bound)
+            else:
+                randomized_cj_fee = _quantize_relative_cjfee(cj_fee)
+
             cjfee_str = _format_relative_cjfee(randomized_cj_fee)
             return cjfee_str, randomized_txfee, float(randomized_cj_fee)
         else:
