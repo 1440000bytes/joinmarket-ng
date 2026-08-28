@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
+from jmcore.constants import MAX_MONEY
 from jmcore.secure_files import atomic_write_private as secure_atomic_write_private
 
 from jmwallet.backends.base import BlockchainBackend, BondVerificationRequest, Transaction
@@ -480,6 +481,100 @@ class TestNeutrinoBackend:
         assert utxo_call[1]["params"]["start_height"] == expected_start
         assert backend._scan_start_height == expected_start
         await backend.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", [0, True, -1, MAX_MONEY + 1, "100000"])
+    async def test_neutrino_verify_bonds_rejects_invalid_values(self, value):
+        """Bonds require a positive, exact-integer value within MAX_MONEY."""
+        backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="regtest")
+        backend.get_block_height = AsyncMock(return_value=100)
+        backend._api_call = AsyncMock(
+            return_value={
+                "unspent": True,
+                "value": value,
+                "block_height": 100,
+                "scriptpubkey": "0020" + "00" * 32,
+            }
+        )
+        bond = BondVerificationRequest(
+            txid="a" * 64,
+            vout=0,
+            utxo_pub=b"\x02" + b"\x00" * 32,
+            locktime=1800000000,
+            address="bcrt1qtest",
+            scriptpubkey="0020" + "00" * 32,
+        )
+
+        try:
+            result = (await backend.verify_bonds([bond]))[0]
+            assert result.valid is False
+            assert result.value == 0
+            assert "invalid value" in (result.error or "")
+        finally:
+            await backend.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("block_height", [True, 0, -1, "100"])
+    async def test_neutrino_verify_bonds_rejects_invalid_block_heights(self, block_height):
+        """Bond responses must provide a positive exact-integer block height."""
+        backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="regtest")
+        backend.get_block_height = AsyncMock(return_value=100)
+        backend._api_call = AsyncMock(
+            return_value={
+                "unspent": True,
+                "value": 100000,
+                "block_height": block_height,
+                "scriptpubkey": "0020" + "00" * 32,
+            }
+        )
+        bond = BondVerificationRequest(
+            txid="a" * 64,
+            vout=0,
+            utxo_pub=b"\x02" + b"\x00" * 32,
+            locktime=1800000000,
+            address="bcrt1qtest",
+            scriptpubkey="0020" + "00" * 32,
+        )
+
+        try:
+            result = (await backend.verify_bonds([bond]))[0]
+            assert result.valid is False
+            assert "invalid block height" in (result.error or "")
+        finally:
+            await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_neutrino_verify_bonds_refetches_tip_and_rejects_future_height(self):
+        """Bond confirmation depth uses the tip observed after the UTXO response."""
+        backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="regtest")
+        backend.get_block_height = AsyncMock(side_effect=[100, 99])
+        backend.get_block_time = AsyncMock()
+        backend._api_call = AsyncMock(
+            return_value={
+                "unspent": True,
+                "value": 100000,
+                "block_height": 100,
+                "scriptpubkey": "0020" + "00" * 32,
+            }
+        )
+        bond = BondVerificationRequest(
+            txid="a" * 64,
+            vout=0,
+            utxo_pub=b"\x02" + b"\x00" * 32,
+            locktime=1800000000,
+            address="bcrt1qtest",
+            scriptpubkey="0020" + "00" * 32,
+        )
+
+        try:
+            result = (await backend.verify_bonds([bond]))[0]
+            assert result.valid is False
+            assert result.confirmations == 0
+            assert "above chain tip 99" in (result.error or "")
+            assert backend.get_block_height.await_count == 2
+            backend.get_block_time.assert_not_awaited()
+        finally:
+            await backend.close()
 
     @pytest.mark.asyncio
     async def test_wait_for_rescan_completes_immediately(self):
@@ -2181,6 +2276,70 @@ class TestNeutrinoBackend:
             await backend.close()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("value", "expected_count"),
+        [(0, 1), (MAX_MONEY, 1), (True, 0), (-1, 0), (MAX_MONEY + 1, 0), ("1", 0)],
+    )
+    async def test_get_utxos_validates_values_and_clamps_future_heights(
+        self, value, expected_count
+    ):
+        """Malformed values are skipped and future confirmed heights have zero depth."""
+        backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="regtest")
+        backend._initial_rescan_done = True
+        backend._watched_addresses = {"bcrt1qtest"}
+        backend._api_call = AsyncMock(
+            return_value={
+                "utxos": [
+                    {
+                        "txid": "a" * 64,
+                        "vout": 0,
+                        "value": value,
+                        "address": "bcrt1qtest",
+                        "scriptpubkey": "0014" + "00" * 20,
+                        "height": 101,
+                    }
+                ]
+            }
+        )
+        backend.get_block_height = AsyncMock(return_value=100)
+
+        try:
+            utxos = await backend.get_utxos(["bcrt1qtest"])
+            assert len(utxos) == expected_count
+            if utxos:
+                assert utxos[0].confirmations == 0
+        finally:
+            await backend.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("height", [True, -1, "100", None, 1.5])
+    async def test_get_utxos_rejects_invalid_heights(self, height):
+        """Malformed backend heights cannot enter wallet UTXO state."""
+        backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="regtest")
+        backend._initial_rescan_done = True
+        backend._watched_addresses = {"bcrt1qtest"}
+        backend._api_call = AsyncMock(
+            return_value={
+                "utxos": [
+                    {
+                        "txid": "a" * 64,
+                        "vout": 0,
+                        "value": 100_000,
+                        "address": "bcrt1qtest",
+                        "scriptpubkey": "0014" + "00" * 20,
+                        "height": height,
+                    }
+                ]
+            }
+        )
+        backend.get_block_height = AsyncMock(return_value=100)
+
+        try:
+            assert await backend.get_utxos(["bcrt1qtest"]) == []
+        finally:
+            await backend.close()
+
+    @pytest.mark.asyncio
     async def test_get_utxos_omits_include_mempool_when_disabled(self):
         """include_mempool is not sent when the operator disabled it client-side."""
         backend = NeutrinoBackend(
@@ -2477,6 +2636,36 @@ class TestNeutrinoBackend:
             )
             assert result.valid is True
             assert result.confirmations == 11
+        finally:
+            await backend.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", [True, -1, MAX_MONEY + 1, "100000"])
+    async def test_verify_utxo_with_metadata_rejects_invalid_response_values(self, value):
+        """Metadata verification must not return API values outside the money range."""
+        backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="regtest")
+        scriptpubkey = "0014" + "00" * 20
+        backend._api_call = AsyncMock(
+            return_value={
+                "unspent": True,
+                "value": value,
+                "scriptpubkey": scriptpubkey,
+                "block_height": 100,
+            }
+        )
+        backend.get_block_height = AsyncMock(return_value=100)
+
+        try:
+            result = await backend.verify_utxo_with_metadata(
+                txid="a" * 64,
+                vout=0,
+                scriptpubkey=scriptpubkey,
+                blockheight=100,
+            )
+            assert result.valid is False
+            assert result.value == 0
+            assert "invalid value" in (result.error or "")
+            assert result.unavailable is True
         finally:
             await backend.close()
 

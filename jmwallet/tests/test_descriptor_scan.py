@@ -120,6 +120,36 @@ async def test_parse_descriptor_path_multiple_mixdepths(test_mnemonic):
 
 
 @pytest.mark.asyncio
+async def test_descriptor_sync_clamps_future_utxo_height_confirmations(test_mnemonic):
+    """A descriptor scan cannot create negative confirmations from a future height."""
+    backend = MockBackend()
+    wallet = WalletService(test_mnemonic, backend, network="regtest", mixdepth_count=1)
+    address = wallet.get_address(0, 0, 0)
+    backend.get_block_height = AsyncMock(return_value=100)  # type: ignore[method-assign]
+    backend.scan_descriptors = AsyncMock(  # type: ignore[method-assign]
+        return_value={
+            "success": True,
+            "unspents": [
+                {
+                    "txid": "a" * 64,
+                    "vout": 0,
+                    "amount": 0.001,
+                    "address": address,
+                    "scriptPubKey": "0014" + "00" * 20,
+                    "height": 101,
+                    "desc": "",
+                }
+            ],
+        }
+    )
+
+    synced = await wallet._sync_all_with_descriptors()
+
+    assert synced is not None
+    assert synced[0][0].confirmations == 0
+
+
+@pytest.mark.asyncio
 async def test_discover_fidelity_bonds_auto_initialises_descriptor_wallet(test_mnemonic):
     """Bond discovery should set up descriptor wallets when called on a fresh service."""
     backend = DescriptorWalletBackend(

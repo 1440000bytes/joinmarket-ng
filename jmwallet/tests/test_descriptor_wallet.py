@@ -3217,6 +3217,48 @@ class TestAddressHistory:
         assert results == [f"addr_{i}" for i in range(750)]
 
     @pytest.mark.asyncio
+    async def test_rpc_batch_call_rejects_cross_chunk_and_boolean_ids(self) -> None:
+        """Only exact integer response IDs from the active chunk can fill a result slot."""
+        backend = DescriptorWalletBackend(wallet_name="test_batch_chunk_ids")
+        backend._wallet_loaded = True
+        post_count = 0
+
+        class FakeResponse:
+            def __init__(self, body: Any) -> None:
+                self._body = body
+
+            def json(self) -> Any:
+                return self._body
+
+            def raise_for_status(self) -> None:
+                return None
+
+        class FakeClient:
+            async def post(self, url: str, json: Any) -> FakeResponse:
+                nonlocal post_count
+                post_count += 1
+                if post_count == 1:
+                    # True is not an exact integer ID, and 2 belongs to the
+                    # following chunk rather than this one.
+                    return FakeResponse(
+                        [
+                            {"jsonrpc": "2.0", "id": True, "result": "boolean"},
+                            {"jsonrpc": "2.0", "id": 2, "result": "cross-chunk"},
+                        ]
+                    )
+                return FakeResponse([{"jsonrpc": "2.0", "id": 3, "result": "second"}])
+
+        backend.client = FakeClient()  # type: ignore[assignment]
+
+        results = await backend._rpc_batch_call(
+            [("getaddressinfo", [f"addr_{index}"]) for index in range(4)], chunk_size=2
+        )
+
+        assert all(isinstance(results[index], ValueError) for index in (0, 1, 2))
+        assert "dropped response for call 2" in str(results[2])
+        assert results[3] == "second"
+
+    @pytest.mark.asyncio
     async def test_batch_get_address_info_converts_errors_to_none(self) -> None:
         """Per-address RPC errors surface as ``None`` to match the single-call contract."""
         backend = DescriptorWalletBackend(wallet_name="test_batch_gai")

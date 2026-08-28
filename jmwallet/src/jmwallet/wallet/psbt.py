@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from jmcore.bitcoin import ParsedTransaction, encode_varint, parse_transaction_bytes
+from jmcore.constants import MAX_MONEY
 
 PSBT_MAGIC = b"psbt\xff"
 
@@ -163,6 +164,8 @@ def parse_witness_utxo(value: bytes) -> WitnessUTXO:
     if len(value) < 8:
         raise PSBTError("Truncated witness UTXO value")
     amount = int.from_bytes(value[:8], "little", signed=False)
+    if amount > MAX_MONEY:
+        raise PSBTError("Witness UTXO amount exceeds Bitcoin MAX_MONEY")
     script_length, offset = _read_compact_size(value, 8, "witness UTXO script length")
     remaining = len(value) - offset
     if script_length > remaining:

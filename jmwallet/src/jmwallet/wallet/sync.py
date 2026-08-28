@@ -1647,7 +1647,7 @@ class WalletSyncMixin:
                     confirmations = 0
                     utxo_height = utxo_data.get("height", 0)
                     if utxo_height > 0:
-                        confirmations = tip_height - utxo_height + 1
+                        confirmations = max(0, tip_height - utxo_height + 1)
 
                     # Path format for fidelity bonds: m/84'/0'/0'/2/index:locktime
                     path = f"{self.root_path}/0'/{FIDELITY_BOND_BRANCH}/{index}:{locktime}"
@@ -1694,7 +1694,7 @@ class WalletSyncMixin:
             confirmations = 0
             utxo_height = utxo_data.get("height", 0)
             if utxo_height > 0:
-                confirmations = tip_height - utxo_height + 1
+                confirmations = max(0, tip_height - utxo_height + 1)
 
             # An address-cache hit can resolve to the fidelity bond branch
             # (e.g. a bond descriptor without the ``addr(...)`` form). Such a

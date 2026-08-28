@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 from jmcore.bitcoin import TxInput, TxOutput, encode_varint, serialize_transaction
+from jmcore.constants import MAX_MONEY
 
 from jmwallet.wallet.psbt import (
     PSBT_GLOBAL_UNSIGNED_TX,
@@ -159,6 +160,13 @@ def test_parses_witness_utxo_with_exact_consumption() -> None:
         parse_witness_utxo(value + b"\x00")
     with pytest.raises(PSBTError, match="Truncated"):
         parse_witness_utxo((1).to_bytes(8, "little") + b"\x02\x00")
+
+
+def test_rejects_witness_utxo_amount_above_max_money() -> None:
+    value = (MAX_MONEY + 1).to_bytes(8, "little") + encode_varint(0)
+
+    with pytest.raises(PSBTError, match="exceeds Bitcoin MAX_MONEY"):
+        parse_witness_utxo(value)
 
 
 def test_parses_bip32_origin_with_exact_path() -> None:

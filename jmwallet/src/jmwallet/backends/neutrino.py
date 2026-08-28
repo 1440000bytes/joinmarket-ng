@@ -26,10 +26,11 @@ import asyncio
 import ssl
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeGuard
 from urllib.parse import urlsplit
 
 import httpx
+from jmcore.constants import MAX_MONEY
 from jmcore.secure_files import atomic_write_private
 from loguru import logger
 
@@ -66,6 +67,11 @@ class NeutrinoTOFUPinningError(Exception):
 
 class _UTXOVerificationUnavailableError(Exception):
     """Raised when a single-outpoint verification cannot reach the backend."""
+
+
+def _is_valid_money(value: Any, *, positive: bool = False) -> TypeGuard[int]:
+    """Return whether an API-supplied satoshi value is within Bitcoin's money range."""
+    return type(value) is int and value <= MAX_MONEY and (value > 0 if positive else value >= 0)
 
 
 @dataclass
@@ -1276,15 +1282,22 @@ class NeutrinoBackend(BlockchainBackend):
             tip_height = await self.get_block_height()
 
             for utxo_data in result.get("utxos", []):
+                value = utxo_data.get("value")
+                if not _is_valid_money(value):
+                    logger.warning("Skipping UTXO with invalid value from neutrino response")
+                    continue
                 height = utxo_data.get("height", 0)
+                if type(height) is not int or height < 0:
+                    logger.warning("Skipping UTXO with invalid height from neutrino response")
+                    continue
                 confirmations = 0
                 if height > 0:
-                    confirmations = tip_height - height + 1
+                    confirmations = max(0, tip_height - height + 1)
 
                 utxo = UTXO(
                     txid=utxo_data["txid"],
                     vout=utxo_data["vout"],
-                    value=utxo_data["value"],
+                    value=value,
                     address=utxo_data.get("address", ""),
                     confirmations=confirmations,
                     scriptpubkey=utxo_data.get("scriptpubkey", ""),
@@ -1693,23 +1706,57 @@ class NeutrinoBackend(BlockchainBackend):
                             error="UTXO spent",
                         )
 
+                    value = response.get("value")
+                    if not _is_valid_money(value, positive=True):
+                        return BondVerificationResult(
+                            txid=bond.txid,
+                            vout=bond.vout,
+                            value=0,
+                            confirmations=0,
+                            block_time=0,
+                            valid=False,
+                            error="UTXO response has an invalid value",
+                        )
+
+                    block_height = response.get("block_height")
+                    if type(block_height) is not int or block_height <= 0:
+                        return BondVerificationResult(
+                            txid=bond.txid,
+                            vout=bond.vout,
+                            value=value,
+                            confirmations=0,
+                            block_time=0,
+                            valid=False,
+                            error="UTXO response has an invalid block height",
+                        )
+
                     actual_spk = response.get("scriptpubkey", "")
                     if not actual_spk or actual_spk.lower() != bond.scriptpubkey.lower():
                         return BondVerificationResult(
                             txid=bond.txid,
                             vout=bond.vout,
-                            value=response.get("value", 0),
+                            value=value,
                             confirmations=0,
                             block_time=0,
                             valid=False,
                             error="ScriptPubKey mismatch",
                         )
 
-                    value = response.get("value", 0)
-                    block_height = response.get("block_height", 0)
-                    confirmations = (
-                        max(0, current_height - block_height + 1) if block_height > 0 else 0
-                    )
+                    tip_height = await self.get_block_height()
+                    if block_height > tip_height:
+                        return BondVerificationResult(
+                            txid=bond.txid,
+                            vout=bond.vout,
+                            value=value,
+                            confirmations=0,
+                            block_time=0,
+                            valid=False,
+                            error=(
+                                f"UTXO block height {block_height} is above chain tip {tip_height}"
+                            ),
+                        )
+
+                    confirmations = max(0, tip_height - block_height + 1)
 
                     if confirmations <= 0:
                         return BondVerificationResult(
@@ -1966,6 +2013,14 @@ class NeutrinoBackend(BlockchainBackend):
                     error=f"UTXO has been spent in tx {spending_txid} at height {spending_height}",
                 )
 
+            value = result.get("value")
+            if not _is_valid_money(value):
+                return UTXOVerificationResult(
+                    valid=False,
+                    error="UTXO response has an invalid value",
+                    conclusive=False,
+                )
+
             # When the watched-mempool tracker reports a pending spend on a
             # confirmed UTXO, treat verification as failed: the UTXO will
             # almost certainly be unavailable by the time we'd act on it.
@@ -1973,7 +2028,7 @@ class NeutrinoBackend(BlockchainBackend):
             if mempool_spending_txid:
                 return UTXOVerificationResult(
                     valid=False,
-                    value=result.get("value", 0),
+                    value=value,
                     error=(f"UTXO has a pending mempool spend in tx {mempool_spending_txid}"),
                 )
 
@@ -1984,7 +2039,7 @@ class NeutrinoBackend(BlockchainBackend):
             if not scriptpubkey_matches:
                 return UTXOVerificationResult(
                     valid=False,
-                    value=result.get("value", 0),
+                    value=value,
                     error=f"ScriptPubKey mismatch: expected {scriptpubkey[:20]}..., "
                     f"got {actual_scriptpubkey[:20]}...",
                     scriptpubkey_matches=False,
@@ -1994,10 +2049,10 @@ class NeutrinoBackend(BlockchainBackend):
             # height, never from peer-supplied metadata. The peer height is only
             # a bounded scan-start hint and may be stale or malicious.
             actual_blockheight = result.get("block_height")
-            if not isinstance(actual_blockheight, int) or actual_blockheight <= 0:
+            if type(actual_blockheight) is not int or actual_blockheight <= 0:
                 return UTXOVerificationResult(
                     valid=False,
-                    value=result.get("value", 0),
+                    value=value,
                     error="UTXO response is missing a confirmed block height",
                     conclusive=False,
                 )
@@ -2005,7 +2060,7 @@ class NeutrinoBackend(BlockchainBackend):
             if actual_blockheight > tip_height:
                 return UTXOVerificationResult(
                     valid=False,
-                    value=result.get("value", 0),
+                    value=value,
                     error=(
                         f"UTXO block height {actual_blockheight} is above chain tip {tip_height}"
                     ),
@@ -2014,13 +2069,12 @@ class NeutrinoBackend(BlockchainBackend):
             confirmations = tip_height - actual_blockheight + 1
 
             logger.debug(
-                f"UTXO {txid}:{vout} verified: value={result.get('value', 0)}, "
-                f"confirmations={confirmations}"
+                f"UTXO {txid}:{vout} verified: value={value}, confirmations={confirmations}"
             )
 
             return UTXOVerificationResult(
                 valid=True,
-                value=result.get("value", 0),
+                value=value,
                 confirmations=confirmations,
                 scriptpubkey_matches=True,
             )

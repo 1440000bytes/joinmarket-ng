@@ -550,9 +550,9 @@ class DescriptorWalletBackend(BlockchainBackend):
                 raise ValueError(f"batch RPC returned non-list response: {err or data}")
             for entry in data:
                 idx = entry.get("id")
-                if not isinstance(idx, int) or idx < 0 or idx >= len(calls):
-                    # Out-of-range id: ignore rather than crash; we'll surface
-                    # any unfilled slots as errors at the end.
+                if type(idx) is not int or idx < start or idx >= end:
+                    # Ignore IDs that do not belong to this chunk. Any slot
+                    # left unfilled is surfaced as an explicit missing response.
                     continue
                 if entry.get("error"):
                     err_info = entry["error"]
@@ -1750,7 +1750,9 @@ class DescriptorWalletBackend(BlockchainBackend):
         """
         return await self.get_utxos([])
 
-    async def scan_descriptors(self, _descriptors: list[Any]) -> dict[str, Any] | None:
+    async def scan_descriptors(
+        self, _descriptors: Sequence[str | dict[str, Any]]
+    ) -> dict[str, Any] | None:
         """
         Return all wallet UTXOs in the format expected by ``_sync_all_with_descriptors``.
 
