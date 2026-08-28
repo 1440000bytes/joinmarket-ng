@@ -35,11 +35,13 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import logging
 import os
-import subprocess
 import sys
 from pathlib import Path
+from urllib.error import URLError
+from urllib.request import Request, urlopen
 
 # Configure logging
 logging.basicConfig(
@@ -76,7 +78,7 @@ NOTIFY_ON_CONFIRMED = os.getenv("NOTIFY_ON_CONFIRMED", "true").lower() == "true"
 
 def send_gotify_notification(title: str, message: str, priority: int = 5) -> bool:
     """
-    Send a notification to Gotify using curl.
+    Send a notification to Gotify.
 
     Args:
         title: Notification title
@@ -90,42 +92,32 @@ def send_gotify_notification(title: str, message: str, priority: int = 5) -> boo
         logger.error("GOTIFY_TOKEN not set. Skipping notification.")
         return False
 
-    url = f"{GOTIFY_URL}/message?token={GOTIFY_TOKEN}"
+    payload = json.dumps(
+        {
+            "title": title,
+            "message": message,
+            "priority": priority,
+        }
+    ).encode("utf-8")
+    request = Request(
+        f"{GOTIFY_URL}/message",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "X-Gotify-Key": GOTIFY_TOKEN,
+        },
+        method="POST",
+    )
 
     try:
-        result = subprocess.run(
-            [
-                "curl",
-                "-X",
-                "POST",
-                url,
-                "-F",
-                f"title={title}",
-                "-F",
-                f"message={message}",
-                "-F",
-                f"priority={priority}",
-                "-s",  # Silent mode
-            ],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-
-        if result.returncode == 0:
-            logger.debug(f"Notification sent: {title}")
-            return True
-        else:
-            logger.error(f"Failed to send notification: {result.stderr}")
-            return False
-
-    except subprocess.TimeoutExpired:
-        logger.error("Notification timed out")
+        with urlopen(request, timeout=10):
+            pass
+    except (OSError, TimeoutError, URLError, ValueError):
+        logger.error("Failed to send Gotify notification")
         return False
-    except Exception as e:
-        logger.error(f"Error sending notification: {e}")
-        return False
+    else:
+        logger.debug(f"Notification sent: {title}")
+        return True
 
 
 SATS_PER_BTC = 100_000_000
