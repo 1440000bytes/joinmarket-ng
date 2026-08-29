@@ -116,7 +116,7 @@
                         <th class="sortable" data-sort="cjfee">Fee</th>
                         <th class="sortable" data-sort="minsize">Min Size (sats)</th>
                         <th class="sortable" data-sort="maxsize">Max Size (sats)</th>
-                        <th class="sortable" data-sort="selection_probability" title="Estimated chance this offer is selected in a 9-maker CoinJoin: 20% uniform selection and 80% bond-value-weighted selection, ignoring fee and amount limits">Pick Chance</th>
+                        <th class="sortable" data-sort="selection_probability" title="Estimated chance this offer is selected in a 9-maker CoinJoin: 5% uniform zero-fee selection and 95% bond-value-weighted selection, ignoring fee and amount limits">Pick Chance</th>
                         <th class="sortable" data-sort="fidelity_bond_value">Bond Value</th>
                         <th>Features</th>
                         <th>Directories</th>
@@ -128,6 +128,9 @@
         </div>
 
     </div>
+
+    <div id="selection-probability-tooltip" class="selection-probability-tooltip"
+         role="tooltip" hidden></div>
 
     <div id="bond-modal" class="bond-modal">
         <div class="bond-modal-content">

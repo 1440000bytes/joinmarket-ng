@@ -619,9 +619,14 @@ test.describe("offer selection probability", () => {
       const zeroChanceText = await page.locator("#orderbook-tbody tr", {
         hasText: "bonded-zero-0",
       }).locator(".selection-probability").textContent();
+      const bondlessChance = page.locator("#orderbook-tbody tr", {
+        hasText: "bondless-zero-0",
+      }).locator(".selection-probability");
       const denominator = (text: string | null) => Number(text?.replace("1/", ""));
 
       expect(denominator(zeroChanceText)).toBeLessThan(denominator(feeChanceText));
+      await expect(bondlessChance).toHaveText(/^1\/\d+(?:\.\d)?$/);
+      await expect(bondlessChance).toHaveAttribute("title", /5% zero-fee allowance/);
     } finally {
       server.close();
     }
@@ -673,8 +678,21 @@ test.describe("mobile layout", () => {
 
     try {
       await expect(page.locator("#orderbook-table thead")).toBeHidden();
-      await expect(page.locator('#orderbook-tbody td[data-label="Pick Chance"]').first())
-        .toHaveText("N/A");
+      const pickChance = page.locator(
+        '#orderbook-tbody td[data-label="Pick Chance"]',
+      ).first();
+      await expect(pickChance).toHaveText("N/A");
+      const pickChanceTrigger = pickChance.locator(".cell-value");
+      await expect(pickChanceTrigger).toHaveAttribute("role", "button");
+      await pickChance.click();
+      await expect(pickChanceTrigger).toHaveAttribute("aria-expanded", "true");
+      await expect(page.locator("#selection-probability-tooltip")).toBeVisible();
+      await expect(page.locator("#selection-probability-tooltip")).toHaveText(
+        /Fewer than 9 qualifying candidates/,
+      );
+      await page.keyboard.press("Escape");
+      await expect(page.locator("#selection-probability-tooltip")).toBeHidden();
+      await expect(pickChanceTrigger).toHaveAttribute("aria-expanded", "false");
       await expect(page.locator(".directory-name")).toHaveCSS("overflow-wrap", "anywhere");
       await page.locator("#mobile-sort-column").selectOption("selection_probability");
       await expect(page.locator("#orderbook-tbody tr").first())

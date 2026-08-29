@@ -98,7 +98,8 @@ with an asterisk because the omitted fee and amount filters determine which
 offer the taker keeps.
 Bonded inclusion chances come from a deterministic simulation of this
 without-replacement chooser when weights or fee categories differ. The UI shows
-`N/A` when fewer than nine qualifying offers are available.
+`N/A` when fewer than nine qualifying offers are available. Hover over a Pick
+Chance value, or select it by touch or keyboard, to see how that value was determined.
 
 ## API Endpoints
 

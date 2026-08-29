@@ -2,6 +2,7 @@ let orderbookData = null;
 let sortColumn = 'fidelity_bond_value';
 let sortDirection = 'desc';
 let offerSelectionProbabilities = new Map();
+let activeSelectionProbabilityTrigger = null;
 
 const DEFAULT_MAKER_COUNT = 9;
 const BONDLESS_ALLOWANCE = 0.05;
@@ -637,10 +638,10 @@ function calculateOfferSelectionProbabilities(offers) {
     );
     candidates.forEach((candidate, candidateIndex) => {
         let probability;
-        if (candidate.category === 'bonded') {
-            probability = simulatedCounts === null
-                ? bondedProbability
-                : simulatedCounts[candidateIndex] / SELECTION_SIMULATION_ROUNDS;
+        if (simulatedCounts !== null) {
+            probability = simulatedCounts[candidateIndex] / SELECTION_SIMULATION_ROUNDS;
+        } else if (candidate.category === 'bonded') {
+            probability = bondedProbability;
         } else {
             probability = bondlessProbability;
         }
@@ -1342,9 +1343,78 @@ function appendTableCell(row, label, text, className = '') {
     return value;
 }
 
+function hideSelectionProbabilityTooltip() {
+    const tooltip = document.getElementById('selection-probability-tooltip');
+    if (tooltip) tooltip.hidden = true;
+    if (activeSelectionProbabilityTrigger) {
+        activeSelectionProbabilityTrigger.setAttribute('aria-expanded', 'false');
+        activeSelectionProbabilityTrigger = null;
+    }
+}
+
+function showSelectionProbabilityTooltip(cell, trigger, text) {
+    const tooltip = document.getElementById('selection-probability-tooltip');
+    if (!tooltip) return;
+
+    if (activeSelectionProbabilityTrigger === trigger && !tooltip.hidden) {
+        hideSelectionProbabilityTooltip();
+        return;
+    }
+
+    hideSelectionProbabilityTooltip();
+    activeSelectionProbabilityTrigger = trigger;
+    trigger.setAttribute('aria-expanded', 'true');
+    tooltip.textContent = text;
+    tooltip.hidden = false;
+
+    const cellRect = cell.getBoundingClientRect();
+    const tooltipRect = tooltip.getBoundingClientRect();
+    const margin = 12;
+    const gap = 8;
+    const left = Math.min(
+        Math.max(cellRect.left + cellRect.width / 2 - tooltipRect.width / 2, margin),
+        window.innerWidth - tooltipRect.width - margin,
+    );
+    const spaceBelow = window.innerHeight - cellRect.bottom;
+    const top = spaceBelow >= tooltipRect.height + gap + margin
+        ? cellRect.bottom + gap
+        : Math.max(margin, cellRect.top - tooltipRect.height - gap);
+    tooltip.style.left = `${left}px`;
+    tooltip.style.top = `${top}px`;
+}
+
+function makeSelectionProbabilityInteractive(cell, selectionProbability) {
+    const trigger = cell.querySelector('.cell-value');
+    const showDetails = () => showSelectionProbabilityTooltip(
+        cell,
+        trigger,
+        selectionProbability.title,
+    );
+    trigger.tabIndex = 0;
+    trigger.setAttribute('role', 'button');
+    trigger.setAttribute('aria-controls', 'selection-probability-tooltip');
+    trigger.setAttribute('aria-expanded', 'false');
+    trigger.setAttribute(
+        'aria-label',
+        `Pick chance ${selectionProbability.text}. ${selectionProbability.title}`,
+    );
+    cell.addEventListener('click', event => {
+        event.stopPropagation();
+        showDetails();
+    });
+    trigger.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            showDetails();
+        }
+    });
+}
+
 function renderTable() {
     const tbody = document.getElementById('orderbook-tbody');
     const fragment = document.createDocumentFragment();
+
+    hideSelectionProbabilityTooltip();
 
     const filtered = filterOffers();
     const sorted = sortOffers(filtered);
@@ -1456,7 +1526,9 @@ function renderTable() {
         const probabilityValue = appendTableCell(
             row, 'Pick Chance', selectionProbability.text, 'selection-probability'
         );
-        probabilityValue.parentElement.title = selectionProbability.title;
+        const probabilityCell = probabilityValue.parentElement;
+        probabilityCell.title = selectionProbability.title;
+        makeSelectionProbabilityInteractive(probabilityCell, selectionProbability);
         const bondValueElement = appendTableCell(row, 'Bond Value', bondValue, hasBond);
         if (bondIndicator) {
             bondValueElement.appendChild(document.createTextNode(' '));
@@ -1565,7 +1637,15 @@ function setupEventListeners() {
         if (event.target === modal) {
             modal.style.display = 'none';
         }
+        if (activeSelectionProbabilityTrigger &&
+            !activeSelectionProbabilityTrigger.parentElement.contains(event.target)) {
+            hideSelectionProbabilityTooltip();
+        }
     });
+    window.addEventListener('keydown', event => {
+        if (event.key === 'Escape') hideSelectionProbabilityTooltip();
+    });
+    window.addEventListener('resize', hideSelectionProbabilityTooltip);
 }
 
 setupEventListeners();
