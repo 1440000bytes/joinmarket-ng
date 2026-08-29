@@ -7,6 +7,248 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.38.0] - 2026-08-29
+
+Lots of security hardening, privacy improvements, new default for 5% zero fee maker allowance (including bondless), quantized feeround up for takers, `concentrated` mixdepth selection policy for improving maker liquidity, CJ ID logging, ...
+
+### Added
+
+- Allow freezing and unfreezing several UTXOs in one atomic update ([aeca8ee6](../../commit/aeca8ee62875c52c405d9ef6501c127619c38b1e))
+- Add freeze-batch endpoint to freeze/unfreeze several UTXOs in one atomic request ([3245fb82](../../commit/3245fb82d2326df099000842f63bac6b1359ba6a))
+- Add grep-friendly CoinJoin IDs to logs and notifications and reduce routine INFO noise ([9a3b6dd2](../../commit/9a3b6dd2853fd5fc28b8c436623cc8b1921453cd))
+- Reject CoinJoins whose miner fee rate is below the configured and locally resolved safety floor ([1b6d38ae](../../commit/1b6d38aee8c7fa47cbddac04daccc59cd9a6f9bc))
+- Add opt-in conflict spending with Bitcoin Core policy diagnostics to jm-wallet send ([a8740a8c](../../commit/a8740a8caaf27cd4cd4959532c1d27c9bafa073f))
+- Improve tumbler maker diversity without deterministic counterparty exclusion ([13c88f9b](../../commit/13c88f9b01cc88c0616c6c9c4afd7ae0fa3a95b2))
+- Round each maker fee up to the closest public quantum by default, with an opt-out for exact-fee compatibility ([9e18c515](../../commit/9e18c515a8b3ac3a918db8780e73a5c8008e5b21))
+- Add an opt-in quantized-offers-only policy; using it without fee rounding is recommended and will become the future default ([9e18c515](../../commit/9e18c515a8b3ac3a918db8780e73a5c8008e5b21))
+- Change the default maker fee to 0.01% relative and 500 sats absolute while leaving taker fee limits unchanged ([9e18c515](../../commit/9e18c515a8b3ac3a918db8780e73a5c8008e5b21))
+- Restrict the default 5% maker allowance to zero-fee offers while retaining fidelity-bond weighting for all other slots ([7180906d](../../commit/7180906d9d7a11ea8d27d79208aeb9d8060e8976))
+- Add optional concentrated maker mixdepth selection for improved liquidity. ([fa4d5e00](../../commit/fa4d5e004d82ea6bfa66292c88ffd0fdb65e81f2))
+
+### Fixed
+
+- Fix batch freeze duplicate detection to ignore txid case and vout padding ([b232fb50](../../commit/b232fb50d3ff95d9c99e7d11d1d5a98a2db23628))
+- Fix batch freeze to validate outpoints properly and recover in-memory state after a failed save ([8343f3d6](../../commit/8343f3d65697718bd2c60bb1d80abbb4bc043275))
+- Fix freeze-batch outpoint validation to reject whitespace-padded txids and vout overflow ([6ddb8a89](../../commit/6ddb8a896afb35ce74fc139e306829b8ff87c687))
+- Keep fidelity-bond warning indicators attached to their values on mobile screens ([72b0f926](../../commit/72b0f9264279b82da6b85d3276b7e4fda82d2273))
+- Return Neutrino UTXO timeout errors before taker response deadlines ([075daf6e](../../commit/075daf6e14e00f38032d2acf30e8594e399fd130))
+- Remove canceled offers promptly from directory orderbooks. ([676776b0](../../commit/676776b09bac478a88aadbe7bc794f413a4bdf74))
+- Release stalled maker liquidity sooner and withdraw unfillable offers. ([77ca46c8](../../commit/77ca46c80314978bfc340715e76229b44993b47b))
+- Reduce privacy-damaging input consolidation in automatic direct sends ([cc57bd79](../../commit/cc57bd794e0cdac3591f4a91b05ceca76be58471))
+- Close authenticated WebSockets when locking or switching wallets ([3bd4674b](../../commit/3bd4674b2928f2f0c60e75e2129d1e29591185e4))
+- Prevent directory advertisements from causing unintended clearnet peer connections ([c9b4f214](../../commit/c9b4f2144dbd22b65bdc34aed3ebb7138412b692))
+- Prevent wallet output address reuse across concurrent processes, restarts, and incomplete backend history checks. ([d34fc7f4](../../commit/d34fc7f484d3ae89d7c5486e8d0702acc382a247))
+- Prevent concurrent or interrupted history writes from losing privacy-critical transaction and address records. ([a6776ceb](../../commit/a6776cebb44998339833fe445bdbbe1d63b75ed6))
+- Preserve tumbler exit and maker diversity across retries and resumes. ([59ec098f](../../commit/59ec098fb09305f03cd2899b75148361b30d8575))
+- Remove the legacy jm-taker tumble command in favor of jm-tumbler. ([463e3c50](../../commit/463e3c509a8083bb4b2c29ec2c6e37f1de2d7791))
+- Normalize CoinJoin locktime and input sequences to reduce transaction fingerprinting. ([b03487b1](../../commit/b03487b1da8d3e3e040891324715f4f4d6b3a171))
+- Warn and report when peer broadcast policies fall back to self-broadcast ([c5643837](../../commit/c564383782283a65f5d76f1bf833d6ac9a31a130))
+- Honor configured mixdepth counts and hide privacy-sensitive logs by default ([21ac47ce](../../commit/21ac47ce5b3c63f9d9a3c4341b1b66bc36aad4dc))
+- Randomize maker identity renewal with isolated Tor, directory, and session generations ([42eea55b](../../commit/42eea55be87c84c92059c8ab8c9ca924192eeba2))
+- Preserve configured directory network policy in tumbler maker phases ([00ce1399](../../commit/00ce13999cd35410dd9769cc2a62704000ce40e3))
+- Fix descriptor wallet UTXO lookups with multiple Core wallets loaded ([9a5d9e94](../../commit/9a5d9e9486e44b6c7f5c276763131906b0f7a621))
+- Include the Orderbook Watcher web UI in virtual environment installs ([928a0683](../../commit/928a06836773869e1b3257179b9d8965ce5d7675))
+- Fix maker startup through jmwalletd when clearnet development directories are explicitly enabled ([9fbc55e9](../../commit/9fbc55e9c1c5cb279937170d88e5e07418a23ca2))
+- Improve direct-send privacy with anti-fee-sniping locktimes, RBF defaults, and randomized ordering ([3f982a6e](../../commit/3f982a6e3af68a372dfbaea519ff34e964eeaa31))
+- Prevent direct sends from selecting inputs reserved by in-flight CoinJoin rounds ([ccfacb83](../../commit/ccfacb832f32e3cf4ae5f1e33e13fe4a4a27496c))
+- Clear wallet-session logs when locking a wallet ([9b3fea63](../../commit/9b3fea63c9566c27b4490483a30554091bd11d3a))
+- Preserve established CoinJoin lease errors during explicit input validation ([34d050be](../../commit/34d050be3b460e2f6cfb6d06ce5ebf0a614721a2))
+- Release the onion service, Tor control connection and listener port when maker startup fails ([d4bb403e](../../commit/d4bb403e905b04bac985377ee276b56df467029c))
+- Stop unauthenticated !fill messages from driving one node query per message ([cb089fe9](../../commit/cb089fe93db976b74dd76a75ddea05992e386434))
+- Apply configured fee and identity renewal settings to makers started from the daemon ([6eefad05](../../commit/6eefad054eafcd3c98473e05d68dc4c77826eb60))
+- Stop wallet history reads from blocking each other ([3d4f89ae](../../commit/3d4f89ae461ba4f3a9ad374f7d54c7c2a3f3a4c9))
+- Fail address allocation with a clear error instead of searching a branch forever ([cc7af3b2](../../commit/cc7af3b2d1f122ef161b5c6723dd0c33b9735e6c))
+- Repair stale orderbook entries from completed directory peer snapshots ([9b3383c2](../../commit/9b3383c2f87dfee435bb2f03f6667ceee3b54923))
+- Reduce maker identity linkage during periodic rotation ([0e41df0b](../../commit/0e41df0b1c50ffd61f41cd23db455b8fd6a59205))
+- Prevent concurrent maker fills from duplicating fee policy backend requests ([87a3e336](../../commit/87a3e3367015e571f1c78a0d842ed8ad19e9cbbc))
+- Apply configured identity rotation quiet intervals to daemon-started makers ([5428a97d](../../commit/5428a97deaba14f3501fe99bd167ece9abb50c0d))
+- Prevent concurrent history migration from hiding newly appended wallet entries ([251b8bc5](../../commit/251b8bc506bd412773ac4fd44ecd91f755146f46))
+- Stop blacklisting makers that decline a CoinJoin on fee policy ([f9034253](../../commit/f9034253039e118c2e0c5b7243c4877d580a95d5))
+- Prevent signer response ordering from bypassing ignored-maker handling ([030a93f2](../../commit/030a93f2e67f9a22f71a8004cbfa013e5b4623eb))
+- Make nick change notifications opt-in to reduce noisy alerts ([f384b556](../../commit/f384b556a5525de404e4ed83a7f94eb32eecc908))
+- Improve neutrino maker selection and directory outage diagnostics ([9a207fed](../../commit/9a207feda07469d587f1c5d673c93334d4e70245))
+- Stop repeated closed-directory errors during CoinJoin response waits ([dd5f2a62](../../commit/dd5f2a6262a5ab2d38ed3bee703b68e26a094de5))
+- Cancel stale CoinJoin previews before contacting makers ([9ed0be8f](../../commit/9ed0be8f62a4a2a979fae453896dec0e44a9750a))
+- Refuse Neutrino HTTPS requests until TOFU pinning succeeds. ([7010db36](../../commit/7010db36b6f9120f87c58bcb0441712ad9b6c75a))
+- Reject malformed or resource-intensive numeric offer fields. ([cd4b171e](../../commit/cd4b171efbdda642189d289734da8aa3f5eae0ff))
+- Reject unsafe relative fee policy values before order selection. ([0d5b36f1](../../commit/0d5b36f16bcf9f9e5af13d455aae586fe5b14816))
+- Harden wallet unlock and WebSocket admission against resource exhaustion. ([3a2b6a36](../../commit/3a2b6a36699bb1deb1469fb2758cb1c8b69661cc))
+- Make mnemonic bond signing fail closed on unreviewed or malformed transactions. ([16dc2cb6](../../commit/16dc2cb6d952871b67e1f823ced17c84e22f7625))
+- Prevent remote HP2 gossip from growing the persistent commitment blacklist. ([7a07fc30](../../commit/7a07fc309a6b10969c33255fa10a4502f4d9bd86))
+- Bound maker work and memory across rotating remote identities. ([b93871c1](../../commit/b93871c1e2249131947cefec94998b62456623d9))
+- Bound maker health discovery and reject unsafe advertised destinations. ([811e6306](../../commit/811e63063f559220da5a7550575c7b09f2ce605f))
+- Prevent remote metadata from altering transaction confirmation displays. ([5d5d7162](../../commit/5d5d7162f1a5a9a4a148c947fa485ddb8883f200))
+- Keep makers serving when scheduled identity rotation cannot complete. ([75190e02](../../commit/75190e0233036038831cc26a882d514edf10515c))
+- Prevent a minority of makers from exhausting taker PoDLE commitments. ([e4f5c616](../../commit/e4f5c61694eff47e7fe04571e7dd6bd3589a4f79))
+- Harden protocol parsing against malformed and oversized peer data ([dfb8e1f8](../../commit/dfb8e1f84ae1c92a23b7bb37a718890cd4580657))
+- Validate backend responses and PSBT amounts before wallet use ([86e2d0e7](../../commit/86e2d0e7357b1d6e7d3acfddb1df4a4b6e0dd81d))
+- Bound maker transaction payload decoding and validation ([14f3111b](../../commit/14f3111b30d06c035f82cc1f52367361b815b805))
+- Keep randomized maker fees within protocol precision limits ([10431ccc](../../commit/10431ccce1b1d67a4ae323d308e3d1a94d474c1d))
+- Keep Gotify tokens out of process arguments and failure logs ([1e110dfb](../../commit/1e110dfbb07919f74cb2bf94f498d3fbd6d4202a))
+- Prevent tumbler confirmation waits from stalling indefinitely ([b1aafd21](../../commit/b1aafd2131b7b447299f54638f76c281569dd681))
+- Reject CoinJoin fee policies whose required minimum exceeds the configured safety cap ([75736fc9](../../commit/75736fc9b32976f9f2209c81edb0e2f5500ad1ce))
+- Apply configured maker runtime policies to daemon and tumbler maker sessions ([3aa69109](../../commit/3aa6910959b02f30d7365dfda879e357c2956a26))
+- Prevent retiring maker identities from reconnecting during privacy rotation ([b8cd1dde](../../commit/b8cd1ddead6e3cdc48b989be2dc93c12fa0bd362))
+- Reselect automatic taker inputs when the initial PoDLE UTXO is exhausted. ([8e26d3c3](../../commit/8e26d3c359a20899a77c9f802c7d5bbff6c78e0d))
+- Fix zero-fee bondless Pick Chance values and make explanations available on mobile ([ba255e68](../../commit/ba255e68202d850cf0be544b7e82a697bce1330e))
+
+### Configuration Changes
+
+Existing `config.toml` files are not updated automatically. Review the bundled template changes below and apply the relevant options manually.
+
+````diff
+--- config.toml.template (0.37.1)
++++ config.toml.template (0.38.0)
+@@ -165,6 +165,11 @@
+ # Override with a custom list if needed:
+ # directory_servers = ["custom1.onion:5222", "custom2.onion:5222"]
+
++# Development only: permit direct TCP to non-onion JoinMarket directories and
++# peers. Production networks require .onion endpoints by default. Regtest
++# permits local directories without this override.
++# allow_clearnet_connections = false
++
+ # Directory nick authentication policy (JMP-0005):
+ # "prefer_verified" authenticates when supported and falls back to legacy servers.
+ # "require_verified" rejects legacy servers. "disabled" uses the legacy handshake.
+@@ -266,7 +271,8 @@
+ # Log level: "TRACE", "DEBUG", "INFO", "WARNING", "ERROR"
+ # level = "INFO"
+
+-# Log sensitive information (private keys, mnemonics, etc.)
++# Log sensitive wallet addresses, amounts, balances, txids, transaction data,
++# descriptors, and secrets. Disabled by default.
+ # sensitive = false
+
+ # ============================================================================
+@@ -315,7 +321,7 @@
+ # notify_signing = true
+ # notify_mempool = true
+ # notify_confirmed = true
+-# notify_nick_change = true
++# notify_nick_change = false  # Nick changes are frequent and disabled by default
+ # notify_disconnect = false  # Individual directory disconnect/reconnect (noisy)
+ # notify_all_disconnect = true  # All directories disconnected (critical)
+ # notify_coinjoin_start = true
+@@ -355,6 +361,12 @@
+ # Default: 100000 (matches the upstream JoinMarket reference; using a different
+ # value may make jm-ng makers fingerprintable).
+ # min_size = 100000
++
++# Do not sign CoinJoins below this miner fee floor. Full-node makers combine
++# this with the local mempool minimum and a conservative estimate; Neutrino
++# makers cannot verify foreign prevout values and therefore cannot enforce it.
++# min_fee_rate_sat_vb = 1.0
++# min_fee_block_target = 10
+
+ # IMPORTANT: offer_type determines which fee setting is used.
+ # Simply changing cj_fee_absolute will NOT switch to absolute fees - you must set offer_type.
+@@ -381,12 +393,8 @@
+ # offer_type = "sw0reloffer"
+
+ # Fee settings (only one is used based on offer_type above)
+-# The relative default (0.00002) is exactly the lowest fee-quantization quantum,
+-# so default makers sit on the grid and share one homogenized fee with every
+-# other default maker, maximizing the anonymity set. It also matches the upstream
+-# JoinMarket reference. If you set a non-quantized value, enable cjfee_factor
+-# randomization below so your exact fee is not a fingerprint.
+-# cj_fee_relative = "0.00002"  # 0.00002 = 0.002% relative fee (for sw0reloffer)
++# The relative default (0.0001) is a public fee-quantization quantum.
++# cj_fee_relative = "0.0001"   # 0.0001 = 0.01% relative fee (for sw0reloffer)
+ # cj_fee_absolute = 500        # Absolute fee in satoshis (for sw0absoffer)
+ # tx_fee_contribution = 0      # Mining fee contribution in satoshis
+
+@@ -395,9 +403,8 @@
+ # announcement so observers cannot correlate balance changes with exact values.
+ # Set any factor to 0 to disable randomization for that field.
+ # cjfee_factor defaults to 0 (no fee randomization) so a default maker stays
+-# exactly on its quantization quantum and blends with other default makers. Only
+-# enable it (the upstream reference uses 0.1, i.e. +-10%) if you deviate to a
+-# non-quantized fee, where an exact value would otherwise be a fingerprint.
++# exactly on its quantization quantum. Randomized and other off-grid offers can
++# be excluded by takers that require quantized fees.
+ # cjfee_factor = 0
+ # txfee_contribution_factor = 0.3
+ # size_factor = 0.1
+@@ -410,6 +417,14 @@
+
+ # UTXO merge algorithm: "default", "gradual", "greedy", "random"
+ # merge_algorithm = "default"
++
++# Source mixdepth selection policy:
++#   "balanced"     - spend from the largest eligible balance so all configured
++#                    mixdepths remain meaningfully active (default)
++#   "concentrated" - use the legacy yg-privacyenhanced cyclic-gap heuristic to
++#                    preserve larger single-mixdepth offers at the cost of weaker
++#                    effective separation between CoinJoin outputs and change
++# mixdepth_selection_policy = "balanced"
+
+ # Mixdepth 0 privacy restriction.
+ # By default, deposits and other unproven md0 UTXOs are restricted to one input
+@@ -422,6 +437,13 @@
+
+ # Timeouts and intervals
+ # session_timeout_sec = 300      # Range: 60-86400 seconds
++# pre_sign_timeout_sec = 180     # Wait after !ioauth for !tx (range: 60-3600 seconds)
++# Randomized identity renewal is independent of fills, sessions, balances, and bonds.
++# identity_renewal_min_sec = 43200  # 12 hours
++# identity_renewal_max_sec = 86400  # 24 hours
++# identity_grace_sec = 300          # At least session_timeout_sec at cutover
++# identity_rotation_quiet_min_sec = 60   # Minimum silence after old TCP disconnects
++# identity_rotation_quiet_max_sec = 600  # Maximum silence before replacement connects
+ # rescan_interval_sec = 600
+ # pending_tx_timeout_min = 60   # Minutes before marking unbroadcast CoinJoins as failed
+ # pending_tx_abandon_hours = 72  # Hours before abandoning a broadcast but unconfirmed tx
+@@ -432,7 +454,9 @@
+ # offer_reannounce_delay_max = 600
+
+ # Onion service settings
+-# onion_host = ""  # Static hidden service address (e.g., 'mymaker...onion'). When not set, Tor control auto-generates one.
++# Static hidden service address (e.g., 'mymaker...onion'). When set, automatic
++# identity renewal is skipped because it cannot create an independent onion transport.
++# onion_host = ""
+ # onion_serving_host = "127.0.0.1"
+ # onion_serving_port = 5222
+ # The hidden-service target is configured as [tor] target_host above.
+@@ -479,6 +503,14 @@
+ # max_cj_fee_abs = 500        # Absolute fee in satoshis per maker
+ # max_cj_fee_rel = "0.001"    # Relative fee (0.001 = 0.1%)
+ # max_sweep_fee_change = 0.8  # Relative fee tolerance for sweep transactions
++# Round each selected maker fee up to the closest same-type public quantum.
++# Disable temporarily for exact-fee compatibility with older makers that reject
++# any overpayment.
++# round_up_cj_fees = true
++# Only consider offers already on the public fee grid. This remains effective
++# when rounding is disabled. Recommended future policy (planned default):
++# require_quantized_cj_fees = true with round_up_cj_fees = false.
++# require_quantized_cj_fees = false
+
+ # Maximum inputs a single maker may contribute to the CoinJoin.
+ # The taker pays the mining fee for EVERY input, so a maker with many inputs
+@@ -501,14 +533,19 @@
+ # fee_rate = 10.0             # Manual fee rate in sat/vB (omit to use estimation)
+ # tx_fee_factor = 0.2         # Fee randomization factor (0 disables; 0.2 = up to +20%)
+ # fee_block_target = 6        # Target blocks for fee estimation (1-1008, omit to use default)
++# Minimum accepted miner fee rate is the maximum of this static floor, the
++# local mempool minimum when available, and the estimate at this block target.
++# min_fee_rate_sat_vb = 1.0
++# min_fee_block_target = 10
+
+ # Fidelity bond settings
+-# bondless_makers_allowance = 0.2  # 0.0-1.0: per-slot probability of picking a bondless maker
++# bondless_makers_allowance = 0.05  # 0.0-1.0: per-slot chance of a uniform zero-fee pick
+ # bond_value_exponent = 1.3
+-# bondless_require_zero_fee = true  # Bondless makers must advertise a zero CoinJoin fee
++# bondless_require_zero_fee = true  # Restrict allowance slots to zero-fee offers
+
+ # Timeouts and intervals
+ # maker_timeout_sec = 60         # Range: 10-3600 seconds
++# initial_confirmation_timeout_sec = 300  # Initial preview expiry; 0 disables
+ # order_wait_time = 120.0        # Max seconds to wait (range: 1-3600)
+ # orderbook_min_wait = 30.0      # Min seconds before early exit is allowed
+ # orderbook_quiet_period = 15.0  # Seconds of silence to trigger early exit
+````
+
 ## [0.37.1] - 2026-08-23
 
 Multiple fixes and security hardening.
@@ -3728,7 +3970,8 @@ This release did not change the bundled `config.toml.template`.
 - Pre-built image support for directory server compose.
 - Tor configuration instructions.
 
-[Unreleased]: ../../compare/0.37.1...HEAD
+[Unreleased]: ../../compare/0.38.0...HEAD
+[0.38.0]: ../../compare/0.37.1...0.38.0
 [0.37.1]: ../../compare/0.37.0...0.37.1
 [0.37.0]: ../../compare/0.36.0...0.37.0
 [0.36.0]: ../../compare/0.35.0...0.36.0
