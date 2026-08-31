@@ -16,6 +16,7 @@ import typer
 from jmcore.cli_common import (
     ResolvedBackendSettings,
     resolve_backend_settings,
+    resolve_configured_mnemonic_file,
     resolve_mnemonic,
     setup_cli,
 )
@@ -66,6 +67,299 @@ def _colorize(text: str, code: str) -> str:
     if not _color_enabled():
         return text
     return f"{code}{text}{_ANSI_RESET}"
+
+
+@app.command("delete")
+def delete_wallet(
+    mnemonic_file: Annotated[
+        Path | None,
+        typer.Option("--mnemonic-file", "-f", help="Path to mnemonic file", envvar="MNEMONIC_FILE"),
+    ] = None,
+    prompt_bip39_passphrase: Annotated[
+        bool,
+        typer.Option(
+            "--prompt-bip39-passphrase",
+            help="Prompt for the BIP39 passphrase used by this wallet",
+        ),
+    ] = False,
+    allow_fingerprint_mismatch: Annotated[
+        bool,
+        typer.Option(
+            "--allow-fingerprint-mismatch",
+            help="Proceed when the mnemonic .meta fingerprint differs from the derived wallet",
+        ),
+    ] = False,
+    network: Annotated[str | None, typer.Option("--network", "-n", help="Bitcoin network")] = None,
+    backend_type: Annotated[
+        str | None,
+        typer.Option("--backend", "-b", help="Backend: descriptor_wallet | neutrino"),
+    ] = None,
+    rpc_url: Annotated[str | None, typer.Option("--rpc-url", envvar="BITCOIN_RPC_URL")] = None,
+    core_wallet_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--core-wallet-dir",
+            help="Host-local Bitcoin Core -walletdir containing the descriptor wallet",
+        ),
+    ] = None,
+    keep_backend_wallet: Annotated[
+        bool,
+        typer.Option(
+            "--keep-backend-wallet",
+            help="Keep the Bitcoin Core descriptor wallet (required for remote Core cleanup)",
+        ),
+    ] = False,
+    delete_history: Annotated[
+        bool,
+        typer.Option(
+            "--delete-history",
+            help="Delete this wallet's fingerprint-scoped rows from history.csv",
+        ),
+    ] = False,
+    delete_bond_registry: Annotated[
+        bool,
+        typer.Option(
+            "--delete-bond-registry",
+            help="Delete this wallet's fidelity-bond registry entries",
+        ),
+    ] = False,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Show the deletion plan without changing anything"),
+    ] = False,
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", "-y", help="Skip the fingerprint confirmation prompt"),
+    ] = False,
+    data_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--data-dir",
+            envvar="JOINMARKET_DATA_DIR",
+            help="Data directory (default: ~/.joinmarket-ng or $JOINMARKET_DATA_DIR)",
+        ),
+    ] = None,
+    config_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--config-file",
+            envvar="JOINMARKET_CONFIG_FILE",
+            help="Config file path (decoupled from data dir). Defaults to <data-dir>/config.toml",
+        ),
+    ] = None,
+    log_level: Annotated[
+        str | None,
+        typer.Option("--log-level", "-l", help="Log level"),
+    ] = None,
+) -> None:
+    """Permanently delete one wallet and its private local state.
+
+    The mnemonic file, companion metadata, UTXO labels/freezes, and history
+    reconstruction cache are always deleted. CoinJoin history and fidelity-bond
+    registry entries are retained unless their explicit deletion flags are set.
+
+    Bitcoin Core has no wallet deletion RPC, so descriptor-wallet deletion also
+    requires host-local access to Core's configured wallet directory. Neutrino
+    watched addresses are removed from a current neutrino-api before local files;
+    shared chain, filter, and confirmed-history data remain.
+    Stop makers, takers, the wallet daemon, and other wallet users first.
+    """
+    from jmwallet.backends.descriptor_wallet import generate_wallet_name, get_mnemonic_fingerprint
+    from jmwallet.wallet.deletion import (
+        collect_neutrino_watch_addresses,
+        core_wallet_path,
+        delete_core_descriptor_wallet,
+        delete_wallet_data,
+        local_wallet_artifact_paths,
+        remove_neutrino_wallet_watches,
+    )
+
+    settings = setup_cli(log_level, data_dir=data_dir, config_file=config_file)
+    resolved_mnemonic_file = mnemonic_file or resolve_configured_mnemonic_file(settings)
+    if resolved_mnemonic_file is None:
+        logger.error(
+            "jm-wallet delete requires a file-backed wallet. Pass --mnemonic-file or configure "
+            "wallet.mnemonic_file."
+        )
+        raise typer.Exit(1)
+
+    try:
+        resolved = resolve_mnemonic(
+            settings,
+            mnemonic_file=resolved_mnemonic_file,
+            prompt_bip39_passphrase=prompt_bip39_passphrase,
+        )
+        if resolved is None:
+            raise ValueError("No mnemonic provided")
+    except (FileNotFoundError, ValueError) as exc:
+        logger.error(str(exc))
+        raise typer.Exit(1)
+
+    backend_settings = resolve_backend_settings(
+        settings,
+        network=network,
+        backend_type=backend_type,
+        rpc_url=rpc_url,
+        data_dir=data_dir,
+    )
+    fingerprint = get_mnemonic_fingerprint(
+        resolved.mnemonic,
+        resolved.bip39_passphrase or "",
+    )
+    from jmwallet.cli.mnemonic import load_mnemonic_meta_fingerprint
+
+    cached_fingerprint = load_mnemonic_meta_fingerprint(resolved_mnemonic_file)
+    if (
+        cached_fingerprint is not None
+        and cached_fingerprint != fingerprint
+        and not allow_fingerprint_mismatch
+    ):
+        logger.error(
+            "The fingerprint stored beside this mnemonic does not match the wallet derived with "
+            "the current BIP39 passphrase. Verify the passphrase, or use "
+            "--allow-fingerprint-mismatch only after confirming the displayed deletion plan."
+        )
+        logger.bind(sensitive=True).error(
+            f"Stored fingerprint {cached_fingerprint}, derived fingerprint {fingerprint}"
+        )
+        raise typer.Exit(1)
+
+    supported_backends = {"descriptor_wallet", "neutrino"}
+    if backend_settings.backend_type not in supported_backends:
+        logger.error(
+            f"Unsupported backend {backend_settings.backend_type!r}; expected descriptor_wallet "
+            "or neutrino."
+        )
+        raise typer.Exit(2)
+    wallet_name = generate_wallet_name(fingerprint, backend_settings.network)
+
+    core_path: Path | None = None
+    if backend_settings.backend_type == "descriptor_wallet":
+        if keep_backend_wallet and core_wallet_dir is not None:
+            logger.error("Use either --core-wallet-dir or --keep-backend-wallet, not both.")
+            raise typer.Exit(2)
+        if not keep_backend_wallet:
+            if core_wallet_dir is None:
+                logger.error(
+                    "Bitcoin Core does not expose wallet deletion over RPC. Pass the host-local "
+                    "--core-wallet-dir path, or explicitly use --keep-backend-wallet."
+                )
+                raise typer.Exit(2)
+            try:
+                core_path = core_wallet_path(core_wallet_dir, wallet_name)
+            except (OSError, ValueError) as exc:
+                logger.error(str(exc))
+                raise typer.Exit(1)
+    elif core_wallet_dir is not None or keep_backend_wallet:
+        logger.error("Core wallet options cannot be used with the Neutrino backend.")
+        raise typer.Exit(2)
+
+    neutrino_watch_addresses: tuple[str, ...] | None = None
+    if backend_settings.backend_type == "neutrino":
+        try:
+            neutrino_watch_addresses = collect_neutrino_watch_addresses(
+                data_dir=backend_settings.data_dir,
+                mnemonic=resolved.mnemonic,
+                bip39_passphrase=resolved.bip39_passphrase,
+                fingerprint=fingerprint,
+                network=backend_settings.bitcoin_network,
+                neutrino_url=backend_settings.neutrino_url,
+                mixdepth_count=settings.wallet.mixdepth_count,
+                gap_limit=settings.wallet.gap_limit,
+                scan_range=settings.wallet.scan_range,
+            )
+        except ValueError as exc:
+            logger.error(f"Wallet deletion stopped before confirmation: {exc}")
+            raise typer.Exit(1)
+
+    typer.echo("Wallet deletion plan")
+    typer.echo(f"  Fingerprint: {fingerprint}")
+    typer.echo(f"  Backend: {backend_settings.backend_type}")
+    if core_path is not None:
+        typer.echo(f"  Bitcoin Core wallet: {core_path}")
+    elif backend_settings.backend_type == "descriptor_wallet":
+        typer.echo(f"  Bitcoin Core wallet: keep {wallet_name}")
+    else:
+        typer.echo(f"  Neutrino watched addresses: remove {len(neutrino_watch_addresses or ())}")
+        typer.echo("  Neutrino state: keep shared chain, filter, and confirmed-history data")
+    for path in local_wallet_artifact_paths(
+        backend_settings.data_dir,
+        resolved_mnemonic_file,
+        fingerprint,
+    ):
+        typer.echo(f"  Delete local file: {path}")
+    typer.echo(
+        "  CoinJoin history: "
+        + ("delete matching rows" if delete_history else "keep matching rows")
+    )
+    typer.echo(
+        "  Fidelity-bond registry: "
+        + ("delete matching entries" if delete_bond_registry else "keep matching entries")
+    )
+
+    if dry_run:
+        typer.echo("Dry run complete; nothing was deleted.")
+        return
+
+    if not yes:
+        typer.echo("Ensure the mnemonic is backed up and all wallet processes are stopped.")
+        confirmation = typer.prompt(f"Type {fingerprint} to permanently delete this wallet")
+        if confirmation.strip().lower() != fingerprint:
+            typer.echo("Wallet deletion cancelled.")
+            raise typer.Exit(1)
+
+    neutrino_cleanup = (0, 0)
+    if neutrino_watch_addresses is not None:
+        try:
+            neutrino_cleanup = asyncio.run(
+                remove_neutrino_wallet_watches(backend_settings, list(neutrino_watch_addresses))
+            )
+        except Exception as exc:
+            logger.error(f"Neutrino cleanup failed; local wallet data was not deleted: {exc}")
+            raise typer.Exit(1)
+
+    deleted_core_path: Path | None = None
+    try:
+        if core_path is not None:
+            deleted_core_path = asyncio.run(
+                delete_core_descriptor_wallet(
+                    backend_settings,
+                    wallet_name,
+                    core_wallet_dir=core_path.parent,
+                )
+            )
+        result = delete_wallet_data(
+            data_dir=backend_settings.data_dir,
+            mnemonic_file=resolved_mnemonic_file,
+            mnemonic=resolved.mnemonic,
+            bip39_passphrase=resolved.bip39_passphrase,
+            fingerprint=fingerprint,
+            network=backend_settings.bitcoin_network,
+            delete_history=delete_history,
+            delete_bond_registry=delete_bond_registry,
+            core_path=deleted_core_path,
+        )
+    except Exception as exc:
+        logger.error(
+            f"Wallet deletion stopped: {exc}. Some earlier items in the displayed plan may "
+            "already have been removed; correct the error and rerun the command."
+        )
+        raise typer.Exit(1)
+
+    typer.echo(f"Deleted wallet {fingerprint}.")
+    typer.echo(f"  Removed files: {len(result.removed_paths)}")
+    if delete_history:
+        typer.echo(f"  Removed history rows: {result.history_entries}")
+    if delete_bond_registry:
+        typer.echo(f"  Removed fidelity-bond entries: {result.bond_entries}")
+    if neutrino_watch_addresses is not None:
+        typer.echo(f"  Removed Neutrino watched addresses: {neutrino_cleanup[0]}")
+        typer.echo(f"  Removed Neutrino UTXOs: {neutrino_cleanup[1]}")
+    if keep_backend_wallet:
+        typer.echo(f"  Kept Bitcoin Core wallet: {wallet_name}")
+    typer.echo(
+        "Remove or update wallet.mnemonic_file in config.toml if it points to the deleted file."
+    )
 
 
 @app.command("import")

@@ -454,7 +454,8 @@ The data directory defaults to `~/.joinmarket-ng` and is configurable
 via `$JOINMARKET_DATA_DIR`. It contains:
 
 - `config.toml`
-- `wallets/` (encrypted seeds and the fidelity-bond registry)
+- `wallets/` (encrypted mnemonic files and companion metadata)
+- Per-wallet fidelity-bond registries and wallet metadata
 - Tor state, log files, and per-wallet caches
 
 The config file normally lives at `<data-dir>/config.toml`, but it can be
@@ -473,25 +474,32 @@ watch-only descriptor wallet inside Bitcoin Core named
 `jm_<fingerprint>_<network>` (for example `jm_abc12345_mainnet`). It is
 not removed by uninstalling the Python packages.
 
-List JoinMarket NG wallets currently loaded:
+Use the wallet deletion command before uninstalling. Preview the exact files
+first (the mainnet Core wallet directory is commonly `~/.bitcoin/wallets`):
 
 ```bash
-bitcoin-cli listwallets | jq '.[] | select(startswith("jm_"))'
+jm-wallet delete --dry-run --core-wallet-dir "$HOME/.bitcoin/wallets"
+jm-wallet delete --core-wallet-dir "$HOME/.bitcoin/wallets"
 ```
 
-Unload then delete each one. Bitcoin Core has no RPC to remove wallet
-files, so the directory must be removed manually after unloading:
+Bitcoin Core has no RPC to remove wallet files. `jm-wallet delete` unloads the
+wallet with startup loading disabled, then removes the generated wallet through
+the host-local filesystem. Pass the actual Core `-walletdir` when using a
+custom data directory or another network. For a remote node whose wallet
+directory is not locally accessible, pass `--keep-backend-wallet`, then run the
+equivalent cleanup on the Core host:
 
 ```bash
 WALLET="jm_<fingerprint>_<network>"
-bitcoin-cli unloadwallet "$WALLET"
-# Remove the on-disk wallet directory. Adjust the path if your
-# Bitcoin Core datadir is not the default ~/.bitcoin (use
-# `bitcoin-cli getwalletinfo` while loaded to confirm the location).
+bitcoin-cli unloadwallet "$WALLET" false
 rm -rf "$HOME/.bitcoin/wallets/$WALLET"
 ```
 
-On Neutrino-only installs there is no Bitcoin Core wallet to clean up.
+See [Deleting a Wallet](README-jmwallet.md#deleting-a-wallet) for optional
+fingerprint-scoped history and fidelity-bond cleanup. On Neutrino-only installs
+`jm-wallet delete` also removes the wallet's persisted watched addresses when
+the configured `neutrino-api` supports `DELETE /v1/watch/addresses`; shared
+headers, compact filters, and confirmed transaction history are retained.
 
 ## Windows (Manual Install)
 

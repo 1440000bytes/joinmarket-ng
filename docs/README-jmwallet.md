@@ -122,6 +122,81 @@ The extended view prints each funded address once, followed by an indented
 with repeatable `--input-utxo` options for explicit coin control with
 `jm-wallet send` or `jm-taker coinjoin`.
 
+## Deleting a Wallet
+
+Stop every maker, taker, tumbler, and wallet daemon using the wallet, then
+preview the deletion:
+
+```bash
+jm-wallet delete --dry-run --core-wallet-dir "$HOME/.bitcoin/wallets"
+```
+
+For a Bitcoin Core backend, `--core-wallet-dir` must be the host-local
+directory containing the generated `jm_<fingerprint>_<network>` wallet. Bitcoin
+Core has no wallet deletion RPC. The command uses RPC to unload the wallet and
+disable startup loading, then removes its files through the local filesystem.
+The mainnet default is commonly `~/.bitcoin/wallets`; custom `-datadir` or
+`-walletdir` settings and other networks use a different path. When Core runs
+on another host and its wallet directory is not mounted locally, use
+`--keep-backend-wallet`, then have the node administrator unload and remove the
+wallet files on that host. The equivalent unload command is:
+
+```bash
+WALLET="jm_<fingerprint>_<network>"
+bitcoin-cli unloadwallet "$WALLET" false
+```
+
+The `false` argument removes the wallet from Bitcoin Core's persistent startup
+list. After it unloads successfully, remove `$WALLET` from the Core host's
+actual `-walletdir`.
+
+After checking the plan, run the deletion and type the displayed wallet
+fingerprint to confirm:
+
+```bash
+jm-wallet delete --core-wallet-dir "$HOME/.bitcoin/wallets"
+```
+
+If the fingerprint cached in the mnemonic's `.meta` file differs from the
+fingerprint derived with the current BIP39 passphrase, deletion stops. Verify
+the passphrase first. `--allow-fingerprint-mismatch` is available for a known
+stale `.meta` file, but use it only after checking the dry-run fingerprint and
+every path in the plan.
+
+The mnemonic file and its `.meta` companion, UTXO labels and frozen state, used
+address metadata, and history reconstruction cache are deleted by default.
+CoinJoin history and fidelity-bond records are privacy-sensitive but useful for
+accounting and bond management, so they are retained unless explicitly chosen:
+
+```bash
+jm-wallet delete \
+  --core-wallet-dir "$HOME/.bitcoin/wallets" \
+  --delete-history \
+  --delete-bond-registry
+```
+
+`--delete-history` removes only rows matching the wallet fingerprint from the
+shared `history.csv`. `--delete-bond-registry` removes the per-wallet registry
+and any entries proven to belong to the wallet in a legacy shared registry.
+Other wallets' data is preserved. Legacy history rows without a fingerprint
+cannot be attributed safely and are retained.
+
+With the Neutrino backend, omit Core options:
+
+```bash
+jm-wallet delete --backend neutrino --delete-history --delete-bond-registry
+```
+
+Neutrino persists watched addresses for each wallet. After confirmation,
+`jm-wallet delete` removes this wallet's watches before deleting any local
+wallet files. This requires a current `neutrino-api` release that supports
+`DELETE /v1/watch/addresses`; an older server or an active rescan stops the
+deletion while local wallet data remains intact. Headers, compact filters, TLS
+credentials, authentication data, and confirmed transaction history belong to
+the shared Neutrino service and are intentionally retained. Remove or update
+`wallet.mnemonic_file` in `config.toml` afterward if it still points to the
+deleted file.
+
 ## Backends
 
 Configure backend in `~/.joinmarket-ng/config.toml` (details in [Installation](install.md#configure-backend)).
@@ -168,6 +243,8 @@ The full CLI reference below is auto-generated from command `--help` output.
 │                              key (cold wallet workflow).                     │
 │ debug-info                   Print privacy-friendly diagnostic information   │
 │                              for troubleshooting.                            │
+│ delete                       Permanently delete one wallet and its private   │
+│                              local state.                                    │
 │ freeze                       Interactively freeze/unfreeze UTXOs to exclude  │
 │                              them from coin selection.                       │
 │ generate                     Generate a new BIP39 mnemonic phrase with       │
@@ -328,6 +405,68 @@ The full CLI reference below is auto-generated from command `--help` output.
 │ --log-level     -l      TEXT  Log level                                      │
 │ --network       -n      TEXT  Bitcoin network                                │
 │ --neutrino-url          TEXT  [env var: NEUTRINO_URL]                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+</details>
+
+<details>
+<summary><code>jm-wallet delete --help</code></summary>
+
+```
+
+ Usage: jm-wallet delete [OPTIONS]
+
+ Permanently delete one wallet and its private local state.
+
+ The mnemonic file, companion metadata, UTXO labels/freezes, and history
+ reconstruction cache are always deleted. CoinJoin history and fidelity-bond
+ registry entries are retained unless their explicit deletion flags are set.
+
+ Bitcoin Core has no wallet deletion RPC, so descriptor-wallet deletion also
+ requires host-local access to Core's configured wallet directory. Neutrino
+ watched addresses are removed from a current neutrino-api before local files;
+ shared chain, filter, and confirmed-history data remain.
+ Stop makers, takers, the wallet daemon, and other wallet users first.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --allow-fingerprint-mismatch                Proceed when the mnemonic .meta  │
+│                                             fingerprint differs from the     │
+│                                             derived wallet                   │
+│ --backend                     -b      TEXT  Backend: descriptor_wallet |     │
+│                                             neutrino                         │
+│ --config-file                         PATH  Config file path (decoupled from │
+│                                             data dir). Defaults to           │
+│                                             <data-dir>/config.toml           │
+│                                             [env var:                        │
+│                                             JOINMARKET_CONFIG_FILE]          │
+│ --core-wallet-dir                     PATH  Host-local Bitcoin Core          │
+│                                             -walletdir containing the        │
+│                                             descriptor wallet                │
+│ --data-dir                            PATH  Data directory (default:         │
+│                                             ~/.joinmarket-ng or              │
+│                                             $JOINMARKET_DATA_DIR)            │
+│                                             [env var: JOINMARKET_DATA_DIR]   │
+│ --delete-bond-registry                      Delete this wallet's             │
+│                                             fidelity-bond registry entries   │
+│ --delete-history                            Delete this wallet's             │
+│                                             fingerprint-scoped rows from     │
+│                                             history.csv                      │
+│ --dry-run                                   Show the deletion plan without   │
+│                                             changing anything                │
+│ --help                                      Show this message and exit.      │
+│ --keep-backend-wallet                       Keep the Bitcoin Core descriptor │
+│                                             wallet (required for remote Core │
+│                                             cleanup)                         │
+│ --log-level                   -l      TEXT  Log level                        │
+│ --mnemonic-file               -f      PATH  Path to mnemonic file            │
+│                                             [env var: MNEMONIC_FILE]         │
+│ --network                     -n      TEXT  Bitcoin network                  │
+│ --prompt-bip39-passphrase                   Prompt for the BIP39 passphrase  │
+│                                             used by this wallet              │
+│ --rpc-url                             TEXT  [env var: BITCOIN_RPC_URL]       │
+│ --yes                         -y            Skip the fingerprint             │
+│                                             confirmation prompt              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

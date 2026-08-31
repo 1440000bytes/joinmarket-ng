@@ -130,6 +130,120 @@ class TestNeutrinoBackend:
         await backend.close()
 
     @pytest.mark.asyncio
+    async def test_api_call_uses_request_for_delete(self):
+        """DELETE requests carry their JSON body through httpx's general request API."""
+        backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="regtest")
+        response = MagicMock()
+        response.json.return_value = {"status": "ok"}
+        backend._maybe_pin_certificate = AsyncMock()  # type: ignore[method-assign]
+        with patch.object(
+            backend.client, "request", new_callable=AsyncMock, return_value=response
+        ) as call:
+            assert await backend._api_call(
+                "DELETE", "v1/watch/addresses", data={"addresses": ["bcrt1qone"]}
+            ) == {"status": "ok"}
+
+        call.assert_awaited_once_with(
+            "DELETE",
+            "http://localhost:8334/v1/watch/addresses",
+            params=None,
+            json={"addresses": ["bcrt1qone"]},
+        )
+        await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_remove_watch_addresses_chunks_and_aggregates_counts(self):
+        """Watch removal respects the server's 1,000-address request limit."""
+        backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="regtest")
+        backend._network_verified = True
+        addresses = [f"bcrt1qaddress{index}" for index in range(1_001)]
+        backend._watched_addresses.update(addresses)
+        backend._api_call = AsyncMock(  # type: ignore[method-assign]
+            side_effect=[
+                {"status": "ok", "removed_addresses": 1_000, "removed_utxos": 3},
+                {"status": "ok", "removed_addresses": 1, "removed_utxos": 2},
+            ]
+        )
+
+        assert await backend.remove_watch_addresses(addresses) == (1_001, 5)
+        assert backend._api_call.await_count == 2
+        assert backend._api_call.await_args_list[0].args == ("DELETE", "v1/watch/addresses")
+        assert backend._api_call.await_args_list[0].kwargs == {
+            "data": {"addresses": addresses[:1000]}
+        }
+        assert backend._api_call.await_args_list[1].args == ("DELETE", "v1/watch/addresses")
+        assert backend._api_call.await_args_list[1].kwargs == {
+            "data": {"addresses": addresses[1000:]}
+        }
+        assert not backend._watched_addresses
+        await backend.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "response",
+        [
+            {},
+            {"removed_addresses": 1, "removed_utxos": -1},
+            {"removed_addresses": True, "removed_utxos": 0},
+            {"removed_addresses": 0, "removed_utxos": "1"},
+        ],
+    )
+    async def test_remove_watch_addresses_rejects_invalid_counts(self, response):
+        """Malformed removal responses do not become successful cleanup reports."""
+        backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="regtest")
+        backend._network_verified = True
+        backend._api_call = AsyncMock(return_value=response)  # type: ignore[method-assign]
+
+        with pytest.raises(ValueError, match="watched-address removal response"):
+            await backend.remove_watch_addresses(["bcrt1qone"])
+
+        await backend.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("status_code", "message"),
+        [
+            (404, "Upgrade neutrino-api"),
+            (409, "while a rescan is active"),
+        ],
+    )
+    async def test_remove_watch_addresses_explains_unsupported_or_busy_server(
+        self, status_code: int, message: str
+    ) -> None:
+        """Wallet deletion receives actionable errors for endpoint incompatibility and rescans."""
+        backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="regtest")
+        backend._network_verified = True
+        request = httpx.Request("DELETE", "http://localhost:8334/v1/watch/addresses")
+        backend._api_call = AsyncMock(  # type: ignore[method-assign]
+            side_effect=httpx.HTTPStatusError(
+                "error",
+                request=request,
+                response=httpx.Response(status_code, request=request),
+            )
+        )
+
+        with pytest.raises(RuntimeError, match=message):
+            await backend.remove_watch_addresses(["bcrt1qone"])
+
+        await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_remove_watch_addresses_requires_matching_verified_network(self) -> None:
+        """Destructive cleanup never reaches a mismatched Neutrino server."""
+        backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="regtest")
+        backend._verify_network = AsyncMock(  # type: ignore[method-assign]
+            side_effect=NeutrinoNetworkMismatchError("wrong network")
+        )
+        backend._api_call = AsyncMock()  # type: ignore[method-assign]
+
+        with pytest.raises(NeutrinoNetworkMismatchError, match="wrong network"):
+            await backend.remove_watch_addresses(["bcrt1qone"])
+
+        backend._verify_network.assert_awaited_once_with(require_success=True)
+        backend._api_call.assert_not_awaited()
+        await backend.close()
+
+    @pytest.mark.asyncio
     async def test_get_block_height_accepts_genesis_height(self):
         """An explicit zero height is valid at chain genesis."""
         backend = NeutrinoBackend(neutrino_url="http://localhost:8334", network="regtest")

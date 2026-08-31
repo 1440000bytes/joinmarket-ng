@@ -46,6 +46,24 @@ def _address_hash(address: str) -> str:
     return sha256(address.strip().lower().encode("ascii")).hexdigest()
 
 
+def load_reconstruction_checkpoint_strict(
+    data_dir: Path, *, wallet_fingerprint: str
+) -> ReconstructionCheckpoint | None:
+    """Load a checkpoint, raising when an existing file cannot be trusted.
+
+    Deletion uses this when it must know every address previously covered by a
+    Neutrino rescan. Unlike incremental reconstruction, it cannot safely ignore
+    a corrupt state file because that could leave persisted watch state behind.
+    """
+    path = _checkpoint_path(data_dir, wallet_fingerprint)
+    if not path.exists():
+        return None
+    try:
+        return ReconstructionCheckpoint.model_validate_json(read_private_file(path), strict=True)
+    except (OSError, ValidationError, ValueError) as exc:
+        raise ValueError(f"Invalid history reconstruction checkpoint {path}: {exc}") from exc
+
+
 def load_reconstruction_cursor(
     data_dir: Path,
     *,

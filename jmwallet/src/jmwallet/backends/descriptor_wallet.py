@@ -2613,6 +2613,47 @@ class DescriptorWalletBackend(BlockchainBackend):
             except Exception as e:
                 logger.warning(f"Failed to unload wallet: {e}")
 
+    async def wallet_exists(self) -> bool:
+        """Return whether Bitcoin Core knows about this wallet."""
+        loaded_wallets = await self._rpc_call("listwallets", use_wallet=False)
+        if self.wallet_name in loaded_wallets:
+            self._wallet_loaded = True
+            return True
+
+        wallet_dir = await self._rpc_call("listwalletdir", use_wallet=False)
+        return any(
+            isinstance(entry, dict) and entry.get("name") == self.wallet_name
+            for entry in wallet_dir.get("wallets", [])
+        )
+
+    async def unload_wallet_for_deletion(self) -> bool:
+        """Unload a known wallet and remove it from Core's startup list.
+
+        Bitcoin Core has no wallet deletion RPC. This method prepares a wallet
+        for host-local filesystem removal and returns ``False`` when Core does
+        not know the wallet.
+        """
+        loaded_wallets = await self._rpc_call("listwallets", use_wallet=False)
+        if self.wallet_name not in loaded_wallets:
+            wallet_dir = await self._rpc_call("listwalletdir", use_wallet=False)
+            known_wallets = {
+                entry.get("name")
+                for entry in wallet_dir.get("wallets", [])
+                if isinstance(entry, dict)
+            }
+            if self.wallet_name not in known_wallets:
+                return False
+            await self._rpc_call("loadwallet", [self.wallet_name], use_wallet=False)
+
+        await self._rpc_call(
+            "unloadwallet",
+            [self.wallet_name, False],
+            use_wallet=False,
+        )
+        self._wallet_loaded = False
+        logger.info(f"Unloaded wallet '{self.wallet_name}' and disabled startup loading")
+        return True
+
     def can_provide_neutrino_metadata(self) -> bool:
         """Bitcoin Core can provide Neutrino-compatible metadata."""
         return True

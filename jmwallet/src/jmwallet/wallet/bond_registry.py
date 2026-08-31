@@ -612,6 +612,70 @@ def migrate_legacy_registry(
     return len(claimed)
 
 
+def delete_wallet_registry_entries(
+    data_dir: Path,
+    fingerprint: str,
+    bond_belongs_to_wallet: Callable[[FidelityBondInfo], bool],
+) -> int:
+    """Delete one wallet's per-wallet and legacy fidelity-bond entries.
+
+    Both files are validated before either is modified. The shared legacy file
+    is filtered with the same ownership predicate used for migration, so bonds
+    belonging to other wallets remain intact.
+
+    Returns:
+        Number of registry entries removed. Duplicate entries present in both
+        files are counted once per stored entry.
+    """
+    safe_fp = _safe_fingerprint(fingerprint)
+    if safe_fp is None or len(safe_fp) != 8:
+        raise ValueError("wallet fingerprint must be exactly 8 hex characters")
+
+    per_wallet_path = get_registry_path(data_dir, safe_fp)
+    legacy_path = get_legacy_registry_path(data_dir)
+    per_wallet_registry: BondRegistry | None = None
+    legacy_registry: BondRegistry | None = None
+
+    try:
+        if per_wallet_path.exists():
+            per_wallet_registry = BondRegistry.model_validate_json(per_wallet_path.read_text())
+        if legacy_path.exists():
+            legacy_registry = BondRegistry.model_validate_json(legacy_path.read_text())
+    except Exception as exc:
+        raise ValueError(f"Cannot delete entries from an invalid bond registry: {exc}") from exc
+
+    removed = len(per_wallet_registry.bonds) if per_wallet_registry is not None else 0
+    if legacy_registry is not None:
+        remaining: list[FidelityBondInfo] = []
+        for bond in legacy_registry.bonds:
+            try:
+                owned = bond_belongs_to_wallet(bond)
+            except Exception as exc:
+                raise ValueError(
+                    f"Cannot determine ownership of legacy bond {bond.address}: {exc}"
+                ) from exc
+            if owned:
+                removed += 1
+            else:
+                remaining.append(bond)
+
+        if len(remaining) != len(legacy_registry.bonds):
+            if remaining:
+                save_registry(
+                    BondRegistry(version=legacy_registry.version, bonds=remaining),
+                    data_dir,
+                    None,
+                )
+            else:
+                legacy_path.unlink()
+
+    if per_wallet_path.exists():
+        per_wallet_path.unlink()
+
+    logger.info(f"Deleted {removed} fidelity-bond registry entries for wallet {safe_fp}")
+    return removed
+
+
 def make_wallet_ownership_predicate(
     master_key: HDKey, root_path: str
 ) -> Callable[[FidelityBondInfo], bool]:

@@ -93,6 +93,8 @@ For full documentation, see [jmwallet Documentation](https://joinmarket-ng.githu
 │                              key (cold wallet workflow).                     │
 │ debug-info                   Print privacy-friendly diagnostic information   │
 │                              for troubleshooting.                            │
+│ delete                       Permanently delete one wallet and its private   │
+│                              local state.                                    │
 │ freeze                       Interactively freeze/unfreeze UTXOs to exclude  │
 │                              them from coin selection.                       │
 │ generate                     Generate a new BIP39 mnemonic phrase with       │
@@ -253,6 +255,68 @@ For full documentation, see [jmwallet Documentation](https://joinmarket-ng.githu
 │ --log-level     -l      TEXT  Log level                                      │
 │ --network       -n      TEXT  Bitcoin network                                │
 │ --neutrino-url          TEXT  [env var: NEUTRINO_URL]                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+</details>
+
+<details>
+<summary><code>jm-wallet delete --help</code></summary>
+
+```
+
+ Usage: jm-wallet delete [OPTIONS]
+
+ Permanently delete one wallet and its private local state.
+
+ The mnemonic file, companion metadata, UTXO labels/freezes, and history
+ reconstruction cache are always deleted. CoinJoin history and fidelity-bond
+ registry entries are retained unless their explicit deletion flags are set.
+
+ Bitcoin Core has no wallet deletion RPC, so descriptor-wallet deletion also
+ requires host-local access to Core's configured wallet directory. Neutrino
+ watched addresses are removed from a current neutrino-api before local files;
+ shared chain, filter, and confirmed-history data remain.
+ Stop makers, takers, the wallet daemon, and other wallet users first.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --allow-fingerprint-mismatch                Proceed when the mnemonic .meta  │
+│                                             fingerprint differs from the     │
+│                                             derived wallet                   │
+│ --backend                     -b      TEXT  Backend: descriptor_wallet |     │
+│                                             neutrino                         │
+│ --config-file                         PATH  Config file path (decoupled from │
+│                                             data dir). Defaults to           │
+│                                             <data-dir>/config.toml           │
+│                                             [env var:                        │
+│                                             JOINMARKET_CONFIG_FILE]          │
+│ --core-wallet-dir                     PATH  Host-local Bitcoin Core          │
+│                                             -walletdir containing the        │
+│                                             descriptor wallet                │
+│ --data-dir                            PATH  Data directory (default:         │
+│                                             ~/.joinmarket-ng or              │
+│                                             $JOINMARKET_DATA_DIR)            │
+│                                             [env var: JOINMARKET_DATA_DIR]   │
+│ --delete-bond-registry                      Delete this wallet's             │
+│                                             fidelity-bond registry entries   │
+│ --delete-history                            Delete this wallet's             │
+│                                             fingerprint-scoped rows from     │
+│                                             history.csv                      │
+│ --dry-run                                   Show the deletion plan without   │
+│                                             changing anything                │
+│ --help                                      Show this message and exit.      │
+│ --keep-backend-wallet                       Keep the Bitcoin Core descriptor │
+│                                             wallet (required for remote Core │
+│                                             cleanup)                         │
+│ --log-level                   -l      TEXT  Log level                        │
+│ --mnemonic-file               -f      PATH  Path to mnemonic file            │
+│                                             [env var: MNEMONIC_FILE]         │
+│ --network                     -n      TEXT  Bitcoin network                  │
+│ --prompt-bip39-passphrase                   Prompt for the BIP39 passphrase  │
+│                                             used by this wallet              │
+│ --rpc-url                             TEXT  [env var: BITCOIN_RPC_URL]       │
+│ --yes                         -y            Skip the fingerprint             │
+│                                             confirmation prompt              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

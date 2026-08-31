@@ -145,6 +145,7 @@ class NeutrinoBackend(BlockchainBackend):
     # receive that retryable response while still bounding older servers.
     _UTXO_VERIFICATION_ATTEMPT_TIMEOUT_SECONDS: float = 65.0
     _UTXO_VERIFICATION_RETRYABLE_STATUS_CODES: frozenset[int] = frozenset({408, 425, 429})
+    _WATCH_ADDRESS_REMOVAL_BATCH_SIZE: int = 1000
 
     def __init__(
         self,
@@ -404,12 +405,13 @@ class NeutrinoBackend(BlockchainBackend):
                     "Pinned neutrino TLS certificate (trust-on-first-use) for this session."
                 )
 
-    async def _verify_network(self) -> None:
+    async def _verify_network(self, *, require_success: bool = False) -> None:
         """Abort if the neutrino server serves a different network (genesis hash).
 
-        Best-effort: when the genesis block hash cannot be fetched (e.g. server
-        not reachable yet) this logs a warning and returns so the caller can
-        retry. A confirmed mismatch raises ``NeutrinoNetworkMismatchError``.
+        Normal sync treats a failed genesis lookup as retryable. Destructive
+        operations pass ``require_success=True`` so no state changes can reach
+        an unverified server. A confirmed mismatch always raises
+        ``NeutrinoNetworkMismatchError``.
         """
         if self._network_verified:
             return
@@ -421,6 +423,10 @@ class NeutrinoBackend(BlockchainBackend):
             genesis = await self.get_block_hash(0)
         except Exception as exc:
             logger.warning(f"Could not verify neutrino network (genesis fetch failed): {exc}")
+            if require_success:
+                raise RuntimeError(
+                    "Could not verify the Neutrino server network; refusing destructive cleanup"
+                ) from exc
             return
         if genesis.lower() != expected.lower():
             actual = _HASH_TO_NETWORK.get(genesis.lower(), "unknown")
@@ -742,6 +748,8 @@ class NeutrinoBackend(BlockchainBackend):
                 response = await self.client.get(url, params=params)
             elif method == "POST":
                 response = await self.client.post(url, json=data)
+            elif method == "DELETE":
+                response = await self.client.request("DELETE", url, params=params, json=data)
             else:
                 raise ValueError(f"Unsupported HTTP method: {method}")
 
@@ -770,6 +778,60 @@ class NeutrinoBackend(BlockchainBackend):
                 f"Neutrino API call failed: {endpoint} - {type(e).__name__}: {e}"
             )
             raise
+
+    async def remove_watch_addresses(self, addresses: list[str]) -> tuple[int, int]:
+        """Remove persisted Neutrino watch state in bounded idempotent batches.
+
+        Returns the aggregate ``(removed_addresses, removed_utxos)`` reported by
+        the server. A server without the endpoint, or one currently rescanning,
+        is surfaced as an actionable error so callers can preserve local wallet
+        state and retry later.
+        """
+        if not addresses:
+            return 0, 0
+        await self._verify_network(require_success=True)
+
+        removed_addresses = 0
+        removed_utxos = 0
+        for offset in range(0, len(addresses), self._WATCH_ADDRESS_REMOVAL_BATCH_SIZE):
+            chunk = addresses[offset : offset + self._WATCH_ADDRESS_REMOVAL_BATCH_SIZE]
+            try:
+                response = await self._api_call(
+                    "DELETE",
+                    "v1/watch/addresses",
+                    data={"addresses": chunk},
+                )
+            except httpx.HTTPStatusError as exc:
+                status_code = exc.response.status_code
+                if status_code == 404:
+                    raise RuntimeError(
+                        "The configured neutrino-api does not support watched-address removal. "
+                        "Upgrade neutrino-api before deleting this wallet."
+                    ) from exc
+                if status_code == 409:
+                    raise RuntimeError(
+                        "Neutrino watched-address cleanup cannot run while a rescan is active. "
+                        "Wait for the rescan to finish and retry wallet deletion."
+                    ) from exc
+                raise
+
+            if not isinstance(response, dict):
+                raise ValueError("Invalid Neutrino watched-address removal response")
+            counts: list[int] = []
+            for response_field in ("removed_addresses", "removed_utxos"):
+                value = response.get(response_field)
+                if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                    raise ValueError(
+                        "Invalid Neutrino watched-address removal response field "
+                        f"{response_field!r}"
+                    )
+                counts.append(value)
+            removed_addresses += counts[0]
+            removed_utxos += counts[1]
+            self._watched_addresses.difference_update(chunk)
+            self._address_usage_cache = None
+
+        return removed_addresses, removed_utxos
 
     async def _wait_for_rescan(
         self,

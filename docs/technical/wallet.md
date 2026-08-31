@@ -262,7 +262,9 @@ correct wallet automatically when a mnemonic is supplied.
 The history file is plaintext privacy-sensitive metadata. It can contain
 wallet fingerprints, transaction IDs, amounts, fees, destination addresses,
 counterparty counts, and failure details. Protect the data directory and its
-backups accordingly; deleting the wallet seed does not remove this history.
+backups accordingly. Deleting only the mnemonic does not remove this history;
+`jm-wallet delete --delete-history` removes rows for the selected fingerprint
+while preserving other wallets and unattributed legacy rows.
 
 The same fingerprint scopes the fidelity bond registry on disk as
 `fidelity_bonds_<fingerprint>.json` (issue #492). Both `jm-wallet

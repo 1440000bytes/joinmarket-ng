@@ -1006,6 +1006,47 @@ def purge_reconstructed_entries(
     return removed
 
 
+def delete_wallet_history_entries(
+    wallet_fingerprint: str,
+    data_dir: Path | None = None,
+) -> int:
+    """Remove every history row belonging to one wallet.
+
+    The history CSV is shared by all wallets in a data directory. This helper
+    performs a fingerprint-scoped atomic rewrite while holding the existing
+    history lock, preserving other wallets' rows and unscoped legacy rows.
+
+    Returns:
+        The number of rows removed.
+
+    Raises:
+        HistoryWriteError: If the pruned file cannot be written back.
+    """
+    fingerprint = wallet_fingerprint.strip().lower()
+    if len(fingerprint) != 8:
+        raise ValueError("wallet fingerprint must be exactly 8 hex characters")
+    try:
+        bytes.fromhex(fingerprint)
+    except ValueError as exc:
+        raise ValueError("wallet fingerprint must be valid hexadecimal") from exc
+
+    with _locked_history_path(data_dir) as history_path:
+        if not history_path.exists():
+            return 0
+        _ensure_history_header_current(history_path)
+        entries = _read_history_entries_unlocked(history_path)
+        kept = [entry for entry in entries if entry.wallet_fingerprint != fingerprint]
+        removed = len(entries) - len(kept)
+        if removed == 0:
+            return 0
+        if not _write_history_entries_atomic(kept, history_path):
+            raise HistoryWriteError(
+                f"Failed to rewrite {history_path} after deleting wallet history"
+            )
+    logger.info(f"Deleted {removed} history entries for wallet {fingerprint}")
+    return removed
+
+
 def list_history_fingerprints(data_dir: Path | None = None) -> list[str]:
     """List distinct wallet fingerprints recorded in the history CSV.
 
