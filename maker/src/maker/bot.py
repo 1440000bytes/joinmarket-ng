@@ -35,6 +35,7 @@ from jmcore.tor_control import (
     TorControlClient,
     TorControlError,
 )
+from jmcore.version import get_build_ref, get_commit_hash, get_version
 from jmwallet.backends.base import BlockchainBackend
 from jmwallet.history import get_coinjoin_lineage_outpoints, get_pending_transactions
 from jmwallet.wallet.models import UTXOInfo
@@ -849,7 +850,10 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
         6. Listen for taker requests
         """
         try:
-            logger.info("Starting maker bot")
+            version = get_version()
+            commit = get_commit_hash() or "unknown"
+            build_ref = get_build_ref() or "unknown"
+            logger.info(f"Starting maker bot (version={version}, commit={commit}, ref={build_ref})")
             logger.bind(sensitive=True).info(f"Starting maker bot (nick: {self.nick})")
 
             await self._initialize_minimum_fee_policy()

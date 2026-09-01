@@ -701,7 +701,7 @@ class BackgroundTasksMixin:
                 messages = await client.listen_for_messages(duration=1.0)
 
                 if messages:
-                    logger.debug(f"Received {len(messages)} messages from {node_id}")
+                    logger.trace(f"Received {len(messages)} messages from {node_id}")
 
                 for message in messages:
                     await self._handle_message(
@@ -719,7 +719,7 @@ class BackgroundTasksMixin:
                 if is_current_accepting_generation():
                     logger.warning(f"Connection lost on {node_id}: {e}")
                 else:
-                    logger.debug(f"Retired generation connection closed on {node_id}: {e}")
+                    logger.trace(f"Retired generation connection closed on {node_id}: {e}")
                 await disconnect_for_reconnect()
                 break
             except Exception as e:

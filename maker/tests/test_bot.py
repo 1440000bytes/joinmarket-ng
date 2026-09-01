@@ -233,6 +233,30 @@ class TestBotInitialization:
 
         bot._seed_mempool_notification_state.assert_called_once_with()
 
+    @pytest.mark.asyncio
+    async def test_start_logs_version_provenance(self, mock_wallet, mock_backend, config):
+        from loguru import logger
+
+        bot = MakerBot(wallet=mock_wallet, backend=mock_backend, config=config)
+        sentinel = RuntimeError("stop after provenance")
+        bot._initialize_minimum_fee_policy = AsyncMock(side_effect=sentinel)
+        messages: list[str] = []
+        handler_id = logger.add(
+            lambda message: messages.append(message.record["message"]), level="INFO"
+        )
+        try:
+            with (
+                patch("maker.bot.get_version", return_value="0.37.1"),
+                patch("maker.bot.get_commit_hash", return_value="9a3b6dd"),
+                patch("maker.bot.get_build_ref", return_value="main"),
+                pytest.raises(RuntimeError, match="stop after provenance"),
+            ):
+                await bot.start()
+        finally:
+            logger.remove(handler_id)
+
+        assert "Starting maker bot (version=0.37.1, commit=9a3b6dd, ref=main)" in messages
+
     def test_bot_respects_no_fidelity_bond_config(self, mock_wallet, mock_backend):
         """Test that no_fidelity_bond=True is stored on the config.
 
@@ -990,6 +1014,7 @@ class TestHandlePush:
             outpoints=frozenset({("ab" * 32, 0)}),
             expires_at=time.monotonic() + 60,
             lock_ttl_sec=3600,
+            commitment="cd" * 32,
             generation_id=0,
         )
         renew = maker_bot.wallet.renew_coinjoin_inputs
@@ -1002,11 +1027,20 @@ class TestHandlePush:
         """Test that !push broadcasts the transaction."""
         import base64
 
+        from loguru import logger
+
         tx_bytes = self._transaction()
         txid = self._authorize_push(maker_bot, "J5taker123", tx_bytes)
         tx_b64 = base64.b64encode(tx_bytes).decode("ascii")
 
-        await maker_bot._handle_push("J5taker123", f"push {tx_b64}")
+        records: list[dict[str, object]] = []
+        handler_id = logger.add(
+            lambda message: records.append(dict(message.record["extra"])), level="DEBUG"
+        )
+        try:
+            await maker_bot._handle_push("J5taker123", f"push {tx_b64}")
+        finally:
+            logger.remove(handler_id)
 
         # Verify broadcast was called with the decoded transaction
         maker_bot.backend.broadcast_transaction.assert_called_once_with(tx_bytes.hex())
@@ -1014,6 +1048,8 @@ class TestHandlePush:
             {("ab" * 32, 0)}, owner="round-owner", ttl=3600
         )
         assert (0, "J5taker123", txid) not in maker_bot._pending_signed_rounds
+        push_event = next(record for record in records if record.get("command") == "push")
+        assert push_event["cj_id"] == "cj-cdcdcdcdcdcd"
 
     @pytest.mark.asyncio
     async def test_handle_push_invalid_format(self, maker_bot):

@@ -39,6 +39,7 @@ from loguru import logger
 from pydantic import ValidationError
 
 from maker.coinjoin import CoinJoinSession, CoinJoinState
+from maker.session_logging import log_coinjoin_message
 
 if TYPE_CHECKING:
     from jmcore.encryption import CryptoSession
@@ -62,6 +63,7 @@ class PendingSignedRound:
     outpoints: frozenset[tuple[str, int]]
     expires_at: float
     lock_ttl_sec: float
+    commitment: str = ""
     generation_id: int = 0
 
 
@@ -319,6 +321,14 @@ class MakerSession:
                 )
                 return
 
+            log_coinjoin_message(
+                "received",
+                "auth",
+                peer=taker_nick,
+                transport=source,
+                payload_length=len(msg.encode("utf-8")),
+                state=self.state.value,
+            )
             logger.debug(f"Received !auth from {taker_nick}, decrypting and verifying PoDLE...")
 
             parts = msg.split()
@@ -400,6 +410,7 @@ class MakerSession:
                 return
 
             if success:
+                logger.info("Taker authentication accepted")
                 # CRITICAL: Record addresses to history BEFORE revealing them to taker
                 # so they are never reused even if the taker vanishes or we crash.
                 try:
@@ -464,13 +475,23 @@ class MakerSession:
                     bot._release_commitment_reservation(commitment)
             else:
                 error_msg = response.get("error", "unknown error")
-                error_code = response.get("error_code", "")
-                logger.error("Authentication failed")
-                logger.bind(sensitive=True).error(f"Authentication failed: {error_msg}")
+                error_reason = response.get("error_reason", "Authentication failed")
+                logger.warning(f"Authentication rejected: {error_reason}")
+                logger.bind(sensitive=True).warning(f"Authentication rejected: {error_msg}")
 
                 try:
-                    for client in bot._generation_clients(self.generation_id).values():
+                    clients = list(bot._generation_clients(self.generation_id).items())
+                    for node_id, client in clients:
                         await client.send_private_message(taker_nick, "error", error_msg)
+                        log_coinjoin_message(
+                            "sent",
+                            "error",
+                            peer=taker_nick,
+                            transport=f"directory:{node_id}",
+                            payload_length=len(error_msg.encode("utf-8")),
+                            state=self.state.value,
+                            outcome="rejected",
+                        )
                         if not self.is_active(bot):
                             return
                     logger.bind(sensitive=True).debug(f"Sent !error to {taker_nick}: {error_msg}")
@@ -491,7 +512,7 @@ class MakerSession:
                 spawn_task(
                     get_notifier().notify_rejection(
                         taker_nick,
-                        error_code or "PoDLE verification failed",
+                        error_reason,
                         error_msg,
                         _notification_coinjoin_id(commitment),
                     )
@@ -522,6 +543,14 @@ class MakerSession:
                 )
                 return
 
+            log_coinjoin_message(
+                "received",
+                "tx",
+                peer=taker_nick,
+                transport=source,
+                payload_length=len(msg.encode("utf-8")),
+                state=self.state.value,
+            )
             logger.debug(f"Received !tx from {taker_nick}, decrypting and verifying transaction...")
 
             parts = msg.split()
@@ -713,12 +742,12 @@ class MakerSession:
             else:
                 msg_content = json.dumps(data)
 
-            clients = list(bot._generation_clients(self.generation_id).values())
+            clients = list(bot._generation_clients(self.generation_id).items())
             if not clients:
                 logger.warning(f"No directory client available to send {command}")
                 return False
 
-            for index, client in enumerate(clients):
+            for index, (node_id, client) in enumerate(clients):
                 if not self.is_active(bot):
                     return False
                 if command == "ioauth" and index == 0:
@@ -729,6 +758,14 @@ class MakerSession:
                     # prove the encrypted maker details were not disclosed.
                     self.state = CoinJoinState.IOAUTH_SEND_STARTED
                 await client.send_private_message(self.taker_nick, command, msg_content)
+                log_coinjoin_message(
+                    "sent",
+                    command,
+                    peer=self.taker_nick,
+                    transport=f"directory:{node_id}",
+                    payload_length=len(msg_content.encode("utf-8")),
+                    state=self.state.value,
+                )
                 if not self.is_active(bot):
                     return False
 

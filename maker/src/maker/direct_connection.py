@@ -122,7 +122,7 @@ class DirectConnectionMixin:
                 # Parse line format: from_nick!PUBLIC!command
                 parts = line.split(COMMAND_PREFIX)
                 if len(parts) < 3:
-                    logger.debug(f"Invalid PUBMSG line format: {line[:50]}...")
+                    logger.trace(f"Invalid PUBMSG line format: {line[:50]}...")
                     return None
 
                 sender_nick = parts[0]
@@ -136,12 +136,12 @@ class DirectConnectionMixin:
                     )
                     return (sender_nick, f"PUBLIC:{rest}", "")
                 else:
-                    logger.debug(f"Ignoring PUBMSG with non-PUBLIC target: {to_nick}")
+                    logger.trace(f"Ignoring PUBMSG with non-PUBLIC target: {to_nick}")
                     return None
 
             # Handle PRIVMSG (685) for CoinJoin protocol
             if msg_type != MessageType.PRIVMSG.value:
-                logger.debug(f"Ignoring message type {msg_type} on direct connection")
+                logger.trace(f"Ignoring message type {msg_type} on direct connection")
                 return None
 
             # Parse line format: from_nick!to_nick!command data
@@ -156,7 +156,7 @@ class DirectConnectionMixin:
 
             # Check if message is for us
             if to_nick != generation.nick_identity.nick:
-                logger.debug(
+                logger.trace(
                     f"Ignoring message not for us: to={to_nick}, us={generation.nick_identity.nick}"
                 )
                 return None
@@ -248,9 +248,9 @@ class DirectConnectionMixin:
             peer_features = FeatureSet.from_comma_string(peer_features_raw)
         peer_version = handshake_data.get("version", handshake_data.get("proto-ver", "unknown"))
 
-        logger.debug("Received direct-connection handshake")
-        logger.bind(sensitive=True).debug(f"Received handshake from {peer_nick} at {peer_str}")
-        logger.debug(
+        logger.trace("Received direct-connection handshake")
+        logger.bind(sensitive=True).trace(f"Received handshake from {peer_nick} at {peer_str}")
+        logger.trace(
             f"Peer {peer_nick} handshake details: version={peer_version}, "
             f"network={peer_network or 'unspecified'}, "
             f"features={peer_features.to_comma_string() or 'none'}"
@@ -303,7 +303,7 @@ class DirectConnectionMixin:
         }
         try:
             await connection.send(json.dumps(response_msg).encode("utf-8"))
-            logger.debug(
+            logger.trace(
                 f"Sent handshake to {peer_nick} (features: {features.to_comma_string() or 'none'})"
             )
         except Exception as e:
@@ -342,8 +342,8 @@ class DirectConnectionMixin:
         - Attackers connecting directly to the onion bypass directory-level protections
         - Connection-based limiting is stricter: faster bans, longer intervals
         """
-        logger.debug("Handling direct connection")
-        logger.bind(sensitive=True).debug(f"Handling direct connection from {peer_str}")
+        logger.trace("Handling direct connection")
+        logger.bind(sensitive=True).trace(f"Handling direct connection from {peer_str}")
 
         # Check if this connection is already banned
         if self._direct_connection_rate_limiter.is_banned(peer_str):
@@ -419,9 +419,9 @@ class DirectConnectionMixin:
                             if isinstance(data, bytes)
                             else str(data)
                         )
-                        # Full message at DEBUG level for troubleshooting
-                        logger.debug("Received unparseable direct message")
-                        logger.bind(sensitive=True).debug(
+                        # Full message at TRACE level for troubleshooting.
+                        logger.trace("Received unparseable direct message")
+                        logger.bind(sensitive=True).trace(
                             f"Unparseable direct message from {peer_str}: {data_str!r}"
                         )
                         # Rate-limited WARNING with truncated preview
@@ -435,7 +435,7 @@ class DirectConnectionMixin:
 
                     sender_nick, cmd, msg_data = parsed
 
-                    logger.debug(f"Direct message from {sender_nick}: cmd={cmd}")
+                    logger.trace(f"Direct message from {sender_nick}: cmd={cmd}")
 
                     if cmd.startswith("PUBLIC:") and sender_nick != state.nick:
                         logger.warning(
@@ -472,7 +472,7 @@ class DirectConnectionMixin:
                                     )
                                 continue
 
-                            logger.debug(
+                            logger.trace(
                                 f"Received !orderbook request from {sender_nick} via direct "
                                 f"connection, sending offers"
                             )
@@ -480,7 +480,7 @@ class DirectConnectionMixin:
                                 sender_nick, connection, generation_id
                             )
                         else:
-                            logger.debug(
+                            logger.trace(
                                 f"Unknown PUBLIC command from {sender_nick} via direct: "
                                 f"{public_cmd}"
                             )
@@ -495,7 +495,7 @@ class DirectConnectionMixin:
                             continue
                     else:
                         if sender_nick != state.nick:
-                            logger.debug(
+                            logger.trace(
                                 f"Verified sender {sender_nick} overrides provisional direct "
                                 f"handshake nick {state.nick} from {peer_str}"
                             )
@@ -527,7 +527,7 @@ class DirectConnectionMixin:
                             sender_nick, full_msg, source="direct", generation_id=generation_id
                         )
                     else:
-                        logger.debug(f"Unknown direct command from {sender_nick}: {cmd}")
+                        logger.trace(f"Unknown direct command from {sender_nick}: {cmd}")
 
                 except TimeoutError:
                     # No message received, continue waiting
@@ -536,9 +536,9 @@ class DirectConnectionMixin:
                     # Remote closed the TCP connection. This is routine for
                     # orderbook-watcher health checks and directory-handshake
                     # discovery probes, which connect, read the handshake
-                    # response, and disconnect. Log at DEBUG so real problems
+                    # response, and disconnect. Log at TRACE so real problems
                     # (parse errors, unexpected exceptions) still surface.
-                    logger.bind(sensitive=True).debug(
+                    logger.bind(sensitive=True).trace(
                         f"Direct connection from {peer_str} closed by peer: {e}"
                     )
                     break
@@ -557,4 +557,4 @@ class DirectConnectionMixin:
         finally:
             await connection.close()
             self._remove_direct_connection(connection, generation_id)
-            logger.bind(sensitive=True).debug(f"Direct connection from {peer_str} closed")
+            logger.bind(sensitive=True).trace(f"Direct connection from {peer_str} closed")

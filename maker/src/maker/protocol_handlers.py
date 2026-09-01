@@ -50,6 +50,7 @@ from maker.rate_limiting import (
     OrderbookRateLimiter,
     ProcessWideTokenBucket,
 )
+from maker.session_logging import log_coinjoin_message
 
 if TYPE_CHECKING:
     from jmcore.network import TCPConnection
@@ -175,7 +176,7 @@ class ProtocolHandlersMixin:
                     and rest.strip().lstrip("!") == "orderbook"
                 )
 
-                logger.debug(f"PUBMSG parts={parts}, is_orderbook={is_orderbook_request}")
+                logger.trace(f"PUBMSG parts={parts}, is_orderbook={is_orderbook_request}")
 
                 # Don't deduplicate !orderbook requests - they have their own rate limiting
                 # and takers may legitimately request the orderbook multiple times
@@ -186,7 +187,7 @@ class ProtocolHandlersMixin:
                     )
                 else:
                     fingerprint = None
-                    logger.debug(f"Skipping deduplication for !orderbook from {from_nick}")
+                    logger.trace(f"Skipping deduplication for !orderbook from {from_nick}")
 
             # Check for duplicates (skip for !orderbook which has its own rate limiting)
             if fingerprint:
@@ -197,7 +198,7 @@ class ProtocolHandlersMixin:
                     # This is a duplicate - log and skip processing
                     # Only log first few duplicates to avoid spam
                     if count <= 3:
-                        logger.debug(
+                        logger.trace(
                             f"Duplicate message #{count} from {from_nick} "
                             f"via {source} (first via {first_source}): {command or 'pubmsg'}"
                         )
@@ -221,9 +222,9 @@ class ProtocolHandlersMixin:
             elif msg_type == MessageType.PUBMSG.value:
                 await self._handle_pubmsg(line, source=source, generation_id=generation_id)
             elif msg_type == MessageType.PEERLIST.value:
-                logger.debug(f"Received peerlist: {line[:50]}...")
+                logger.trace(f"Received peerlist: {line[:50]}...")
             else:
-                logger.debug(f"Ignoring message type {msg_type}")
+                logger.trace(f"Ignoring message type {msg_type}")
 
         except Exception as e:
             logger.error(f"Failed to handle message: {e}")
@@ -339,7 +340,7 @@ class ProtocolHandlersMixin:
                     "Suppressing !orderbook response (global proof-work budget exhausted)",
                 )
                 return
-            logger.info(
+            logger.trace(
                 f"Received !orderbook request from {taker_nick}, sending offers via PRIVMSG"
             )
             offers = (
@@ -363,7 +364,7 @@ class ProtocolHandlersMixin:
                     )
                     if bond_proof:
                         data += f"!tbond {bond_proof}"
-                        logger.debug(
+                        logger.trace(
                             f"Including fidelity bond proof in offer to {taker_nick} "
                             f"(proof length: {len(bond_proof)})"
                         )
@@ -374,7 +375,7 @@ class ProtocolHandlersMixin:
                         # Send as PRIVMSG
                         # Format: taker_nick!maker_nick!<order_type> <data> <signature>
                         await client.send_private_message(taker_nick, order_type_str, data)
-                        logger.debug(f"Sent {order_type_str} offer to {taker_nick}")
+                        logger.trace(f"Sent {order_type_str} offer to {taker_nick}")
                     except Exception as e:
                         logger.error(f"Failed to send offer to {taker_nick} via directory: {e}")
 
@@ -430,7 +431,7 @@ class ProtocolHandlersMixin:
                     )
                     if bond_proof:
                         data += f"!tbond {bond_proof}"
-                        logger.debug(
+                        logger.trace(
                             f"Including fidelity bond proof in direct offer to {taker_nick}"
                         )
 
@@ -445,7 +446,7 @@ class ProtocolHandlersMixin:
                 # Send as PRIVMSG (type 685)
                 msg = {"type": MessageType.PRIVMSG.value, "line": line}
                 await connection.send(json.dumps(msg).encode())
-                logger.debug(f"Sent {order_type_str} offer to {taker_nick} via direct connection")
+                logger.trace(f"Sent {order_type_str} offer to {taker_nick} via direct connection")
 
         except Exception as e:
             logger.error(f"Failed to send offers to {taker_nick} via direct connection: {e}")
@@ -508,7 +509,7 @@ class ProtocolHandlersMixin:
                 # We should re-broadcast it publicly to obfuscate the source
                 await self._handle_hp2_privmsg(from_nick, command)
             else:
-                logger.debug(f"Unknown command: {command[:20]}...")
+                logger.trace(f"Unknown command: {command[:20]}...")
 
         except Exception as e:
             logger.error(f"Failed to handle privmsg: {e}")
@@ -577,6 +578,14 @@ class ProtocolHandlersMixin:
             commitment = commitment.lower()
             log_context = coinjoin_log_context(commitment)
             log_context.__enter__()
+            log_coinjoin_message(
+                "received",
+                "fill",
+                peer=taker_nick,
+                transport=source,
+                payload_length=len(msg.encode("utf-8")),
+                state="pre_session",
+            )
 
             # Check if commitment is already blacklisted
             if not check_commitment(commitment):
@@ -933,6 +942,7 @@ class ProtocolHandlersMixin:
             outpoints=frozenset(session.our_utxos),
             expires_at=now + pending_ttl,
             lock_ttl_sec=pending_ttl,
+            commitment=session.commitment.hex(),
         )
         async with self._pending_signed_rounds_lock:
             self._prune_pending_signed_rounds_locked(now)
@@ -1009,6 +1019,7 @@ class ProtocolHandlersMixin:
         Note: !push doesn't require channel consistency validation since it's
         fire-and-forget and not part of the critical CoinJoin handshake.
         """
+        log_context: AbstractContextManager[None] | None = None
         try:
             generation_id = self.current_generation_id if generation_id is None else generation_id
             generation = self._generation(generation_id)
@@ -1047,6 +1058,17 @@ class ProtocolHandlersMixin:
                         f"Rejecting unmatched !push from {taker_nick} for {txid[:16]}..."
                     )
                     return
+                if pending.commitment:
+                    log_context = coinjoin_log_context(pending.commitment)
+                    log_context.__enter__()
+                log_coinjoin_message(
+                    "received",
+                    "push",
+                    peer=taker_nick,
+                    transport=source,
+                    payload_length=len(msg.encode("utf-8")),
+                    state=CoinJoinState.COMPLETE.value,
+                )
                 try:
                     renewed = self.wallet.renew_coinjoin_inputs(
                         set(pending.outpoints),
@@ -1075,6 +1097,7 @@ class ProtocolHandlersMixin:
 
             try:
                 txid = await self.backend.broadcast_transaction(tx_hex)
+                logger.info("Broadcast matched CoinJoin transaction")
                 logger.bind(sensitive=True).info(f"Broadcast transaction for {taker_nick}: {txid}")
             except Exception as e:
                 # Log but don't fail - the taker may have a fallback
@@ -1084,6 +1107,9 @@ class ProtocolHandlersMixin:
         except Exception as e:
             logger.error("Failed to handle !push")
             logger.bind(sensitive=True).error(f"Failed to handle !push: {e}")
+        finally:
+            if log_context is not None:
+                log_context.__exit__(None, None, None)
 
     async def _handle_hp2_pubmsg(self, from_nick: str, msg: str) -> None:
         """Handle !hp2 commitment broadcast seen in public channel.
@@ -1097,7 +1123,7 @@ class ProtocolHandlersMixin:
         try:
             parts = msg.split()
             if len(parts) < 2:
-                logger.debug(f"Invalid !hp2 format from {from_nick}: missing commitment")
+                logger.trace(f"Invalid !hp2 format from {from_nick}: missing commitment")
                 return
 
             commitment = parts[1]
@@ -1105,18 +1131,18 @@ class ProtocolHandlersMixin:
             # Validate format before adding to blacklist
             valid, error = validate_commitment_hex(commitment)
             if not valid:
-                logger.debug(f"Ignoring invalid !hp2 commitment from {from_nick}: {error}")
+                logger.trace(f"Ignoring invalid !hp2 commitment from {from_nick}: {error}")
                 return
 
             commitment = commitment.lower()
             if not check_commitment(commitment):
-                logger.debug(
+                logger.trace(
                     f"Received duplicate commitment broadcast from {from_nick}: "
                     f"{commitment[:16]}..."
                 )
                 return
             if not self._hp2_admission_limiter.try_consume():
-                logger.debug("Dropping hp2 broadcast (global admission budget exhausted)")
+                logger.trace("Dropping hp2 broadcast (global admission budget exhausted)")
                 return
 
             if add_remote_commitment(commitment):
@@ -1125,7 +1151,7 @@ class ProtocolHandlersMixin:
                     f"cached for this process: {commitment[:16]}..."
                 )
             else:
-                logger.debug(
+                logger.trace(
                     f"Received commitment broadcast from {from_nick}, "
                     f"already blacklisted: {commitment[:16]}..."
                 )
@@ -1151,29 +1177,29 @@ class ProtocolHandlersMixin:
         try:
             parts = msg.split()
             if len(parts) < 2:
-                logger.debug(f"Invalid !hp2 format from {from_nick}: missing commitment")
+                logger.trace(f"Invalid !hp2 format from {from_nick}: missing commitment")
                 return
 
             commitment = parts[1]
             # Validate format before relaying or caching.
             valid, error = validate_commitment_hex(commitment)
             if not valid:
-                logger.debug(f"Ignoring invalid !hp2 relay from {from_nick}: {error}")
+                logger.trace(f"Ignoring invalid !hp2 relay from {from_nick}: {error}")
                 return
 
             commitment = commitment.lower()
             if not check_commitment(commitment):
-                logger.debug(
+                logger.trace(
                     f"Received duplicate commitment relay from {from_nick}: {commitment[:16]}..."
                 )
                 return
             if not self._hp2_admission_limiter.try_consume():
-                logger.debug("Dropping hp2 relay (global admission budget exhausted)")
+                logger.trace("Dropping hp2 relay (global admission budget exhausted)")
                 return
             if not add_remote_commitment(commitment):
                 return
             if not self._hp2_relay_work_limiter.try_consume():
-                logger.debug("Dropping hp2 relay (global relay-work budget exhausted)")
+                logger.trace("Dropping hp2 relay (global relay-work budget exhausted)")
                 return
 
             # Broadcast via ephemeral identity (fire-and-forget)
@@ -1256,7 +1282,7 @@ class ProtocolHandlersMixin:
             try:
                 await asyncio.wait_for(semaphore.acquire(), timeout=0)
             except TimeoutError:
-                logger.debug(
+                logger.trace(
                     f"Dropping relayed hp2 broadcast (concurrency limit): {commitment[:16]}..."
                 )
                 return
@@ -1265,7 +1291,12 @@ class ProtocolHandlersMixin:
             await semaphore.acquire()
 
         hp2_msg = f"hp2 {commitment}"
-        ephemeral_clients: list[DirectoryClient] = []
+        ephemeral_clients: list[tuple[str, DirectoryClient]] = []
+        log_context: AbstractContextManager[None] | None = None
+        valid_commitment, _ = validate_commitment_hex(commitment)
+        if not is_relay and valid_commitment:
+            log_context = coinjoin_log_context(commitment)
+            log_context.__enter__()
 
         try:
             nick_identity = NickIdentity(JM_VERSION)
@@ -1297,21 +1328,30 @@ class ProtocolHandlersMixin:
                         socks_password=socks_password,
                     )
                     await client.connect()
-                    ephemeral_clients.append(client)
+                    ephemeral_clients.append((f"directory:{host}:{port}", client))
                 except Exception as e:
-                    logger.debug(f"Ephemeral hp2 connection to {dir_server} failed: {e}")
+                    logger.trace(f"Ephemeral hp2 connection to {dir_server} failed: {e}")
 
             if not ephemeral_clients:
                 logger.warning("Could not connect to any directory for ephemeral hp2 broadcast")
                 return
 
-            for client in ephemeral_clients:
+            for transport, client in ephemeral_clients:
                 try:
                     await client.send_public_message(hp2_msg)
+                    if not is_relay:
+                        log_coinjoin_message(
+                            "sent",
+                            "hp2",
+                            peer="PUBLIC",
+                            transport=transport,
+                            payload_length=len(hp2_msg.encode("utf-8")),
+                            state=CoinJoinState.IOAUTH_SENT.value,
+                        )
                 except Exception as e:
-                    logger.debug(f"Ephemeral hp2 broadcast failed on one directory: {e}")
+                    logger.trace(f"Ephemeral hp2 broadcast failed on one directory: {e}")
 
-            logger.debug(
+            logger.trace(
                 f"Ephemeral hp2 broadcast complete on "
                 f"{len(ephemeral_clients)} directories: {commitment[:16]}..."
             )
@@ -1321,7 +1361,9 @@ class ProtocolHandlersMixin:
 
         finally:
             semaphore.release()
-            for client in ephemeral_clients:
+            if log_context is not None:
+                log_context.__exit__(None, None, None)
+            for _, client in ephemeral_clients:
                 try:
                     await client.close()
                 except Exception:
@@ -1363,8 +1405,16 @@ class ProtocolHandlersMixin:
                 # Fallback to JSON for unknown commands
                 msg_content = json.dumps(data)
 
-            for client in self._generation_clients(generation_id).values():
+            for node_id, client in self._generation_clients(generation_id).items():
                 await client.send_private_message(taker_nick, command, msg_content)
+                log_coinjoin_message(
+                    "sent",
+                    command,
+                    peer=taker_nick,
+                    transport=f"directory:{node_id}",
+                    payload_length=len(msg_content.encode("utf-8")),
+                    state=CoinJoinState.PUBKEY_SENT.value,
+                )
 
             logger.debug(f"Sent signed {command} to {taker_nick}")
 
