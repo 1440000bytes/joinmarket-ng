@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -28,6 +28,7 @@ from jmcore.bitcoin import get_txid
 
 from jmwallet.backends.base import MempoolAcceptResult, MempoolSpenderLookupResult
 from jmwallet.backends.descriptor_wallet import (
+    DEFAULT_RPC_TIMEOUT,
     DescriptorWalletBackend,
     generate_wallet_name,
     get_mnemonic_fingerprint,
@@ -49,6 +50,60 @@ class TestDescriptorWalletBackendUnit:
         assert backend.wallet_name == "test_wallet"
         assert backend._wallet_loaded is False
         assert backend._descriptors_imported is False
+
+    def test_constructor_clients_ignore_environment_proxies(self) -> None:
+        """Regular and import RPC clients must not inherit process proxy settings."""
+        regular_client = MagicMock()
+        import_client = MagicMock()
+        with patch(
+            "jmwallet.backends.descriptor_wallet.httpx.AsyncClient",
+            side_effect=[regular_client, import_client],
+        ) as mock_async_client:
+            DescriptorWalletBackend(
+                rpc_user=TEST_RPC_USER,
+                rpc_password=TEST_RPC_PASSWORD,
+                import_timeout=123.0,
+            )
+
+        assert mock_async_client.call_args_list[0].kwargs == {
+            "timeout": DEFAULT_RPC_TIMEOUT,
+            "auth": (TEST_RPC_USER, TEST_RPC_PASSWORD),
+            "trust_env": False,
+        }
+        assert mock_async_client.call_args_list[1].kwargs == {
+            "timeout": 123.0,
+            "auth": (TEST_RPC_USER, TEST_RPC_PASSWORD),
+            "trust_env": False,
+        }
+
+    @pytest.mark.asyncio
+    async def test_close_recreates_clients_without_environment_proxies(self) -> None:
+        """Client recreation preserves proxy isolation after a backend restart."""
+        original_regular_client = MagicMock()
+        original_regular_client.aclose = AsyncMock()
+        original_import_client = MagicMock()
+        original_import_client.aclose = AsyncMock()
+        reopened_regular_client = MagicMock()
+        reopened_import_client = MagicMock()
+
+        with patch(
+            "jmwallet.backends.descriptor_wallet.httpx.AsyncClient",
+            side_effect=[
+                original_regular_client,
+                original_import_client,
+                reopened_regular_client,
+                reopened_import_client,
+            ],
+        ) as mock_async_client:
+            backend = DescriptorWalletBackend(import_timeout=123.0)
+            await backend.close()
+
+        assert len(mock_async_client.call_args_list) == 4
+        assert all(call.kwargs["trust_env"] is False for call in mock_async_client.call_args_list)
+        assert mock_async_client.call_args_list[2].kwargs["timeout"] is DEFAULT_RPC_TIMEOUT
+        assert mock_async_client.call_args_list[3].kwargs["timeout"] == 123.0
+        original_regular_client.aclose.assert_awaited_once()
+        original_import_client.aclose.assert_awaited_once()
 
     def test_get_wallet_url(self):
         """Test wallet-specific URL generation."""
@@ -1799,6 +1854,32 @@ class TestBackgroundRescan:
     never does. The scan itself is server-side, so we don't need any
     Python-side task plumbing.
     """
+
+    @pytest.mark.asyncio
+    async def test_start_background_rescan_kick_ignores_environment_proxies(self) -> None:
+        """The short-lived rescan client must not inherit process proxy settings."""
+        backend = DescriptorWalletBackend(wallet_name="test_rescan_proxy_isolation")
+        backend._wallet_loaded = True
+        backend._effective_rescan_height = AsyncMock(return_value=42)  # type: ignore[method-assign]
+        backend._rpc_call = AsyncMock(return_value={"start_height": 42})  # type: ignore[method-assign]
+        kick_client = MagicMock()
+        kick_client.aclose = AsyncMock()
+
+        try:
+            with patch(
+                "jmwallet.backends.descriptor_wallet.httpx.AsyncClient",
+                return_value=kick_client,
+            ) as mock_async_client:
+                assert await backend.start_background_rescan(start_height=42) is True
+        finally:
+            await backend.close()
+
+        mock_async_client.assert_called_once_with(
+            timeout=2.0,
+            auth=(backend.rpc_user, backend.rpc_password),
+            trust_env=False,
+        )
+        kick_client.aclose.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_start_background_rescan_observes_scanning_started(self) -> None:

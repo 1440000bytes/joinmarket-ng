@@ -3363,6 +3363,7 @@ class TestNeutrinoTofuPinning:
         original_client.aclose.assert_awaited_once()
         assert pinned_client.get.await_count == 2
         assert mock_async_client.call_count == 3
+        assert all(call.kwargs["trust_env"] is False for call in mock_async_client.call_args_list)
         assert mock_async_client.call_args_list[1].kwargs["headers"] == {
             "Authorization": "Bearer secret-token"
         }

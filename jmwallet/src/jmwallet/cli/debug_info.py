@@ -222,7 +222,7 @@ async def _get_neutrino_info(
     info["url"] = neutrino_url
 
     # Build httpx client kwargs with optional TLS pinning and auth header.
-    client_kwargs: dict[str, Any] = {"timeout": 10.0}
+    client_kwargs: dict[str, Any] = {"timeout": 10.0, "trust_env": False}
     if tls_cert_path:
         cert = Path(tls_cert_path)
         if cert.is_file():

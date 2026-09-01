@@ -323,7 +323,7 @@ class NeutrinoBackend(BlockchainBackend):
 
     def _build_http_client(self) -> httpx.AsyncClient:
         """Create an ``httpx.AsyncClient`` with optional TLS pinning and auth."""
-        kwargs: dict[str, Any] = {"timeout": 300.0}
+        kwargs: dict[str, Any] = {"timeout": 300.0, "trust_env": False}
 
         if self._is_https:
             kwargs["verify"] = self._build_ssl_context()

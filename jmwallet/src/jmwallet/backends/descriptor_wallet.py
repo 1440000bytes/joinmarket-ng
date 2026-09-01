@@ -190,10 +190,12 @@ class DescriptorWalletBackend(BlockchainBackend):
         )
 
         # Client for regular RPC calls
-        self.client = httpx.AsyncClient(timeout=DEFAULT_RPC_TIMEOUT, auth=(rpc_user, rpc_password))
+        self.client = httpx.AsyncClient(
+            timeout=DEFAULT_RPC_TIMEOUT, auth=(rpc_user, rpc_password), trust_env=False
+        )
         # Client for long-running import operations
         self._import_client = httpx.AsyncClient(
-            timeout=import_timeout, auth=(rpc_user, rpc_password)
+            timeout=import_timeout, auth=(rpc_user, rpc_password), trust_env=False
         )
         self._request_id = 0
 
@@ -1256,7 +1258,9 @@ class DescriptorWalletBackend(BlockchainBackend):
         # Short-timeout client. We expect the request to time out because
         # rescanblockchain only returns once the scan completes, which can
         # take hours on mainnet.
-        kick_client = httpx.AsyncClient(timeout=2.0, auth=(self.rpc_user, self.rpc_password))
+        kick_client = httpx.AsyncClient(
+            timeout=2.0, auth=(self.rpc_user, self.rpc_password), trust_env=False
+        )
         try:
             try:
                 await self._rpc_call(
@@ -2665,10 +2669,10 @@ class DescriptorWalletBackend(BlockchainBackend):
         # Re-create fresh clients so this instance is usable again if the
         # wallet service is restarted (e.g. maker stop → start in jmwalletd).
         self.client = httpx.AsyncClient(
-            timeout=DEFAULT_RPC_TIMEOUT, auth=(self.rpc_user, self.rpc_password)
+            timeout=DEFAULT_RPC_TIMEOUT, auth=(self.rpc_user, self.rpc_password), trust_env=False
         )
         self._import_client = httpx.AsyncClient(
-            timeout=self.import_timeout, auth=(self.rpc_user, self.rpc_password)
+            timeout=self.import_timeout, auth=(self.rpc_user, self.rpc_password), trust_env=False
         )
         self._wallet_loaded = False
         self._descriptors_imported = False

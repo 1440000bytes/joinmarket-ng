@@ -197,14 +197,19 @@ class TestGetNeutrinoInfo:
         with patch(
             "httpx.AsyncClient",
             return_value=_FakeAsyncClient(responses),
-        ):
-            info = asyncio.run(_get_neutrino_info(base))
+        ) as mock_async_client:
+            info = asyncio.run(_get_neutrino_info(base, auth_token="debug-token"))
 
         assert info["status"] == "reachable"
         assert info["server_version"] == "v0.10.0"
         assert info["version_source"] == "/v1/version"
         assert info["watched_addresses"] == "42"
         assert info["peers_connected"] == "6"
+        mock_async_client.assert_called_once_with(
+            timeout=10.0,
+            trust_env=False,
+            headers={"Authorization": "Bearer debug-token"},
+        )
 
     def test_get_neutrino_info_handles_missing_version_and_watch_count(self) -> None:
         base = "http://127.0.0.1:8334"
