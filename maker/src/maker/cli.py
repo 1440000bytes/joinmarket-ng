@@ -758,7 +758,16 @@ def start(
     logger.info(f"Directory servers: {len(config.directory_servers)} configured")
 
     wallet = create_wallet_service(config)
-    bot = MakerBot(wallet, wallet.backend, config)
+
+    def _publish_maker_nick(_old_nick: str, new_nick: str) -> None:
+        write_nick_state(config.data_dir, "maker", new_nick)
+
+    bot = MakerBot(
+        wallet,
+        wallet.backend,
+        config,
+        nick_change_callback=_publish_maker_nick,
+    )
 
     # Store the specific fidelity bond selection if provided
     if fidelity_bond and no_fidelity_bond:

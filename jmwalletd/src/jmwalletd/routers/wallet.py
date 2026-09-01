@@ -89,6 +89,13 @@ def _get_offer_list_from_maker(
     ]
 
 
+def _get_nickname_from_maker(state: DaemonState) -> str | None:
+    """Read the current generation's nickname from the running maker."""
+    maker = state._maker_ref
+    nickname = getattr(maker, "nick", None) if maker is not None else None
+    return nickname if isinstance(nickname, str) and nickname else state.nickname
+
+
 def _broadcast_status_value(
     taker: object | None, attribute: str, fallback: str | None
 ) -> str | None:
@@ -200,7 +207,7 @@ async def get_session(
     # Populate extra fields only when authenticated.
     if state.wallet_loaded and token_valid:
         resp.schedule = _get_running_tumble_schedule(state)
-        resp.nickname = state.nickname
+        resp.nickname = _get_nickname_from_maker(state)
         taker = state._taker_ref
         resp.broadcast_policy = _broadcast_status_value(
             taker, "last_broadcast_policy", state.last_broadcast_policy

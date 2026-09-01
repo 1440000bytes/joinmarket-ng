@@ -330,10 +330,16 @@ async def start_maker(
                     cj_fee_absolute=cjfee_a,
                     tx_fee_contribution=txfee,
                 )
+
+                def _publish_maker_nick(_old_nick: str, new_nick: str) -> None:
+                    state.nickname = new_nick
+                    write_nick_state(state.data_dir, "maker", new_nick)
+
                 maker = MakerBot(
                     wallet=ws,
                     backend=backend,
                     config=config,
+                    nick_change_callback=_publish_maker_nick,
                 )
                 state._maker_ref = maker
                 state.nickname = maker.nick

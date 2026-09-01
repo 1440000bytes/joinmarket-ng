@@ -144,6 +144,7 @@ async def test_scheduler_samples_independently_of_activity(
 @pytest.mark.parametrize("bonded", [False, True])
 async def test_cutover_silently_disconnects_before_replacement(bot: MakerBot, bonded: bool) -> None:
     old = bot.generations[0]
+    old_nick = old.nick_identity.nick
     old.current_offers = [MagicMock(oid=0), MagicMock(oid=1)]
     bot.current_offers = old.current_offers
     old_client = MagicMock()
@@ -160,6 +161,8 @@ async def test_cutover_silently_disconnects_before_replacement(bot: MakerBot, bo
     replacement.direct_connections["J5SameTaker"] = new_connection
     bot.running = True
     bot.fidelity_bond = MagicMock() if bonded else None
+    publish_nick_change = MagicMock()
+    bot._nick_change_callback = publish_nick_change
     events: list[str] = []
     old_client.close.side_effect = lambda: events.append("old-close")
 
@@ -189,6 +192,7 @@ async def test_cutover_silently_disconnects_before_replacement(bot: MakerBot, bo
     old.hidden_service_listener.stop.assert_awaited_once_with()
     old_client.send_public_message.assert_not_awaited()
     assert events == ["old-close", "new-connect", "new-announce"]
+    publish_nick_change.assert_called_once_with(old_nick, replacement.nick_identity.nick)
     for task in old.tasks:
         task.cancel()
     await asyncio.gather(*old.tasks, return_exceptions=True)
@@ -290,6 +294,8 @@ async def test_replacement_connect_failure_closes_prepared_generation(bot: Maker
         side_effect=RuntimeError("connect failed")
     )
     bot.running = True
+    publish_nick_change = MagicMock()
+    bot._nick_change_callback = publish_nick_change
 
     with patch.object(
         bot, "_create_replacement_generation", new=AsyncMock(return_value=replacement)
@@ -304,6 +310,7 @@ async def test_replacement_connect_failure_closes_prepared_generation(bot: Maker
     old.hidden_service_listener.start.assert_awaited_once_with()
     assert old.hidden_service_listener.port == old.listener_port
     old.directory_pool.connect_all_with_retry.assert_awaited_once()
+    publish_nick_change.assert_not_called()
 
 
 @pytest.mark.asyncio

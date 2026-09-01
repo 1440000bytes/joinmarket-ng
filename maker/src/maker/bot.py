@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from jmcore.commitment_blacklist import set_blacklist_path
@@ -101,10 +102,12 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
         wallet: WalletService,
         backend: BlockchainBackend,
         config: MakerConfig,
+        nick_change_callback: Callable[[str, str], None] | None = None,
     ):
         self.wallet = wallet
         self.backend = backend
         self.config = config
+        self._nick_change_callback = nick_change_callback
         self._static_onion_configured = config.onion_host is not None
         self.minimum_fee_rate_sat_vb = config.min_fee_rate_sat_vb
         self._minimum_fee_policy_resolved_at: float | None = None
@@ -281,6 +284,15 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
         self.direct_connections = generation.direct_connections
         self._direct_connection_states = generation.direct_connection_states
         self._directory_reconnect_attempts = generation.reconnect_attempts
+
+    def _publish_nick_change(self, old_nick: str, new_nick: str) -> None:
+        """Publish a completed identity cutover to the embedding process."""
+        if self._nick_change_callback is None:
+            return
+        try:
+            self._nick_change_callback(old_nick, new_nick)
+        except Exception as exc:
+            logger.warning(f"Could not publish maker nick change: {exc}")
 
     def _resolve_directory_outage(self, connected_count: int) -> None:
         """Emit one recovery notification for an outstanding process-wide outage."""
@@ -765,6 +777,7 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
                 return False
             self.generations[replacement.generation_id] = replacement
             self._activate_generation(replacement)
+            self._publish_nick_change(old.nick_identity.nick, replacement.nick_identity.nick)
             await self._announce_generation_offers(replacement)
             self._start_generation_listeners(replacement)
             self._resolve_directory_outage(len(replacement.directory_clients))

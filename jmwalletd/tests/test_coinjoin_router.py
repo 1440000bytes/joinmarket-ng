@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from typing import Any
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, Mock, call, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -831,6 +831,13 @@ class TestStartMaker:
         mock_maker = AsyncMock()
         mock_maker.nick = "J5TestNickWalletd"
         mock_maker.current_offers = []
+
+        async def rotate_then_stop() -> None:
+            callback = mock_maker_cls.call_args.kwargs["nick_change_callback"]
+            callback("J5TestNickWalletd", "J5RotatedNickWalletd")
+            assert state.nickname == "J5RotatedNickWalletd"
+
+        mock_maker.start.side_effect = rotate_then_stop
         mock_maker_cls.return_value = mock_maker
 
         resp = client.post(
@@ -849,7 +856,10 @@ class TestStartMaker:
         # Allow the background asyncio task to run to completion.
         time.sleep(0.1)
 
-        mock_write_nick.assert_called_once_with(state.data_dir, "maker", "J5TestNickWalletd")
+        assert mock_write_nick.call_args_list == [
+            call(state.data_dir, "maker", "J5TestNickWalletd"),
+            call(state.data_dir, "maker", "J5RotatedNickWalletd"),
+        ]
         mock_remove_nick.assert_called_once_with(state.data_dir, "maker")
 
     @patch("jmwalletd._backend.get_backend", new_callable=AsyncMock)

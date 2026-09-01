@@ -107,7 +107,13 @@ def test_start_expired_certificate_exits_and_cleans_up(
     bot.stop = AsyncMock()
     notifier = MagicMock()
     notifier.notify_startup = AsyncMock()
+    write_nick_state = MagicMock()
     remove_nick_state = MagicMock()
+    maker_kwargs: dict[str, object] = {}
+
+    def make_bot(*_args: object, **kwargs: object) -> MagicMock:
+        maker_kwargs.update(kwargs)
+        return bot
 
     monkeypatch.setattr(cli_module, "setup_cli", lambda *_args, **_kwargs: settings)
     monkeypatch.setattr(cli_module, "ensure_config_file", lambda _data_dir: None)
@@ -122,9 +128,9 @@ def test_start_expired_certificate_exits_and_cleans_up(
     )
     monkeypatch.setattr(cli_module, "build_maker_config", lambda **_kwargs: config)
     monkeypatch.setattr(cli_module, "create_wallet_service", lambda _config: wallet)
-    monkeypatch.setattr(cli_module, "MakerBot", lambda *_args: bot)
+    monkeypatch.setattr(cli_module, "MakerBot", make_bot)
     monkeypatch.setattr(cli_module, "get_notifier", lambda *_args, **_kwargs: notifier)
-    monkeypatch.setattr(cli_module, "write_nick_state", MagicMock())
+    monkeypatch.setattr(cli_module, "write_nick_state", write_nick_state)
     monkeypatch.setattr(cli_module, "remove_nick_state", remove_nick_state)
 
     result = runner.invoke(app, ["start"], prog_name="jm-maker")
@@ -132,3 +138,8 @@ def test_start_expired_certificate_exits_and_cleans_up(
     assert result.exit_code == 1
     bot.stop.assert_awaited_once()
     remove_nick_state.assert_called_once_with(tmp_path, "maker")
+
+    callback = maker_kwargs["nick_change_callback"]
+    assert callable(callback)
+    callback("J5ExpiredMaker", "J5RotatedMaker")
+    write_nick_state.assert_any_call(tmp_path, "maker", "J5RotatedMaker")

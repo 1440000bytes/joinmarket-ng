@@ -723,6 +723,24 @@ class TestSessionOfferList:
         assert data["offer_list"][0]["cjfee"] == "250"
         assert data["offer_list"][0]["minsize"] == 100_000
 
+    def test_nickname_from_current_maker_generation(
+        self, authed_client: tuple[TestClient, str]
+    ) -> None:
+        """The live maker nickname must take precedence after identity rotation."""
+        client, token = authed_client
+        state = get_daemon_state()
+        maker = MagicMock()
+        maker.nick = "J5RotatedMaker"
+        maker.current_offers = []
+        state._maker_ref = maker
+        state.maker_running = True
+        state.nickname = "J5StartupMaker"
+
+        resp = client.get("/api/v1/session", headers={"Authorization": f"Bearer {token}"})
+
+        assert resp.status_code == 200
+        assert resp.json()["nickname"] == "J5RotatedMaker"
+
     def test_offer_list_none_without_maker(self, authed_client: tuple[TestClient, str]) -> None:
         """Without a maker reference, offer_list should be None."""
         client, token = authed_client
