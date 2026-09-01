@@ -23,6 +23,8 @@ jobs:
           python-version: '3.14'
 
       - uses: j178/prek-action@v1
+        with:
+          prek-version: 0.5.1
 
       - name: Validate commit messages
         if: ${{ github.event_name == 'pull_request' }}
