@@ -294,9 +294,6 @@ class ProtocolHandlersMixin:
                             )
                     return
 
-                logger.info(
-                    f"Received !orderbook request from {from_nick}, sending offers via PRIVMSG"
-                )
                 await self._send_offers_to_taker(from_nick, generation_id=generation_id)
             elif to_nick == "PUBLIC" and command.startswith("hp2"):
                 # hp2 via pubmsg = commitment broadcast for blacklisting
@@ -337,8 +334,14 @@ class ProtocolHandlersMixin:
             if generation is None or generation.state is not GenerationState.ACCEPTING:
                 return
             if not self._orderbook_proof_work_limiter.try_consume():
-                logger.debug("Dropping orderbook response (global proof-work budget exhausted)")
+                self._log_rate_limited(
+                    "orderbook-proof-work-budget",
+                    "Suppressing !orderbook response (global proof-work budget exhausted)",
+                )
                 return
+            logger.info(
+                f"Received !orderbook request from {taker_nick}, sending offers via PRIVMSG"
+            )
             offers = (
                 self.current_offers
                 if generation_id == self.current_generation_id

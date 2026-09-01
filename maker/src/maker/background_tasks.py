@@ -303,8 +303,6 @@ class BackgroundTasksMixin:
                 generation.directory_clients = clients
                 generation.current_offers = offers
                 generation.reconnect_attempts = reconnect_attempts
-                if self._all_directories_disconnected:
-                    generation.all_directories_disconnected = True
 
                 # Find disconnected directories
                 disconnected_servers = directory_pool.list_disconnected()
@@ -389,15 +387,7 @@ class BackgroundTasksMixin:
                             )
                         )
 
-                        # If all directories were previously disconnected, send a recovery alert
-                        if generation.all_directories_disconnected:
-                            generation.all_directories_disconnected = False
-                            self._all_directories_disconnected = False
-                            spawn_task(
-                                get_notifier().notify_all_directories_reconnected(
-                                    connected_count, total_count
-                                )
-                            )
+                        self._resolve_directory_outage(connected_count)
                     else:
                         # Increment retry counter
                         reconnect_attempts[node_id] = attempts + 1
@@ -674,6 +664,37 @@ class BackgroundTasksMixin:
         consecutive_errors = 0
         max_consecutive_errors = 10
 
+        def is_current_accepting_generation() -> bool:
+            return (
+                generation_id == self.current_generation_id
+                and generation is self._generation()
+                and generation.state is GenerationState.ACCEPTING
+            )
+
+        async def disconnect_for_reconnect() -> None:
+            """Remove one failed client and notify only for active service loss."""
+            was_registered = clients.get(node_id) is client
+            if was_registered:
+                clients.pop(node_id, None)
+            try:
+                await client.close()
+            except Exception:
+                pass
+
+            if not was_registered or not is_current_accepting_generation():
+                return
+
+            connected_count = len(clients)
+            total_count = len(self.config.directory_servers)
+            spawn_task(
+                get_notifier().notify_directory_disconnect(
+                    node_id, connected_count, total_count, reconnecting=True
+                )
+            )
+            if connected_count == 0 and not self._all_directories_disconnected:
+                self._all_directories_disconnected = True
+                spawn_task(get_notifier().notify_all_directories_disconnected())
+
         while self.running:
             try:
                 # Use listen_for_messages with short duration to check running flag frequently
@@ -695,33 +716,11 @@ class BackgroundTasksMixin:
                 break
             except DirectoryClientError as e:
                 # Connection lost - remove from directory_clients so reconnection task can handle it
-                logger.warning(f"Connection lost on {node_id}: {e}")
-
-                # Remove from connected clients
-                # A stale listener must never erase a newer connection with
-                # the same node id (including after a generation cutover).
-                if clients.get(node_id) is client:
-                    clients.pop(node_id, None)
-
-                # Close the client gracefully
-                try:
-                    await client.close()
-                except Exception:
-                    pass
-
-                # Fire-and-forget notification for directory disconnect
-                connected_count = len(clients)
-                total_count = len(self.config.directory_servers)
-                spawn_task(
-                    get_notifier().notify_directory_disconnect(
-                        node_id, connected_count, total_count, reconnecting=True
-                    )
-                )
-                if connected_count == 0:
-                    generation.all_directories_disconnected = True
-                    if generation_id == self.current_generation_id:
-                        self._all_directories_disconnected = True
-                    spawn_task(get_notifier().notify_all_directories_disconnected())
+                if is_current_accepting_generation():
+                    logger.warning(f"Connection lost on {node_id}: {e}")
+                else:
+                    logger.debug(f"Retired generation connection closed on {node_id}: {e}")
+                await disconnect_for_reconnect()
                 break
             except Exception as e:
                 consecutive_errors += 1
@@ -733,12 +732,7 @@ class BackgroundTasksMixin:
                     logger.error(
                         f"Too many consecutive errors on {node_id}, disconnecting for reconnection"
                     )
-                    if clients.get(node_id) is client:
-                        clients.pop(node_id, None)
-                    try:
-                        await client.close()
-                    except Exception:
-                        pass
+                    await disconnect_for_reconnect()
                     break
                 await asyncio.sleep(backoff)
 

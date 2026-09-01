@@ -2404,6 +2404,9 @@ class TestDirectoryReconnection:
 
         recovery_notify = AsyncMock(return_value=True)
         reconnect_notify = AsyncMock(return_value=True)
+        mock_notifier = MagicMock()
+        mock_notifier.notify_directory_reconnect = reconnect_notify
+        mock_notifier.notify_all_directories_reconnected = recovery_notify
 
         def create_task_stub(coro: object, **_kwargs: object) -> MagicMock:
             if asyncio.iscoroutine(coro):
@@ -2418,16 +2421,15 @@ class TestDirectoryReconnection:
             ),
             patch("maker.background_tasks.asyncio.sleep", side_effect=sleep_and_stop),
             patch("maker.background_tasks.asyncio.create_task", side_effect=create_task_stub),
-            patch("maker.background_tasks.get_notifier") as mock_get_notifier,
+            patch("maker.background_tasks.get_notifier", return_value=mock_notifier),
+            patch("maker.background_tasks.spawn_task", side_effect=create_task_stub),
+            patch("maker.bot.get_notifier", return_value=mock_notifier),
+            patch("maker.bot.spawn_task", side_effect=create_task_stub),
         ):
-            mock_notifier = MagicMock()
-            mock_notifier.notify_directory_reconnect = reconnect_notify
-            mock_notifier.notify_all_directories_reconnected = recovery_notify
-            mock_get_notifier.return_value = mock_notifier
-
             await maker_bot._periodic_directory_reconnect()
 
         assert maker_bot._all_directories_disconnected is False
+        recovery_notify.assert_called_once_with(1, 3)
 
     @pytest.mark.asyncio
     async def test_recovery_notification_not_sent_when_no_all_disconnect_state(self, maker_bot):

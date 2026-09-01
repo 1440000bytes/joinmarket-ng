@@ -50,6 +50,5 @@ class MakerGeneration:
     )
     tasks: list[asyncio.Task[None]] = field(default_factory=list)
     reconnect_attempts: dict[str, int] = field(default_factory=dict)
-    all_directories_disconnected: bool = False
     state: GenerationState = GenerationState.ACCEPTING
     grace_deadline: float | None = None

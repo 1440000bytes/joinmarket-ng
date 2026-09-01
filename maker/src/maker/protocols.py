@@ -183,6 +183,8 @@ class MakerBotProtocol(Protocol):
         interval: float = 10.0,
     ) -> None: ...
 
+    def _resolve_directory_outage(self, connected_count: int) -> None: ...
+
     # Defined in BackgroundTasksMixin, called internally with Protocol-typed self
     async def _connect_to_directory(
         self, dir_server: str

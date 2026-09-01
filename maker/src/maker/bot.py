@@ -245,7 +245,6 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
             direct_connections=self.direct_connections,
             direct_connection_states=self._direct_connection_states,
             reconnect_attempts=self._directory_reconnect_attempts,
-            all_directories_disconnected=self._all_directories_disconnected,
         )
         self.generations[0] = initial_generation
 
@@ -281,7 +280,17 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
         self.direct_connections = generation.direct_connections
         self._direct_connection_states = generation.direct_connection_states
         self._directory_reconnect_attempts = generation.reconnect_attempts
-        self._all_directories_disconnected = generation.all_directories_disconnected
+
+    def _resolve_directory_outage(self, connected_count: int) -> None:
+        """Emit one recovery notification for an outstanding process-wide outage."""
+        if connected_count <= 0 or not self._all_directories_disconnected:
+            return
+        self._all_directories_disconnected = False
+        spawn_task(
+            get_notifier().notify_all_directories_reconnected(
+                connected_count, len(self.config.directory_servers)
+            )
+        )
 
     def _current_session_key(self, taker_nick: str) -> tuple[int, str]:
         return (self.current_generation_id, taker_nick)
@@ -702,6 +711,7 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
         if connected > 0:
             await self._announce_generation_offers(old)
             self._start_generation_listeners(old)
+            self._resolve_directory_outage(len(old.directory_clients))
 
     async def _rotate_generation(self) -> bool:
         """Retire one identity, wait quietly, then publish its replacement."""
@@ -756,6 +766,7 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
             self._activate_generation(replacement)
             await self._announce_generation_offers(replacement)
             self._start_generation_listeners(replacement)
+            self._resolve_directory_outage(len(replacement.directory_clients))
             logger.bind(sensitive=True).info(
                 f"Maker identity generation cut over: {old.nick_identity.nick} -> "
                 f"{replacement.nick_identity.nick}"

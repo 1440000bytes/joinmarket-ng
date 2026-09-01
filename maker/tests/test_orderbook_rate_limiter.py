@@ -434,6 +434,23 @@ class TestMakerBotRateLimiting:
         directory_client.send_private_message.assert_awaited_once()
         direct_connection.send.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_proof_work_suppression_has_no_sent_offers_log(self, maker_bot):
+        maker_bot._orderbook_proof_work_limiter = ProcessWideTokenBucket(1, 0.0)
+        assert maker_bot._orderbook_proof_work_limiter.try_consume() is True
+
+        with (
+            patch("maker.protocol_handlers.logger.info") as info_log,
+            patch("maker.bot.logger.warning") as warning_log,
+        ):
+            await maker_bot._handle_pubmsg("J5First!PUBLIC!orderbook")
+            await maker_bot._handle_pubmsg("J5Second!PUBLIC!orderbook")
+
+        info_log.assert_not_called()
+        warning_log.assert_called_once_with(
+            "Suppressing !orderbook response (global proof-work budget exhausted)"
+        )
+
     def test_config_default_rate_limit_values(self, mock_wallet, mock_backend):
         """Test default rate limit values in MakerConfig."""
         default_config = MakerConfig(

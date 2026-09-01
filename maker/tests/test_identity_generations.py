@@ -629,10 +629,13 @@ async def test_grace_cleanup_closes_only_old_generation(bot: MakerBot) -> None:
 
 
 @pytest.mark.asyncio
-async def test_stale_old_listener_cannot_remove_current_client(bot: MakerBot) -> None:
+@pytest.mark.parametrize("retired_state", [GenerationState.GRACE, GenerationState.CLOSED])
+async def test_retired_listener_is_silent_and_cannot_remove_current_client(
+    bot: MakerBot, retired_state: GenerationState
+) -> None:
     node_id = "directory.onion:5222"
     old = bot.generations[0]
-    old.state = GenerationState.GRACE
+    old.state = retired_state
     old_client = MagicMock()
     old_client.listen_for_messages = AsyncMock(side_effect=DirectoryClientError("lost"))
     old_client.close = AsyncMock()
@@ -644,14 +647,119 @@ async def test_stale_old_listener_cannot_remove_current_client(bot: MakerBot) ->
     bot.generations[1] = replacement
     bot._activate_generation(replacement)
     bot.running = True
+    notifier = MagicMock()
+    notifier.notify_directory_disconnect = AsyncMock()
+    notifier.notify_all_directories_disconnected = AsyncMock()
 
-    with patch(
-        "maker.background_tasks.spawn_task", side_effect=lambda coroutine: coroutine.close()
+    with (
+        patch("maker.background_tasks.get_notifier", return_value=notifier),
+        patch("maker.background_tasks.spawn_task", side_effect=lambda coroutine: coroutine.close()),
     ):
         await bot._listen_client(node_id, old_client, generation_id=0)
 
     assert bot.directory_clients[node_id] is new_client
     old_client.close.assert_awaited_once_with()
+    assert bot._all_directories_disconnected is False
+    notifier.notify_directory_disconnect.assert_not_called()
+    notifier.notify_all_directories_disconnected.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_current_accepting_listener_opens_directory_outage_once(bot: MakerBot) -> None:
+    node_id = "directory.onion:5222"
+    bot.running = True
+    notifier = MagicMock()
+    notifier.notify_directory_disconnect = AsyncMock()
+    notifier.notify_all_directories_disconnected = AsyncMock()
+
+    for _ in range(2):
+        client = MagicMock()
+        client.listen_for_messages = AsyncMock(side_effect=DirectoryClientError("lost"))
+        client.close = AsyncMock()
+        bot.directory_clients[node_id] = client
+        with (
+            patch("maker.background_tasks.get_notifier", return_value=notifier),
+            patch(
+                "maker.background_tasks.spawn_task", side_effect=lambda coroutine: coroutine.close()
+            ),
+        ):
+            await bot._listen_client(node_id, client)
+
+    assert bot._all_directories_disconnected is True
+    assert notifier.notify_directory_disconnect.call_count == 2
+    notifier.notify_all_directories_disconnected.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_cutover_resolves_existing_process_directory_outage_once(bot: MakerBot) -> None:
+    old = bot.generations[0]
+    replacement = _generation(bot, 1)
+    replacement_client = MagicMock()
+    replacement.directory_clients["directory.onion:5222"] = replacement_client
+    bot.running = True
+    bot._all_directories_disconnected = True
+    observed_outage_during_connect = False
+
+    async def connect_replacement(**_kwargs: object) -> int:
+        nonlocal observed_outage_during_connect
+        observed_outage_during_connect = bot._all_directories_disconnected
+        return 1
+
+    replacement.directory_pool.connect_all_with_retry = AsyncMock(side_effect=connect_replacement)
+    notifier = MagicMock()
+    notifier.notify_all_directories_reconnected = AsyncMock()
+    notifier.notify_nick_change = AsyncMock()
+
+    with (
+        patch.object(
+            bot, "_create_replacement_generation", new=AsyncMock(return_value=replacement)
+        ),
+        patch.object(bot, "_announce_generation_offers", new=AsyncMock()),
+        patch.object(bot, "_start_generation_listeners"),
+        patch("maker.bot.get_notifier", return_value=notifier),
+        patch("maker.bot.spawn_task", side_effect=lambda coroutine: coroutine.close()),
+    ):
+        assert await bot._rotate_generation() is True
+
+    assert old.state is GenerationState.GRACE
+    assert observed_outage_during_connect is True
+    assert bot._all_directories_disconnected is False
+    notifier.notify_all_directories_reconnected.assert_called_once_with(1, 1)
+
+    for task in old.tasks:
+        task.cancel()
+    await asyncio.gather(*old.tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_normal_cutover_does_not_resolve_directory_outage(bot: MakerBot) -> None:
+    replacement = _generation(bot, 1)
+    replacement_client = MagicMock()
+    replacement.directory_clients["directory.onion:5222"] = replacement_client
+    replacement.directory_pool.connect_all_with_retry = AsyncMock(return_value=1)
+    bot.running = True
+    notifier = MagicMock()
+    notifier.notify_all_directories_reconnected = AsyncMock()
+    notifier.notify_nick_change = AsyncMock()
+
+    with (
+        patch.object(
+            bot, "_create_replacement_generation", new=AsyncMock(return_value=replacement)
+        ),
+        patch.object(bot, "_announce_generation_offers", new=AsyncMock()),
+        patch.object(bot, "_start_generation_listeners"),
+        patch("maker.bot.get_notifier", return_value=notifier),
+        patch("maker.bot.spawn_task", side_effect=lambda coroutine: coroutine.close()),
+    ):
+        assert await bot._rotate_generation() is True
+
+    assert bot._all_directories_disconnected is False
+    notifier.notify_all_directories_reconnected.assert_not_called()
+
+    old = bot.generations[0]
+    for task in old.tasks:
+        task.cancel()
+    await asyncio.gather(*old.tasks, return_exceptions=True)
 
 
 @pytest.mark.asyncio
