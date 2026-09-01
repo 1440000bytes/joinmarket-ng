@@ -48,7 +48,7 @@ Fields are separated by **single whitespace** (multiple spaces not allowed).
 | `!reloffer`, `!absoffer` | No | Yes | 1 | Maker offer responses (via PRIVMSG) |
 | `!fill` | No | Yes | 2 | Taker fills offer with NaCl pubkey + PoDLE commitment |
 | `!pubkey` | No | Yes | 2 | Maker responds with NaCl pubkey |
-| `!error` | No | Yes | Any | Error notification |
+| `!error` | No | Yes | Any | Error notification (NG makers use fixed safe messages) |
 | `!push` | No | Yes | 5 | Request maker to broadcast transaction |
 | `!tbond` | No | Yes | 1 | Fidelity bond proof (with offers) |
 | `!auth` | **Yes** | No | 3 | Taker reveals PoDLE proof (encrypted) |

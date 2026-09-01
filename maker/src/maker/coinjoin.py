@@ -392,7 +392,11 @@ class CoinJoinSession:
                 if not result.valid:
                     return False, {
                         "error": f"Taker's UTXO verification failed: {result.error}",
-                        "error_code": "podle_utxo_invalid",
+                        "error_code": (
+                            "utxo_verification_unavailable"
+                            if result.unavailable
+                            else "podle_utxo_invalid"
+                        ),
                         "error_reason": "PoDLE UTXO verification failed",
                     }
 

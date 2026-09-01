@@ -53,7 +53,7 @@ import binascii
 import ipaddress
 import json
 import re
-from enum import IntEnum
+from enum import IntEnum, StrEnum
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -100,6 +100,13 @@ ALL_FEATURES = {
     FEATURE_PING,
     FEATURE_NICK_AUTH,
 }
+
+
+class MakerError(StrEnum):
+    """Fixed maker error messages that are safe to expose to counterparties."""
+
+    AUTHENTICATION_FAILED = "authentication-failed"
+    VERIFICATION_UNAVAILABLE = "verification-unavailable"
 
 
 @dataclass

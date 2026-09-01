@@ -32,7 +32,7 @@ from jmcore.fee_policy import (
     fee_rate_meets_minimum,
     resolve_min_fee_rate,
 )
-from jmcore.protocol import FEATURE_NEUTRINO_COMPAT, UTXOMetadata, parse_utxo_list
+from jmcore.protocol import FEATURE_NEUTRINO_COMPAT, MakerError, UTXOMetadata, parse_utxo_list
 from jmcore.randomness import secure_random
 from jmwallet.history import (
     HistoryWriteError,
@@ -783,7 +783,17 @@ class CoinJoinSession:
                 # before attempting decryption.
                 if responses[nick].get("error"):
                     error_msg = responses[nick].get("data", "Unknown error")
-                    logger.error(f"Maker {nick} rejected !auth: {error_msg}")
+                    safe_error = (
+                        MakerError.VERIFICATION_UNAVAILABLE
+                        if error_msg == MakerError.VERIFICATION_UNAVAILABLE
+                        else MakerError.AUTHENTICATION_FAILED
+                    )
+                    logger.error(f"Maker {nick} rejected !auth: {safe_error.value}")
+                    logger.bind(sensitive=True).error(
+                        "Maker {} rejected !auth: {}", nick, error_msg
+                    )
+                    # A remote maker controls this error token, so it cannot be
+                    # trusted to bypass the persistent failed-maker policy.
                     failed_makers.append(nick)
                     del self.maker_sessions[nick]
                     continue

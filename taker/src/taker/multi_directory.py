@@ -20,7 +20,12 @@ from jmcore.directory_pool import DirectoryClientPool
 from jmcore.models import Offer
 from jmcore.network import ONION_HOSTID, OnionPeer
 from jmcore.nick_auth import NickAuthMode
-from jmcore.protocol import NOT_SERVING_ONION_HOSTNAME, is_onion_peer_location, parse_jm_message
+from jmcore.protocol import (
+    NOT_SERVING_ONION_HOSTNAME,
+    MessageType,
+    is_onion_peer_location,
+    parse_jm_message,
+)
 from jmcore.randomness import secure_random
 from loguru import logger
 
@@ -806,6 +811,9 @@ class MultiDirectoryClient(DirectoryClientPool):
             """Process a single message from any source (directory or direct)."""
             nonlocal responses, remaining_nicks
 
+            if msg.get("type") != MessageType.PRIVMSG.value:
+                return
+
             line = msg.get("line", "")
             if not line:
                 return
@@ -817,6 +825,8 @@ class MultiDirectoryClient(DirectoryClientPool):
                 return
             from_nick = parsed[0]
             if from_nick not in expected_nicks:
+                return
+            if parsed[1] != self.nick:
                 return
 
             ok, command, _data = verify_signed_privmsg(from_nick, parsed[2], ONION_HOSTID)

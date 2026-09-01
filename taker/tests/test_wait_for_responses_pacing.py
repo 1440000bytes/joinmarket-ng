@@ -16,6 +16,7 @@ from _taker_test_helpers import make_directory_client
 from jmcore.crypto import NickIdentity
 from jmcore.directory_client import DirectoryClientError
 from jmcore.network import ONION_HOSTID
+from jmcore.protocol import MessageType
 from loguru import logger
 
 
@@ -157,12 +158,13 @@ async def test_terminal_listener_does_not_block_healthy_directory_response() -> 
     healthy = HealthyClient(
         [
             {
+                "type": MessageType.PRIVMSG.value,
                 "line": signed_line(
                     maker,
                     client.nick_identity.nick,
                     "pubkey",
                     "MAKER_NACL",
-                )
+                ),
             }
         ]
     )
@@ -185,7 +187,10 @@ async def test_terminal_listener_does_not_block_healthy_directory_response() -> 
 async def test_direct_response_arriving_after_eviction_is_processed() -> None:
     client = make_directory_client()
     maker = NickIdentity(5)
-    direct_message = {"line": signed_line(maker, client.nick_identity.nick, "pubkey", "MAKER_NACL")}
+    direct_message = {
+        "type": MessageType.PRIVMSG.value,
+        "line": signed_line(maker, client.nick_identity.nick, "pubkey", "MAKER_NACL"),
+    }
     dead = DirectMessageDeadClient(client._direct_message_queue, direct_message)
     client.clients = {"dead.onion:5222": dead}
 

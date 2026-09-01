@@ -29,6 +29,7 @@ from jmcore.directory_pool import DirectoryConnectionResult
 from jmcore.encryption import CryptoSession
 from jmcore.models import Offer, OfferType
 from jmcore.network import ONION_HOSTID
+from jmcore.protocol import MakerError, MessageType
 from jmwallet.wallet.models import UTXOInfo
 from loguru import logger
 
@@ -732,8 +733,8 @@ class TestMultiDirectoryClientDirectConnections:
         # the identical, validly-signed !sig payload from the same maker.
         signed = maker.sign_message(sig_data, ONION_HOSTID)
         line = f"{maker_nick}!{client.nick_identity.nick}!sig {signed}"
-        msg_dir1 = {"line": line, "source": "dir1"}
-        msg_dir2 = {"line": line, "source": "dir2"}
+        msg_dir1 = {"type": MessageType.PRIVMSG.value, "line": line, "source": "dir1"}
+        msg_dir2 = {"type": MessageType.PRIVMSG.value, "line": line, "source": "dir2"}
 
         # Pre-load both messages into the direct queue so wait_for_responses
         # drains them without actually opening network connections.
@@ -2244,6 +2245,7 @@ class TestPhaseAuthMakerAuthentication:
         declared_utxos: int = 1,
         max_maker_utxos: int = 15,
         backend_utxo: str = "ok",
+        peer_error: str | None = None,
         cj_amount: int = 0,
         utxo_value: int = 1_500_000,
         utxo_list_override: str | None = None,
@@ -2369,7 +2371,13 @@ class TestPhaseAuthMakerAuthentication:
             dc = MagicMock()
             dc.send_privmsg = AsyncMock()
             dc.upgrade_channel_prefer_direct = MagicMock(side_effect=lambda n, ch: ch)
-            dc.wait_for_responses = AsyncMock(return_value={nick: {"data": encrypted}})
+            dc.wait_for_responses = AsyncMock(
+                return_value=(
+                    {nick: {"error": True, "data": peer_error}}
+                    if peer_error is not None
+                    else {nick: {"data": encrypted}}
+                )
+            )
             taker.directory_client = dc
 
             commitment = MagicMock()
@@ -2395,6 +2403,26 @@ class TestPhaseAuthMakerAuthentication:
         assert result.success is True
         assert nick in session_state.maker_sessions
         assert session_state.maker_sessions[nick].responded_auth is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "peer_error",
+        [
+            MakerError.VERIFICATION_UNAVAILABLE.value,
+            MakerError.AUTHENTICATION_FAILED.value,
+        ],
+    )
+    async def test_peer_reported_errors_remain_failed_makers(self, peer_error):
+        result, session_state, nick = await self._drive_phase_auth(
+            auth_owns_utxo=True,
+            valid_btc_sig=True,
+            peer_error=peer_error,
+        )
+
+        assert result.success is False
+        assert nick not in session_state.maker_sessions
+        assert result.unavailable_makers == []
+        assert result.failed_makers == [nick]
 
     @pytest.mark.asyncio
     async def test_rejects_maker_with_invalid_btc_sig(self):

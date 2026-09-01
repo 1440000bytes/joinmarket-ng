@@ -13,6 +13,7 @@ import pytest
 from _taker_test_helpers import make_directory_client
 from jmcore.crypto import NickIdentity
 from jmcore.network import ONION_HOSTID
+from jmcore.protocol import MessageType
 
 
 def signed_line(identity: NickIdentity, recipient: str, command: str, data: str) -> str:
@@ -22,7 +23,9 @@ def signed_line(identity: NickIdentity, recipient: str, command: str, data: str)
 
 async def run(client, expected_nicks, command, lines, counts=None):
     for line in lines:
-        await client._direct_message_queue.put({"line": line, "source": "dir1"})
+        await client._direct_message_queue.put(
+            {"type": MessageType.PRIVMSG.value, "line": line, "source": "dir1"}
+        )
     client.clients = {}
     return await client.wait_for_responses(
         expected_nicks=expected_nicks,
@@ -89,6 +92,35 @@ async def test_tampered_payload_dropped():
     tampered = "pubkey TAMPERED " + signed.split(" ", 1)[1]
     line = f"{maker.nick}!{client.nick_identity.nick}!{tampered}"
     responses = await run(client, [maker.nick], "!pubkey", [line])
+    assert maker.nick not in responses
+
+
+@pytest.mark.asyncio
+async def test_public_message_from_expected_maker_ignored():
+    client = make_directory_client()
+    maker = NickIdentity(5)
+    line = f"{maker.nick}!PUBLIC!sw0reloffer 0 100000 1000000 0 0.001"
+    await client._direct_message_queue.put(
+        {"type": MessageType.PUBMSG.value, "line": line, "source": "dir1"}
+    )
+    client.clients = {}
+
+    responses = await client.wait_for_responses(
+        expected_nicks=[maker.nick], expected_command="!pubkey", timeout=0.01
+    )
+
+    assert maker.nick not in responses
+
+
+@pytest.mark.asyncio
+async def test_response_addressed_to_another_taker_ignored():
+    client = make_directory_client()
+    maker = NickIdentity(5)
+    other_taker = NickIdentity(5)
+    line = signed_line(maker, other_taker.nick, "pubkey", "MAKER_NACL")
+
+    responses = await run(client, [maker.nick], "!pubkey", [line])
+
     assert maker.nick not in responses
 
 

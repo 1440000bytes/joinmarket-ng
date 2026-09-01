@@ -613,6 +613,77 @@ async def test_neutrino_maker_accepts_neutrino_compat_taker_auth():
     podle_admission.assert_called_once_with(("bb" * 32, 0))
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("conclusive", "expected_code"),
+    [(False, "utxo_verification_unavailable"), (True, "podle_utxo_invalid")],
+)
+async def test_neutrino_auth_distinguishes_unavailable_verification(conclusive, expected_code):
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from jmcore.models import Offer, OfferType
+    from jmwallet.backends.base import UTXOVerificationResult
+
+    from maker.coinjoin import CoinJoinSession, CoinJoinState
+
+    backend = MagicMock()
+    backend.requires_neutrino_metadata.return_value = True
+    backend.verify_utxo_with_metadata = AsyncMock(
+        return_value=UTXOVerificationResult(
+            valid=False,
+            error="private backend diagnostic",
+            conclusive=conclusive,
+        )
+    )
+    session = CoinJoinSession(
+        taker_nick="J5CompatTaker",
+        offer=Offer(
+            counterparty="J5NeutrinoMaker",
+            ordertype=OfferType.SW0_RELATIVE,
+            oid=0,
+            minsize=10_000,
+            maxsize=100_000_000,
+            txfee=1000,
+            cjfee="0.0003",
+        ),
+        wallet=MagicMock(),
+        backend=backend,
+    )
+    session.state = CoinJoinState.PUBKEY_SENT
+    session.commitment = bytes.fromhex("aa" * 32)
+    revelation = {
+        "utxo": "bb" * 32 + ":0:0014" + "ab" * 20 + ":100",
+        "P": "02" + "cc" * 32,
+        "P2": "02" + "dd" * 32,
+        "sig": "ee" * 32,
+        "e": "ff" * 16,
+    }
+    parsed = {
+        "P": bytes.fromhex("02" + "cc" * 32),
+        "P2": bytes.fromhex("02" + "dd" * 32),
+        "sig": bytes.fromhex("ee" * 32),
+        "e": bytes.fromhex("ff" * 16),
+        "txid": "bb" * 32,
+        "vout": 0,
+        "scriptpubkey": "0014" + "ab" * 20,
+        "blockheight": 100,
+    }
+
+    with (
+        patch("maker.coinjoin.verify_podle", return_value=(True, None)),
+        patch("maker.coinjoin.parse_podle_revelation", return_value=parsed),
+    ):
+        success, response = await session.handle_auth(
+            commitment="aa" * 32,
+            revelation=revelation,
+            kphex="",
+        )
+
+    assert success is False
+    assert response["error_code"] == expected_code
+    assert "private backend diagnostic" in response["error"]
+
+
 def test_pre_sign_wait_shortens_only_the_remaining_session_deadline() -> None:
     """After !ioauth, a stalled taker gets the shorter pre-sign window."""
     from unittest.mock import MagicMock, patch
@@ -1240,6 +1311,67 @@ async def test_on_auth_releases_reservation_only_after_persistence(
             inner.wallet.release_coinjoin_inputs.assert_called_once_with(
                 {outpoint}, owner=inner.input_lock_owner
             )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("response", "expected_peer_error"),
+    [
+        (
+            {
+                "error": "UTXO query failed: https://127.0.0.1:38334/private/path",
+                "error_code": "utxo_verification_unavailable",
+                "error_reason": "PoDLE UTXO verification failed",
+            },
+            "verification-unavailable",
+        ),
+        (
+            {
+                "error": "Taker's UTXO not found on blockchain",
+                "error_code": "podle_utxo_invalid",
+                "error_reason": "PoDLE UTXO verification failed",
+            },
+            "authentication-failed",
+        ),
+    ],
+)
+async def test_on_auth_sends_only_predefined_peer_errors(response, expected_peer_error):
+    """Detailed authentication failures must remain local to the maker."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from maker.coinjoin import CoinJoinState
+    from maker.maker_session import MakerSession
+
+    commitment = "ba" * 32
+    taker_nick = "J5ErrorTaker"
+    inner = MagicMock()
+    inner.taker_nick = taker_nick
+    inner.session_timeout_sec = 300
+    inner.state = CoinJoinState.PUBKEY_SENT
+    inner.commitment = bytes.fromhex(commitment)
+    inner.crypto.is_encrypted = True
+    inner.crypto.decrypt.return_value = f"{'bb' * 32}:0|02{'cc' * 32}|02{'dd' * 32}|11|22"
+    inner.handle_auth = AsyncMock(return_value=(False, response))
+    session = MakerSession(inner)
+
+    directory = MagicMock()
+    directory.send_private_message = AsyncMock()
+    bot = MagicMock()
+    bot.active_sessions = {_session_key(taker_nick): session}
+    bot._generation_clients.return_value = {"directory.test:5222": directory}
+    bot._reserve_podle_outpoint.return_value = True
+
+    with (
+        patch("maker.maker_session.UTXOMetadata.from_str"),
+        patch("maker.maker_session.get_notifier", return_value=MagicMock()),
+        patch("maker.maker_session.spawn_task"),
+    ):
+        await session.on_auth(bot, "auth ciphertext", "dir:test")
+
+    directory.send_private_message.assert_awaited_once_with(
+        taker_nick, "error", expected_peer_error
+    )
+    assert response["error"] not in str(directory.send_private_message.await_args)
 
 
 @pytest.mark.asyncio

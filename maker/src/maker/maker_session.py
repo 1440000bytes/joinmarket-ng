@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Any
 
 from jmcore.logging_context import coinjoin_id_from_commitment, coinjoin_log_context
 from jmcore.notifications import get_notifier
-from jmcore.protocol import UTXOMetadata
+from jmcore.protocol import MakerError, UTXOMetadata
 from jmcore.tasks import spawn_task
 from jmwallet.history import (
     append_history_entry,
@@ -476,25 +476,30 @@ class MakerSession:
             else:
                 error_msg = response.get("error", "unknown error")
                 error_reason = response.get("error_reason", "Authentication failed")
+                peer_error = (
+                    MakerError.VERIFICATION_UNAVAILABLE
+                    if response.get("error_code") == "utxo_verification_unavailable"
+                    else MakerError.AUTHENTICATION_FAILED
+                )
                 logger.warning(f"Authentication rejected: {error_reason}")
                 logger.bind(sensitive=True).warning(f"Authentication rejected: {error_msg}")
 
                 try:
                     clients = list(bot._generation_clients(self.generation_id).items())
                     for node_id, client in clients:
-                        await client.send_private_message(taker_nick, "error", error_msg)
+                        await client.send_private_message(taker_nick, "error", peer_error.value)
                         log_coinjoin_message(
                             "sent",
                             "error",
                             peer=taker_nick,
                             transport=f"directory:{node_id}",
-                            payload_length=len(error_msg.encode("utf-8")),
+                            payload_length=len(peer_error.value.encode("utf-8")),
                             state=self.state.value,
                             outcome="rejected",
                         )
                         if not self.is_active(bot):
                             return
-                    logger.bind(sensitive=True).debug(f"Sent !error to {taker_nick}: {error_msg}")
+                    logger.debug(f"Sent !error to {taker_nick}: {peer_error.value}")
                 except Exception as e:
                     logger.warning("Failed to send !error")
                     logger.bind(sensitive=True).warning(
