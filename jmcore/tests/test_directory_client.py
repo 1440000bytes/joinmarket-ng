@@ -1442,6 +1442,149 @@ def _make_non_offer_msg() -> dict[str, Any]:
 
 
 @pytest.mark.asyncio
+async def test_listen_continuously_retries_zero_offer_orderbook_requests_on_schedule() -> None:
+    """An empty initial orderbook response is retried without a tight send loop."""
+    client = DirectoryClient("host", 1234, "mainnet")
+    client.connection = AsyncMock()
+    client.get_peerlist_with_features = AsyncMock(return_value=[])
+    clock = {"now": 0.0}
+    client.orderbook_refresh_interval = 1_800.0
+    client.zero_offer_retry_interval = 600.0
+
+    receive_calls = 0
+
+    async def receive() -> bytes:
+        nonlocal receive_calls
+        receive_calls += 1
+        if receive_calls == 1:
+            clock["now"] = 599.9
+        elif receive_calls == 2:
+            clock["now"] = 600.0
+        else:
+            client.stop()
+        raise TimeoutError()
+
+    client.connection.receive.side_effect = receive
+
+    with patch("jmcore.directory_client.time.monotonic", side_effect=lambda: clock["now"]):
+        await client.listen_continuously()
+
+    assert client.connection.send.await_count == 2
+    assert client.initial_orderbook_received is False
+    assert client.last_orderbook_request_time == 600.0
+
+
+@pytest.mark.asyncio
+async def test_listen_continuously_uses_refresh_interval_after_caching_offer() -> None:
+    """A valid cached offer switches requests from zero-response retry to refresh."""
+    client = DirectoryClient("host", 1234, "mainnet")
+    client.connection = AsyncMock()
+    client.get_peerlist_with_features = AsyncMock(return_value=[])
+    client.peer_features[VALID_MAKER_NICK] = {}
+    clock = {"now": 0.0}
+
+    receive_calls = 0
+
+    async def receive() -> bytes:
+        nonlocal receive_calls
+        receive_calls += 1
+        if receive_calls == 1:
+            clock["now"] = 100.0
+            return json.dumps(_make_offer_msg()).encode("utf-8")
+        if receive_calls == 2:
+            clock["now"] = 600.0
+        elif receive_calls == 3:
+            clock["now"] = 1_899.9
+        elif receive_calls == 4:
+            clock["now"] = 1_900.0
+        else:
+            client.stop()
+        raise TimeoutError()
+
+    client.connection.receive.side_effect = receive
+
+    with patch("jmcore.directory_client.time.monotonic", side_effect=lambda: clock["now"]):
+        await client.listen_continuously()
+
+    assert client.connection.send.await_count == 2
+    assert client.initial_orderbook_received is True
+    assert client.last_offer_received_time == 100.0
+    assert client.last_orderbook_request_time == 1_900.0
+
+
+def test_orderbook_request_returns_to_zero_offer_interval_after_cache_is_emptied() -> None:
+    """An emptied live cache must not retain the slower populated refresh cadence."""
+    client = DirectoryClient("host", 1234, "mainnet")
+    offer = Offer(
+        counterparty=VALID_MAKER_NICK,
+        ordertype=OfferType.SW0_RELATIVE,
+        oid=0,
+        minsize=750_000,
+        maxsize=790_107_726_787,
+        txfee=500,
+        cjfee="0.001",
+    )
+    client._store_offer((VALID_MAKER_NICK, 0), offer, None)
+    client.initial_orderbook_received = True
+
+    assert client._orderbook_request_interval() == client.orderbook_refresh_interval
+
+    client.offers.clear()
+
+    assert client._orderbook_request_interval() == client.zero_offer_retry_interval
+
+
+@pytest.mark.asyncio
+async def test_listen_continuously_retries_failed_orderbook_request_on_retry_interval() -> None:
+    """A failed request retries sooner than a successful zero-response request."""
+    client = DirectoryClient("host", 1234, "mainnet")
+    client.connection = AsyncMock()
+    client.connection.send.side_effect = [OSError("send failed"), None]
+    client.get_peerlist_with_features = AsyncMock(return_value=[])
+    clock = {"now": 0.0}
+
+    receive_calls = 0
+
+    async def receive() -> bytes:
+        nonlocal receive_calls
+        receive_calls += 1
+        if receive_calls == 1:
+            clock["now"] = 299.9
+        elif receive_calls == 2:
+            clock["now"] = 300.0
+        else:
+            client.stop()
+        raise TimeoutError()
+
+    client.connection.receive.side_effect = receive
+
+    with patch("jmcore.directory_client.time.monotonic", side_effect=lambda: clock["now"]):
+        await client.listen_continuously()
+
+    assert client.connection.send.await_count == 2
+    assert client._last_orderbook_request_failed is False
+    assert client.last_orderbook_request_time == 300.0
+
+
+@pytest.mark.asyncio
+async def test_listen_continuously_does_not_request_orderbook_when_disabled() -> None:
+    """Maker callers that opt out never send startup or scheduled requests."""
+    client = DirectoryClient("host", 1234, "mainnet")
+    client.connection = AsyncMock()
+    client.get_peerlist_with_features = AsyncMock(return_value=[])
+
+    async def receive() -> bytes:
+        client.stop()
+        raise TimeoutError()
+
+    client.connection.receive.side_effect = receive
+
+    await client.listen_continuously(request_orderbook=False)
+
+    client.connection.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_fetch_orderbooks_enriches_returned_offers_from_late_peerlist():
     """A PEERLIST after an offer still enriches the returned offer object."""
     client = DirectoryClient("host", 1234, "mainnet")

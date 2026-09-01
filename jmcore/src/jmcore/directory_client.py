@@ -290,6 +290,7 @@ class DirectoryClient:
         self.initial_orderbook_received = False
         self.last_orderbook_request_time: float = 0.0
         self.last_offer_received_time: float | None = None
+        self._last_orderbook_request_failed = False
         self.neutrino_compat = neutrino_compat
         self.nick_auth_mode = nick_auth_mode
         self.allow_clearnet_connections = allow_clearnet_connections
@@ -1391,6 +1392,43 @@ class DirectoryClient:
         except Exception:
             logger.bind(sensitive=True).exception("Directory disconnect callback failed")
 
+    def _orderbook_request_interval(self) -> float:
+        """Return the bounded interval before the next orderbook request."""
+        if self._last_orderbook_request_failed:
+            return self.orderbook_retry_interval
+        if self.offers:
+            return self.orderbook_refresh_interval
+        return self.zero_offer_retry_interval
+
+    def _orderbook_request_due(self, current_time: float) -> bool:
+        """Return whether the current request state permits another request."""
+        request_anchor = self.last_orderbook_request_time
+        if self.initial_orderbook_received and self.last_offer_received_time is not None:
+            request_anchor = max(request_anchor, self.last_offer_received_time)
+        return current_time - request_anchor >= self._orderbook_request_interval()
+
+    async def _send_orderbook_request(self) -> bool:
+        """Send an orderbook request and retain enough state for bounded retries."""
+        if self.connection is None:
+            return False
+
+        self.last_orderbook_request_time = time.monotonic()
+        pubmsg = {
+            "type": MessageType.PUBMSG.value,
+            "line": f"{self.nick}!PUBLIC!orderbook",
+        }
+        try:
+            await self.connection.send(json.dumps(pubmsg).encode("utf-8"))
+        except Exception as e:
+            self._last_orderbook_request_failed = True
+            logger.warning("Failed to send orderbook request")
+            logger.bind(sensitive=True).warning(f"Failed to send !orderbook request: {e}")
+            return False
+
+        self._last_orderbook_request_failed = False
+        logger.debug("Sent !orderbook request to get current offers")
+        return True
+
     async def listen_continuously(self, request_orderbook: bool = True) -> None:
         """
         Continuously listen for messages and update internal offer/bond caches.
@@ -1429,20 +1467,7 @@ class DirectoryClient:
 
         # Request current orderbook from makers
         if request_orderbook:
-            try:
-                pubmsg = {
-                    "type": MessageType.PUBMSG.value,
-                    "line": f"{self.nick}!PUBLIC!orderbook",
-                }
-                await self.connection.send(json.dumps(pubmsg).encode("utf-8"))
-                logger.debug("Sent !orderbook request to get current offers")
-            except Exception as e:
-                logger.warning("Failed to send orderbook request")
-                logger.bind(sensitive=True).warning(f"Failed to send !orderbook request: {e}")
-
-        # Track when we last sent an orderbook request (to avoid spamming)
-        last_orderbook_request = time.time()
-        orderbook_request_min_interval = 60.0  # Minimum 60 seconds between requests
+            await self._send_orderbook_request()
 
         # Mark the listen loop as active so that _fetch_peerlist() (called by
         # periodic/on-demand peerlist refreshes) routes its response through
@@ -1452,6 +1477,11 @@ class DirectoryClient:
 
         while self.running:
             try:
+                if request_orderbook:
+                    current_time = time.monotonic()
+                    if self._orderbook_request_due(current_time):
+                        await self._send_orderbook_request()
+
                 # First check if we have buffered messages from previous operations
                 # (e.g., messages received while waiting for PEERLIST)
                 if not self._message_buffer.empty():
@@ -1516,7 +1546,7 @@ class DirectoryClient:
                                 # Track them with empty features for now - we'll get their features
                                 # from the initial peerlist or from their offer messages
                                 is_new_peer = from_nick not in self.peer_features
-                                current_time = time.time()
+                                current_time = time.monotonic()
 
                                 if is_new_peer:
                                     # Track new peer - merge empty features (will be a no-op
@@ -1545,25 +1575,12 @@ class DirectoryClient:
                                     # Request orderbook from new peer (rate-limited)
                                     if (
                                         request_orderbook
-                                        and current_time - last_orderbook_request
-                                        > orderbook_request_min_interval
+                                        and current_time - self.last_orderbook_request_time > 60.0
+                                        and await self._send_orderbook_request()
                                     ):
-                                        try:
-                                            pubmsg = {
-                                                "type": MessageType.PUBMSG.value,
-                                                "line": f"{self.nick}!PUBLIC!orderbook",
-                                            }
-                                            await self.connection.send(
-                                                json.dumps(pubmsg).encode("utf-8")
-                                            )
-                                            last_orderbook_request = current_time
-                                            logger.bind(sensitive=True).debug(
-                                                f"Sent !orderbook request for new peer {from_nick}"
-                                            )
-                                        except Exception as e:
-                                            logger.bind(sensitive=True).debug(
-                                                f"Failed to send !orderbook: {e}"
-                                            )
+                                        logger.bind(sensitive=True).debug(
+                                            f"Sent !orderbook request for new peer {from_nick}"
+                                        )
 
                                 if msg_type == MessageType.PUBMSG.value and to_nick == "PUBLIC":
                                     self._handle_public_offer_cancellation(rest, from_nick)
@@ -1578,6 +1595,8 @@ class DirectoryClient:
                                         from_nick, offer, bond_data
                                     ):
                                         continue
+                                    self.initial_orderbook_received = True
+                                    self.last_offer_received_time = time.monotonic()
                     except Exception as e:
                         logger.bind(sensitive=True).debug(f"Failed to process PUBMSG: {e}")
 
