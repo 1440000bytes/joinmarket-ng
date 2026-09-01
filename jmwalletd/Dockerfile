@@ -114,7 +114,11 @@ RUN if [ -n "$SOURCE_DATE_EPOCH" ]; then export SOURCE_DATE_EPOCH=$SOURCE_DATE_E
         /build/taker \
         /build/orderbook_watcher \
         /build/tumbler \
-        /build/jmwalletd
+        /build/jmwalletd \
+    && rm -rf \
+        /opt/venv/bin/pip* \
+        /opt/venv/lib/python${PYTHON_VERSION%.*}/site-packages/pip \
+        /opt/venv/lib/python${PYTHON_VERSION%.*}/site-packages/pip-*.dist-info
 
 # =============================================================================
 # Stage 2: jmwalletd standalone API daemon (default target)

@@ -109,6 +109,13 @@ def test_runtime_images_exclude_python_package_installers() -> None:
             assert "/site-packages/pip" in stage_text
             assert "/site-packages/pip-*.dist-info" in stage_text
 
+    jmwalletd_builder = _dockerfile_stage("jmwalletd/Dockerfile", "builder")
+    assert "/opt/venv/bin/pip*" in jmwalletd_builder
+    assert (
+        "/opt/venv/lib/python${PYTHON_VERSION%.*}/site-packages/pip"
+        in jmwalletd_builder
+    )
+
 
 def test_main_and_release_promotions_depend_on_image_scans() -> None:
     ci_jobs = _workflow("ci.yaml")["jobs"]
