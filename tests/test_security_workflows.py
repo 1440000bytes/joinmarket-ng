@@ -40,11 +40,21 @@ def _workflow(name: str) -> dict[str, Any]:
     return yaml.safe_load((WORKFLOWS / name).read_text(encoding="utf-8"))
 
 
+def test_dependency_updates_remain_maintainer_driven() -> None:
+    assert not (REPO_ROOT / ".github" / "dependabot.yml").exists()
+
+
 def _dockerfile_stage(path: str, stage: str) -> str:
     lines = (REPO_ROOT / path).read_text(encoding="utf-8").splitlines()
-    start = next(index for index, line in enumerate(lines) if line.endswith(f" AS {stage}"))
+    start = next(
+        index for index, line in enumerate(lines) if line.endswith(f" AS {stage}")
+    )
     end = next(
-        (index for index, line in enumerate(lines[start + 1 :], start + 1) if line.startswith("FROM ")),
+        (
+            index
+            for index, line in enumerate(lines[start + 1 :], start + 1)
+            if line.startswith("FROM ")
+        ),
         len(lines),
     )
     return "\n".join(lines[start:end])
@@ -58,7 +68,7 @@ def test_python_security_workflow_audits_locks_and_fresh_resolution() -> None:
 
     fresh_steps = jobs["audit-fresh-resolution"]["steps"]
     fresh_commands = "\n".join(step.get("run", "") for step in fresh_steps)
-    assert "--path \"$target_site_packages\" --skip-editable" in fresh_commands
+    assert '--path "$target_site_packages" --skip-editable' in fresh_commands
     assert "requirements-security.txt" in fresh_commands
 
 
@@ -71,7 +81,9 @@ def test_codeql_uses_extended_queries_for_supported_sources() -> None:
         "javascript-typescript",
         "actions",
     }
-    init = next(step for step in analyze["steps"] if step["name"] == "Initialize CodeQL")
+    init = next(
+        step for step in analyze["steps"] if step["name"] == "Initialize CodeQL"
+    )
     assert init["with"]["queries"] == "+security-extended"
 
 
@@ -82,7 +94,7 @@ def test_image_scanner_covers_published_images_and_defaults_to_all_platforms() -
 
     assert set(matrix["image"]) == IMAGES
     assert all(platform in workflow_text for platform in PLATFORMS)
-    assert "'[\"main\", \"latest\"]'" in workflow_text
+    assert '\'["main", "latest"]\'' in workflow_text
     assert "severity: HIGH,CRITICAL" in workflow_text
     assert "ignore-unfixed: true" in workflow_text
     assert "exit-code: '1'" in workflow_text
@@ -115,7 +127,11 @@ def test_main_and_release_promotions_depend_on_image_scans() -> None:
         "promote-docker-images",
     }
 
-    candidate_matrix = release_jobs["build-candidate-images"]["strategy"]["matrix"]["include"]
-    promotion_matrix = release_jobs["promote-docker-images"]["strategy"]["matrix"]["include"]
+    candidate_matrix = release_jobs["build-candidate-images"]["strategy"]["matrix"][
+        "include"
+    ]
+    promotion_matrix = release_jobs["promote-docker-images"]["strategy"]["matrix"][
+        "include"
+    ]
     assert {entry["image"] for entry in candidate_matrix} == IMAGES
     assert {entry["image"] for entry in promotion_matrix} == IMAGES

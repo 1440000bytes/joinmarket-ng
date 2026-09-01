@@ -43,6 +43,10 @@ published images:
 - A daily job re-scans both the moving `main` images and the current `latest`
   release images so newly published advisories are detected between builds.
 
+Automated dependency update pull requests are intentionally disabled. Maintainers
+refresh dependencies with the repository update scripts before releases, while
+GitHub vulnerability alerts and scheduled audits report issues between releases.
+
 All high and critical image findings are retained in the workflow artifacts.
 Findings with a published fix block image promotion; findings without a fix
 produce warnings for maintainer review. Scanner matches identify affected
