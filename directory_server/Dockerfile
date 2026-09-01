@@ -4,8 +4,8 @@
 # Base image digests for reproducible builds
 # Update with: ./scripts/update-base-images.sh
 ARG PYTHON_VERSION=3.14
-ARG PYTHON_SLIM_DIGEST=sha256:cae66f2ef0ec51a9891263eeee7f987dacf0a9879e8aa9353d5606e0530619a5
-ARG PYTHON_FULL_DIGEST=sha256:b0aed0e0059e9b1527ef57689a7206f32526627b0713e2228a916df62880188a
+ARG PYTHON_SLIM_DIGEST=sha256:656d12e70054d5fda18a045e2494c96701e9792dd1445f95b3d038df954f57e9
+ARG PYTHON_FULL_DIGEST=sha256:8edbf9e42c7fb168b9c523718ed907117e6d2e60f5889c0c499bbda3a787da53
 # Pin build tools for reproducible builds
 # setuptools version is stamped into WHEEL metadata (Generator: setuptools (x.y.z))
 # Different versions produce different WHEEL/RECORD files, breaking layer reproducibility
@@ -89,11 +89,17 @@ WORKDIR /app
 # Install only runtime dependencies (no build tools)
 # Versions pinned for reproducible builds
 # Delete apt/dpkg logs and ldconfig cache for reproducible builds
+# Package installers are build-only; remove pip and its vendored libraries.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libsodium23=1.0.18-1+deb13u1 \
     && rm -rf /var/lib/apt/lists/* \
     && rm -rf /var/log/dpkg.log /var/log/apt/* \
-    && rm -rf /var/cache/ldconfig/aux-cache
+    && rm -rf /var/cache/ldconfig/aux-cache \
+    && rm -rf \
+        /usr/local/bin/pip* \
+        /usr/local/lib/python${PYTHON_VERSION%.*}/ensurepip \
+        /usr/local/lib/python${PYTHON_VERSION%.*}/site-packages/pip \
+        /usr/local/lib/python${PYTHON_VERSION%.*}/site-packages/pip-*.dist-info
 
 # Reproducible builds: SOURCE_DATE_EPOCH for consistent timestamps
 ARG SOURCE_DATE_EPOCH
@@ -197,12 +203,23 @@ WORKDIR /app
 
 # Install runtime and debug dependencies (sorted alphabetically, versions pinned for reproducibility)
 # Delete apt/dpkg logs and ldconfig cache for reproducible builds
+# Package installers are build-only; remove pip and its vendored libraries.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gdb=16.3-1 \
+    libssl-dev=3.5.7-1~deb13u2 \
+    libssl3t64=3.5.7-1~deb13u2 \
+    linux-libc-dev=6.12.107-1 \
     libsodium23=1.0.18-1+deb13u1 \
+    openssl=3.5.7-1~deb13u2 \
+    openssl-provider-legacy=3.5.7-1~deb13u2 \
     && rm -rf /var/lib/apt/lists/* \
     && rm -rf /var/log/dpkg.log /var/log/apt/* \
-    && rm -rf /var/cache/ldconfig/aux-cache
+    && rm -rf /var/cache/ldconfig/aux-cache \
+    && rm -rf \
+        /usr/local/bin/pip* \
+        /usr/local/lib/python${PYTHON_VERSION%.*}/ensurepip \
+        /usr/local/lib/python${PYTHON_VERSION%.*}/site-packages/pip \
+        /usr/local/lib/python${PYTHON_VERSION%.*}/site-packages/pip-*.dist-info
 
 # Reproducible builds: SOURCE_DATE_EPOCH for consistent timestamps
 ARG SOURCE_DATE_EPOCH

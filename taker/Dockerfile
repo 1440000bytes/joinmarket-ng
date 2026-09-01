@@ -4,7 +4,7 @@
 # Base image digests for reproducible builds
 # Update with: ./scripts/update-base-images.sh
 ARG PYTHON_VERSION=3.14
-ARG PYTHON_SLIM_DIGEST=sha256:cae66f2ef0ec51a9891263eeee7f987dacf0a9879e8aa9353d5606e0530619a5
+ARG PYTHON_SLIM_DIGEST=sha256:656d12e70054d5fda18a045e2494c96701e9792dd1445f95b3d038df954f57e9
 # Pin build tools for reproducible builds
 # setuptools version is stamped into WHEEL metadata (Generator: setuptools (x.y.z))
 # Different versions produce different WHEEL/RECORD files, breaking layer reproducibility
@@ -107,12 +107,18 @@ WORKDIR /app
 # Install only runtime dependencies (no build tools)
 # Versions pinned for reproducible builds
 # Delete apt/dpkg logs and ldconfig cache for reproducible builds
+# Package installers are build-only; remove pip and its vendored libraries.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libsodium23=1.0.18-1+deb13u1 \
     whiptail=0.52.25-1 \
     && rm -rf /var/lib/apt/lists/* \
     && rm -rf /var/log/dpkg.log /var/log/apt/* \
-    && rm -rf /var/cache/ldconfig/aux-cache
+    && rm -rf /var/cache/ldconfig/aux-cache \
+    && rm -rf \
+        /usr/local/bin/pip* \
+        /usr/local/lib/python${PYTHON_VERSION%.*}/ensurepip \
+        /usr/local/lib/python${PYTHON_VERSION%.*}/site-packages/pip \
+        /usr/local/lib/python${PYTHON_VERSION%.*}/site-packages/pip-*.dist-info
 
 # Reproducible builds: SOURCE_DATE_EPOCH for consistent timestamps
 ARG SOURCE_DATE_EPOCH

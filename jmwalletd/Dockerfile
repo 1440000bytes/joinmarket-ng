@@ -4,7 +4,7 @@
 # Update with: ./scripts/update-base-images.sh
 # =============================================================================
 ARG PYTHON_VERSION=3.14
-ARG PYTHON_SLIM_DIGEST=sha256:cae66f2ef0ec51a9891263eeee7f987dacf0a9879e8aa9353d5606e0530619a5
+ARG PYTHON_SLIM_DIGEST=sha256:656d12e70054d5fda18a045e2494c96701e9792dd1445f95b3d038df954f57e9
 
 # Pin build tools for reproducible builds
 # setuptools version is stamped into WHEEL metadata (Generator: setuptools (x.y.z))
@@ -122,11 +122,17 @@ RUN if [ -n "$SOURCE_DATE_EPOCH" ]; then export SOURCE_DATE_EPOCH=$SOURCE_DATE_E
 FROM python:${PYTHON_VERSION}-slim@${PYTHON_SLIM_DIGEST} AS jmwalletd
 WORKDIR /app
 
+# Package installers are build-only; remove pip and its vendored libraries.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tini=0.19.0-3+b7 \
     libsodium23=1.0.18-1+deb13u1 \
     && rm -rf /var/lib/apt/lists/* \
-    && rm -rf /var/log/dpkg.log /var/log/apt/* /var/cache/ldconfig/aux-cache
+    && rm -rf /var/log/dpkg.log /var/log/apt/* /var/cache/ldconfig/aux-cache \
+    && rm -rf \
+        /usr/local/bin/pip* \
+        /usr/local/lib/python${PYTHON_VERSION%.*}/ensurepip \
+        /usr/local/lib/python${PYTHON_VERSION%.*}/site-packages/pip \
+        /usr/local/lib/python${PYTHON_VERSION%.*}/site-packages/pip-*.dist-info
 
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
