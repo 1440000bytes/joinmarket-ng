@@ -1,0 +1,115 @@
+name: Security
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    - cron: "23 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PIP_NO_INPUT: "1"
+
+jobs:
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    name: Dependency review
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Review dependencies
+        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
+        with:
+          fail-on-severity: high
+          fail-on-scopes: runtime,development
+
+  audit-production-locks:
+    name: Audit ${{ matrix.requirements }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        requirements:
+          - directory_server/requirements.txt
+          - jmcore/requirements.txt
+          - jmwallet/requirements.txt
+          - jmwalletd/requirements.txt
+          - maker/requirements.txt
+          - orderbook_watcher/requirements.txt
+          - taker/requirements.txt
+          - tumbler/requirements.txt
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.14"
+
+      - name: Install pinned audit tool
+        run: |
+          python -m venv "$RUNNER_TEMP/pip-audit"
+          "$RUNNER_TEMP/pip-audit/bin/python" -m pip install --require-hashes \
+            -r requirements-security.txt
+
+      - name: Audit production lock
+        run: |
+          case "${{ matrix.requirements }}" in
+            jmcore/requirements.txt|jmwallet/requirements.txt|jmwalletd/requirements.txt)
+              echo "::warning::coincurve is a direct archive dependency. pip-audit checks its package metadata, not archive provenance."
+              ;;
+          esac
+          "$RUNNER_TEMP/pip-audit/bin/pip-audit" --progress-spinner off --require-hashes \
+            -r "${{ matrix.requirements }}"
+
+  audit-fresh-resolution:
+    name: Audit fresh development resolution
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.14"
+
+      - name: Install pinned audit tool
+        run: |
+          python -m venv "$RUNNER_TEMP/pip-audit"
+          "$RUNNER_TEMP/pip-audit/bin/python" -m pip install --require-hashes \
+            -r requirements-security.txt
+
+      - name: Resolve local projects without development extras
+        run: |
+          python -m venv "$RUNNER_TEMP/joinmarket-target"
+          "$RUNNER_TEMP/joinmarket-target/bin/python" -m pip install \
+            -e ./jmcore \
+            -e ./jmwallet \
+            -e ./directory_server \
+            -e ./orderbook_watcher \
+            -e ./maker \
+            -e ./taker \
+            -e ./jmwalletd \
+            -e ./tumbler
+
+          # pip is seeded into virtual environments but is not a project dependency.
+          "$RUNNER_TEMP/joinmarket-target/bin/python" -m pip uninstall --yes pip
+
+      - name: Audit target site packages
+        run: |
+          target_site_packages=$("$RUNNER_TEMP/joinmarket-target/bin/python" -c \
+            'import sysconfig; print(sysconfig.get_paths()["purelib"])')
+          "$RUNNER_TEMP/pip-audit/bin/pip-audit" --progress-spinner off \
+            --path "$target_site_packages" --skip-editable

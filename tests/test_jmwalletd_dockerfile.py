@@ -125,7 +125,10 @@ def test_release_and_ci_matrices_publish_jmwalletd_but_not_jam_ng() -> None:
         ci_jobs[job]["strategy"]["matrix"]["include"]
         for job in ("build-images", "build-arm64", "build-armv7", "publish-images")
     ]
-    matrices.append(release_jobs["publish-docker"]["strategy"]["matrix"]["include"])
+    matrices.extend(
+        release_jobs[job]["strategy"]["matrix"]["include"]
+        for job in ("build-candidate-images", "promote-docker-images")
+    )
 
     for matrix in matrices:
         images = {entry["image"] for entry in matrix}

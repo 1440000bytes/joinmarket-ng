@@ -27,6 +27,28 @@ Primary goals:
 - rate limiting and message validation in directory/maker paths
 - fidelity bond weighting as Sybil-cost mechanism
 
+## Automated Vulnerability Scanning
+
+GitHub Actions applies complementary scanners to source, dependencies, and
+published images:
+
+- CodeQL runs extended security queries against Python, JavaScript/TypeScript,
+  and GitHub Actions workflows on pull requests, main-branch updates, and a
+  weekly schedule.
+- Dependency review blocks pull requests that introduce high or critical
+  vulnerabilities. `pip-audit` checks every production lock file and a fresh
+  resolution of the package set used by unsigned development installs.
+- Trivy scans every container candidate before it is promoted. Pull requests
+  cover amd64; main and release promotion cover amd64, arm64, and arm/v7.
+- A daily job re-scans both the moving `main` images and the current `latest`
+  release images so newly published advisories are detected between builds.
+
+All high and critical image findings are retained in the workflow artifacts.
+Findings with a published fix block image promotion; findings without a fix
+produce warnings for maintainer review. Scanner matches identify affected
+package versions, not exploitability, so maintainers must evaluate whether the
+affected code is reachable in JoinMarket's runtime and threat model.
+
 ## Randomness and Key Material
 
 Wallet mnemonics are encoded from explicit entropy bytes obtained through

@@ -113,6 +113,10 @@ jobs:
           file: ${{ matrix.dockerfile }}
           target: ${{ matrix.target || '' }}
           push: true
+          # Keep scanner input to the runtime filesystem. BuildKit attestations
+          # describe build tooling that is not present in the final image.
+          provenance: false
+          sbom: false
           tags: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.image }}:${{ env.CI_TAG }}${{ matrix.tag_suffix }}
           cache-from: |
             type=registry,ref=${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.image }}:buildcache
@@ -2038,6 +2042,8 @@ jobs:
           file: ${{ matrix.dockerfile }}
           target: ${{ matrix.target || '' }}
           push: true
+          provenance: false
+          sbom: false
           platforms: linux/arm64
           tags: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.image }}:${{ github.ref_name }}-${{ github.sha }}${{ matrix.tag_suffix }}-arm64
           cache-from: |
@@ -2129,6 +2135,8 @@ jobs:
           file: ${{ matrix.dockerfile }}
           target: ${{ matrix.target || '' }}
           push: true
+          provenance: false
+          sbom: false
           platforms: linux/arm/v7
           tags: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.image }}:${{ github.ref_name }}-${{ github.sha }}${{ matrix.tag_suffix }}-armv7
           cache-from: |
@@ -2144,7 +2152,42 @@ jobs:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
 
   # ==========================================================================
-  # Stage 4c: Publish images (combine manifests and promote to production)
+  # Stage 4c: Scan architecture-specific images before promotion
+  # ==========================================================================
+  scan-amd64:
+    needs: build-images
+    permissions:
+      contents: read
+      packages: read
+    uses: ./.github/workflows/image-security.yaml
+    with:
+      image-tags: ${{ format('["ci-unsafe-do-not-run-{0}"]', github.event.pull_request.head.sha || github.sha) }}
+      platforms: '[{"name":"linux/amd64","slug":"linux-amd64"}]'
+
+  scan-arm64:
+    needs: build-arm64
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: read
+    uses: ./.github/workflows/image-security.yaml
+    with:
+      image-tags: ${{ format('["{0}-{1}-arm64"]', github.ref_name, github.sha) }}
+      platforms: '[{"name":"linux/arm64","slug":"linux-arm64"}]'
+
+  scan-armv7:
+    needs: build-armv7
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: read
+    uses: ./.github/workflows/image-security.yaml
+    with:
+      image-tags: ${{ format('["{0}-{1}-armv7"]', github.ref_name, github.sha) }}
+      platforms: '[{"name":"linux/arm/v7","slug":"linux-arm-v7"}]'
+
+  # ==========================================================================
+  # Stage 4d: Publish images (combine manifests and promote to production)
   # Waits for ALL builds to complete, then creates multi-arch manifests
   # Combines amd64 (from build-images) + arm64 + armv7 into single manifest
   # ==========================================================================
@@ -2169,6 +2212,10 @@ jobs:
       # ARM builds (run in parallel with everything)
       - build-arm64
       - build-armv7
+      # Vulnerability gates for every promoted architecture
+      - scan-amd64
+      - scan-arm64
+      - scan-armv7
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
