@@ -39,15 +39,22 @@ The module is designed to be:
 from __future__ import annotations
 
 import asyncio
-import logging
-import os
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 from pydantic import BaseModel, Field, SecretStr
+
+from jmcore._notification_worker import (
+    AppriseWorker,
+    NotificationWorker,
+    NotificationWorkerConfig,
+    NotificationWorkerResult,
+    _sanitize_worker_diagnostic,
+)
 
 if TYPE_CHECKING:
     from jmcore.settings import JoinMarketSettings
@@ -650,42 +657,6 @@ def convert_settings_to_notification_config(
     )
 
 
-_apprise_log_bridge_installed = False
-
-
-class _AppriseLogHandler(logging.Handler):
-    """Forward Apprise's stdlib logging records to loguru.
-
-    Apprise reports the real cause of delivery failures (TLS verification
-    errors, connection refusals, HTTP status codes, ...) through the standard
-    ``logging`` module, which this project does not configure. Without this
-    bridge those records are silently dropped and the operator only sees a
-    generic "Notification failed" line. Apprise records can contain private
-    endpoint details, so they follow the sensitive logging policy.
-    """
-
-    def emit(self, record: logging.LogRecord) -> None:
-        try:
-            level: str | int = logger.level(record.levelname).name
-        except ValueError:
-            level = record.levelno
-        logger.bind(sensitive=True).opt(depth=6, exception=record.exc_info).log(
-            level, record.getMessage()
-        )
-
-
-def install_apprise_log_bridge() -> None:
-    """Route the ``apprise`` stdlib logger into loguru (idempotent)."""
-    global _apprise_log_bridge_installed
-    if _apprise_log_bridge_installed:
-        return
-    apprise_logger = logging.getLogger("apprise")
-    apprise_logger.addHandler(_AppriseLogHandler())
-    # Let all records reach the handler; loguru sinks apply their own level.
-    apprise_logger.setLevel(logging.DEBUG)
-    _apprise_log_bridge_installed = True
-
-
 class Notifier:
     """
     Notification sender using Apprise.
@@ -699,7 +670,11 @@ class Notifier:
     are common.
     """
 
-    def __init__(self, config: NotificationConfig | None = None):
+    def __init__(
+        self,
+        config: NotificationConfig | None = None,
+        worker_factory: Callable[[NotificationWorkerConfig], NotificationWorker] = AppriseWorker,
+    ):
         """
         Initialize the notifier.
 
@@ -707,9 +682,11 @@ class Notifier:
             config: Notification configuration. If None, loads from environment.
         """
         self.config = config or load_notification_config()
-        self._apprise: Any | None = None
+        self._worker: NotificationWorker | None = None
+        self._worker_factory = worker_factory
         self._initialized = False
         self._lock = asyncio.Lock()
+        self._worker_send_lock = asyncio.Lock()
         self._retry_tasks: set[asyncio.Task[None]] = set()
 
     def _prepare_url(self, url: str) -> str:
@@ -739,73 +716,68 @@ class Notifier:
             return False
 
         if self._initialized:
-            return self._apprise is not None
+            return self._worker is not None
 
         async with self._lock:
             if self._initialized:
-                return self._apprise is not None
+                return self._worker is not None
 
             try:
-                import apprise
-
-                # Surface Apprise's own error reporting (TLS failures, HTTP
-                # errors, ...) instead of dropping it on the floor.
-                install_apprise_log_bridge()
-
-                # Configure proxy environment variables if Tor is enabled
-                if self.config.use_tor:
-                    # Use the Tor configuration from settings
-                    tor_host = self.config.tor_socks_host
-                    tor_port = self.config.tor_socks_port
-
-                    if self.config.stream_isolation:
-                        from jmcore.tor_isolation import (
-                            IsolationCategory,
-                            build_isolated_proxy_url,
-                        )
-
-                        proxy_url = build_isolated_proxy_url(
-                            tor_host,
-                            tor_port,
-                            IsolationCategory.NOTIFICATION,
-                        )
-                    else:
-                        # Use socks5h:// to resolve DNS through the proxy
-                        # (important for .onion)
-                        proxy_url = f"socks5h://{tor_host}:{tor_port}"
-
-                    # Set environment variables that Apprise/requests will use
-                    os.environ["HTTP_PROXY"] = proxy_url
-                    os.environ["HTTPS_PROXY"] = proxy_url
-                    logger.info(f"Configuring notifications to route through Tor: {proxy_url}")
-
-                self._apprise = apprise.Apprise()
-
-                for secret_url in self.config.urls:
-                    # Get the actual URL string from SecretStr
-                    url = secret_url.get_secret_value()
-
-                    if not self._apprise.add(self._prepare_url(url)):
-                        logger.warning(f"Failed to add notification URL: {url[:30]}...")
-
-                if len(self._apprise) == 0:
-                    logger.warning("No valid notification URLs configured")
-                    self._apprise = None
-                else:
-                    logger.info(f"Notifications enabled with {len(self._apprise)} service(s)")
-
-            except ImportError:
-                logger.warning(
-                    "Apprise not installed. Install with: pip install apprise\n"
-                    "Notifications will be disabled."
+                worker_config = NotificationWorkerConfig(
+                    urls=tuple(
+                        self._prepare_url(secret_url.get_secret_value())
+                        for secret_url in self.config.urls
+                    ),
+                    use_tor=self.config.use_tor,
+                    tor_socks_host=self.config.tor_socks_host,
+                    tor_socks_port=self.config.tor_socks_port,
+                    stream_isolation=self.config.stream_isolation,
                 )
-                self._apprise = None
-            except Exception as e:
-                logger.warning(f"Failed to initialize notifications: {e}")
-                self._apprise = None
+                worker = self._worker_factory(worker_config)
+                start_task = asyncio.create_task(asyncio.to_thread(worker.start))
+                try:
+                    start_result = await asyncio.shield(start_task)
+                except asyncio.CancelledError:
+                    start_task.add_done_callback(
+                        lambda completed: self._close_worker_after_cancelled_start(
+                            completed, worker
+                        )
+                    )
+                    raise
+
+                if not start_result.success:
+                    worker.close()
+                    self._log_worker_diagnostic(start_result.diagnostic)
+                    diagnostic = _sanitize_worker_diagnostic(start_result.diagnostic)
+                    if diagnostic is None:
+                        logger.warning("Failed to initialize notification worker")
+                    else:
+                        logger.warning(f"Failed to initialize notification worker: {diagnostic}")
+                else:
+                    self._worker = worker
+                    logger.info(f"Notifications enabled with {len(self.config.urls)} service(s)")
+            except Exception:
+                logger.warning("Failed to initialize notification worker")
+                self._worker = None
 
             self._initialized = True
-            return self._apprise is not None
+            return self._worker is not None
+
+    @staticmethod
+    def _close_worker_after_cancelled_start(
+        start_task: asyncio.Task[NotificationWorkerResult],
+        worker: NotificationWorker,
+    ) -> None:
+        """Release a worker once a cancelled ``to_thread`` start finishes."""
+        with suppress(Exception, asyncio.CancelledError):
+            start_task.result()
+        asyncio.create_task(asyncio.to_thread(worker.close))
+
+    @staticmethod
+    def _log_worker_diagnostic(diagnostic: str | None) -> None:
+        """Log a worker diagnostic only after applying the final safety filter."""
+        if sanitized_diagnostic := _sanitize_worker_diagnostic(diagnostic):
+            logger.debug(f"Notification worker diagnostic: {sanitized_diagnostic}")
 
     async def _send(
         self,
@@ -856,47 +828,31 @@ class Notifier:
         if not await self._ensure_initialized():
             return False
 
-        # At this point, _apprise is guaranteed to be initialized
-        assert self._apprise is not None
-        apprise_instance = self._apprise  # Bind to local for type narrowing
+        # At this point, the isolated delivery worker is guaranteed to be ready.
+        assert self._worker is not None
+        worker = self._worker
 
         try:
-            import apprise
-
-            # Map our priority to Apprise NotifyType
-            notify_type = {
-                NotificationPriority.INFO: apprise.NotifyType.INFO,
-                NotificationPriority.SUCCESS: apprise.NotifyType.SUCCESS,
-                NotificationPriority.WARNING: apprise.NotifyType.WARNING,
-                NotificationPriority.FAILURE: apprise.NotifyType.FAILURE,
-            }.get(priority, apprise.NotifyType.INFO)
-
             # Build title: "JoinMarket NG (Maker): Title" or "JoinMarket NG: Title" if no component
             if self.config.component_name:
                 full_title = f"{self.config.title_prefix} ({self.config.component_name}): {title}"
             else:
                 full_title = f"{self.config.title_prefix}: {title}"
 
-            # Send asynchronously if apprise supports it, otherwise in executor
-            if hasattr(apprise_instance, "async_notify"):
-                result = await apprise_instance.async_notify(
-                    title=full_title,
-                    body=body,
-                    notify_type=notify_type,
-                )
-            else:
-                # Run synchronous notify in thread pool
-                loop = asyncio.get_event_loop()
-                result = await loop.run_in_executor(
-                    None,
-                    lambda: apprise_instance.notify(
-                        title=full_title,
-                        body=body,
-                        notify_type=notify_type,
-                    ),
-                )
+            # One notifier uses one worker process and one in-flight delivery.
+            # This bounds child-process activity even when retry tasks overlap.
+            async with self._worker_send_lock:
+                result = await asyncio.to_thread(worker.send, full_title, body, priority.value)
 
-            if not result:
+            self._log_worker_diagnostic(result.diagnostic)
+
+            # A timed-out or crashed worker closes itself. Resetting this
+            # reference lets the existing retry path start a fresh child.
+            if worker.closed and self._worker is worker:
+                self._worker = None
+                self._initialized = False
+
+            if not result.success:
                 if self.config.use_tor:
                     hint = (
                         "Check Tor connectivity and the notification service URL. "
@@ -909,19 +865,27 @@ class Notifier:
                         "set verify_tls = false in [notifications] or point the "
                         "REQUESTS_CA_BUNDLE environment variable at your CA bundle."
                     )
-                logger.warning(
-                    f"Notification failed: {title}. {hint} "
-                    "Run with DEBUG logging to see the underlying error from Apprise."
-                )
+                logger.warning(f"Notification failed: {title}. {hint}")
             else:
                 # Keep the event visible at the default INFO level without
                 # logging the privacy-sensitive notification body.
                 logger.info(f"Notification sent: {title}")
-            return result
+            return result.success
 
-        except Exception as e:
-            logger.warning(f"Failed to send notification '{title}': {e}")
+        except Exception:
+            logger.warning("Failed to send notification")
             return False
+
+    def close(self) -> None:
+        """Stop retries and release the isolated Apprise worker."""
+        for task in self._retry_tasks:
+            task.cancel()
+        self._retry_tasks.clear()
+        worker = self._worker
+        self._worker = None
+        self._initialized = False
+        if worker is not None:
+            worker.close()
 
     def _schedule_retry(
         self,
@@ -971,7 +935,7 @@ class Notifier:
                     )
                     return
             except Exception as e:
-                logger.debug(f"Retry attempt {attempt} for '{title}' raised: {e}")
+                logger.debug(f"Retry attempt {attempt} for '{title}' raised: {type(e).__name__}")
 
             delay *= 2  # Exponential backoff
 
@@ -1431,6 +1395,8 @@ def get_notifier(
 def reset_notifier() -> None:
     """Reset the global notifier (useful for testing)."""
     global _notifier
+    if _notifier is not None:
+        _notifier.close()
     _notifier = None
 
 

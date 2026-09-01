@@ -6,12 +6,21 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import Generator
+import threading
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from jmcore._notification_worker import (
+    PROXY_ENVIRONMENT_KEYS,
+    AppriseWorker,
+    NotificationWorkerConfig,
+    NotificationWorkerResult,
+    _AppriseDiagnosticHandler,
+    _configure_worker_environment,
+    _sanitize_worker_diagnostic,
+)
 from jmcore.notifications import (
     NotificationConfig,
     NotificationPriority,
@@ -21,24 +30,55 @@ from jmcore.notifications import (
     load_notification_config,
     reset_notifier,
 )
+from jmcore.tor_isolation import IsolationCategory
 
 
-@pytest.fixture(autouse=True)
-def isolate_proxy_env() -> Generator[None, None, None]:
-    """Restore proxy env vars after each test.
+class RecordingNotificationWorker:
+    """Deterministic worker seam for notifier tests."""
 
-    ``notifications.py`` writes HTTP_PROXY / HTTPS_PROXY into ``os.environ``
-    when Tor is enabled (inside ``_ensure_initialized``). Without isolation
-    those vars persist for the rest of the process and break any test that
-    later calls ``urllib.request.urlopen`` -- in particular the directory
-    CLI tests, which connect to a local mock HTTP server and fail with
-    ``unknown url type: socks5h`` when a SOCKS proxy is configured.
+    def __init__(
+        self,
+        send_results: list[NotificationWorkerResult] | None = None,
+        start_result: NotificationWorkerResult | None = None,
+    ):
+        self.config: NotificationWorkerConfig | None = None
+        self.send_results = send_results or []
+        self.start_result = start_result or NotificationWorkerResult(True)
+        self.calls: list[tuple[str, str, str]] = []
+        self.closed = False
 
-    This fixture lives at module scope so it covers every test class
-    in this file, not just ``TestNotifier``.
-    """
-    with patch.dict(os.environ, {}, clear=False):
-        yield
+    def __call__(self, config: NotificationWorkerConfig) -> RecordingNotificationWorker:
+        self.config = config
+        return self
+
+    def start(self) -> NotificationWorkerResult:
+        return self.start_result
+
+    def send(self, title: str, body: str, priority: str) -> NotificationWorkerResult:
+        self.calls.append((title, body, priority))
+        return self.send_results.pop(0) if self.send_results else NotificationWorkerResult(True)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class BlockingStartNotificationWorker(RecordingNotificationWorker):
+    """Worker seam that exposes delayed completion of a blocking start call."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.start_started = threading.Event()
+        self.release_start = threading.Event()
+        self.close_completed = threading.Event()
+
+    def start(self) -> NotificationWorkerResult:
+        self.start_started.set()
+        self.release_start.wait()
+        return NotificationWorkerResult(True)
+
+    def close(self) -> None:
+        super().close()
+        self.close_completed.set()
 
 
 class TestNotificationConfig:
@@ -425,30 +465,55 @@ class TestNotifier:
         url = "gotify://host/token?verify=yes"
         assert notifier._prepare_url(url) == url
 
-    def test_apprise_log_bridge_forwards_to_loguru(self) -> None:
-        """Apprise's stdlib logging must surface through loguru.
+    def test_worker_diagnostic_is_bounded_and_sanitized(self) -> None:
+        """Worker diagnostics retain the failure class without endpoint credentials."""
+        notification_url = "https://notify.example.invalid/token-secret"
+        proxy_url = "socks5h://jm-notification:isolation-secret@127.0.0.1:9050"
+        message = "notification-body-secret"
+        diagnostic = _sanitize_worker_diagnostic(
+            f"certificate verify failed for {notification_url} via {proxy_url}: {message}"
+        )
+        worker_result = NotificationWorkerResult(
+            False,
+            f"certificate verify failed for {notification_url} via {proxy_url}: {message}",
+        )
 
-        Apprise reports the real cause of delivery failures (e.g. TLS
-        verification errors) via logging.getLogger('apprise'); without the
-        bridge those records were dropped and users only saw a generic
-        failure message (user report: original error was never shown).
-        """
+        assert diagnostic == "TLS certificate verification failed"
+        assert worker_result.diagnostic == diagnostic
+        assert notification_url not in diagnostic
+        assert proxy_url not in diagnostic
+        assert "isolation-secret" not in diagnostic
+        assert message not in diagnostic
+
+    def test_apprise_diagnostic_handler_ignores_unclassified_logs(self) -> None:
+        """Benign debug chatter cannot overwrite a useful failure classification."""
         import logging
 
-        from loguru import logger as loguru_logger
+        handler = _AppriseDiagnosticHandler()
+        handler.emit(
+            logging.LogRecord(
+                "apprise",
+                logging.DEBUG,
+                __file__,
+                0,
+                "certificate verify failed: self-signed",
+                (),
+                None,
+            )
+        )
+        handler.emit(
+            logging.LogRecord(
+                "apprise",
+                logging.DEBUG,
+                __file__,
+                0,
+                "Preparing notification payload",
+                (),
+                None,
+            )
+        )
 
-        from jmcore.notifications import install_apprise_log_bridge
-
-        install_apprise_log_bridge()
-
-        captured: list[str] = []
-        sink_id = loguru_logger.add(lambda msg: captured.append(str(msg)), level="WARNING")
-        try:
-            logging.getLogger("apprise").warning("certificate verify failed: self-signed")
-        finally:
-            loguru_logger.remove(sink_id)
-
-        assert any("certificate verify failed: self-signed" in line for line in captured)
+        assert handler.diagnostic == "TLS certificate verification failed"
 
     def test_format_amount(self) -> None:
         """Test amount formatting."""
@@ -701,34 +766,21 @@ class TestNotifier:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_notify_with_mock_apprise(self) -> None:
-        """Test notification with mocked apprise."""
+    async def test_notify_uses_isolated_worker(self) -> None:
+        """Notification payloads are handed to the worker without parent Apprise state."""
         config = NotificationConfig(
             enabled=True,
             urls=["gotify://host/token"],
         )
-        notifier = Notifier(config)
+        worker = RecordingNotificationWorker()
+        notifier = Notifier(config, worker_factory=worker)
 
-        # Mock the apprise module
-        mock_apprise_instance = MagicMock()
-        mock_apprise_instance.add.return_value = True
-        mock_apprise_instance.__len__ = lambda self: 1
-        mock_apprise_instance.async_notify = AsyncMock(return_value=True)
+        result = await notifier.notify_fill_request("taker123", 500000, 0)
 
-        mock_apprise_module = MagicMock()
-        mock_apprise_module.Apprise.return_value = mock_apprise_instance
-        mock_apprise_module.NotifyType.INFO = "info"
-
-        with patch.dict("sys.modules", {"apprise": mock_apprise_module}):
-            # Force re-initialization
-            notifier._initialized = False
-            notifier._apprise = None
-
-            result = await notifier.notify_fill_request("taker123", 500000, 0)
-
-        # Should succeed with mock
         assert result is True
-        mock_apprise_instance.async_notify.assert_called_once()
+        assert worker.config is not None
+        assert worker.config.urls == ("gotify://host/token?cto=30&rto=30",)
+        assert worker.calls[0][0] == "JoinMarket NG: Fill Request Received"
 
     @pytest.mark.asyncio
     async def test_notification_title_with_component_name(self) -> None:
@@ -739,29 +791,13 @@ class TestNotifier:
             title_prefix="JoinMarket NG",
             component_name="Maker",
         )
-        notifier = Notifier(config)
+        worker = RecordingNotificationWorker()
+        notifier = Notifier(config, worker_factory=worker)
 
-        # Mock the apprise module
-        mock_apprise_instance = MagicMock()
-        mock_apprise_instance.add.return_value = True
-        mock_apprise_instance.__len__ = lambda self: 1
-        mock_apprise_instance.async_notify = AsyncMock(return_value=True)
-
-        mock_apprise_module = MagicMock()
-        mock_apprise_module.Apprise.return_value = mock_apprise_instance
-        mock_apprise_module.NotifyType.INFO = "info"
-
-        with patch.dict("sys.modules", {"apprise": mock_apprise_module}):
-            # Force re-initialization
-            notifier._initialized = False
-            notifier._apprise = None
-
-            await notifier._send("Test Event", "Test body")
+        await notifier._send("Test Event", "Test body")
 
         # Verify the title includes component name
-        mock_apprise_instance.async_notify.assert_called_once()
-        call_kwargs = mock_apprise_instance.async_notify.call_args[1]
-        assert call_kwargs["title"] == "JoinMarket NG (Maker): Test Event"
+        assert worker.calls[0][0] == "JoinMarket NG (Maker): Test Event"
 
     @pytest.mark.asyncio
     async def test_notification_title_without_component_name(self) -> None:
@@ -772,130 +808,216 @@ class TestNotifier:
             title_prefix="JoinMarket NG",
             component_name="",  # Empty component name
         )
-        notifier = Notifier(config)
+        worker = RecordingNotificationWorker()
+        notifier = Notifier(config, worker_factory=worker)
 
-        # Mock the apprise module
-        mock_apprise_instance = MagicMock()
-        mock_apprise_instance.add.return_value = True
-        mock_apprise_instance.__len__ = lambda self: 1
-        mock_apprise_instance.async_notify = AsyncMock(return_value=True)
-
-        mock_apprise_module = MagicMock()
-        mock_apprise_module.Apprise.return_value = mock_apprise_instance
-        mock_apprise_module.NotifyType.INFO = "info"
-
-        with patch.dict("sys.modules", {"apprise": mock_apprise_module}):
-            # Force re-initialization
-            notifier._initialized = False
-            notifier._apprise = None
-
-            await notifier._send("Test Event", "Test body")
+        await notifier._send("Test Event", "Test body")
 
         # Verify the title does not have parentheses when no component
-        mock_apprise_instance.async_notify.assert_called_once()
-        call_kwargs = mock_apprise_instance.async_notify.call_args[1]
-        assert call_kwargs["title"] == "JoinMarket NG: Test Event"
+        assert worker.calls[0][0] == "JoinMarket NG: Test Event"
 
     @pytest.mark.asyncio
-    async def test_tor_proxy_configuration(self) -> None:
-        """Test that Tor proxy environment variables are set correctly from config."""
+    async def test_tor_worker_does_not_mutate_parent_proxy_environment(self) -> None:
+        """Tor worker setup and delivery leave every parent proxy variable intact."""
         config = NotificationConfig(
             enabled=True,
             urls=["gotify://host/token"],
+            retry_enabled=False,
             use_tor=True,
             tor_socks_host="192.168.1.100",
             tor_socks_port=9150,
             stream_isolation=False,
         )
-        notifier = Notifier(config)
+        worker = RecordingNotificationWorker(send_results=[NotificationWorkerResult(False)])
+        notifier = Notifier(config, worker_factory=worker)
+        parent_proxy_environment = {key: os.environ.get(key) for key in PROXY_ENVIRONMENT_KEYS}
 
-        # Mock the apprise module
-        mock_apprise_instance = MagicMock()
-        mock_apprise_instance.add.return_value = True
-        mock_apprise_instance.__len__ = lambda self: 1
+        assert await notifier._send("Test Event", "Test body") is False
 
-        mock_apprise_module = MagicMock()
-        mock_apprise_module.Apprise.return_value = mock_apprise_instance
+        assert {
+            key: os.environ.get(key) for key in PROXY_ENVIRONMENT_KEYS
+        } == parent_proxy_environment
+        assert worker.config is not None
+        assert worker.config.use_tor is True
+        assert worker.config.tor_socks_host == "192.168.1.100"
+        assert worker.config.tor_socks_port == 9150
+        assert worker.config.stream_isolation is False
 
-        with patch.dict("sys.modules", {"apprise": mock_apprise_module}):
-            # Force re-initialization
-            notifier._initialized = False
-            notifier._apprise = None
-
-            await notifier._ensure_initialized()
-
-            # Verify proxy environment variables were set with socks5h:// (DNS through proxy)
-            assert os.environ.get("HTTP_PROXY") == "socks5h://192.168.1.100:9150"
-            assert os.environ.get("HTTPS_PROXY") == "socks5h://192.168.1.100:9150"
-
-    @pytest.mark.asyncio
-    async def test_tor_proxy_with_stream_isolation(self) -> None:
-        """Test that Tor proxy URL embeds isolation credentials when stream_isolation=True."""
+    def test_tor_worker_environment_uses_stream_isolation_proxy(self) -> None:
+        """The child environment has the configured SOCKS proxy and no inherited bypasses."""
         config = NotificationConfig(
-            enabled=True,
             urls=["gotify://host/token"],
             use_tor=True,
             tor_socks_host="192.168.1.100",
             tor_socks_port=9150,
             stream_isolation=True,
         )
-        notifier = Notifier(config)
+        worker_config = NotificationWorkerConfig(
+            urls=("gotify://host/token",),
+            use_tor=config.use_tor,
+            tor_socks_host=config.tor_socks_host,
+            tor_socks_port=config.tor_socks_port,
+            stream_isolation=config.stream_isolation,
+        )
+        child_environment = dict.fromkeys(PROXY_ENVIRONMENT_KEYS, "ambient-proxy")
+        child_environment["UNCHANGED"] = "value"
+        proxy_url = "socks5h://jm-notification:child-secret@192.168.1.100:9150"
 
-        # Mock the apprise module
-        mock_apprise_instance = MagicMock()
-        mock_apprise_instance.add.return_value = True
-        mock_apprise_instance.__len__ = lambda self: 1
+        def build_proxy_url(host: str, port: int, category: IsolationCategory) -> str:
+            assert (host, port, category) == (
+                "192.168.1.100",
+                9150,
+                IsolationCategory.NOTIFICATION,
+            )
+            return proxy_url
 
-        mock_apprise_module = MagicMock()
-        mock_apprise_module.Apprise.return_value = mock_apprise_instance
+        _configure_worker_environment(worker_config, child_environment, build_proxy_url)
 
-        with patch.dict("sys.modules", {"apprise": mock_apprise_module}):
-            # Force re-initialization
-            notifier._initialized = False
-            notifier._apprise = None
+        assert child_environment["HTTP_PROXY"] == proxy_url
+        assert child_environment["HTTPS_PROXY"] == proxy_url
+        assert child_environment["http_proxy"] == proxy_url
+        assert child_environment["https_proxy"] == proxy_url
+        assert "ALL_PROXY" not in child_environment
+        assert "all_proxy" not in child_environment
+        assert "NO_PROXY" not in child_environment
+        assert "no_proxy" not in child_environment
+        assert child_environment["UNCHANGED"] == "value"
 
-            await notifier._ensure_initialized()
+    def test_direct_worker_environment_clears_ambient_proxies(self) -> None:
+        """Direct notifications do not inherit parent proxy configuration."""
+        worker_config = NotificationWorkerConfig(
+            urls=("gotify://host/token",),
+            use_tor=False,
+            tor_socks_host="127.0.0.1",
+            tor_socks_port=9050,
+            stream_isolation=True,
+        )
+        child_environment = dict.fromkeys(PROXY_ENVIRONMENT_KEYS, "ambient-proxy")
 
-            proxy_url = os.environ.get("HTTP_PROXY", "")
-            # Should use socks5h:// with isolation credentials
-            assert proxy_url.startswith("socks5h://jm-notification:")
-            assert "@192.168.1.100:9150" in proxy_url
-            assert os.environ.get("HTTPS_PROXY") == proxy_url
+        _configure_worker_environment(worker_config, child_environment)
+
+        assert not set(PROXY_ENVIRONMENT_KEYS) & set(child_environment)
+
+    def test_apprise_worker_uses_one_child_and_closes(self) -> None:
+        """A valid Apprise configuration is initialized in one owned child process."""
+        worker = AppriseWorker(
+            NotificationWorkerConfig(
+                urls=("json://localhost",),
+                use_tor=True,
+                tor_socks_host="127.0.0.1",
+                tor_socks_port=9050,
+                stream_isolation=True,
+            )
+        )
+
+        assert worker.start().success is True
+        process = worker._process
+        assert process is not None
+        assert process.pid != os.getpid()
+
+        worker.close()
+
+        assert process.is_alive() is False
 
     @pytest.mark.asyncio
-    async def test_tor_proxy_disabled(self) -> None:
-        """Test that proxy is not set when Tor is disabled."""
-        config = NotificationConfig(
-            enabled=True,
-            urls=["gotify://host/token"],
-            use_tor=False,
+    async def test_apprise_child_routes_through_isolated_socks_proxy(self) -> None:
+        """The spawned Apprise process uses its private stream-isolated proxy."""
+        captured: dict[str, object] = {}
+        request_received = asyncio.Event()
+
+        async def fake_socks_proxy(
+            reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+        ) -> None:
+            try:
+                version, method_count = await reader.readexactly(2)
+                assert version == 5
+                methods = await reader.readexactly(method_count)
+                assert 2 in methods
+                writer.write(b"\x05\x02")
+                await writer.drain()
+
+                auth_version, username_length = await reader.readexactly(2)
+                assert auth_version == 1
+                username = await reader.readexactly(username_length)
+                password_length = (await reader.readexactly(1))[0]
+                password = await reader.readexactly(password_length)
+                captured["auth"] = (username.decode(), password.decode())
+                writer.write(b"\x01\x00")
+                await writer.drain()
+
+                version, command, reserved, address_type = await reader.readexactly(4)
+                assert (version, command, reserved) == (5, 1, 0)
+                if address_type == 3:
+                    host_length = (await reader.readexactly(1))[0]
+                    host = (await reader.readexactly(host_length)).decode()
+                elif address_type == 1:
+                    host = ".".join(str(part) for part in await reader.readexactly(4))
+                else:
+                    raise AssertionError(f"Unexpected SOCKS address type: {address_type}")
+                port = int.from_bytes(await reader.readexactly(2), "big")
+                captured["target"] = (host, port)
+                writer.write(b"\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00")
+                await writer.drain()
+
+                await reader.readuntil(b"\r\n\r\n")
+                writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+                await writer.drain()
+                request_received.set()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        server = await asyncio.start_server(fake_socks_proxy, "127.0.0.1", 0)
+        proxy_port = server.sockets[0].getsockname()[1]
+        parent_proxy_environment = {key: os.environ.get(key) for key in PROXY_ENVIRONMENT_KEYS}
+        worker = AppriseWorker(
+            NotificationWorkerConfig(
+                urls=("json://notification.invalid:18080",),
+                use_tor=True,
+                tor_socks_host="127.0.0.1",
+                tor_socks_port=proxy_port,
+                stream_isolation=True,
+            )
         )
-        notifier = Notifier(config)
 
-        # Mock the apprise module
-        mock_apprise_instance = MagicMock()
-        mock_apprise_instance.add.return_value = True
-        mock_apprise_instance.__len__ = lambda self: 1
+        try:
+            async with server:
+                assert (await asyncio.to_thread(worker.start)).success is True
+                result = await asyncio.to_thread(worker.send, "Test", "Body", "info")
+                assert result.success is True
+                await asyncio.wait_for(request_received.wait(), timeout=1.0)
+        finally:
+            await asyncio.to_thread(worker.close)
 
-        mock_apprise_module = MagicMock()
-        mock_apprise_module.Apprise.return_value = mock_apprise_instance
+        auth = captured["auth"]
+        assert isinstance(auth, tuple)
+        username, password = auth
+        assert username == "jm-notification"
+        assert password
+        assert captured["target"] == ("notification.invalid", 18080)
+        assert {
+            key: os.environ.get(key) for key in PROXY_ENVIRONMENT_KEYS
+        } == parent_proxy_environment
 
-        # Clear any existing proxy env vars
-        env_clear = {k: v for k, v in os.environ.items() if k not in ["HTTP_PROXY", "HTTPS_PROXY"]}
+    @pytest.mark.asyncio
+    async def test_cancelled_worker_start_is_closed_after_completion(self) -> None:
+        """Cancellation cannot strand a child whose blocking start is still running."""
+        worker = BlockingStartNotificationWorker()
+        notifier = Notifier(
+            NotificationConfig(enabled=True, urls=["test://"]),
+            worker_factory=worker,
+        )
+        initialization_task = asyncio.create_task(notifier._ensure_initialized())
 
-        with (
-            patch.dict("sys.modules", {"apprise": mock_apprise_module}),
-            patch.dict(os.environ, env_clear, clear=True),
-        ):
-            # Force re-initialization
-            notifier._initialized = False
-            notifier._apprise = None
+        assert await asyncio.to_thread(worker.start_started.wait, 1.0)
+        initialization_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await initialization_task
 
-            await notifier._ensure_initialized()
-
-            # Verify proxy environment variables were NOT set
-            assert "HTTP_PROXY" not in os.environ
-            assert "HTTPS_PROXY" not in os.environ
+        worker.release_start.set()
+        assert await asyncio.to_thread(worker.close_completed.wait, 1.0)
+        assert worker.closed is True
+        assert notifier._worker is None
 
 
 class TestGlobalNotifier:
@@ -918,6 +1040,24 @@ class TestGlobalNotifier:
         n2 = get_notifier()
 
         assert n1 is not n2
+
+    def test_reset_notifier_closes_worker(self) -> None:
+        """Reset releases an initialized worker instead of leaving a child behind."""
+        import jmcore.notifications as notifications_module
+
+        reset_notifier()
+        worker = RecordingNotificationWorker()
+        notifier = Notifier(
+            NotificationConfig(enabled=True, urls=["test://"]), worker_factory=worker
+        )
+        notifier._worker = worker
+        notifier._initialized = True
+        notifications_module._notifier = notifier
+
+        reset_notifier()
+
+        assert worker.closed is True
+        assert notifications_module._notifier is None
 
     def test_get_notifier_with_component_name(self) -> None:
         """Test that get_notifier sets component_name in config."""
@@ -1430,28 +1570,14 @@ class TestNotificationLogging:
             enabled=True,
             urls=["gotify://host/token"],
         )
-        notifier = Notifier(config)
-
-        # Mock the apprise module
-        mock_apprise_instance = MagicMock()
-        mock_apprise_instance.add.return_value = True
-        mock_apprise_instance.__len__ = lambda self: 1
-        mock_apprise_instance.async_notify = AsyncMock(return_value=True)
-
-        mock_apprise_module = MagicMock()
-        mock_apprise_module.Apprise.return_value = mock_apprise_instance
-        mock_apprise_module.NotifyType.INFO = "info"
+        worker = RecordingNotificationWorker()
+        notifier = Notifier(config, worker_factory=worker)
 
         output = StringIO()
         handler_id = logger.add(output, format="{message}", level="INFO")
 
         try:
-            with patch.dict("sys.modules", {"apprise": mock_apprise_module}):
-                # Force re-initialization
-                notifier._initialized = False
-                notifier._apprise = None
-
-                await notifier._send("Test Title", "Test body")
+            await notifier._send("Test Title", "Test body")
         finally:
             logger.remove(handler_id)
 
@@ -1465,37 +1591,80 @@ class TestNotificationLogging:
 
         from loguru import logger
 
-        config = NotificationConfig(
-            enabled=True,
-            urls=["gotify://host/token"],
-        )
-        notifier = Notifier(config)
-
-        # Mock the apprise module
-        mock_apprise_instance = MagicMock()
-        mock_apprise_instance.add.return_value = True
-        mock_apprise_instance.__len__ = lambda self: 1
-        mock_apprise_instance.async_notify = AsyncMock(return_value=False)
-
-        mock_apprise_module = MagicMock()
-        mock_apprise_module.Apprise.return_value = mock_apprise_instance
-        mock_apprise_module.NotifyType.INFO = "info"
+        config = NotificationConfig(enabled=True, urls=["gotify://host/token"], retry_enabled=False)
+        worker = RecordingNotificationWorker(send_results=[NotificationWorkerResult(False)])
+        notifier = Notifier(config, worker_factory=worker)
 
         output = StringIO()
         handler_id = logger.add(output, format="{message}", level="DEBUG")
 
         try:
-            with patch.dict("sys.modules", {"apprise": mock_apprise_module}):
-                # Force re-initialization
-                notifier._initialized = False
-                notifier._apprise = None
-
-                await notifier._send("Test Title", "Test body")
+            await notifier._send("Test Title", "Test body")
         finally:
             logger.remove(handler_id)
 
         log_output = output.getvalue()
         assert "Notification failed: Test Title" in log_output
+
+    @pytest.mark.asyncio
+    async def test_send_logs_sanitized_worker_diagnostic(self) -> None:
+        """A child TLS failure reaches parent loguru without notification secrets."""
+        from io import StringIO
+
+        from loguru import logger
+
+        notification_url = "https://notify.example.invalid/token-secret"
+        proxy_url = "socks5h://jm-notification:isolation-secret@127.0.0.1:9050"
+        title = "title-secret"
+        body = "body-secret"
+        diagnostic = f"certificate verify failed for {notification_url} via {proxy_url}: {body}"
+        worker = RecordingNotificationWorker(
+            send_results=[NotificationWorkerResult(False, diagnostic)]
+        )
+        notifier = Notifier(
+            NotificationConfig(enabled=True, urls=[notification_url], retry_enabled=False),
+            worker_factory=worker,
+        )
+        output = StringIO()
+        handler_id = logger.add(output, format="{message}", level="DEBUG")
+
+        try:
+            assert await notifier._send(title, body) is False
+        finally:
+            logger.remove(handler_id)
+
+        log_output = output.getvalue()
+        assert "TLS certificate verification failed" in log_output
+        assert title in log_output
+        for secret in (notification_url, proxy_url, "isolation-secret", body):
+            assert secret not in log_output
+
+    @pytest.mark.asyncio
+    async def test_initialization_failure_logs_worker_diagnostic(self) -> None:
+        """Initialization failures report the safe worker cause, not a URL error."""
+        from io import StringIO
+
+        from loguru import logger
+
+        worker = RecordingNotificationWorker(
+            start_result=NotificationWorkerResult(False, "Apprise is not installed")
+        )
+        notifier = Notifier(
+            NotificationConfig(enabled=True, urls=["https://notify.example.invalid/token-secret"]),
+            worker_factory=worker,
+        )
+        output = StringIO()
+        handler_id = logger.add(output, format="{message}", level="WARNING")
+
+        try:
+            assert await notifier._ensure_initialized() is False
+        finally:
+            logger.remove(handler_id)
+
+        log_output = output.getvalue()
+        assert "Failed to initialize notification worker: Apprise is not installed" in log_output
+        assert "No valid notification URLs configured" not in log_output
+        assert "token-secret" not in log_output
 
 
 class TestConvertSettingsToNotificationConfig:
@@ -1862,7 +2031,7 @@ class TestNotificationRetry:
 
         # Pre-initialize so _ensure_initialized passes
         notifier._initialized = True
-        notifier._apprise = MagicMock()
+        notifier._worker = RecordingNotificationWorker()
 
         # First call fails, second call (retry) succeeds
         notifier._try_send = AsyncMock(side_effect=[False, True])
@@ -1896,7 +2065,7 @@ class TestNotificationRetry:
         notifier = Notifier(config)
 
         notifier._initialized = True
-        notifier._apprise = MagicMock()
+        notifier._worker = RecordingNotificationWorker()
         notifier._try_send = AsyncMock(return_value=False)
 
         result = await notifier._send("Test", "Body")
@@ -1944,7 +2113,7 @@ class TestNotificationRetry:
         notifier = Notifier(config)
 
         notifier._initialized = True
-        notifier._apprise = MagicMock()
+        notifier._worker = RecordingNotificationWorker()
         notifier._try_send = AsyncMock(return_value=True)
 
         result = await notifier._send("Test", "Body")
@@ -1965,7 +2134,7 @@ class TestNotificationRetry:
         notifier = Notifier(config)
 
         notifier._initialized = True
-        notifier._apprise = MagicMock()
+        notifier._worker = RecordingNotificationWorker()
         # All attempts fail
         notifier._try_send = AsyncMock(return_value=False)
 
@@ -1994,7 +2163,7 @@ class TestNotificationRetry:
         notifier = Notifier(config)
 
         notifier._initialized = True
-        notifier._apprise = MagicMock()
+        notifier._worker = RecordingNotificationWorker()
         # First call (from _send) fails, first retry fails, second retry succeeds
         notifier._try_send = AsyncMock(side_effect=[False, False, True])
 
@@ -2022,7 +2191,7 @@ class TestNotificationRetry:
         notifier = Notifier(config)
 
         notifier._initialized = True
-        notifier._apprise = MagicMock()
+        notifier._worker = RecordingNotificationWorker()
         notifier._try_send = AsyncMock(return_value=False)
 
         sleep_delays: list[float] = []
@@ -2055,7 +2224,7 @@ class TestNotificationRetry:
         notifier = Notifier(config)
 
         notifier._initialized = True
-        notifier._apprise = MagicMock()
+        notifier._worker = RecordingNotificationWorker()
         # First call fails normally, retries raise exceptions
         notifier._try_send = AsyncMock(
             side_effect=[False, ConnectionError("Tor circuit failed"), True]
@@ -2085,7 +2254,7 @@ class TestNotificationRetry:
         notifier = Notifier(config)
 
         notifier._initialized = True
-        notifier._apprise = MagicMock()
+        notifier._worker = RecordingNotificationWorker()
         notifier._try_send = AsyncMock(return_value=False)
 
         with patch("jmcore.notifications.asyncio.sleep", new_callable=AsyncMock):
@@ -2117,7 +2286,7 @@ class TestNotificationRetry:
         notifier = Notifier(config)
 
         notifier._initialized = True
-        notifier._apprise = MagicMock()
+        notifier._worker = RecordingNotificationWorker()
         notifier._try_send = AsyncMock(return_value=False)
 
         start = time.monotonic()
@@ -2134,7 +2303,7 @@ class TestNotificationRetry:
             task.cancel()
 
     @pytest.mark.asyncio
-    async def test_retry_with_real_apprise_mock(self) -> None:
+    async def test_retry_with_worker(self) -> None:
         """Test retry integrates correctly with the full _send/_try_send flow."""
         config = NotificationConfig(
             enabled=True,
@@ -2143,25 +2312,16 @@ class TestNotificationRetry:
             retry_max_attempts=2,
             retry_base_delay=1.0,
         )
-        notifier = Notifier(config)
+        worker = RecordingNotificationWorker(
+            send_results=[
+                NotificationWorkerResult(False),
+                NotificationWorkerResult(False),
+                NotificationWorkerResult(True),
+            ]
+        )
+        notifier = Notifier(config, worker_factory=worker)
 
-        # Mock the apprise module with failing then succeeding sends
-        mock_apprise_instance = MagicMock()
-        mock_apprise_instance.add.return_value = True
-        mock_apprise_instance.__len__ = lambda self: 1
-        mock_apprise_instance.async_notify = AsyncMock(side_effect=[False, False, True])
-
-        mock_apprise_module = MagicMock()
-        mock_apprise_module.Apprise.return_value = mock_apprise_instance
-        mock_apprise_module.NotifyType.INFO = "info"
-
-        with (
-            patch.dict("sys.modules", {"apprise": mock_apprise_module}),
-            patch("jmcore.notifications.asyncio.sleep", new_callable=AsyncMock),
-        ):
-            notifier._initialized = False
-            notifier._apprise = None
-
+        with patch("jmcore.notifications.asyncio.sleep", new_callable=AsyncMock):
             result = await notifier._send("Test Event", "Test body")
 
             # First attempt failed
@@ -2172,5 +2332,5 @@ class TestNotificationRetry:
             await asyncio.gather(*tasks)
 
         # 1 initial + 2 retries = 3 calls, last one succeeded
-        assert mock_apprise_instance.async_notify.call_count == 3
+        assert len(worker.calls) == 3
         assert len(notifier._retry_tasks) == 0

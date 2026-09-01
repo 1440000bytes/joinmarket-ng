@@ -13,9 +13,7 @@ properties of the registry itself.
 
 from __future__ import annotations
 
-import os
-from collections.abc import Generator
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -26,13 +24,6 @@ from jmcore.notifications import (
     NotificationPriority,
     Notifier,
 )
-
-
-@pytest.fixture(autouse=True)
-def isolate_proxy_env() -> Generator[None, None, None]:
-    """Restore proxy env vars after each test (see test_notifications.py)."""
-    with patch.dict(os.environ, {}, clear=False):
-        yield
 
 
 class TestRegistryCompleteness:
