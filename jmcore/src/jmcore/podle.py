@@ -404,6 +404,31 @@ def generate_podle(
 # ==============================================================================
 
 
+def _classify_unsupported_scriptpubkey(spk: bytes) -> str:
+    """Return the recognizable family of an unsupported scriptPubKey."""
+    if len(spk) == 34:
+        if spk.startswith(b"\x00\x20"):
+            return "P2WSH"
+        if spk.startswith(b"\x51\x20"):
+            return "P2TR"
+
+    # Bare compressed or uncompressed pay-to-public-key output.
+    if ((len(spk) == 35 and spk[0] == 0x21) or (len(spk) == 67 and spk[0] == 0x41)) and spk[
+        -1
+    ] == 0xAC:
+        return "P2PK"
+
+    if spk.startswith(b"\x6a"):
+        return "OP_RETURN"
+
+    # Native witness programs have a version opcode followed by one canonical push.
+    if len(spk) >= 4 and (spk[0] == 0x00 or 0x51 <= spk[0] <= 0x60) and spk[1] == len(spk) - 2:
+        witness_version = 0 if spk[0] == 0x00 else spk[0] - 0x50
+        return f"witness v{witness_version}"
+
+    return "nonstandard"
+
+
 def verify_podle_binding(p: bytes, scriptpubkey: bytes | str) -> tuple[bool, str]:
     """
     Verify that a PoDLE public key ``P`` actually controls a given UTXO.
@@ -464,7 +489,8 @@ def verify_podle_binding(p: bytes, scriptpubkey: bytes | str) -> tuple[bool, str
             return True, ""
         return False, "P does not match P2SH-P2WPKH scriptpubkey"
 
-    return False, f"Unsupported scriptpubkey type for PoDLE binding ({len(spk)} bytes)"
+    family = _classify_unsupported_scriptpubkey(spk)
+    return False, f"Unsupported {family} scriptpubkey for PoDLE binding ({len(spk)} bytes)"
 
 
 def verify_podle(

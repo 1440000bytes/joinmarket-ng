@@ -1125,17 +1125,47 @@ class TestVerifyPodleBinding:
         p = self._pubkey()
         bound, err = verify_podle_binding(p, b"\x6a\x04dead")
         assert not bound
-        assert "Unsupported" in err
+        assert "OP_RETURN" in err
+        assert "6 bytes" in err
+
+    @pytest.mark.parametrize(
+        ("spk", "family"),
+        [
+            (b"\x00\x20" + b"\xab" * 32, "P2WSH"),
+            (b"\x51\x20" + b"\xcd" * 32, "P2TR"),
+        ],
+    )
+    def test_unsupported_34_byte_witness_script_type_is_named(
+        self, spk: bytes, family: str
+    ) -> None:
+        bound, err = verify_podle_binding(self._pubkey(), spk)
+        assert not bound
+        assert family in err
+        assert "34 bytes" in err
+
+    @pytest.mark.parametrize(
+        ("spk", "family"),
+        [
+            (b"\x21" + G_COMPRESSED + b"\xac", "P2PK"),
+            (b"\xff", "nonstandard"),
+            (b"\x52\x03" + b"\x00" * 3, "witness v2"),
+        ],
+    )
+    def test_other_unsupported_script_type_has_family_and_length(
+        self, spk: bytes, family: str
+    ) -> None:
+        bound, err = verify_podle_binding(self._pubkey(), spk)
+        assert not bound
+        assert family in err
+        assert f"{len(spk)} bytes" in err
 
     def test_invalid_pubkey_length_rejected(self) -> None:
         bound, err = verify_podle_binding(b"\x02" * 32, b"\x00\x14" + b"\x00" * 20)
-        assert not bound
-        assert "length" in err
+        assert (bound, err) == (False, "Invalid P length: 32, expected 33 (compressed)")
 
     def test_invalid_hex_scriptpubkey_rejected(self) -> None:
         bound, err = verify_podle_binding(self._pubkey(), "zz")
-        assert not bound
-        assert "hex" in err
+        assert (bound, err) == (False, "scriptpubkey is not valid hex")
 
 
 class TestPoDLENonceSecurity:

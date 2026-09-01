@@ -405,6 +405,86 @@ async def test_neutrino_maker_rejects_legacy_taker_auth():
 
 
 @pytest.mark.asyncio
+async def test_full_node_rejects_p2wsh_podle_authorization_before_input_selection():
+    """An authoritative unsupported script must fail closed after proof verification."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from jmcore.encryption import CryptoSession
+    from jmcore.models import Offer, OfferType
+
+    from maker.coinjoin import CoinJoinSession
+
+    mock_wallet = MagicMock()
+    mock_backend = MagicMock()
+    mock_backend.requires_neutrino_metadata.return_value = False
+    taker_utxo = MagicMock()
+    taker_utxo.value = 2_000_000
+    taker_utxo.confirmations = 10
+    taker_utxo.scriptpubkey = "0020" + "11" * 32
+    mock_backend.get_utxo = AsyncMock(return_value=taker_utxo)
+
+    offer = Offer(
+        counterparty="J5FullNodeMaker",
+        ordertype=OfferType.SW0_RELATIVE,
+        oid=0,
+        minsize=10_000,
+        maxsize=100_000_000,
+        txfee=1000,
+        cjfee="0.0003",
+    )
+    session = CoinJoinSession(
+        taker_nick="J5ExperimentalTaker",
+        offer=offer,
+        wallet=mock_wallet,
+        backend=mock_backend,
+    )
+    taker_crypto = CryptoSession()
+    success, _ = await session.handle_fill(
+        amount=1_000_000,
+        commitment="aa" * 32,
+        taker_pk=taker_crypto.get_pubkey_hex(),
+    )
+    assert success
+
+    parsed_revelation = {
+        "P": bytes.fromhex("02" + "cc" * 32),
+        "P2": bytes.fromhex("02" + "dd" * 32),
+        "sig": bytes.fromhex("ee" * 32),
+        "e": bytes.fromhex("ff" * 16),
+        "txid": "bb" * 32,
+        "vout": 0,
+    }
+    revelation = {
+        "utxo": "bb" * 32 + ":0",
+        "P": "02" + "cc" * 32,
+        "P2": "02" + "dd" * 32,
+        "sig": "ee" * 32,
+        "e": "ff" * 16,
+    }
+
+    with (
+        patch("maker.coinjoin.parse_podle_revelation", return_value=parsed_revelation),
+        patch("maker.coinjoin.verify_podle", return_value=(True, None)),
+        patch.object(session, "_select_our_utxos", new_callable=AsyncMock) as select_utxos,
+    ):
+        success, response = await session.handle_auth(
+            commitment="aa" * 32,
+            revelation=revelation,
+            kphex="",
+        )
+
+    assert success is False
+    assert response == {
+        "error": "PoDLE binding failed: Unsupported P2WSH scriptpubkey for PoDLE binding "
+        "(34 bytes)",
+        "error_code": "podle_binding_unsupported_script",
+        "error_reason": "PoDLE ownership binding failed",
+    }
+    mock_backend.get_utxo.assert_awaited_once_with("bb" * 32, 0)
+    select_utxos.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_neutrino_maker_accepts_neutrino_compat_taker_auth():
     """Test that a neutrino maker succeeds when taker sends extended metadata.
 

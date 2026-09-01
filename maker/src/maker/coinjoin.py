@@ -310,11 +310,10 @@ class CoinJoinSession:
                 logger.bind(sensitive=True).debug(f"Failed to parse PoDLE revelation: {revelation}")
                 return False, {"error": "Invalid PoDLE revelation format"}
 
-            # Log PoDLE verification inputs at TRACE level
-            logger.bind(sensitive=True).trace(
-                f"PoDLE verification inputs: P={parsed_rev['P'].hex()[:32]}..., "
-                f"P2={parsed_rev['P2'].hex()[:32]}..., sig={parsed_rev['sig'].hex()[:32]}..., "
-                f"e={parsed_rev['e'].hex()[:16]}..., commitment={commitment[:16]}..."
+            logger.bind(sensitive=True).debug(
+                f"PoDLE verification inputs: P={parsed_rev['P'].hex()}, "
+                f"P2={parsed_rev['P2'].hex()}, sig={parsed_rev['sig'].hex()}, "
+                f"e={parsed_rev['e'].hex()}, commitment={commitment}"
             )
 
             is_valid, error = verify_podle(
@@ -333,7 +332,11 @@ class CoinJoinSession:
                     f"PoDLE verification failed for {self.taker_nick}: {error} "
                     f"(commitment={commitment[:16]}..., utxo={utxo_str})"
                 )
-                return False, {"error": f"PoDLE verification failed: {error}"}
+                return False, {
+                    "error": f"PoDLE verification failed: {error}",
+                    "error_code": "podle_proof_invalid",
+                    "error_reason": "PoDLE proof verification failed",
+                }
 
             logger.debug("PoDLE proof verified ✓")
             logger.bind(sensitive=True).debug(
@@ -387,13 +390,21 @@ class CoinJoinSession:
                 if active_check is not None and not active_check():
                     return False, {"error": "Session expired during UTXO verification"}
                 if not result.valid:
-                    return False, {"error": f"Taker's UTXO verification failed: {result.error}"}
+                    return False, {
+                        "error": f"Taker's UTXO verification failed: {result.error}",
+                        "error_code": "podle_utxo_invalid",
+                        "error_reason": "PoDLE UTXO verification failed",
+                    }
 
                 taker_utxo_value = result.value
                 taker_utxo_confirmations = result.confirmations
                 # verify_utxo_with_metadata confirmed this scriptpubkey matches
                 # the on-chain output, so it is authoritative for binding.
                 verified_scriptpubkey: str | None = taker_scriptpubkey
+                logger.debug(
+                    "PoDLE authorization UTXO verified via Neutrino "
+                    f"(scriptpubkey_len={len(taker_scriptpubkey) // 2} bytes)"
+                )
                 logger.bind(sensitive=True).debug(
                     f"Neutrino-verified taker's UTXO: {utxo_txid}:{utxo_vout}"
                 )
@@ -404,11 +415,19 @@ class CoinJoinSession:
                     return False, {"error": "Session expired during UTXO verification"}
 
                 if not taker_utxo:
-                    return False, {"error": "Taker's UTXO not found on blockchain"}
+                    return False, {
+                        "error": "Taker's UTXO not found on blockchain",
+                        "error_code": "podle_utxo_invalid",
+                        "error_reason": "PoDLE UTXO verification failed",
+                    }
 
                 taker_utxo_value = taker_utxo.value
                 taker_utxo_confirmations = taker_utxo.confirmations
                 verified_scriptpubkey = taker_utxo.scriptpubkey
+                logger.debug(
+                    "PoDLE authorization UTXO verified via Bitcoin Core "
+                    f"(scriptpubkey_len={len(verified_scriptpubkey) // 2} bytes)"
+                )
 
             # Bind the PoDLE public key P to the UTXO's scriptPubKey. Without
             # this a taker could present a valid PoDLE for a key it owns while
@@ -418,12 +437,23 @@ class CoinJoinSession:
             if verified_scriptpubkey:
                 bound, bind_err = verify_podle_binding(parsed_rev["P"], verified_scriptpubkey)
                 if not bound:
-                    logger.warning("PoDLE binding failed")
+                    unsupported_script = bind_err.startswith("Unsupported ")
+                    error_code = (
+                        "podle_binding_unsupported_script"
+                        if unsupported_script
+                        else "podle_binding_mismatch"
+                    )
+                    logger.warning(f"PoDLE ownership binding failed: {bind_err}")
                     logger.bind(sensitive=True).warning(
                         f"PoDLE binding failed for {self.taker_nick}: {bind_err} "
-                        f"(utxo={utxo_txid[:16]}...:{utxo_vout})"
+                        f"(utxo={utxo_txid}:{utxo_vout}, "
+                        f"scriptpubkey={verified_scriptpubkey}, P={parsed_rev['P'].hex()})"
                     )
-                    return False, {"error": f"PoDLE binding failed: {bind_err}"}
+                    return False, {
+                        "error": f"PoDLE binding failed: {bind_err}",
+                        "error_code": error_code,
+                        "error_reason": "PoDLE ownership binding failed",
+                    }
                 logger.debug("PoDLE bound to UTXO scriptpubkey ✓")
             else:
                 logger.warning("Could not verify PoDLE binding to UTXO")
@@ -431,7 +461,11 @@ class CoinJoinSession:
                     f"No scriptpubkey available to bind PoDLE for "
                     f"{utxo_txid[:16]}...:{utxo_vout}; rejecting"
                 )
-                return False, {"error": "Could not verify PoDLE binding to UTXO"}
+                return False, {
+                    "error": "Could not verify PoDLE binding to UTXO",
+                    "error_code": "podle_binding_unavailable",
+                    "error_reason": "PoDLE ownership binding failed",
+                }
 
             if taker_utxo_confirmations < self.taker_utxo_age:
                 logger.bind(sensitive=True).debug(
