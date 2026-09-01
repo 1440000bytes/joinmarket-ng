@@ -15,6 +15,7 @@ from jmcore.crypto import NickIdentity, verify_signed_privmsg
 from jmcore.directory_client import DirectoryClient
 from jmcore.models import Offer
 from jmcore.network import ONION_HOSTID, TCPConnection
+from jmcore.network import ConnectionError as NetworkConnectionError
 from jmcore.nick_auth import NickAuthMode
 from jmcore.protocol import (
     COMMAND_PREFIX,
@@ -531,11 +532,11 @@ class DirectConnectionMixin:
                 except TimeoutError:
                     # No message received, continue waiting
                     continue
-                except ConnectionError as e:
+                except NetworkConnectionError as e:
                     # Remote closed the TCP connection. This is routine for
                     # orderbook-watcher health checks and directory-handshake
                     # discovery probes, which connect, read the handshake
-                    # response, and disconnect. Log at INFO so real problems
+                    # response, and disconnect. Log at DEBUG so real problems
                     # (parse errors, unexpected exceptions) still surface.
                     logger.bind(sensitive=True).debug(
                         f"Direct connection from {peer_str} closed by peer: {e}"

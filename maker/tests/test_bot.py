@@ -860,17 +860,17 @@ class TestHiddenServiceListener:
 
     @pytest.mark.asyncio
     async def test_on_direct_connection_clean_eof_not_logged_as_error(
-        self, mock_wallet, mock_backend, config_with_onion, caplog
+        self, mock_wallet, mock_backend, config_with_onion
     ):
         """Clean EOF after handshake must not surface as an ERROR.
 
         Orderbook-watcher health checks and directory-handshake probes connect,
         read the handshake response, and disconnect. The maker's receive loop
         sees that as ``ConnectionError('Connection closed by peer')`` from
-        TCPConnection.receive(). It should log that at INFO, not ERROR, so it
+        TCPConnection.receive(). It should log that at DEBUG, not ERROR, so it
         doesn't swamp operator logs with every benign probe.
         """
-        import logging
+        from loguru import logger
 
         bot = MakerBot(
             wallet=mock_wallet,
@@ -878,30 +878,58 @@ class TestHiddenServiceListener:
             config=config_with_onion,
         )
         bot.running = True
-
-        mock_conn = MagicMock(spec=TCPConnection)
-        mock_conn.is_connected.side_effect = [True, True, False]
-
-        async def mock_receive() -> bytes:
-            raise ConnectionError("Connection closed by peer")
-
-        mock_conn.receive = mock_receive
-
-        async def mock_close() -> None:
-            pass
-
-        mock_conn.close = mock_close
-
-        with caplog.at_level(logging.INFO, logger="maker.direct_connection"):
-            await bot._on_direct_connection(mock_conn, "127.0.0.1:12345")
-
-        # No ERROR-level record should mention this peer_str.
-        errors = [
-            r for r in caplog.records if r.levelno >= logging.ERROR and "12345" in r.getMessage()
-        ]
-        assert errors == [], (
-            f"Clean EOF should not log at ERROR; got: {[r.getMessage() for r in errors]}"
+        taker = NickIdentity(JM_VERSION)
+        reader = asyncio.StreamReader()
+        reader.feed_data(self._handshake(taker.nick) + b"\r\n")
+        reader.feed_eof()
+        writer = MagicMock()
+        writer.drain = AsyncMock()
+        connection = TCPConnection(reader, writer)
+        errors: list[str] = []
+        handler_id = logger.add(
+            lambda message: errors.append(message.record["message"]),
+            level="ERROR",
         )
+
+        try:
+            await bot._on_direct_connection(connection, "127.0.0.1:12345")
+        finally:
+            logger.remove(handler_id)
+
+        writer.write.assert_called_once()
+        assert errors == []
+        assert connection not in bot._direct_connection_states
+
+    @pytest.mark.asyncio
+    async def test_on_direct_connection_unexpected_receive_error_is_logged(
+        self, mock_wallet, mock_backend, config_with_onion
+    ):
+        """Unexpected receive failures must remain visible to operators."""
+        from loguru import logger
+
+        bot = MakerBot(
+            wallet=mock_wallet,
+            backend=mock_backend,
+            config=config_with_onion,
+        )
+        bot.running = True
+        connection = MagicMock(spec=TCPConnection)
+        connection.is_connected.return_value = True
+        connection.receive = AsyncMock(side_effect=RuntimeError("unexpected failure"))
+        connection.close = AsyncMock()
+        errors: list[str] = []
+        handler_id = logger.add(
+            lambda message: errors.append(message.record["message"]),
+            level="ERROR",
+        )
+
+        try:
+            await bot._on_direct_connection(connection, "127.0.0.1:12345")
+        finally:
+            logger.remove(handler_id)
+
+        assert "Error processing direct message" in errors
+        connection.close.assert_awaited_once()
 
 
 class TestHandlePush:
