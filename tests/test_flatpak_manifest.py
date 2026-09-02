@@ -3,15 +3,20 @@ from __future__ import annotations
 from pathlib import Path
 import re
 import xml.etree.ElementTree as ET
+from typing import Any
 
 import yaml
 
 
-def test_application_source_excludes_local_state() -> None:
+def _manifest() -> dict[str, Any]:
     manifest_path = (
         Path(__file__).resolve().parents[1] / "flatpak" / "org.joinmarketng.JamNG.yml"
     )
-    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    return yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+
+
+def test_application_source_excludes_local_state() -> None:
+    manifest = _manifest()
     application_module = next(
         module for module in manifest["modules"] if module["name"] == "jam-ng"
     )
@@ -22,6 +27,19 @@ def test_application_source_excludes_local_state() -> None:
     assert {".git", ".flatpak-builder", "build-dir", "flatpak-repo", "tmp"} <= set(
         application_source["skip"]
     )
+
+
+def test_manifest_builds_recovery_enabled_libsecp256k1() -> None:
+    manifest = _manifest()
+    secp_module = next(
+        module for module in manifest["modules"] if module["name"] == "libsecp256k1"
+    )
+
+    assert secp_module["buildsystem"] == "cmake-ninja"
+    assert "-DSECP256K1_ENABLE_MODULE_RECOVERY=ON" in secp_module["config-opts"]
+    source = secp_module["sources"][0]
+    assert source["type"] == "git"
+    assert source["commit"] == "e3a885d42a7800c1ccebad94ad1e2b82c4df5c65"
 
 
 def test_latest_appstream_release_matches_project_version() -> None:

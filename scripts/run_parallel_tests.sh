@@ -813,7 +813,6 @@ setup_reference_implementation() {
         service-identity==21.1.0 \
         twisted==24.7.0 \
         txtorcon==23.11.0 \
-        python-bitcointx==1.1.5 \
         argon2_cffi==21.3.0 \
         autobahn==20.12.3 \
         fastbencode==0.3.6 \

@@ -12,9 +12,6 @@ ARG PYTHON_SLIM_DIGEST=sha256:656d12e70054d5fda18a045e2494c96701e9792dd1445f95b3
 # Update versions with: ./scripts/update-base-images.sh
 ARG SETUPTOOLS_VERSION=84.0.0
 ARG WHEEL_VERSION=0.48.0
-# hatchling builds coincurve's wheel from source (no cp314 wheel upstream); its
-# version is recorded in WHEEL/RECORD, so pin it for reproducible layer digests.
-ARG HATCHLING_VERSION=1.30.1
 
 # =============================================================================
 # Stage 1: Build Python environment
@@ -22,10 +19,9 @@ ARG HATCHLING_VERSION=1.30.1
 FROM python:${PYTHON_VERSION}-slim@${PYTHON_SLIM_DIGEST} AS builder
 WORKDIR /build
 
-# build-essential + cmake + pkg-config needed to compile coincurve (no wheels for 3.14 yet)
+# Build dependencies for Python packages without platform wheels.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential=12.12 \
-    cmake=3.31.6-2 \
     pkg-config=1.8.1-4 \
     libffi-dev=3.4.8-2 \
     libsodium-dev=1.0.18-1+deb13u1 \
@@ -46,15 +42,11 @@ ENV JOINMARKET_BUILD_REF=${JOINMARKET_BUILD_REF}
 # Pin build tools for reproducible builds (re-declare to inherit global ARGs)
 ARG SETUPTOOLS_VERSION
 ARG WHEEL_VERSION
-ARG HATCHLING_VERSION
 RUN echo "setuptools==${SETUPTOOLS_VERSION}" > /build/constraints.txt && \
-    echo "wheel==${WHEEL_VERSION}" >> /build/constraints.txt && \
-    echo "hatchling==${HATCHLING_VERSION}" > /build/coincurve-build-constraints.txt
+    echo "wheel==${WHEEL_VERSION}" >> /build/constraints.txt
 # Note: the full setuptools/wheel build constraint is applied only to our own package
-# install steps below. For the requirements install we apply a hatchling-only constraint
-# (pinning coincurve's PEP 517 backend) instead; applying the setuptools pin here would
-# conflict with packages that pin their own setuptools (e.g. httptools==0.7.1 needs
-# setuptools==80.9.0 exactly and has no pre-built wheel on armv7).
+# install steps below. Applying the setuptools pin to third-party requirements would conflict
+# with packages that pin their own setuptools (for example, httptools on armv7).
 
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
@@ -70,9 +62,9 @@ COPY taker/requirements.txt /build/requirements-taker.txt
 COPY orderbook_watcher/requirements.txt /build/requirements-obwatcher.txt
 COPY jmwalletd/requirements.txt /build/requirements-jmwalletd.txt
 
-RUN --mount=type=cache,target=/root/.cache/pip,id=jmng-pip-${HATCHLING_VERSION} \
+RUN --mount=type=cache,target=/root/.cache/pip,id=jmng-pip-${SETUPTOOLS_VERSION} \
     if [ -n "$SOURCE_DATE_EPOCH" ]; then export SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; fi && \
-    pip install --build-constraint /build/coincurve-build-constraints.txt \
+    pip install \
         -r /build/requirements-jmcore.txt \
         -r /build/requirements-jmwallet.txt \
         -r /build/requirements-maker.txt \
@@ -128,8 +120,9 @@ WORKDIR /app
 
 # Package installers are build-only; remove pip and its vendored libraries.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    tini=0.19.0-3+b7 \
+    libsecp256k1-2=0.5.0-2+b1 \
     libsodium23=1.0.18-1+deb13u1 \
+    tini=0.19.0-3+b7 \
     && rm -rf /var/lib/apt/lists/* \
     && rm -rf /var/log/dpkg.log /var/log/apt/* /var/cache/ldconfig/aux-cache \
     && rm -rf \

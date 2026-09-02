@@ -228,13 +228,13 @@ Debian/Ubuntu:
 
 ```bash
 sudo apt update
-sudo apt install -y git build-essential libffi-dev libsodium-dev pkg-config python3 python3-venv
+sudo apt install -y git build-essential libffi-dev libsecp256k1-dev libsodium-dev pkg-config python3 python3-venv
 ```
 
 macOS:
 
 ```bash
-brew install libsodium pkg-config python3
+brew install libsecp256k1 libsodium pkg-config python3
 ```
 
 Install packages:
@@ -302,6 +302,7 @@ newgrp debian-tor
 - `jm-wallet: command not found`: run `source ~/.joinmarket-ng/activate.sh`
 - `jm-orderbook-watcher: command not found`: rerun the installer with
   `--orderbook-watcher`, then run `source ~/.joinmarket-ng/activate.sh`
+- secp256k1 library errors on Linux: install `libsecp256k1-dev`
 - build dependency errors on Linux: install `build-essential libffi-dev libsodium-dev pkg-config`
 - Python venv issues: install `python3-venv`
 - RPC failures: verify Bitcoin Core is reachable and credentials in `config.toml` are correct
@@ -514,6 +515,7 @@ Prerequisites:
 - Windows 10 or later (or Windows Server 2022+).
 - Python 3.11+ from python.org (tick "Add Python to PATH" during install).
 - PowerShell 7+ (or built-in Windows PowerShell 5).
+- Git, CMake, and Visual Studio 2022 Build Tools with the C++ build tools workload.
 - Tor (we use the Tor Project Expert Bundle; Tor Browser is not required).
 
 ### 1. Install joinmarket-ng
@@ -525,6 +527,22 @@ git clone https://github.com/joinmarket-ng/joinmarket-ng.git
 cd joinmarket-ng
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
+$secpSource = Join-Path $PWD "tmp\secp256k1"
+$secpBuild = Join-Path $secpSource "build"
+git init $secpSource
+git -C $secpSource remote add origin https://github.com/bitcoin-core/secp256k1.git
+git -C $secpSource fetch --depth 1 origin e3a885d42a7800c1ccebad94ad1e2b82c4df5c65
+git -C $secpSource checkout --detach FETCH_HEAD
+cmake -S $secpSource -B $secpBuild `
+  -DBUILD_SHARED_LIBS=ON `
+  -DSECP256K1_ENABLE_MODULE_RECOVERY=ON `
+  -DSECP256K1_ENABLE_MODULE_ECDH=ON `
+  -DSECP256K1_BUILD_TESTS=OFF `
+  -DSECP256K1_BUILD_BENCHMARK=OFF `
+  -DSECP256K1_BUILD_EXHAUSTIVE_TESTS=OFF
+cmake --build $secpBuild --config Release
+$secpDll = Get-ChildItem $secpBuild -Recurse -Filter "*secp256k1*.dll" | Select-Object -First 1
+Copy-Item $secpDll.FullName .\.venv\Scripts\secp256k1.dll
 python -m pip install --upgrade pip
 pip install .\jmcore .\jmwallet .\taker
 ```

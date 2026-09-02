@@ -17,6 +17,16 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Install native secp256k1 library
+      shell: bash
+      run: |
+        if [ "$RUNNER_OS" = "Linux" ]; then
+          sudo apt-get update
+          sudo apt-get install -y libsecp256k1-dev
+        elif [ "$RUNNER_OS" = "macOS" ]; then
+          brew install libsecp256k1
+        fi
+
     - name: Setup Python
       uses: actions/setup-python@v6
       with:

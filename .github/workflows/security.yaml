@@ -64,11 +64,6 @@ jobs:
 
       - name: Audit production lock
         run: |
-          case "${{ matrix.requirements }}" in
-            jmcore/requirements.txt|jmwallet/requirements.txt|jmwalletd/requirements.txt)
-              echo "::warning::coincurve is a direct archive dependency. pip-audit checks its package metadata, not archive provenance."
-              ;;
-          esac
           "$RUNNER_TEMP/pip-audit/bin/pip-audit" --progress-spinner off --require-hashes \
             -r "${{ matrix.requirements }}"
 

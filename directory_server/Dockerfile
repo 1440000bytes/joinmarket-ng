@@ -12,9 +12,6 @@ ARG PYTHON_FULL_DIGEST=sha256:8edbf9e42c7fb168b9c523718ed907117e6d2e60f5889c0c49
 # Update versions with: ./scripts/update-base-images.sh
 ARG SETUPTOOLS_VERSION=84.0.0
 ARG WHEEL_VERSION=0.48.0
-# hatchling builds coincurve's wheel from source (no cp314 wheel upstream); its
-# version is recorded in WHEEL/RECORD, so pin it for reproducible layer digests.
-ARG HATCHLING_VERSION=1.30.1
 
 FROM python:${PYTHON_VERSION}-slim@${PYTHON_SLIM_DIGEST} AS builder
 
@@ -44,10 +41,8 @@ ENV JOINMARKET_BUILD_REF=${JOINMARKET_BUILD_REF}
 # Pin build tools for reproducible builds (re-declare to inherit global ARGs)
 ARG SETUPTOOLS_VERSION
 ARG WHEEL_VERSION
-ARG HATCHLING_VERSION
 RUN echo "setuptools==${SETUPTOOLS_VERSION}" > /build/constraints.txt && \
-    echo "wheel==${WHEEL_VERSION}" >> /build/constraints.txt && \
-    echo "hatchling==${HATCHLING_VERSION}" >> /build/constraints.txt
+    echo "wheel==${WHEEL_VERSION}" >> /build/constraints.txt
 
 # Install jmcore and directory_server dependencies in a single pip invocation.
 # --build-constraint is included because stem (in directory_server requirements) uses
@@ -55,7 +50,7 @@ RUN echo "setuptools==${SETUPTOOLS_VERSION}" > /build/constraints.txt && \
 COPY jmcore/requirements.txt /build/jmcore/requirements.txt
 COPY directory_server/requirements.txt /build/directory_server/requirements.txt
 
-RUN --mount=type=cache,target=/root/.cache/pip,id=jmng-pip-${HATCHLING_VERSION} \
+RUN --mount=type=cache,target=/root/.cache/pip,id=jmng-pip-${SETUPTOOLS_VERSION} \
     if [ -n "$SOURCE_DATE_EPOCH" ]; then export SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; fi && \
     pip install --prefix=/app --build-constraint /build/constraints.txt \
         -r /build/jmcore/requirements.txt \
@@ -68,7 +63,7 @@ COPY jmcore/setup.py /build/jmcore/
 COPY directory_server/src /build/directory_server/src
 COPY directory_server/pyproject.toml /build/directory_server/
 
-RUN --mount=type=cache,target=/root/.cache/pip,id=jmng-pip-${HATCHLING_VERSION} \
+RUN --mount=type=cache,target=/root/.cache/pip,id=jmng-pip-${SETUPTOOLS_VERSION} \
     if [ -n "$SOURCE_DATE_EPOCH" ]; then export SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; fi && \
     pip install --no-deps --prefix=/app --build-constraint /build/constraints.txt \
         /build/jmcore \
@@ -91,6 +86,7 @@ WORKDIR /app
 # Delete apt/dpkg logs and ldconfig cache for reproducible builds
 # Package installers are build-only; remove pip and its vendored libraries.
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    libsecp256k1-2=0.5.0-2+b1 \
     libsodium23=1.0.18-1+deb13u1 \
     && rm -rf /var/lib/apt/lists/* \
     && rm -rf /var/log/dpkg.log /var/log/apt/* \
@@ -162,10 +158,8 @@ ENV JOINMARKET_BUILD_REF=${JOINMARKET_BUILD_REF}
 # Pin build tools for reproducible builds (same versions as main builder)
 ARG SETUPTOOLS_VERSION
 ARG WHEEL_VERSION
-ARG HATCHLING_VERSION
 RUN echo "setuptools==${SETUPTOOLS_VERSION}" > /build/constraints.txt && \
-    echo "wheel==${WHEEL_VERSION}" >> /build/constraints.txt && \
-    echo "hatchling==${HATCHLING_VERSION}" >> /build/constraints.txt
+    echo "wheel==${WHEEL_VERSION}" >> /build/constraints.txt
 
 # Install jmcore and directory_server dependencies in a single pip invocation
 # (debug-builder variant). --build-constraint is included because stem uses legacy
@@ -173,7 +167,7 @@ RUN echo "setuptools==${SETUPTOOLS_VERSION}" > /build/constraints.txt && \
 COPY jmcore/requirements.txt /build/jmcore/requirements.txt
 COPY directory_server/requirements.txt /build/directory_server/requirements.txt
 
-RUN --mount=type=cache,target=/root/.cache/pip,id=jmng-pip-${HATCHLING_VERSION} \
+RUN --mount=type=cache,target=/root/.cache/pip,id=jmng-pip-${SETUPTOOLS_VERSION} \
     if [ -n "$SOURCE_DATE_EPOCH" ]; then export SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; fi && \
     pip install --prefix=/app --build-constraint /build/constraints.txt \
         -r /build/jmcore/requirements.txt \
@@ -186,7 +180,7 @@ COPY jmcore/setup.py /build/jmcore/
 COPY directory_server/src /build/directory_server/src
 COPY directory_server/pyproject.toml /build/directory_server/
 
-RUN --mount=type=cache,target=/root/.cache/pip,id=jmng-pip-${HATCHLING_VERSION} \
+RUN --mount=type=cache,target=/root/.cache/pip,id=jmng-pip-${SETUPTOOLS_VERSION} \
     if [ -n "$SOURCE_DATE_EPOCH" ]; then export SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; fi && \
     pip install --no-deps --prefix=/app --build-constraint /build/constraints.txt \
         /build/jmcore \
@@ -206,6 +200,7 @@ WORKDIR /app
 # Package installers are build-only; remove pip and its vendored libraries.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gdb=16.3-1 \
+    libsecp256k1-2=0.5.0-2+b1 \
     libssl-dev=3.5.7-1~deb13u2 \
     libssl3t64=3.5.7-1~deb13u2 \
     linux-libc-dev=6.12.107-1 \

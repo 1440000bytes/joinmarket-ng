@@ -27,6 +27,10 @@ PRODUCTION_LOCKS = {
     "taker/requirements.txt",
     "tumbler/requirements.txt",
 }
+BITCOINTX_PACKAGES = {"jmcore", "jmwallet", "jmwalletd"}
+BITCOINTX_WHEEL_SHA256 = (
+    "6162a46e1eeb20230a23415e303cfdcbc266f9f0261687cdf37db68957e1b4f8"
+)
 RUNTIME_IMAGE_STAGES = {
     "directory_server/Dockerfile": {"production", "debug"},
     "jmwalletd/Dockerfile": {"jmwalletd"},
@@ -115,6 +119,30 @@ def test_runtime_images_exclude_python_package_installers() -> None:
         "/opt/venv/lib/python${PYTHON_VERSION%.*}/site-packages/pip"
         in jmwalletd_builder
     )
+
+
+def test_runtime_images_include_native_secp256k1() -> None:
+    for dockerfile, stages in RUNTIME_IMAGE_STAGES.items():
+        for stage in stages:
+            assert "libsecp256k1-2=0.5.0-2+b1" in _dockerfile_stage(dockerfile, stage)
+
+
+def test_bitcointx_dependency_is_pinned_to_release_wheel() -> None:
+    expected_url = (
+        "https://github.com/m0wer/python-bitcointx/releases/download/python-bitcointx-v2.1.0/"
+        "python_bitcointx-2.1.0-py3-none-any.whl"
+    )
+    for package in BITCOINTX_PACKAGES:
+        manifest = (REPO_ROOT / package / "pyproject.toml").read_text(encoding="utf-8")
+        assert "coincurve" not in manifest
+        assert expected_url in manifest
+        assert BITCOINTX_WHEEL_SHA256 in manifest
+
+        for lock_name in ("requirements.txt", "requirements-dev.txt"):
+            lock = (REPO_ROOT / package / lock_name).read_text(encoding="utf-8")
+            assert "coincurve" not in lock
+            assert expected_url in lock
+            assert BITCOINTX_WHEEL_SHA256 in lock
 
 
 def test_main_and_release_promotions_depend_on_image_scans() -> None:

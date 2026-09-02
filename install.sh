@@ -125,9 +125,6 @@ check_system_dependencies() {
         if ! dpkg -s build-essential &> /dev/null 2>&1; then
             missing_deps+=("build-essential")
         fi
-        if ! dpkg -s cmake &> /dev/null 2>&1; then
-            missing_deps+=("cmake")
-        fi
         if ! dpkg -s ca-certificates &> /dev/null 2>&1; then
             missing_deps+=("ca-certificates")
         fi
@@ -136,6 +133,9 @@ check_system_dependencies() {
         fi
         if ! dpkg -s libsodium-dev &> /dev/null 2>&1; then
             missing_deps+=("libsodium-dev")
+        fi
+        if ! dpkg -s libsecp256k1-dev &> /dev/null 2>&1; then
+            missing_deps+=("libsecp256k1-dev")
         fi
         if ! dpkg -s pkg-config &> /dev/null 2>&1; then
             missing_deps+=("pkg-config")
@@ -164,11 +164,11 @@ check_system_dependencies() {
             print_error "Homebrew not found. Install from https://brew.sh"
             exit 1
         fi
-        if ! brew list cmake &> /dev/null 2>&1; then
-            missing_deps+=("cmake")
-        fi
         if ! brew list libsodium &> /dev/null 2>&1; then
             missing_deps+=("libsodium")
+        fi
+        if ! brew list libsecp256k1 &> /dev/null 2>&1; then
+            missing_deps+=("libsecp256k1")
         fi
         if ! brew list pkg-config &> /dev/null 2>&1; then
             missing_deps+=("pkg-config")

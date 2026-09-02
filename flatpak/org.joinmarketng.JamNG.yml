@@ -86,7 +86,24 @@ modules:
         sha256: adbdd8f16149e81ac6078a03aca6fc03b592b89ef7b5ed83841c086191be3349
 
   # =========================================================================
-  # Module 4: neutrino-api (pre-built Go binary)
+  # Module 4: libsecp256k1 (python-bitcointx native dependency)
+  # =========================================================================
+  - name: libsecp256k1
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DSECP256K1_ENABLE_MODULE_RECOVERY=ON
+      - -DSECP256K1_ENABLE_MODULE_ECDH=ON
+      - -DSECP256K1_ENABLE_MODULE_SCHNORRSIG=ON
+      - -DSECP256K1_BUILD_BENCHMARK=OFF
+      - -DSECP256K1_BUILD_TESTS=OFF
+      - -DSECP256K1_BUILD_EXHAUSTIVE_TESTS=OFF
+    sources:
+      - type: git
+        url: https://github.com/bitcoin-core/secp256k1.git
+        commit: e3a885d42a7800c1ccebad94ad1e2b82c4df5c65
+
+  # =========================================================================
+  # Module 5: neutrino-api (pre-built Go binary)
   # Privacy-preserving Bitcoin light client using BIP157/BIP158.
   # =========================================================================
   - name: neutrino-api
@@ -111,7 +128,7 @@ modules:
         dest-filename: neutrinod
 
   # =========================================================================
-  # Module 5: JAM frontend (built from source with Node.js)
+  # Module 6: JAM frontend (built from source with Node.js)
   # Static JS/HTML served by jmwalletd at /usr/share/jmwalletd/jam/
   # =========================================================================
   - name: jam-frontend
@@ -139,13 +156,12 @@ modules:
         commit: dfed3f85158a7ca6991e3563aaa9ecd35f7b3306
 
   # =========================================================================
-  # Module 6: Python application
+  # Module 7: Python application
   # jmcore, jmwallet, maker, taker, tumbler, jmwalletd, orderbook_watcher
   # =========================================================================
   - name: jam-ng
     buildsystem: simple
     build-options:
-      # coincurve needs C compiler + cmake + pkg-config + libffi
       build-args:
         - --share=network
       env:
