@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
@@ -816,7 +817,7 @@ class TestTimelockAddress:
 
 class TestSignMessage:
     @patch("jmcore.crypto.bitcoin_message_hash")
-    @patch("coincurve.PrivateKey")
+    @patch("jmwalletd.routers.wallet_data.CKey")
     def test_sign_message_success(
         self,
         mock_privkey_cls: Mock,
@@ -831,13 +832,14 @@ class TestSignMessage:
         mock_hash.return_value = b"msg_hash"
 
         mock_pk_instance = Mock()
-        # "raw_sig" base64 encoded is "cmF3X3NpZw=="
-        mock_pk_instance.sign_recoverable.return_value = b"raw_sig"
+        compact_signature = bytes(range(64))
+        recovery_id = 3
+        mock_pk_instance.sign_compact.return_value = compact_signature, recovery_id
         mock_privkey_cls.return_value = mock_pk_instance
 
         # Wallet service mocks
         mock_key = Mock()
-        mock_key.private_key = b"privkeybytes"
+        mock_key.private_key = b"\x01" * 32
         mock_key.address = "bcrt1qaddr123"
         ws.get_key_for_address.return_value = mock_key
         # mock get_address to return the address needed for lookup
@@ -850,9 +852,11 @@ class TestSignMessage:
         )
         assert resp.status_code == 200
         data = resp.json()
-        assert data["signature"] == "cmF3X3NpZw=="
+        assert base64.b64decode(data["signature"]) == bytes([31 + recovery_id]) + compact_signature
         assert data["address"] == "bcrt1qaddr123"
         assert data["message"] == "hello"
+        mock_privkey_cls.assert_called_once_with(mock_key.private_key)
+        mock_pk_instance.sign_compact.assert_called_once_with(mock_hash.return_value)
 
     def test_sign_message_invalid_path(self, authed_client: tuple[TestClient, str]) -> None:
         client, token = authed_client

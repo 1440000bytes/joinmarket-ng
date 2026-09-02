@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import calendar
 import datetime
 from typing import Any
 
+from bitcointx.core.key import CKey  # type: ignore[import-not-found]
 from fastapi import APIRouter, Depends
 from loguru import logger
 
@@ -736,18 +738,11 @@ async def sign_message(
         if key is None:
             raise InvalidRequestFormat(f"Cannot derive key for path: {body.hd_path}")
 
-        # Sign the message using Bitcoin message format (via coincurve).
         from jmcore.crypto import bitcoin_message_hash
 
         msg_hash = bitcoin_message_hash(body.message)
-
-        from coincurve import PrivateKey
-
-        privkey = PrivateKey(key.private_key)
-        sig = privkey.sign_recoverable(msg_hash, hasher=None)
-        import base64
-
-        signature = base64.b64encode(sig).decode()
+        compact_signature, recovery_id = CKey(key.private_key).sign_compact(msg_hash)
+        signature = base64.b64encode(bytes([31 + recovery_id]) + compact_signature).decode()
 
         return SignMessageResponse(
             signature=signature,
