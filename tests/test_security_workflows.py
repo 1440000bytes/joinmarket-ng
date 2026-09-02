@@ -127,6 +127,19 @@ def test_runtime_images_include_native_secp256k1() -> None:
             assert "libsecp256k1-2=0.5.0-2+b1" in _dockerfile_stage(dockerfile, stage)
 
 
+def test_macos_uses_secp256k1_homebrew_formula() -> None:
+    installer = (REPO_ROOT / "install.sh").read_text(encoding="utf-8")
+    setup_action = (
+        REPO_ROOT / ".github/actions/setup-python-deps/action.yaml"
+    ).read_text(encoding="utf-8")
+
+    assert "brew list secp256k1" in installer
+    assert 'missing_deps+=("secp256k1")' in installer
+    assert "brew install secp256k1" in setup_action
+    assert "brew list libsecp256k1" not in installer
+    assert "brew install libsecp256k1" not in setup_action
+
+
 def test_bitcointx_dependency_is_pinned_to_release_wheel() -> None:
     expected_url = (
         "https://github.com/m0wer/python-bitcointx/releases/download/python-bitcointx-v2.1.0/"

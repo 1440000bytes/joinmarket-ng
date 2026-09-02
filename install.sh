@@ -167,8 +167,8 @@ check_system_dependencies() {
         if ! brew list libsodium &> /dev/null 2>&1; then
             missing_deps+=("libsodium")
         fi
-        if ! brew list libsecp256k1 &> /dev/null 2>&1; then
-            missing_deps+=("libsecp256k1")
+        if ! brew list secp256k1 &> /dev/null 2>&1; then
+            missing_deps+=("secp256k1")
         fi
         if ! brew list pkg-config &> /dev/null 2>&1; then
             missing_deps+=("pkg-config")

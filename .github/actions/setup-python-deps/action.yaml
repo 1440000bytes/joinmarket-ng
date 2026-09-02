@@ -24,7 +24,7 @@ runs:
           sudo apt-get update
           sudo apt-get install -y libsecp256k1-dev
         elif [ "$RUNNER_OS" = "macOS" ]; then
-          brew install libsecp256k1
+          brew install secp256k1
         fi
 
     - name: Setup Python

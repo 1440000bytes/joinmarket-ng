@@ -234,7 +234,7 @@ sudo apt install -y git build-essential libffi-dev libsecp256k1-dev libsodium-de
 macOS:
 
 ```bash
-brew install libsecp256k1 libsodium pkg-config python3
+brew install secp256k1 libsodium pkg-config python3
 ```
 
 Install packages:
