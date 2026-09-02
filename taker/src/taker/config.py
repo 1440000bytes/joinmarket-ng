@@ -113,7 +113,7 @@ class TakerConfig(WalletConfig):
         default=0.8,
         ge=0.0,
         allow_inf_nan=False,
-        description="Relative fee tolerance for sweep transactions (reference default 0.8)",
+        description="Maximum relative amount a sweep fee estimate may exceed its selected budget",
     )
     tx_fee_factor: float = Field(
         default=0.2,

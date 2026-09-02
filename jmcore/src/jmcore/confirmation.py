@@ -72,6 +72,7 @@ def _display_coinjoin_send_confirmation(
     makers = additional_info.get("Makers", []) if additional_info else []
     total_maker_fee = additional_info.get("Total Maker Fee", 0) if additional_info else 0
     fee_rate = additional_info.get("Fee Rate") if additional_info else None
+    minimum_fee_rate = additional_info.get("Minimum Fee Rate") if additional_info else None
 
     # Source Mixdepth
     if source_mixdepth is not None:
@@ -110,6 +111,9 @@ def _display_coinjoin_send_confirmation(
     # Miner Fee Rate
     if fee_rate is not None:
         print(f"{'Miner Fee Rate:':<{_LABEL_WIDTH}}  {fee_rate:.2f} sat/vB")
+
+    if minimum_fee_rate is not None:
+        print(f"{'Required Rate:':<{_LABEL_WIDTH}}  {minimum_fee_rate:.2f} sat/vB minimum")
 
     # Mining fee
     if mining_fee is not None:
@@ -360,7 +364,10 @@ async def confirm_transaction_async(
 
 
 def format_maker_summary(
-    makers: list[dict[str, Any]], fee_rate: float | None = None, amount: int | None = None
+    makers: list[dict[str, Any]],
+    fee_rate: float | None = None,
+    amount: int | None = None,
+    minimum_fee_rate: float | None = None,
 ) -> dict[str, Any]:
     """
     Format maker information for confirmation display.
@@ -369,6 +376,7 @@ def format_maker_summary(
         makers: List of selected maker dicts with 'nick', 'fee', 'bond_value', 'location', etc.
         fee_rate: Fee rate in sat/vB (optional)
         amount: CoinJoin amount in satoshis, used to display fee percentages (optional)
+        minimum_fee_rate: Required minimum fee rate in sat/vB (optional)
 
     Returns:
         Dict with formatted maker info for confirmation display
@@ -383,6 +391,7 @@ def format_maker_summary(
     for m in makers:
         nick = _sanitize_terminal_text(m.get("nick", "unknown"))
         fee = m.get("fee", 0)
+        advertised_fee = m.get("advertised_fee", fee)
         bond_value = m.get("bond_value", 0)
         raw_location = m.get("location")
         location = _sanitize_terminal_text(raw_location) if raw_location else None
@@ -390,6 +399,9 @@ def format_maker_summary(
         # Right-align fee and bond values
         fee_str = f"{fee:>{max_fee_width},}"
         fee_percentage = _format_fee_percentage(fee, amount) if amount is not None else ""
+        advertised_fee_str = (
+            f" (advertised {advertised_fee:,} sats)" if advertised_fee != fee else ""
+        )
         bond_str = f" [bond: {bond_value:>{max_bond_width},}]" if bond_value > 0 else " [no bond]"
 
         # Add location info if available
@@ -403,9 +415,13 @@ def format_maker_summary(
                     location_str = f" @ {location}"
             else:
                 location_str = f" @ {location[:20]}..."
-            maker_details.append(f"{nick}: {fee_str} sats{fee_percentage}{bond_str}{location_str}")
+            maker_details.append(
+                f"{nick}: {fee_str} sats{fee_percentage}{advertised_fee_str}{bond_str}{location_str}"
+            )
         else:
-            maker_details.append(f"{nick}: {fee_str} sats{fee_percentage}{bond_str}")
+            maker_details.append(
+                f"{nick}: {fee_str} sats{fee_percentage}{advertised_fee_str}{bond_str}"
+            )
 
     result: dict[str, Any] = {
         "Total Maker Fee": total_maker_fee,
@@ -414,5 +430,8 @@ def format_maker_summary(
 
     if fee_rate is not None:
         result["Fee Rate"] = fee_rate
+
+    if minimum_fee_rate is not None:
+        result["Minimum Fee Rate"] = minimum_fee_rate
 
     return result

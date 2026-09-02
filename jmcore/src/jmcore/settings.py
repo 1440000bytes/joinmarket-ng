@@ -1058,10 +1058,7 @@ class TakerSettings(BaseModel):
         default=0.8,
         ge=0.0,
         allow_inf_nan=False,
-        description=(
-            "Maximum relative fee tolerance for sweep CoinJoins (default 0.8 matches "
-            "reference JoinMarket)."
-        ),
+        description=("Maximum relative amount a sweep fee estimate may exceed its selected budget"),
     )
 
     @field_validator("max_cj_fee_rel", mode="before")

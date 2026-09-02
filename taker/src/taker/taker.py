@@ -90,11 +90,17 @@ def _append_confirmation_hint(message: str, taker_utxo_age: int) -> str:
 
 
 def _estimate_initial_tx_shape(
-    num_taker_inputs: int, num_makers: int, *, is_sweep: bool
+    num_taker_inputs: int,
+    num_makers: int,
+    *,
+    is_sweep: bool,
+    max_maker_utxos: int,
 ) -> tuple[int, int]:
     """Estimate the pre-negotiation transaction shape shown to the user."""
     if is_sweep:
-        maker_inputs = num_makers * 2 + 5
+        if max_maker_utxos <= 0:
+            raise ValueError("Sweep fee budgeting requires a positive max_maker_utxos limit")
+        maker_inputs = num_makers * max_maker_utxos
         num_outputs = 1 + num_makers * 2
     else:
         maker_inputs = math.ceil(num_makers * 1.2)
@@ -103,13 +109,17 @@ def _estimate_initial_tx_shape(
 
 
 def _initial_fee_confirmation_values(
-    session: CoinJoinSession, num_taker_inputs: int, num_makers: int
+    session: CoinJoinSession,
+    num_taker_inputs: int,
+    num_makers: int,
+    max_maker_utxos: int,
 ) -> tuple[int, int, int, float]:
     """Return the transaction shape, fee, and rate used in initial confirmation."""
     estimated_inputs, estimated_outputs = _estimate_initial_tx_shape(
         num_taker_inputs,
         num_makers,
         is_sweep=session.is_sweep,
+        max_maker_utxos=max_maker_utxos,
     )
     if session.is_sweep:
         estimated_tx_fee = session._sweep_tx_fee_budget
@@ -466,6 +476,11 @@ class Taker(TakerMonitoringMixin):
     def failed_signer_nicks(self) -> set[str]:
         """Maker nicks that failed to provide valid signatures in the current round."""
         return self._session.failed_signer_nicks
+
+    @property
+    def minimum_fee_rate_sat_vb(self) -> float | None:
+        """Resolved minimum miner fee rate for the current round."""
+        return self._session._minimum_fee_rate_sat_vb
 
     async def _resolve_explicit_input_utxos(
         self,
@@ -1196,11 +1211,24 @@ class Taker(TakerMonitoringMixin):
                     f"total value: {total_input_value:,} sats"
                 )
 
-                # Estimate the deterministic sweep budget before maker input
-                # counts are known. The same shape and budget are disclosed in
-                # the initial confirmation below.
+                if self.config.max_maker_utxos <= 0:
+                    reason = (
+                        "Sweep CoinJoins require max_maker_utxos to be greater than 0 so the "
+                        "minimum miner fee rate can be guaranteed before maker inputs are known."
+                    )
+                    logger.error(reason)
+                    self._session.last_failure_reason = reason
+                    self.state = TakerState.FAILED
+                    return None
+
+                # Budget for every maker input the authenticated session will
+                # accept. This keeps the fixed sweep amount relayable even when
+                # all makers contribute the configured maximum input count.
                 estimated_inputs, estimated_outputs = _estimate_initial_tx_shape(
-                    len(self._session.preselected_utxos), n_makers, is_sweep=True
+                    len(self._session.preselected_utxos),
+                    n_makers,
+                    is_sweep=True,
+                    max_maker_utxos=self.config.max_maker_utxos,
                 )
                 # For sweeps, use base rate for deterministic budget calculation.
                 # The cj_amount is calculated based on this budget, so it must match
@@ -1356,6 +1384,7 @@ class Taker(TakerMonitoringMixin):
                 self._session,
                 len(self._session.preselected_utxos),
                 n_makers,
+                self.config.max_maker_utxos,
             )
             logger.bind(sensitive=True).info(
                 f"Estimated transaction (mining) fee: {estimated_tx_fee:,} sats "
@@ -1374,6 +1403,11 @@ class Taker(TakerMonitoringMixin):
                             self._session.cj_amount,
                             self.config.round_up_cj_fees,
                         )
+                        advertised_fee = calculate_cj_fee(
+                            session.offer,
+                            self._session.cj_amount,
+                            False,
+                        )
                         bond_value = session.offer.fidelity_bond_value
                         # Get maker's location from any connected directory
                         location = None
@@ -1385,6 +1419,7 @@ class Taker(TakerMonitoringMixin):
                             {
                                 "nick": nick,
                                 "fee": fee,
+                                "advertised_fee": advertised_fee,
                                 "bond_value": bond_value,
                                 "location": location,
                             }
@@ -2137,6 +2172,11 @@ class Taker(TakerMonitoringMixin):
                         self._session.cj_amount,
                         self.config.round_up_cj_fees,
                     )
+                    advertised_fee = calculate_cj_fee(
+                        session.offer,
+                        self._session.cj_amount,
+                        False,
+                    )
                     bond_value = session.offer.fidelity_bond_value
                     location = None
                     for client in self.directory_client.clients.values():
@@ -2147,6 +2187,7 @@ class Taker(TakerMonitoringMixin):
                         {
                             "nick": nick,
                             "fee": fee,
+                            "advertised_fee": advertised_fee,
                             "bond_value": bond_value,
                             "location": location,
                         }

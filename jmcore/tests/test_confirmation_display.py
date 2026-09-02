@@ -180,6 +180,41 @@ def test_coinjoin_fee_amounts_include_percentages(capsys: pytest.CaptureFixture[
     assert "Total Fee:        382 sats (0.00000382 BTC) (0.3820%)" in out
 
 
+def test_coinjoin_displays_rounded_and_required_fees(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    makers = format_maker_summary(
+        [
+            {
+                "nick": "maker-rounded",
+                "fee": 200,
+                "advertised_fee": 125,
+                "bond_value": 0,
+            },
+            {
+                "nick": "maker-exact",
+                "fee": 500,
+                "advertised_fee": 500,
+                "bond_value": 0,
+            },
+        ],
+        fee_rate=2.5,
+        minimum_fee_rate=2.0,
+        amount=100_000,
+    )
+    _display_coinjoin_send_confirmation(
+        amount=100_000,
+        destination="bc1qexampledestination",
+        mining_fee=1_000,
+        additional_info=makers,
+    )
+
+    out = capsys.readouterr().out
+    assert "maker-rounded: 200 sats (0.2000%) (advertised 125 sats)" in out
+    assert "maker-exact: 500 sats (0.5000%) [no bond]" in out
+    assert "Required Rate:    2.00 sat/vB minimum" in out
+
+
 def test_coinjoin_zero_fee_percentage_and_sweep_amount(capsys: pytest.CaptureFixture[str]) -> None:
     """Zero fees include a percentage, but sweeps do not divide by zero."""
     makers = format_maker_summary(

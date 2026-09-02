@@ -1224,33 +1224,31 @@ class CoinJoinSession:
                         num_inputs, num_outputs, use_base_rate=True
                     )
                     fee_ratio = actual_base_fee / tx_fee
-                    if fee_ratio < 1 - tolerance or fee_ratio > 1 + tolerance:
+                    if fee_ratio > 1 + tolerance:
                         self.last_failure_reason = (
-                            "Sweep transaction fee estimate differs from the selected fee budget: "
+                            "Sweep transaction fee estimate exceeds the selected fee budget: "
                             f"estimated {actual_base_fee} sats for {num_inputs} inputs and "
                             f"{num_outputs} outputs, budget {tx_fee} sats, "
                             f"tolerance {tolerance:.2f}. "
                             "Retry the CoinJoin with different makers."
                         )
-                        logger.error("Sweep fee estimate differs from the selected budget")
+                        logger.error("Sweep fee estimate exceeds the selected budget")
                         logger.bind(sensitive=True).error(
                             "Sweep fee estimate detail: {}", self.last_failure_reason
                         )
                         return False
 
-                # The budget was estimated from an assumed maker input count. If
-                # counterparties contributed far more inputs than assumed, the
-                # fixed budget spread over the larger transaction can fall below
-                # the relay minimum, making the sweep unbroadcastable. Fail here
-                # (before signing) instead of broadcasting a doomed transaction.
+                # Defensively verify the finalized shape against the relay floor.
+                # Sweep budgeting should cover every input allowed by policy, but
+                # fail before signing if that invariant is ever broken.
                 fee_rate_floor = self._minimum_fee_rate_sat_vb or self.config.min_fee_rate_sat_vb
                 if not fee_rate_meets_minimum(actual_mining_fee, actual_tx_vsize, fee_rate_floor):
                     logger.error("Sweep fee rate is below the required minimum")
                     logger.bind(sensitive=True).error(
                         f"Sweep failed: effective fee rate {actual_fee_rate:.2f} sat/vB "
                         f"is below the required minimum of {fee_rate_floor:.2f} sat/vB "
-                        f"({actual_mining_fee:,} sats over ~{actual_tx_vsize} vB). Makers "
-                        "contributed more inputs than the fee budget anticipated."
+                        f"({actual_mining_fee:,} sats over ~{actual_tx_vsize} vB). The selected "
+                        "fee budget did not cover the finalized transaction shape."
                     )
                     return False
 

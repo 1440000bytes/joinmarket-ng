@@ -443,6 +443,7 @@ async def _run_coinjoin(
             maker_details,
             fee_rate=fee_rate,
             amount=cj_amount,
+            minimum_fee_rate=taker.minimum_fee_rate_sat_vb,
         )
         # ``taker`` is assigned below in this scope, before the callback can
         # fire. With --select-utxos the source mixdepth is derived from the

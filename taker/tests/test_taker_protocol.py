@@ -133,8 +133,13 @@ def sample_offer2():
 
 def test_initial_tx_shape_matches_fee_budget_assumptions() -> None:
     """Initial confirmations use the same shapes as fee budgeting."""
-    assert _estimate_initial_tx_shape(3, 9, is_sweep=True) == (26, 19)
-    assert _estimate_initial_tx_shape(3, 9, is_sweep=False) == (14, 20)
+    assert _estimate_initial_tx_shape(3, 9, is_sweep=True, max_maker_utxos=15) == (138, 19)
+    assert _estimate_initial_tx_shape(3, 9, is_sweep=False, max_maker_utxos=15) == (14, 20)
+
+
+def test_sweep_tx_shape_requires_bounded_maker_inputs() -> None:
+    with pytest.raises(ValueError, match="positive max_maker_utxos"):
+        _estimate_initial_tx_shape(3, 9, is_sweep=True, max_maker_utxos=0)
 
 
 @pytest.mark.asyncio
@@ -191,12 +196,12 @@ def test_initial_fee_confirmation_uses_committed_sweep_budget(
     session._sweep_tx_fee_budget = 1_421
     session._fee_rate = 0.6
 
-    assert _initial_fee_confirmation_values(session, 3, 9) == (26, 19, 1_421, 0.6)
+    assert _initial_fee_confirmation_values(session, 3, 9, 15) == (138, 19, 1_421, 0.6)
 
     session.is_sweep = False
     session._randomized_fee_rate = 0.63
     with patch.object(session, "_estimate_tx_fee", return_value=1_004) as estimate:
-        values = _initial_fee_confirmation_values(session, 3, 9)
+        values = _initial_fee_confirmation_values(session, 3, 9, 15)
 
     assert values == (14, 20, 1_004, 0.63)
     estimate.assert_called_once_with(14, 20)
@@ -1116,13 +1121,13 @@ class TestSweepCjAmountPreservation:
     @pytest.mark.parametrize(
         ("actual_base_fee", "expected_result"),
         [
-            (559, False),  # Below 80% of the 700-sat budget.
-            (560, True),  # At the lower boundary.
+            (559, True),  # A conservative budget may exceed the final shape.
+            (700, True),  # Exact budget match.
             (840, True),  # At the upper boundary.
             (841, False),  # Above 120% of the budget.
         ],
     )
-    async def test_sweep_fee_budget_tolerance_is_symmetric(
+    async def test_sweep_fee_budget_tolerance_caps_only_underfunding(
         self,
         mock_wallet_for_sweep,
         mock_backend_for_sweep,
@@ -1155,7 +1160,54 @@ class TestSweepCjAmountPreservation:
             assert session.last_failure_reason is None
         else:
             assert session.last_failure_reason is not None
-            assert "fee estimate differs" in session.last_failure_reason
+            assert "fee estimate exceeds" in session.last_failure_reason
+
+    @pytest.mark.asyncio
+    async def test_sweep_budget_for_maker_input_cap_meets_minimum_rate(
+        self, mock_wallet_for_sweep, mock_backend_for_sweep, taker_config_for_sweep
+    ) -> None:
+        """The pre-negotiation budget covers every maker input allowed by policy."""
+        taker_config_for_sweep.max_maker_utxos = 15
+        taker = Taker(mock_wallet_for_sweep, mock_backend_for_sweep, taker_config_for_sweep)
+        session = taker._session
+        session.is_sweep = True
+        session.preselected_utxos = mock_wallet_for_sweep.get_all_utxos()
+        session._fee_rate = 1.0
+        session._minimum_fee_rate_sat_vb = 1.0
+
+        estimated_inputs, estimated_outputs = _estimate_initial_tx_shape(
+            len(session.preselected_utxos),
+            1,
+            is_sweep=True,
+            max_maker_utxos=taker_config_for_sweep.max_maker_utxos,
+        )
+        session._sweep_tx_fee_budget = session._estimate_tx_fee(
+            estimated_inputs,
+            estimated_outputs,
+            use_base_rate=True,
+        )
+        total_input = sum(utxo.value for utxo in session.preselected_utxos)
+        session.cj_amount = total_input - session._sweep_tx_fee_budget
+
+        nick, maker_session = self._make_single_utxo_maker_session()
+        maker_session.utxos = [
+            {
+                "txid": f"{i:064x}",
+                "vout": 0,
+                "value": 30_000,
+                "address": "bcrt1qmaker",
+            }
+            for i in range(10, 25)
+        ]
+        session.maker_sessions = {nick: maker_session}
+
+        result = await session._phase_build_tx(
+            destination="bcrt1qqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcruj60yu",
+            mixdepth=3,
+        )
+
+        assert result is True
+        assert session.last_failure_reason is None
 
     @pytest.mark.asyncio
     async def test_sweep_accepts_dropped_maker_fee_as_residual(
