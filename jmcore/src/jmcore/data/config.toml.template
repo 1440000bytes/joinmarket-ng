@@ -305,6 +305,9 @@
 # into clickable links (e.g. "https://mempool.space/signet" -> ".../tx/<txid>").
 # Leave empty to show the bare txid instead.
 # mempool_url = ""
+# Include the commitment-derived correlation ID in CoinJoin notifications.
+# Set to false to keep the ID in local logs only.
+# include_coinjoin_id = true
 # include_nick = true
 # use_tor = true
 

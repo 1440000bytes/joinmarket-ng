@@ -545,6 +545,10 @@ class NotificationSettings(BaseModel):
         default=False,
         description="Include transaction IDs in notifications (privacy risk)",
     )
+    include_coinjoin_id: bool = Field(
+        default=True,
+        description="Include commitment-derived CoinJoin IDs in notifications",
+    )
     mempool_url: str = Field(
         default="",
         description=(

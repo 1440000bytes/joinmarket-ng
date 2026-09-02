@@ -174,10 +174,12 @@ def _rejection_body(notifier: Notifier, f: dict[str, Any]) -> str:
     details = f.get("details", "")
     if details:
         body += f"\nDetails: {details}"
-    return body + _coinjoin_id_line(f)
+    return body + _coinjoin_id_line(notifier, f)
 
 
-def _coinjoin_id_line(f: dict[str, Any]) -> str:
+def _coinjoin_id_line(notifier: Notifier, f: dict[str, Any]) -> str:
+    if not notifier.config.include_coinjoin_id:
+        return ""
     cj_id = f.get("cj_id")
     return f"\nCoinJoin ID: {cj_id}" if cj_id else ""
 
@@ -190,7 +192,7 @@ def _coinjoin_failed_body(notifier: Notifier, f: dict[str, Any]) -> str:
     cj_amount = f.get("cj_amount", 0)
     if cj_amount > 0:
         body += f"\nAmount: {notifier._format_amount(cj_amount)}"
-    return body + _coinjoin_id_line(f)
+    return body + _coinjoin_id_line(notifier, f)
 
 
 def _directory_disconnect_priority(f: dict[str, Any]) -> NotificationPriority:
@@ -228,7 +230,7 @@ EVENT_TEMPLATES: dict[NotificationEvent, EventTemplate] = {
         body_builder=lambda n, f: (
             f"Taker: {n._format_nick(f['taker_nick'])}\n"
             f"Amount: {n._format_amount(f['cj_amount'])}\n"
-            f"Offer ID: {f['offer_id']}" + _coinjoin_id_line(f)
+            f"Offer ID: {f['offer_id']}" + _coinjoin_id_line(n, f)
         ),
         priority_builder=lambda _f: NotificationPriority.INFO,
     ),
@@ -245,7 +247,7 @@ EVENT_TEMPLATES: dict[NotificationEvent, EventTemplate] = {
             f"Taker: {n._format_nick(f['taker_nick'])}\n"
             f"CJ Amount: {n._format_amount(f['cj_amount'])}\n"
             f"Inputs signed: {f['num_inputs']}\n"
-            f"Fee earned: {n._format_amount(f['fee_earned'])}" + _coinjoin_id_line(f)
+            f"Fee earned: {n._format_amount(f['fee_earned'])}" + _coinjoin_id_line(n, f)
         ),
         priority_builder=lambda _f: NotificationPriority.SUCCESS,
     ),
@@ -324,7 +326,7 @@ EVENT_TEMPLATES: dict[NotificationEvent, EventTemplate] = {
             f"Makers: {f['num_makers']}\n"
             f"Destination: "
             f"{'internal' if f['destination'] == 'INTERNAL' else f['destination'][:12] + '...'}"
-            + _coinjoin_id_line(f)
+            + _coinjoin_id_line(n, f)
         ),
         priority_builder=lambda _f: NotificationPriority.INFO,
     ),
@@ -342,7 +344,7 @@ EVENT_TEMPLATES: dict[NotificationEvent, EventTemplate] = {
                 if f.get("broadcast_fallback_reason")
                 else ""
             )
-            + _coinjoin_id_line(f)
+            + _coinjoin_id_line(n, f)
         ),
         priority_builder=lambda f: (
             NotificationPriority.WARNING
@@ -440,6 +442,10 @@ class NotificationConfig(BaseModel):
     include_txids: bool = Field(
         default=False,
         description="Include transaction IDs in notifications (privacy risk)",
+    )
+    include_coinjoin_id: bool = Field(
+        default=True,
+        description="Include commitment-derived CoinJoin IDs in notifications",
     )
     mempool_url: str = Field(
         default="",
@@ -626,6 +632,7 @@ def convert_settings_to_notification_config(
         component_name=effective_component_name,
         include_amounts=ns.include_amounts,
         include_txids=ns.include_txids,
+        include_coinjoin_id=ns.include_coinjoin_id,
         include_nick=ns.include_nick,
         mempool_url=ns.mempool_url,
         use_tor=ns.use_tor,

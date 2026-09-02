@@ -94,6 +94,7 @@ class TestNotificationConfig:
         assert config.component_name == ""
         assert config.include_amounts is True
         assert config.include_txids is False
+        assert config.include_coinjoin_id is True
         assert config.include_nick is True
         assert config.notify_fill is True
         assert config.notify_rejection is True
@@ -135,6 +136,42 @@ class TestNotificationConfig:
 
 class TestCoinJoinNotificationIDs:
     """CoinJoin notifications include an optional log correlation ID."""
+
+    @pytest.mark.parametrize(
+        ("method_name", "args"),
+        [
+            ("notify_fill_request", ("taker", 100_000, 1, "cj-abcdef123456")),
+            ("notify_rejection", ("taker", "reason", "details", "cj-abcdef123456")),
+            ("notify_tx_signed", ("taker", 100_000, 1, 500, "cj-abcdef123456")),
+            ("notify_coinjoin_start", (100_000, 2, "INTERNAL", "cj-abcdef123456")),
+            (
+                "notify_coinjoin_complete",
+                ("ab" * 32, 100_000, 2, 500, "cj-abcdef123456"),
+            ),
+            ("notify_coinjoin_failed", ("reason", "phase", 100_000, "cj-abcdef123456")),
+        ],
+    )
+    @pytest.mark.parametrize("include_coinjoin_id", [True, False])
+    @pytest.mark.asyncio
+    async def test_coinjoin_id_respects_privacy_setting(
+        self,
+        method_name: str,
+        args: tuple[object, ...],
+        include_coinjoin_id: bool,
+    ) -> None:
+        notifier = Notifier(
+            NotificationConfig(
+                enabled=True,
+                urls=["test://"],
+                include_coinjoin_id=include_coinjoin_id,
+            )
+        )
+        notifier._send = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+        await getattr(notifier, method_name)(*args)
+
+        body = notifier._send.call_args.kwargs["body"]
+        assert ("CoinJoin ID: cj-abcdef123456" in body) is include_coinjoin_id
 
     @pytest.mark.asyncio
     async def test_coinjoin_start_id_is_optional_and_rendered_when_present(self) -> None:
@@ -276,6 +313,7 @@ class TestLoadNotificationConfig:
             "NOTIFICATIONS__URLS": '["gotify://host/token"]',
             "NOTIFICATIONS__INCLUDE_AMOUNTS": "false",
             "NOTIFICATIONS__INCLUDE_TXIDS": "true",
+            "NOTIFICATIONS__INCLUDE_COINJOIN_ID": "false",
             "NOTIFICATIONS__INCLUDE_NICK": "false",
         }
 
@@ -284,7 +322,21 @@ class TestLoadNotificationConfig:
 
         assert config.include_amounts is False
         assert config.include_txids is True
+        assert config.include_coinjoin_id is False
         assert config.include_nick is False
+
+    def test_load_coinjoin_id_setting_from_toml(self, tmp_path: Path) -> None:
+        """The CoinJoin ID privacy option can be disabled in config.toml."""
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(
+            "[notifications]\ninclude_coinjoin_id = false\n",
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"JOINMARKET_CONFIG_FILE": str(config_file)}, clear=True):
+            config = load_notification_config()
+
+        assert config.include_coinjoin_id is False
 
     def test_load_event_toggles(self) -> None:
         """Test loading per-event toggles."""
@@ -1699,6 +1751,7 @@ class TestConvertSettingsToNotificationConfig:
                 urls=["gotify://host/token"],
                 include_amounts=False,
                 include_txids=True,
+                include_coinjoin_id=False,
                 include_nick=False,
             )
         )
@@ -1707,6 +1760,7 @@ class TestConvertSettingsToNotificationConfig:
 
         assert config.include_amounts is False
         assert config.include_txids is True
+        assert config.include_coinjoin_id is False
         assert config.include_nick is False
 
     def test_convert_mempool_url(self) -> None:

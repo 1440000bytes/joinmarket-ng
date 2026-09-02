@@ -90,6 +90,7 @@ class TestConfigTemplate:
         assert "# socks_port = " in template
         assert "# rpc_url = " in template
         assert "# notify_nick_change = false" in template
+        assert "# include_coinjoin_id = true" in template
 
     def test_nested_template_keys_define_environment_variables(self) -> None:
         """Every canonical nested template key maps to SECTION__KEY."""
@@ -221,6 +222,11 @@ class TestSettingsDefaults:
         settings = JoinMarketSettings()
 
         assert settings.notifications.notify_nick_change is False
+
+    def test_coinjoin_ids_are_included_in_notifications_by_default(self) -> None:
+        settings = JoinMarketSettings()
+
+        assert settings.notifications.include_coinjoin_id is True
 
     def test_maker_change_threshold_is_fixed(self) -> None:
         with pytest.raises(ValidationError):
