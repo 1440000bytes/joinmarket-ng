@@ -124,9 +124,6 @@ cffi==2.1.1 \
     --hash=sha256:fb92203a88b3d3053034db775110081c49d28be6551923805e039924093761e4 \
     --hash=sha256:fcd22650c908d7b7da162bbfaab594a1227a15d1643a98c68b122ac642fa2264
     # via cryptography
-coincurve @ https://github.com/ofek/coincurve/archive/7829b29c08ebb1cc80386a1cdaf8c2243c4ef5c5.zip#sha256=623b363c1e39977255d9222351e211a96dc5884aebb28e8a23d85bfef0dec37e \
-    --hash=sha256:623b363c1e39977255d9222351e211a96dc5884aebb28e8a23d85bfef0dec37e
-    # via jmwallet (pyproject.toml)
 cryptography==50.0.1 \
     --hash=sha256:01f41478cf33fc605a6a089cd56d28b45c6c0b45a1928b61797f2621a04bac71 \
     --hash=sha256:05ba322c4da95b262a212c345af888ef2c37c88c0509756ea00a0e6d68850f23 \
@@ -343,8 +340,8 @@ pygments==2.21.0 \
     --hash=sha256:2363c69b61c4a97c838da3b130dcd6468f4848992b21a82f2a63ec34377137d9 \
     --hash=sha256:610ca751c9bc2492b38eb9a38a7fbc93edbbb2d7182edaf34e66ae493dee5c8c
     # via rich
-python-bitcointx==1.1.5 \
-    --hash=sha256:7d961afac69dde865140e65af47c4ecc7b73a0697ced27244345539d8e94c555
+python-bitcointx @ https://github.com/m0wer/python-bitcointx/releases/download/python-bitcointx-v2.1.0/python_bitcointx-2.1.0-py3-none-any.whl#sha256=6162a46e1eeb20230a23415e303cfdcbc266f9f0261687cdf37db68957e1b4f8 \
+    --hash=sha256:6162a46e1eeb20230a23415e303cfdcbc266f9f0261687cdf37db68957e1b4f8
     # via jmwallet (pyproject.toml)
 rich==15.0.0 \
     --hash=sha256:33bd4ef74232fb73fe9279a257718407f169c09b78a87ad3d296f548e27de0bb \

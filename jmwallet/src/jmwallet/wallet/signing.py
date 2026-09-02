@@ -9,9 +9,11 @@ an audited library. The transaction is serialized via the in-tree
 
 from __future__ import annotations
 
+from typing import cast
+
 from bitcointx.core import CTransaction
+from bitcointx.core.key import CKey
 from bitcointx.core.script import SIGVERSION_WITNESS_V0, CScript, SIGHASH_Type, SignatureHash
-from coincurve import PrivateKey
 from jmcore.bitcoin import (
     ParsedTransaction,
     TxInput,
@@ -23,6 +25,7 @@ from jmcore.bitcoin import (
     parse_transaction_bytes,
     serialize_transaction,
 )
+from jmcore.crypto import verify_strict_ecdsa
 
 # Backward-compat alias: old code imports ``Transaction`` from here.
 Transaction = ParsedTransaction
@@ -94,17 +97,17 @@ def sign_p2wpkh_input(
     input_index: int,
     script_code: bytes,
     value: int,
-    private_key: PrivateKey,
+    private_key: CKey,
     sighash_type: int = 1,
 ) -> bytes:
-    """Sign a P2WPKH input using coincurve.
+    """Sign a P2WPKH input.
 
     Args:
         tx: The transaction to sign
         input_index: Index of the input to sign
         script_code: The scriptCode for signing (P2PKH script for P2WPKH)
         value: The value of the input being spent (in satoshis)
-        private_key: coincurve PrivateKey instance
+        private_key: Signing private key
         sighash_type: Sighash type (default SIGHASH_ALL = 1)
 
     Returns:
@@ -117,9 +120,8 @@ def sign_p2wpkh_input(
 
     sighash = compute_sighash_segwit(tx, input_index, script_code, value, sighash_type)
 
-    # Sign the pre-hashed sighash (it's already SHA256d)
-    # coincurve's sign() with hasher=None skips hashing
-    signature = private_key.sign(sighash, hasher=None)
+    # Sign the pre-hashed sighash (it is already SHA256d).
+    signature = cast(bytes, private_key.sign(sighash, _ecdsa_sig_grind_low_r=False))
 
     return signature + bytes([sighash_type])
 
@@ -132,7 +134,7 @@ def verify_p2wpkh_signature(
     signature: bytes,
     pubkey: bytes,
 ) -> bool:
-    """Verify a P2WPKH signature using coincurve.
+    """Verify a P2WPKH signature.
 
     Args:
         tx: The transaction containing the input
@@ -145,8 +147,6 @@ def verify_p2wpkh_signature(
     Returns:
         True if signature is valid, False otherwise
     """
-    from coincurve import PublicKey
-
     try:
         # Extract sighash type from last byte of signature
         if not signature:
@@ -156,10 +156,7 @@ def verify_p2wpkh_signature(
 
         sighash = compute_sighash_segwit(tx, input_index, script_code, value, sighash_type)
 
-        # Verify signature against sighash
-        # coincurve verify(signature, message, hasher=None)
-        public_key = PublicKey(pubkey)
-        return public_key.verify(der_signature, sighash, hasher=None)
+        return verify_strict_ecdsa(sighash, der_signature, pubkey)
     except Exception:
         return False
 
@@ -173,10 +170,10 @@ def sign_p2wsh_input(
     input_index: int,
     witness_script: bytes,
     value: int,
-    private_key: PrivateKey,
+    private_key: CKey,
     sighash_type: int = 1,
 ) -> bytes:
-    """Sign a P2WSH input using coincurve.
+    """Sign a P2WSH input.
 
     For P2WSH, the scriptCode in BIP143 signing is the witness script itself.
 
@@ -185,7 +182,7 @@ def sign_p2wsh_input(
         input_index: Index of the input to sign
         witness_script: The witness script (e.g., timelocked freeze script)
         value: The value of the input being spent (in satoshis)
-        private_key: coincurve PrivateKey instance
+        private_key: Signing private key
         sighash_type: Sighash type (default SIGHASH_ALL = 1)
 
     Returns:
@@ -199,8 +196,8 @@ def sign_p2wsh_input(
     # For P2WSH, the scriptCode is the witness script itself
     sighash = compute_sighash_segwit(tx, input_index, witness_script, value, sighash_type)
 
-    # Sign the pre-hashed sighash (it's already SHA256d)
-    signature = private_key.sign(sighash, hasher=None)
+    # Sign the pre-hashed sighash (it is already SHA256d).
+    signature = cast(bytes, private_key.sign(sighash, _ecdsa_sig_grind_low_r=False))
 
     return signature + bytes([sighash_type])
 
@@ -214,14 +211,12 @@ def verify_p2wsh_signature(
     pubkey: bytes,
 ) -> bool:
     """Verify a P2WSH BIP143 signature against its witness script."""
-    from coincurve import PublicKey
-
     try:
         if not signature:
             return False
         sighash_type = signature[-1]
         sighash = compute_sighash_segwit(tx, input_index, witness_script, value, sighash_type)
-        return PublicKey(pubkey).verify(signature[:-1], sighash, hasher=None)
+        return verify_strict_ecdsa(sighash, signature[:-1], pubkey)
     except Exception:
         return False
 

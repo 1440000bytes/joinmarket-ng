@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
-from coincurve import PrivateKey
+from bitcointx.core.key import CKey
 from jmcore.crypto import bitcoin_message_hash_bytes
 from typer.testing import CliRunner
 
@@ -21,6 +21,10 @@ from jmwallet.wallet.bond_registry import (
 )
 
 runner = CliRunner()
+
+
+def _key(value: int) -> CKey:
+    return CKey.from_secret_bytes(value.to_bytes(32, "big"))
 
 
 def test_generate_hot_keypair_does_not_print_private_key_and_writes_key_file():
@@ -53,23 +57,43 @@ def test_generate_hot_keypair_does_not_print_private_key_and_writes_key_file():
         assert len(payload["cert_privkey"]) == 64
 
 
+def test_create_bond_address_rejects_invalid_curve_pubkey():
+    """A compressed prefix alone is not enough for a valid public key."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        result = runner.invoke(
+            app,
+            [
+                "create-bond-address",
+                "03" + "11" * 32,
+                "--locktime-date",
+                "2030-01",
+                "--data-dir",
+                tmpdir,
+                "--wallet-fingerprint",
+                "deadbeef",
+            ],
+        )
+
+    assert result.exit_code == 1
+
+
 def test_prepare_certificate_message_accepts_current_block_override():
     """prepare-certificate-message should work offline with --current-block."""
     with tempfile.TemporaryDirectory() as tmpdir:
         data_dir = Path(tmpdir)
-        utxo_key = PrivateKey()
-        cert_key = PrivateKey()
+        utxo_key = _key(1)
+        cert_key = _key(2)
         bond = FidelityBondInfo(
             address="bc1qtestpreparecert",
             locktime=1893456000,
             locktime_human="2030-01-01 00:00:00",
             index=0,
             path="external",
-            pubkey=utxo_key.public_key.format(compressed=True).hex(),
+            pubkey=bytes(utxo_key.pub).hex(),
             witness_script_hex="aa" * 20,
             network="mainnet",
             created_at="2025-01-01T00:00:00",
-            cert_pubkey=cert_key.public_key.format(compressed=True).hex(),
+            cert_pubkey=bytes(cert_key.pub).hex(),
         )
         save_registry(BondRegistry(bonds=[bond]), data_dir, "deadbeef")
 
@@ -132,14 +156,14 @@ def test_import_certificate_expiry_validation(cert_expiry, current_block, expect
     """Import enforces the wire range and reference expiry boundary."""
     with tempfile.TemporaryDirectory() as tmpdir:
         data_dir = Path(tmpdir)
-        utxo_key = PrivateKey()
-        cert_key = PrivateKey()
-        cert_pubkey_hex = cert_key.public_key.format(compressed=True).hex()
+        utxo_key = _key(1)
+        cert_key = _key(2)
+        cert_pubkey_hex = bytes(cert_key.pub).hex()
 
         message = f"fidelity-bond-cert|{cert_pubkey_hex}|{cert_expiry}".encode()
         msg_hash = bitcoin_message_hash_bytes(message)
-        recoverable = utxo_key.sign_recoverable(msg_hash, hasher=None)
-        electrum_sig = bytes([31 + recoverable[64]]) + recoverable[:64]
+        compact_sig, recovery_id = utxo_key.sign_compact(msg_hash)
+        electrum_sig = bytes([31 + recovery_id]) + compact_sig
         sig_b64 = base64.b64encode(electrum_sig).decode()
 
         bond = FidelityBondInfo(
@@ -148,12 +172,12 @@ def test_import_certificate_expiry_validation(cert_expiry, current_block, expect
             locktime_human="2030-01-01 00:00:00",
             index=0,
             path="external",
-            pubkey=utxo_key.public_key.format(compressed=True).hex(),
+            pubkey=bytes(utxo_key.pub).hex(),
             witness_script_hex="bb" * 20,
             network="mainnet",
             created_at="2025-01-01T00:00:00",
             cert_pubkey=cert_pubkey_hex,
-            cert_privkey=cert_key.secret.hex(),
+            cert_privkey=cert_key.secret_bytes.hex(),
         )
         save_registry(BondRegistry(bonds=[bond]), data_dir, "deadbeef")
 

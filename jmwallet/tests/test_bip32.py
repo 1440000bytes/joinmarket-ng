@@ -3,6 +3,7 @@ Tests for BIP32 HD key derivation.
 """
 
 import pytest
+from bitcointx.core.key import CKey, CPubKey
 
 from jmwallet.wallet.bip32 import HDKey, mnemonic_to_seed
 
@@ -19,7 +20,8 @@ def test_hdkey_from_seed(test_mnemonic):
 
     assert master_key.depth == 0
     assert len(master_key.chain_code) == 32
-    assert master_key.private_key is not None
+    assert isinstance(master_key.private_key, CKey)
+    assert isinstance(master_key.public_key, CPubKey)
 
 
 def test_hdkey_derivation(test_mnemonic):
@@ -29,7 +31,7 @@ def test_hdkey_derivation(test_mnemonic):
     child = master_key.derive("m/84'/0'/0'/0/0")
 
     assert child.depth == 5
-    assert child.private_key is not None
+    assert isinstance(child.private_key, CKey)
 
     privkey_bytes = child.get_private_key_bytes()
     assert len(privkey_bytes) == 32
@@ -136,6 +138,23 @@ def test_xprv_serialization(test_mnemonic):
     tprv = account_key.get_xprv("testnet")
     assert tprv.startswith("tprv")
     assert len(tprv) >= 100
+
+
+def test_serialization_and_signature_compatibility_vector(test_mnemonic):
+    """Serialized keys and deterministic signatures remain wire-compatible."""
+    seed = mnemonic_to_seed(test_mnemonic)
+    key = HDKey.from_seed(seed).derive("m/84'/0'/0'/0/0")
+
+    assert key.get_xpub() == (
+        "xpub6FrCS2gWHvogbAX8ipHuBmbPvckXLYs5SfEKq1Lp3tneESUXuNNUw67q6Q6r1xHhmoQtByXS7SXes78nuGckLXWEuRPWNfwBo8Cp5QQLPKy"
+    )
+    assert key.get_xprv() == (
+        "xprvA2rr2X9cTZFPNgSfcnktpdefNav2w69E5SJj2cwCVZFfMe9PMq4EPHoMF7HfYYFwxDC3L98KUdGmhmamCAifxPbtSyLq9pFQJnf3AyC2JJD"
+    )
+    assert key.sign(b"HDKey signature compatibility vector") == bytes.fromhex(
+        "30440220234c5591ad333a71d823cdcf3407c63115967766e45be991693459340a07d06e"
+        "02203803fe92d04db1c02351083e6e65bda0a87532b662d360434cfa61daa2e09ad4"
+    )
 
 
 def test_fingerprint(test_mnemonic):

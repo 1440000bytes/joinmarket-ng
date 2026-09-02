@@ -5,7 +5,7 @@ from __future__ import annotations
 from hashlib import sha256
 
 import pytest
-from coincurve import PrivateKey
+from bitcointx.core.key import CKey
 from jmcore.bitcoin import (
     TxInput,
     TxOutput,
@@ -153,7 +153,7 @@ def test_fallback_scan_finds_regular_input_without_origin(wallet_service) -> Non
 
 def test_partially_signs_mixed_wallet_and_foreign_inputs(wallet_service) -> None:
     owned_records, _, _ = _regular_input_records(wallet_service, 0, 0, 0, 60_000)
-    foreign_pubkey = PrivateKey.from_int(2).public_key.format(compressed=True)
+    foreign_pubkey = bytes(CKey.from_secret_bytes((2).to_bytes(32, "big")).pub)
     foreign_script = pubkey_to_p2wpkh_script(foreign_pubkey)
     foreign_records = [(bytes([PSBT_IN_WITNESS_UTXO]), _witness_utxo(40_000, foreign_script))]
     raw = _build_psbt(
@@ -326,7 +326,7 @@ def test_fee_estimate_accounts_for_large_compact_size_counts(
 ) -> None:
     owned_records, _, _ = _regular_input_records(wallet_service, 0, 0, 0, 1_000_000)
     foreign_script = pubkey_to_p2wpkh_script(
-        PrivateKey.from_int(3).public_key.format(compressed=True)
+        bytes(CKey.from_secret_bytes((3).to_bytes(32, "big")).pub)
     )
     inputs = [TxInput.from_hex("01" * 32, 0)]
     input_records = [owned_records]

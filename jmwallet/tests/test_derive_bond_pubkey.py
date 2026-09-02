@@ -5,7 +5,8 @@ public keys from the reference JoinMarket implementation's xpub.  Tests use
 deterministic test vectors derived from the well-known BIP39 test mnemonic
 ("abandon abandon ... about") at path m/84'/0'/0'.
 
-The script under test is self-contained (only depends on coincurve).
+The script under test is self-contained and depends on python-bitcointx with
+native libsecp256k1.
 """
 
 from __future__ import annotations
@@ -251,6 +252,10 @@ class TestECOperations:
         sum1 = _point_add(p1, p2)
         sum2 = _point_add(p2, p1)
         assert sum1 == sum2
+
+    def test_point_add_rejects_invalid_pubkey(self) -> None:
+        with pytest.raises(ValueError, match="invalid public keys"):
+            _point_add(b"\x02" + bytes(32), b"\x03" + bytes(32))
 
 
 # ---------------------------------------------------------------------------

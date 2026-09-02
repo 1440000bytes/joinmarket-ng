@@ -1529,7 +1529,7 @@ async def test_signing_produces_valid_witness(funded_taker_wallet: WalletService
     assert signature[0] == 0x30, "DER signatures start with 0x30"
 
     # Verify low-S (BIP 62/146)
-    # coincurve always produces low-S signatures by default
+    # Bitcoin Core's secp256k1 bindings produce low-S signatures by default
     # DER format: 0x30 [total-length] 0x02 [r-length] [r] 0x02 [s-length] [s]
     der_sig = signature[:-1]  # Remove sighash byte
     assert der_sig[0] == 0x30  # DER sequence marker

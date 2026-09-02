@@ -13,6 +13,7 @@ import asyncio
 import base64
 
 import pytest
+from bitcointx.core.key import CKey
 from jmcore.encryption import CryptoSession
 from loguru import logger
 
@@ -72,10 +73,8 @@ async def test_fidelity_bond_proof():
     taker_nick = "J5TestTaker"
 
     # Add private key and pubkey for signing
-    from coincurve import PrivateKey
-
-    bond.private_key = PrivateKey(b"\x01" * 32)
-    bond.pubkey = bond.private_key.public_key.format(compressed=True)
+    bond.private_key = CKey(b"\x01" * 32)
+    bond.pubkey = bytes(bond.private_key.pub)
 
     # Create proof
     proof = create_fidelity_bond_proof(bond, maker_nick, taker_nick, current_block_height=930000)

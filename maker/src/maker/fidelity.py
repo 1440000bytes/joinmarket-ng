@@ -5,8 +5,9 @@ from __future__ import annotations
 import base64
 import os
 import struct
+from typing import cast
 
-from coincurve import PrivateKey
+from bitcointx.core.key import CKey  # type: ignore[import-not-found]
 from jmcore.bond_calc import calculate_timelocked_fidelity_bond_value
 from jmcore.crypto import bitcoin_message_hash_bytes
 from jmwallet.wallet.service import WalletService
@@ -38,11 +39,11 @@ class FidelityBondInfo:
     confirmation_time: int
     bond_value: int
     pubkey: bytes | None = None
-    private_key: PrivateKey | None = None
+    private_key: CKey | None = None
     # Certificate fields (for cold wallet support)
     # When set, the bond proof uses the certificate chain instead of self-signing
     cert_pubkey: bytes | None = None  # Hot wallet certificate public key
-    cert_privkey: PrivateKey | None = None  # Hot wallet private key for signing nicks
+    cert_privkey: CKey | None = None  # Hot wallet private key for signing nicks
     cert_signature: bytes | None = None  # Certificate signature by UTXO key
     cert_expiry: int | None = None  # Certificate expiry in 2016-block periods
 
@@ -171,7 +172,7 @@ async def find_fidelity_bonds(
         is_external_bond = index_str == "-1"
 
         pubkey: bytes | None = None
-        private_key: PrivateKey | None = None
+        private_key: CKey | None = None
 
         # Check registry for bond info (needed for both external bonds and certificates)
         registry_bond = None
@@ -223,8 +224,8 @@ async def find_fidelity_bonds(
                     "could not derive its key from this wallet"
                 )
                 continue
-            pubkey = key.get_public_key_bytes(compressed=True)
-            private_key = key.private_key
+            private_key = cast(CKey, key.private_key)
+            pubkey = bytes(private_key.pub)
 
         # Get confirmation_time (Unix timestamp) from block height
         # For unconfirmed UTXOs (height=None), we can't calculate bond value yet
@@ -244,14 +245,14 @@ async def find_fidelity_bonds(
 
         # Check registry for certificate information (cold wallet support)
         cert_pubkey: bytes | None = None
-        cert_privkey: PrivateKey | None = None
+        cert_privkey: CKey | None = None
         cert_signature: bytes | None = None
         cert_expiry: int | None = None
 
         if registry_bond is not None and registry_bond.has_certificate:
             try:
                 cert_pubkey = bytes.fromhex(registry_bond.cert_pubkey)  # type: ignore
-                cert_privkey = PrivateKey(
+                cert_privkey = CKey(
                     bytes.fromhex(registry_bond.cert_privkey)  # type: ignore
                 )
                 cert_signature = bytes.fromhex(registry_bond.cert_signature)  # type: ignore
@@ -310,19 +311,28 @@ def _bitcoin_message_hash(message: bytes) -> bytes:
     return bitcoin_message_hash_bytes(message)
 
 
-def _sign_message_bitcoin(private_key: PrivateKey, message: bytes) -> bytes:
+def _sign_message_bitcoin(private_key: CKey, message: bytes) -> bytes:
     """
     Sign a message using Bitcoin message signing format.
 
     Args:
-        private_key: coincurve PrivateKey
+        private_key: CKey
         message: Raw message bytes (NOT pre-hashed)
 
     Returns:
         DER-encoded signature
     """
     msg_hash = _bitcoin_message_hash(message)
-    return private_key.sign(msg_hash, hasher=None)
+    return private_key.sign(msg_hash, _ecdsa_sig_grind_low_r=False)
+
+
+def _generate_certificate_private_key() -> CKey:
+    """Create a valid random key, retrying the negligible invalid-scalar case."""
+    while True:
+        try:
+            return CKey(os.urandom(32))
+        except ValueError:
+            continue
 
 
 def create_fidelity_bond_proof(
@@ -410,8 +420,8 @@ def create_fidelity_bond_proof(
                 return None
 
             # Generate ephemeral cert keypair (reference: yieldgenerator.py line 162)
-            cert_priv = PrivateKey(os.urandom(32))
-            cert_pub = cert_priv.public_key.format(compressed=True)
+            cert_priv = _generate_certificate_private_key()
+            cert_pub = bytes(cert_priv.pub)
             utxo_pub = bond.pubkey
 
             # Calculate certificate expiry as retarget period number

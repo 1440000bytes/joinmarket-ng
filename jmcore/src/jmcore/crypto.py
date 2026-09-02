@@ -10,18 +10,71 @@ import hashlib
 import secrets
 
 import base58
-from coincurve import PrivateKey, PublicKey
-from coincurve import verify_signature as coincurve_verify
+from bitcointx.core.key import CKey, CPubKey
 from mnemonic import Mnemonic
 
 from jmcore.protocol import JM_VERSION, get_nick_version
 
 NICK_HASH_LENGTH = 10
 NICK_MAX_ENCODED = 14
+_SECP256K1_ORDER = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
 
 
 class CryptoError(Exception):
     pass
+
+
+def _random_key() -> CKey:
+    while True:
+        try:
+            return CKey(secrets.token_bytes(32))
+        except ValueError:
+            continue
+
+
+def _is_strict_low_s_der_signature(signature: bytes) -> bool:
+    if not 8 <= len(signature) <= 72:
+        return False
+    if signature[0] != 0x30 or signature[1] != len(signature) - 2:
+        return False
+    if signature[2] != 0x02:
+        return False
+
+    r_length = signature[3]
+    if r_length == 0 or 5 + r_length >= len(signature):
+        return False
+    r_start = 4
+    if signature[r_start] & 0x80:
+        return False
+    if r_length > 1 and signature[r_start] == 0 and not signature[r_start + 1] & 0x80:
+        return False
+    r_value = int.from_bytes(signature[r_start : r_start + r_length], "big")
+    if not 1 <= r_value < _SECP256K1_ORDER:
+        return False
+
+    s_type_index = r_start + r_length
+    if signature[s_type_index] != 0x02:
+        return False
+    s_length = signature[s_type_index + 1]
+    s_start = s_type_index + 2
+    if s_length == 0 or s_start + s_length != len(signature):
+        return False
+    if signature[s_start] & 0x80:
+        return False
+    if s_length > 1 and signature[s_start] == 0 and not signature[s_start + 1] & 0x80:
+        return False
+    s_value = int.from_bytes(signature[s_start : s_start + s_length], "big")
+    return 1 <= s_value <= _SECP256K1_ORDER // 2
+
+
+def verify_strict_ecdsa(message_hash: bytes, signature: bytes, pubkey_bytes: bytes) -> bool:
+    """Verify a strict DER, low-S signature over an already hashed message."""
+    if not _is_strict_low_s_der_signature(signature):
+        return False
+    pubkey = CPubKey(pubkey_bytes)
+    if not pubkey.is_fullyvalid():
+        return False
+    return pubkey.verify(message_hash, signature)
 
 
 def base58_encode(data: bytes) -> str:
@@ -91,10 +144,9 @@ def validate_bip39_checksum(mnemonic: str) -> bool:
 
 
 def generate_jm_nick(version: int = JM_VERSION) -> str:
-    privkey_bytes = secrets.token_bytes(32)
-    private_key = PrivateKey(privkey_bytes)
+    private_key = _random_key()
     # Use compressed pubkey (33 bytes) - matches reference implementation
-    pubkey_bytes = private_key.public_key.format(compressed=True)
+    pubkey_bytes = bytes(private_key.pub)
 
     pubkey_hex = binascii.hexlify(pubkey_bytes)
     nick_pkh_raw = hashlib.sha256(pubkey_hex).digest()[:NICK_HASH_LENGTH]
@@ -180,9 +232,9 @@ def ecdsa_sign(message: str, private_key_bytes: bytes) -> str:
     # Hash using Bitcoin message format
     msg_hash = bitcoin_message_hash(message)
 
-    # Sign with coincurve (raw signature, no additional hashing)
-    priv_key = PrivateKey(private_key_bytes)
-    signature = priv_key.sign(msg_hash, hasher=None)
+    # Sign the prehashed message without low-R grinding for wire compatibility.
+    priv_key = CKey(private_key_bytes)
+    signature = priv_key.sign(msg_hash, _ecdsa_sig_grind_low_r=False)
 
     return base64.b64encode(signature).decode("ascii")
 
@@ -206,8 +258,7 @@ def ecdsa_verify(message: str, signature_b64: str, pubkey_bytes: bytes) -> bool:
         # Decode signature from base64
         signature = base64.b64decode(signature_b64)
 
-        # Verify with coincurve (hasher=None because we already hashed)
-        return coincurve_verify(signature, msg_hash, pubkey_bytes, hasher=None)
+        return verify_strict_ecdsa(msg_hash, signature, pubkey_bytes)
     except Exception:
         return False
 
@@ -237,13 +288,13 @@ class NickIdentity:
             private_key_bytes = hashlib.sha256(secrets.token_bytes(16)).digest()
 
         self._private_key_bytes = private_key_bytes
-        self._private_key = PrivateKey(private_key_bytes)
-        self._public_key = self._private_key.public_key
+        self._private_key = CKey(private_key_bytes)
+        self._public_key = self._private_key.pub
         self._version = version
 
         # Derive nick from pubkey hash
         # Reference uses COMPRESSED pubkey (33 bytes) - the 0x01 suffix indicates compressed
-        pubkey_bytes = self._public_key.format(compressed=True)
+        pubkey_bytes = bytes(self._public_key)
         pubkey_hex = binascii.hexlify(pubkey_bytes)
         nick_pkh_raw = hashlib.sha256(pubkey_hex).digest()[:NICK_HASH_LENGTH]
         nick_pkh = base58_encode(nick_pkh_raw)
@@ -258,7 +309,7 @@ class NickIdentity:
     @property
     def public_key_hex(self) -> str:
         """Public key as hex string (compressed, 33 bytes)."""
-        return self._public_key.format(compressed=True).hex()
+        return bytes(self._public_key).hex()
 
     def sign_message(self, message: str, hostid: str = "") -> str:
         """
@@ -277,8 +328,8 @@ class NickIdentity:
         # Hash using Bitcoin message format (double SHA256 with prefix)
         msg_hash = bitcoin_message_hash(msg_to_sign)
 
-        # Sign the pre-hashed message (raw signature, no additional hashing)
-        signature = self._private_key.sign(msg_hash, hasher=None)
+        # Sign the prehashed message without low-R grinding for wire compatibility.
+        signature = self._private_key.sign(msg_hash, _ecdsa_sig_grind_low_r=False)
 
         # Encode signature as base64
         sig_b64 = base64.b64encode(signature).decode("ascii")
@@ -288,37 +339,39 @@ class NickIdentity:
     def sign_bytes(self, message: bytes) -> str:
         """Sign raw bytes using the Bitcoin Signed Message algorithm."""
         msg_hash = bitcoin_message_hash_bytes(message)
-        signature = self._private_key.sign(msg_hash, hasher=None)
+        signature = self._private_key.sign(msg_hash, _ecdsa_sig_grind_low_r=False)
         return base64.b64encode(signature).decode("ascii")
 
 
 class KeyPair:
-    def __init__(self, private_key: PrivateKey | None = None):
+    def __init__(self, private_key: CKey | None = None):
         if private_key is None:
-            private_key = PrivateKey()
+            private_key = _random_key()
         self._private_key = private_key
-        self._public_key = private_key.public_key
+        self._public_key = private_key.pub
 
     @property
-    def private_key(self) -> PrivateKey:
+    def private_key(self) -> CKey:
         return self._private_key
 
     @property
-    def public_key(self) -> PublicKey:
+    def public_key(self) -> CPubKey:
         return self._public_key
 
     def sign(self, message: bytes) -> bytes:
         """Sign a message with SHA256 hashing."""
-        return self._private_key.sign(message)
+        message_hash = hashlib.sha256(message).digest()
+        return self._private_key.sign(message_hash, _ecdsa_sig_grind_low_r=False)
 
     def verify(self, message: bytes, signature: bytes) -> bool:
         try:
-            return self._public_key.verify(signature, message)
+            message_hash = hashlib.sha256(message).digest()
+            return verify_strict_ecdsa(message_hash, signature, bytes(self._public_key))
         except Exception:
             return False
 
     def public_key_bytes(self) -> bytes:
-        return self._public_key.format(compressed=True)
+        return bytes(self._public_key)
 
     def public_key_hex(self) -> str:
         return self.public_key_bytes().hex()
@@ -327,7 +380,8 @@ class KeyPair:
 def verify_signature(public_key_hex: str, message: bytes, signature: bytes) -> bool:
     try:
         public_key_bytes = bytes.fromhex(public_key_hex)
-        return coincurve_verify(signature, message, public_key_bytes)
+        message_hash = hashlib.sha256(message).digest()
+        return verify_strict_ecdsa(message_hash, signature, public_key_bytes)
     except Exception:
         return False
 
@@ -409,9 +463,7 @@ def verify_raw_ecdsa(message_hash: bytes, signature_der: bytes, pubkey_bytes: by
         if len(sig) == 0:
             return False
 
-        # Use PublicKey.verify with hasher=None for raw verification
-        pubkey = PublicKey(pubkey_bytes)
-        return pubkey.verify(sig, message_hash, hasher=None)
+        return verify_strict_ecdsa(message_hash, sig, pubkey_bytes)
     except Exception:
         return False
 

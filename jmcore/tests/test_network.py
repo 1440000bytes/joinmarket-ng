@@ -712,15 +712,16 @@ class TestOnionPeerConnection:
         # Verify the signature is valid by manually checking
         import base64
 
-        from coincurve import PublicKey
+        from bitcointx.core.key import CPubKey
 
         from jmcore.crypto import bitcoin_message_hash
 
         sig_bytes = base64.b64decode(data_parts[2])
         msg_to_verify = "encrypted_data_here" + ONION_HOSTID
         msg_hash = bitcoin_message_hash(msg_to_verify)
-        pubkey = PublicKey(bytes.fromhex(nick_identity.public_key_hex))
-        assert pubkey.verify(sig_bytes, msg_hash, hasher=None)
+        pubkey = CPubKey(bytes.fromhex(nick_identity.public_key_hex))
+        assert pubkey.is_fullyvalid()
+        assert pubkey.verify(msg_hash, sig_bytes)
 
     @pytest.mark.asyncio
     async def test_send_privmsg_without_identity_no_signature(self):

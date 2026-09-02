@@ -9,6 +9,7 @@ from typing import Any
 from unittest.mock import Mock, patch
 
 import pytest
+from bitcointx.core.key import CKey, CPubKey
 
 import jmcore.podle as podle
 from jmcore.constants import SECP256K1_P
@@ -65,13 +66,10 @@ class TestConstants:
         This ensures we can trust both constants and that G_UNCOMPRESSED is not
         tampered with, minimizing the need for trust in hardcoded values.
         """
-        # Convert uncompressed to compressed using coincurve
-        from coincurve import PublicKey
-
         # Parse uncompressed point
-        uncompressed_point = PublicKey(G_UNCOMPRESSED)
-        # Get compressed representation
-        compressed_from_uncompressed = uncompressed_point.format(compressed=True)
+        uncompressed_point = CPubKey(G_UNCOMPRESSED)
+        assert uncompressed_point.is_fullyvalid()
+        compressed_from_uncompressed = bytes(CKey((1).to_bytes(32, "big")).pub)
 
         # Should match G_COMPRESSED
         assert compressed_from_uncompressed == G_COMPRESSED
@@ -412,7 +410,7 @@ class TestPoDLEResponseArithmetic:
         nonce: int,
         challenge_scalar: int,
     ) -> None:
-        private_key = podle.PrivateKey(private_scalar.to_bytes(32, "big"))
+        private_key = podle.CKey(private_scalar.to_bytes(32, "big"))
         challenge = challenge_scalar.to_bytes(32, "big")
 
         response = podle._compute_podle_response(private_key, nonce, challenge)
@@ -422,12 +420,12 @@ class TestPoDLEResponseArithmetic:
         assert response == expected.to_bytes(32, "big")
 
     def test_zero_challenge_requires_retry(self) -> None:
-        private_key = podle.PrivateKey((1).to_bytes(32, "big"))
+        private_key = podle.CKey((1).to_bytes(32, "big"))
         for challenge in (bytes(32), SECP256K1_N.to_bytes(32, "big")):
             assert podle._compute_podle_response(private_key, 1, challenge) is None
 
     def test_zero_response_requires_retry(self) -> None:
-        private_key = podle.PrivateKey((1).to_bytes(32, "big"))
+        private_key = podle.CKey((1).to_bytes(32, "big"))
         assert (
             podle._compute_podle_response(
                 private_key,
@@ -438,13 +436,13 @@ class TestPoDLEResponseArithmetic:
         )
 
     def test_response_does_not_mutate_private_key(self) -> None:
-        private_key = podle.PrivateKey((7).to_bytes(32, "big"))
-        original_secret = private_key.secret
+        private_key = podle.CKey((7).to_bytes(32, "big"))
+        original_secret = private_key.secret_bytes
 
         response = podle._compute_podle_response(private_key, 11, (13).to_bytes(32, "big"))
 
         assert response is not None
-        assert private_key.secret == original_secret
+        assert private_key.secret_bytes == original_secret
 
     def test_generation_rejects_exhausted_nonce_candidates(self) -> None:
         with (
@@ -888,7 +886,7 @@ class TestVerifyPoDLEEdgeCases:
     def test_verify_invalid_point(self) -> None:
         """Test verification with invalid EC point data."""
         # Use bytes that look right (33 bytes, 0x02 prefix) but aren't a valid point
-        # This should cause an exception in PublicKey() constructor
+        # This should be rejected when full curve validation is required.
         bad_p = b"\x02" + b"\xff" * 32  # likely not on curve
 
         # We need p2 to match commitment: commitment = sha256(p2)
@@ -1088,7 +1086,7 @@ class TestVerifyPodleBinding:
 
     @staticmethod
     def _pubkey(secret: int = 12345) -> bytes:
-        return scalar_mult_g(secret).format(compressed=True)
+        return bytes(scalar_mult_g(secret))
 
     def test_p2wpkh_binding_matches(self) -> None:
         from jmcore.bitcoin import hash160

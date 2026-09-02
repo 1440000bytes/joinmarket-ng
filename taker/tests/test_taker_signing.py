@@ -966,7 +966,7 @@ class TestPhaseCollectSignaturesCompleteness:
         tx = deserialize_transaction(tx_bytes)
         index_map = {(ti.txid_le[::-1].hex(), ti.vout): idx for idx, ti in enumerate(tx.inputs)}
         idx = index_map[("b" * 64, 0)]
-        pub = privkey.public_key.format(compressed=True)
+        pub = bytes(privkey.pub)
         sig = sign_p2wpkh_input(tx, idx, create_p2wpkh_script_code(pub), 1_500_000, privkey)
         payload = bytes([len(sig)]) + sig + bytes([len(pub)]) + pub
         return base64.b64encode(payload).decode()
@@ -1021,10 +1021,10 @@ class TestPhaseCollectSignaturesCompleteness:
         self, two_maker_tx_data: CoinJoinTxData
     ) -> None:
         """A valid signature whose pubkey owns the UTXO scriptPubKey is accepted."""
-        from coincurve import PrivateKey
+        from bitcointx.core.key import CKey
 
-        maker1_key = PrivateKey()
-        spk = pubkey_to_p2wpkh_script(maker1_key.public_key.format(compressed=True)).hex()
+        maker1_key = CKey(b"\x01" * 32)
+        spk = pubkey_to_p2wpkh_script(bytes(maker1_key.pub)).hex()
         taker = self._collect_with_maker1(two_maker_tx_data, spk, maker1_key)
 
         result = await taker._session._phase_collect_signatures()
@@ -1043,12 +1043,12 @@ class TestPhaseCollectSignaturesCompleteness:
         the UTXO, so a maker could pass verification with a key it does not own,
         producing a consensus-invalid coinjoin.
         """
-        from coincurve import PrivateKey
+        from bitcointx.core.key import CKey
 
-        maker1_key = PrivateKey()
-        other_key = PrivateKey()
+        maker1_key = CKey(b"\x01" * 32)
+        other_key = CKey(b"\x02" * 32)
         # The UTXO is owned by other_key, but maker1 signs with maker1_key.
-        spk = pubkey_to_p2wpkh_script(other_key.public_key.format(compressed=True)).hex()
+        spk = pubkey_to_p2wpkh_script(bytes(other_key.pub)).hex()
         taker = self._collect_with_maker1(two_maker_tx_data, spk, maker1_key)
 
         result = await taker._session._phase_collect_signatures()

@@ -4,10 +4,11 @@ Tests for jmcore.crypto
 
 import base64
 import hashlib
+import secrets
 import struct
 from typing import Any
 
-from coincurve import PrivateKey
+from bitcointx.core.key import CKey
 
 from jmcore.crypto import (
     KeyPair,
@@ -28,6 +29,14 @@ from jmcore.crypto import (
     verify_raw_ecdsa,
     verify_signature,
 )
+
+
+def _random_private_key() -> CKey:
+    while True:
+        try:
+            return CKey(secrets.token_bytes(32))
+        except ValueError:
+            continue
 
 
 def test_base58_encode():
@@ -54,9 +63,9 @@ def test_generate_jm_nick():
 
 def test_ecdsa_sign_verify():
     """Test ECDSA signing and verification used for BTC signature in !ioauth."""
-    priv_key = PrivateKey()
-    priv_key_bytes = priv_key.secret
-    pub_key_bytes = priv_key.public_key.format(compressed=True)
+    priv_key = _random_private_key()
+    priv_key_bytes = priv_key.secret_bytes
+    pub_key_bytes = bytes(priv_key.pub)
 
     # Sign a hex string message (as used in maker's !ioauth)
     message = "0123456789abcdef" * 4  # 64-char hex string (like NaCl pubkey)
@@ -69,14 +78,14 @@ def test_ecdsa_sign_verify():
     assert not ecdsa_verify("wrong message", sig_b64, pub_key_bytes)
 
     # Verify fails with wrong pubkey
-    wrong_key = PrivateKey().public_key.format(compressed=True)
+    wrong_key = bytes(_random_private_key().pub)
     assert not ecdsa_verify(message, sig_b64, wrong_key)
 
 
 def test_ecdsa_verify_invalid_signature():
     """Test that ecdsa_verify handles invalid signatures gracefully."""
-    priv_key = PrivateKey()
-    pub_key_bytes = priv_key.public_key.format(compressed=True)
+    priv_key = _random_private_key()
+    pub_key_bytes = bytes(priv_key.pub)
 
     # Invalid base64
     assert not ecdsa_verify("test", "not-valid-base64!!!", pub_key_bytes)
@@ -116,15 +125,15 @@ def test_verify_signature_utility():
 
 def test_verify_raw_ecdsa():
     """Test raw ECDSA verification with pre-hashed message."""
-    priv_key = PrivateKey()
-    pub_key_bytes = priv_key.public_key.format(compressed=True)
+    priv_key = _random_private_key()
+    pub_key_bytes = bytes(priv_key.pub)
 
     # Create a message hash
     message = b"test message for raw ecdsa"
     msg_hash = hashlib.sha256(message).digest()
 
     # Sign without additional hashing
-    sig = priv_key.sign(msg_hash, hasher=None)
+    sig = priv_key.sign(msg_hash, _ecdsa_sig_grind_low_r=False)
 
     # Verify should succeed
     assert verify_raw_ecdsa(msg_hash, sig, pub_key_bytes)
@@ -153,12 +162,12 @@ def test_strip_signature_padding():
 
 def test_verify_raw_ecdsa_with_leading_padding():
     """Test raw ECDSA verification with 0xff-padded signature (reference format)."""
-    priv_key = PrivateKey()
-    pub_key_bytes = priv_key.public_key.format(compressed=True)
+    priv_key = _random_private_key()
+    pub_key_bytes = bytes(priv_key.pub)
 
     message = b"padded signature test"
     msg_hash = hashlib.sha256(message).digest()
-    sig = priv_key.sign(msg_hash, hasher=None)
+    sig = priv_key.sign(msg_hash, _ecdsa_sig_grind_low_r=False)
 
     # Pad signature with leading 0xff to 72 bytes (reference impl format)
     padded_sig = sig.rjust(72, b"\xff")
@@ -193,8 +202,8 @@ def test_get_ascii_cert_msg():
 
 def test_verify_bitcoin_message_signature():
     """Test Bitcoin message signature verification."""
-    priv_key = PrivateKey()
-    pub_key_bytes = priv_key.public_key.format(compressed=True)
+    priv_key = _random_private_key()
+    pub_key_bytes = bytes(priv_key.pub)
 
     message = b"test message for bitcoin signing"
 
@@ -205,7 +214,7 @@ def test_verify_bitcoin_message_signature():
     msg_hash = hashlib.sha256(hashlib.sha256(full_msg).digest()).digest()
 
     # Sign the hash
-    sig = priv_key.sign(msg_hash, hasher=None)
+    sig = priv_key.sign(msg_hash, _ecdsa_sig_grind_low_r=False)
 
     # Verify
     assert verify_bitcoin_message_signature(message, sig, pub_key_bytes)
@@ -239,11 +248,11 @@ def _bitcoin_message_hash(message: bytes) -> bytes:
 def test_verify_fidelity_bond_proof_roundtrip():
     """Test creating and verifying a bond proof using reference impl format."""
     # Generate keys
-    utxo_priv_key = PrivateKey()
-    utxo_pub_key = utxo_priv_key.public_key.format(compressed=True)
+    utxo_priv_key = _random_private_key()
+    utxo_pub_key = bytes(utxo_priv_key.pub)
 
-    cert_priv_key = PrivateKey()
-    cert_pub_key = cert_priv_key.public_key.format(compressed=True)
+    cert_priv_key = _random_private_key()
+    cert_pub_key = bytes(cert_priv_key.pub)
 
     maker_nick = "J5testmaker123"
     taker_nick = "J5testtaker456"
@@ -253,12 +262,12 @@ def test_verify_fidelity_bond_proof_roundtrip():
     # Reference format: b'fidelity-bond-cert|' + cert_pub + b'|' + str(cert_expiry).encode('ascii')
     cert_msg = get_cert_msg(cert_pub_key, cert_expiry_encoded)
     cert_msg_hash = _bitcoin_message_hash(cert_msg)
-    cert_sig = utxo_priv_key.sign(cert_msg_hash, hasher=None)
+    cert_sig = utxo_priv_key.sign(cert_msg_hash, _ecdsa_sig_grind_low_r=False)
 
     # 2. Create nick signature (cert key signs taker_nick|maker_nick)
     nick_msg = (taker_nick + "|" + maker_nick).encode("ascii")
     nick_msg_hash = _bitcoin_message_hash(nick_msg)
-    nick_sig = cert_priv_key.sign(nick_msg_hash, hasher=None)
+    nick_sig = cert_priv_key.sign(nick_msg_hash, _ecdsa_sig_grind_low_r=False)
 
     # 3. Pad signatures to 72 bytes using rjust with 0xff (reference format)
     nick_sig_padded = nick_sig.rjust(72, b"\xff")
@@ -298,11 +307,11 @@ def test_verify_fidelity_bond_proof_roundtrip():
 
 def test_verify_fidelity_bond_proof_wrong_taker():
     """Test that verification fails with wrong taker nick."""
-    utxo_priv_key = PrivateKey()
-    utxo_pub_key = utxo_priv_key.public_key.format(compressed=True)
+    utxo_priv_key = _random_private_key()
+    utxo_pub_key = bytes(utxo_priv_key.pub)
 
-    cert_priv_key = PrivateKey()
-    cert_pub_key = cert_priv_key.public_key.format(compressed=True)
+    cert_priv_key = _random_private_key()
+    cert_pub_key = bytes(cert_priv_key.pub)
 
     maker_nick = "J5maker"
     correct_taker = "J5correct"
@@ -312,11 +321,11 @@ def test_verify_fidelity_bond_proof_wrong_taker():
     # Create signatures for correct_taker
     cert_msg = get_cert_msg(cert_pub_key, cert_expiry_encoded)
     cert_msg_hash = _bitcoin_message_hash(cert_msg)
-    cert_sig = utxo_priv_key.sign(cert_msg_hash, hasher=None)
+    cert_sig = utxo_priv_key.sign(cert_msg_hash, _ecdsa_sig_grind_low_r=False)
 
     nick_msg = (correct_taker + "|" + maker_nick).encode("ascii")
     nick_msg_hash = _bitcoin_message_hash(nick_msg)
-    nick_sig = cert_priv_key.sign(nick_msg_hash, hasher=None)
+    nick_sig = cert_priv_key.sign(nick_msg_hash, _ecdsa_sig_grind_low_r=False)
 
     nick_sig_padded = nick_sig.rjust(72, b"\xff")
     cert_sig_padded = cert_sig.rjust(72, b"\xff")
@@ -809,7 +818,7 @@ class TestVerifyRawEcdsaEdgeCases:
 
     def test_empty_signature(self):
         """Empty signature returns False."""
-        pub_key = PrivateKey().public_key.format(compressed=True)
+        pub_key = bytes(_random_private_key().pub)
         msg_hash = hashlib.sha256(b"test").digest()
         assert not verify_raw_ecdsa(msg_hash, b"", pub_key)
 
@@ -820,7 +829,7 @@ class TestVerifyRawEcdsaEdgeCases:
 
     def test_all_zero_signature_stripped(self):
         """All-zero signature is stripped to empty and returns False."""
-        pub_key = PrivateKey().public_key.format(compressed=True)
+        pub_key = bytes(_random_private_key().pub)
         msg_hash = hashlib.sha256(b"test").digest()
         assert not verify_raw_ecdsa(msg_hash, b"\x00" * 72, pub_key)
 
@@ -834,12 +843,12 @@ class TestVerifyBitcoinMessageSignatureEdgeCases:
 
     def test_empty_message(self):
         """Empty message with valid sig structure returns False for wrong key."""
-        priv_key = PrivateKey()
-        pub_key = priv_key.public_key.format(compressed=True)
-        wrong_pub = PrivateKey().public_key.format(compressed=True)
+        priv_key = _random_private_key()
+        pub_key = bytes(priv_key.pub)
+        wrong_pub = bytes(_random_private_key().pub)
         msg = b""
         msg_hash = bitcoin_message_hash_bytes(msg)
-        sig = priv_key.sign(msg_hash, hasher=None)
+        sig = priv_key.sign(msg_hash, _ecdsa_sig_grind_low_r=False)
         assert verify_bitcoin_message_signature(msg, sig, pub_key)
         assert not verify_bitcoin_message_signature(msg, sig, wrong_pub)
 
@@ -849,11 +858,11 @@ class TestVerifyFidelityBondProofEdgeCases:
 
     def test_invalid_cert_sig_no_der_header(self):
         """Test that proof with no DER header in cert sig fails."""
-        utxo_priv_key = PrivateKey()
-        utxo_pub_key = utxo_priv_key.public_key.format(compressed=True)
+        utxo_priv_key = _random_private_key()
+        utxo_pub_key = bytes(utxo_priv_key.pub)
 
-        cert_priv_key = PrivateKey()
-        cert_pub_key = cert_priv_key.public_key.format(compressed=True)
+        cert_priv_key = _random_private_key()
+        cert_pub_key = bytes(cert_priv_key.pub)
 
         maker_nick = "J5maker"
         taker_nick = "J5taker"
@@ -862,7 +871,7 @@ class TestVerifyFidelityBondProofEdgeCases:
         # Create valid nick signature
         nick_msg = (taker_nick + "|" + maker_nick).encode("ascii")
         nick_msg_hash = _bitcoin_message_hash(nick_msg)
-        nick_sig = cert_priv_key.sign(nick_msg_hash, hasher=None)
+        nick_sig = cert_priv_key.sign(nick_msg_hash, _ecdsa_sig_grind_low_r=False)
         nick_sig_padded = nick_sig.rjust(72, b"\xff")
 
         # Create cert sig without 0x30 header (all 'Z' bytes)
@@ -887,11 +896,11 @@ class TestVerifyFidelityBondProofEdgeCases:
 
     def test_valid_proof_with_ascii_cert_format(self):
         """Test bond proof verification with ASCII certificate format."""
-        utxo_priv_key = PrivateKey()
-        utxo_pub_key = utxo_priv_key.public_key.format(compressed=True)
+        utxo_priv_key = _random_private_key()
+        utxo_pub_key = bytes(utxo_priv_key.pub)
 
-        cert_priv_key = PrivateKey()
-        cert_pub_key = cert_priv_key.public_key.format(compressed=True)
+        cert_priv_key = _random_private_key()
+        cert_pub_key = bytes(cert_priv_key.pub)
 
         maker_nick = "J5makerascii"
         taker_nick = "J5takerascii"
@@ -900,12 +909,12 @@ class TestVerifyFidelityBondProofEdgeCases:
         # Create certificate signature using ASCII format
         ascii_cert_msg = get_ascii_cert_msg(cert_pub_key, cert_expiry_encoded)
         cert_msg_hash = _bitcoin_message_hash(ascii_cert_msg)
-        cert_sig = utxo_priv_key.sign(cert_msg_hash, hasher=None)
+        cert_sig = utxo_priv_key.sign(cert_msg_hash, _ecdsa_sig_grind_low_r=False)
 
         # Create nick signature
         nick_msg = (taker_nick + "|" + maker_nick).encode("ascii")
         nick_msg_hash = _bitcoin_message_hash(nick_msg)
-        nick_sig = cert_priv_key.sign(nick_msg_hash, hasher=None)
+        nick_sig = cert_priv_key.sign(nick_msg_hash, _ecdsa_sig_grind_low_r=False)
 
         nick_sig_padded = nick_sig.rjust(72, b"\xff")
         cert_sig_padded = cert_sig.rjust(72, b"\xff")

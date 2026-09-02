@@ -11,8 +11,7 @@ from collections.abc import Mapping
 from enum import StrEnum
 from typing import Any, ClassVar, Literal, Self, cast
 
-from coincurve import PublicKey
-from coincurve import verify_signature as coincurve_verify
+from bitcointx.core.key import CPubKey
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from jmcore.crypto import NickIdentity, bitcoin_message_hash_bytes, nick_from_pubkey_hex
@@ -195,7 +194,9 @@ class NickAuthProof(_NickAuthPayload):
         if _COMPRESSED_PUBKEY_RE.fullmatch(value) is None:
             raise ValueError("pubkey must be a lowercase compressed secp256k1 public key")
         try:
-            PublicKey(bytes.fromhex(value))
+            pubkey = CPubKey(bytes.fromhex(value))
+            if not pubkey.is_fullyvalid():
+                raise ValueError("invalid public key")
         except ValueError as exc:
             raise ValueError("pubkey is not a valid secp256k1 public key") from exc
         return value
@@ -304,6 +305,14 @@ def verify_nick_auth_proof(
             proof.pubkey,
         )
         message_hash = bitcoin_message_hash_bytes(message)
-        return coincurve_verify(signature, message_hash, bytes.fromhex(proof.pubkey), hasher=None)
+        s_length = signature[4 + signature[3] + 1]
+        s_start = 4 + signature[3] + 2
+        s_value = int.from_bytes(signature[s_start : s_start + s_length], "big")
+        if s_value > _SECP256K1_ORDER // 2:
+            return False
+        pubkey = CPubKey(bytes.fromhex(proof.pubkey))
+        if not pubkey.is_fullyvalid():
+            return False
+        return pubkey.verify(message_hash, signature)
     except (TypeError, ValueError):
         return False

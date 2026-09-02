@@ -11,10 +11,13 @@ import json
 import math
 from datetime import datetime
 from pathlib import Path
+from secrets import token_bytes
 from typing import Annotated
 
 import typer
+from bitcointx.core.key import CKey, CPubKey
 from jmcore.cli_common import resolve_backend_settings, setup_cli
+from jmcore.constants import SECP256K1_N
 from jmcore.secure_files import atomic_write_private
 from loguru import logger
 
@@ -26,6 +29,15 @@ _WALLET_FINGERPRINT_HELP = (
     "to look it up. Required because each wallet has its own bond registry "
     "(fidelity_bonds_<fp>.json) under the shared data directory."
 )
+
+
+def _generate_private_key() -> CKey:
+    """Generate a valid compressed secp256k1 private key."""
+    while True:
+        try:
+            return CKey.from_secret_bytes(token_bytes(32))
+        except ValueError:
+            continue
 
 
 def _resolve_wallet_fingerprint(wallet_fingerprint: str | None) -> str:
@@ -114,6 +126,8 @@ def create_bond_address(
         # Verify it's a valid compressed pubkey (starts with 02 or 03)
         if pubkey_bytes[0] not in (0x02, 0x03):
             raise ValueError("Invalid compressed public key format")
+        if not CPubKey(pubkey_bytes).is_fullyvalid():
+            raise ValueError("Invalid compressed public key")
     except ValueError as e:
         logger.error(f"Invalid public key: {e}")
         raise typer.Exit(1)
@@ -299,12 +313,11 @@ def generate_hot_keypair(
     """
     setup_cli(log_level, data_dir=data_dir)
 
-    from coincurve import PrivateKey
     from jmcore.paths import get_default_data_dir
 
     # Generate a random private key
-    privkey = PrivateKey()
-    pubkey = privkey.public_key.format(compressed=True)
+    privkey = _generate_private_key()
+    pubkey = bytes(privkey.pub)
 
     resolved_data_dir = data_dir if data_dir else get_default_data_dir()
 
@@ -320,7 +333,7 @@ def generate_hot_keypair(
 
         if bond:
             bond.cert_pubkey = pubkey.hex()
-            bond.cert_privkey = privkey.secret.hex()
+            bond.cert_privkey = privkey.secret_bytes.hex()
             save_registry(registry, resolved_data_dir, resolved_fingerprint)
             saved_to_registry = True
             logger.info("Saved hot keypair to bond registry")
@@ -340,7 +353,7 @@ def generate_hot_keypair(
             json.dumps(
                 {
                     "cert_pubkey": pubkey.hex(),
-                    "cert_privkey": privkey.secret.hex(),
+                    "cert_privkey": privkey.secret_bytes.hex(),
                 },
                 indent=2,
             )
@@ -489,6 +502,8 @@ def prepare_certificate_message(
             raise ValueError("Certificate pubkey must be 33 bytes (compressed)")
         if cert_pubkey_bytes[0] not in (0x02, 0x03):
             raise ValueError("Invalid compressed public key format")
+        if not CPubKey(cert_pubkey_bytes).is_fullyvalid():
+            raise ValueError("Invalid compressed public key")
     except ValueError as e:
         logger.error(f"Invalid certificate pubkey: {e}")
         raise typer.Exit(1)
@@ -628,19 +643,21 @@ def _verify_recoverable_signature(
       35-38: P2SH-P2WPKH (nested segwit, compressed)
       39-42: P2WPKH (native segwit, compressed)
 
-    coincurve format: 32 bytes R + 32 bytes S + 1 byte recovery_id
+    Compact recovery format: 1-byte header + 32 bytes R + 32 bytes S
 
     Returns True if the recovered pubkey matches expected_pubkey.
     """
-    from coincurve import PublicKey
     from jmcore.crypto import bitcoin_message_hash_bytes
 
     if len(sig_bytes) != 65:
         return False
 
+    r_value = int.from_bytes(sig_bytes[1:33], "big")
+    s_value = int.from_bytes(sig_bytes[33:65], "big")
+    if not 1 <= r_value < SECP256K1_N or not 1 <= s_value <= SECP256K1_N // 2:
+        return False
+
     header = sig_bytes[0]
-    r = sig_bytes[1:33]
-    s = sig_bytes[33:65]
 
     # Determine recovery ID from header byte.
     # Electrum/Sparrow encode both recovery ID and address type in the header:
@@ -665,18 +682,26 @@ def _verify_recoverable_signature(
         logger.warning(f"Unknown signature header byte: {header}")
         return False
 
-    # coincurve expects: r (32) + s (32) + recovery_id (1)
-    coincurve_sig = r + s + bytes([recovery_id])
+    if not CPubKey(expected_pubkey).is_fullyvalid():
+        return False
+
+    canonical_header = (31 if compressed else 27) + recovery_id
+    compact_sig = bytes([canonical_header]) + sig_bytes[1:]
+
+    def recovers_expected_pubkey(msg_hash: bytes) -> bool:
+        recovered_pubkey = CPubKey.recover_compact(msg_hash, compact_sig)
+        return (
+            recovered_pubkey is not None
+            and recovered_pubkey.is_fullyvalid()
+            and bytes(recovered_pubkey) == expected_pubkey
+        )
 
     # Try ASCII message format (what Sparrow signed with our new CLI)
     ascii_msg = f"fidelity-bond-cert|{cert_pubkey_hex}|{cert_expiry}".encode()
     msg_hash = bitcoin_message_hash_bytes(ascii_msg)
 
     try:
-        recovered_pk = PublicKey.from_signature_and_message(coincurve_sig, msg_hash, hasher=None)
-        recovered_pubkey = recovered_pk.format(compressed=compressed)
-
-        if recovered_pubkey == expected_pubkey:
+        if recovers_expected_pubkey(msg_hash):
             logger.debug("Signature verified with ASCII message format")
             return True
     except Exception as e:
@@ -690,10 +715,7 @@ def _verify_recoverable_signature(
     msg_hash = bitcoin_message_hash_bytes(binary_msg)
 
     try:
-        recovered_pk = PublicKey.from_signature_and_message(coincurve_sig, msg_hash, hasher=None)
-        recovered_pubkey = recovered_pk.format(compressed=compressed)
-
-        if recovered_pubkey == expected_pubkey:
+        if recovers_expected_pubkey(msg_hash):
             logger.debug("Signature verified with binary message format")
             return True
     except Exception as e:
@@ -708,10 +730,7 @@ def _verify_recoverable_signature(
     msg_hash = bitcoin_message_hash_bytes(hex_as_text_msg)
 
     try:
-        recovered_pk = PublicKey.from_signature_and_message(coincurve_sig, msg_hash, hasher=None)
-        recovered_pubkey = recovered_pk.format(compressed=compressed)
-
-        if recovered_pubkey == expected_pubkey:
+        if recovers_expected_pubkey(msg_hash):
             logger.debug("Signature verified with hex-as-text message format")
             return True
     except Exception as e:
@@ -859,7 +878,6 @@ def import_certificate(
     """
     settings = setup_cli(log_level, data_dir=data_dir, config_file=config_file)
 
-    from coincurve import PrivateKey
     from jmcore.paths import get_default_data_dir
 
     from jmwallet.wallet.bond_registry import get_registry_path, load_registry, save_registry
@@ -981,6 +999,8 @@ def import_certificate(
             raise ValueError("Certificate pubkey must be 33 bytes")
         if cert_pubkey_bytes[0] not in (0x02, 0x03):
             raise ValueError("Invalid compressed public key format")
+        if not CPubKey(cert_pubkey_bytes).is_fullyvalid():
+            raise ValueError("Invalid compressed public key")
 
         cert_privkey_bytes = bytes.fromhex(cert_privkey)
         if len(cert_privkey_bytes) != 32:
@@ -997,8 +1017,8 @@ def import_certificate(
                 raise ValueError("Signature must be base64 (from Sparrow) or hex encoded")
 
         # Verify that privkey matches pubkey
-        privkey = PrivateKey(cert_privkey_bytes)
-        derived_pubkey = privkey.public_key.format(compressed=True)
+        privkey = CKey.from_secret_bytes(cert_privkey_bytes)
+        derived_pubkey = bytes(privkey.pub)
         if derived_pubkey != cert_pubkey_bytes:
             raise ValueError("Certificate privkey does not match cert_pubkey!")
 

@@ -3,7 +3,7 @@ Pytest configuration and fixtures for maker tests.
 """
 
 import pytest
-from coincurve import PrivateKey
+from bitcointx.core.key import CKey
 
 
 @pytest.fixture
@@ -22,12 +22,12 @@ def test_network() -> str:
 
 
 @pytest.fixture
-def test_private_key() -> PrivateKey:
+def test_private_key() -> CKey:
     """Generate a test ECDSA private key for fidelity bond tests."""
-    return PrivateKey()
+    return CKey(b"\x01" * 32)
 
 
 @pytest.fixture
-def test_pubkey(test_private_key: PrivateKey) -> bytes:
+def test_pubkey(test_private_key: CKey) -> bytes:
     """Get compressed public key from test private key."""
-    return test_private_key.public_key.format(compressed=True)
+    return bytes(test_private_key.pub)

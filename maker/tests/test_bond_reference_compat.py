@@ -8,7 +8,7 @@ import base64
 import struct
 
 import pytest
-from coincurve import PrivateKey
+from bitcointx.core.key import CKey
 from jmcore.crypto import NickIdentity, bitcoin_message_hash
 from jmcore.protocol import COMMAND_PREFIX
 
@@ -68,8 +68,8 @@ def simulate_reference_privmsg_parsing(privmsg: str) -> list[tuple[str, list[str
 def test_bond_proof_structure():
     """Test that our bond proof has the correct 252-byte structure."""
     # Create a test bond
-    privkey = PrivateKey()
-    pubkey = privkey.public_key.format(compressed=True)
+    privkey = CKey(b"\x01" * 32)
+    pubkey = bytes(privkey.pub)
 
     bond = FidelityBondInfo(
         txid="a" * 64,
@@ -120,8 +120,8 @@ def test_privmsg_format_with_bond():
     taker_nick = "J5TestTaker"
 
     # Create a test bond proof
-    privkey = PrivateKey()
-    pubkey = privkey.public_key.format(compressed=True)
+    privkey = CKey(b"\x01" * 32)
+    pubkey = bytes(privkey.pub)
 
     bond = FidelityBondInfo(
         txid="b" * 64,
@@ -181,8 +181,8 @@ def test_privmsg_format_with_bond():
 
 def test_bond_message_format_matches_reference():
     """Test that our bond signing messages match reference format."""
-    privkey = PrivateKey()
-    pubkey = privkey.public_key.format(compressed=True)
+    privkey = CKey(b"\x01" * 32)
+    pubkey = bytes(privkey.pub)
 
     maker_nick = "J52TestMaker"
     taker_nick = "J5TestTaker"
@@ -211,8 +211,8 @@ def test_bond_proof_with_multiple_offers():
     taker_nick = "J5TestTaker"
 
     # Create bond
-    privkey = PrivateKey()
-    pubkey = privkey.public_key.format(compressed=True)
+    privkey = CKey(b"\x01" * 32)
+    pubkey = bytes(privkey.pub)
 
     bond = FidelityBondInfo(
         txid="c" * 64,
@@ -265,8 +265,8 @@ def test_bond_proof_with_multiple_offers():
 )
 def test_bond_proof_with_various_locktimes(locktime: int, cert_expiry_blocks: int):
     """Test bond proofs with various locktime values."""
-    privkey = PrivateKey()
-    pubkey = privkey.public_key.format(compressed=True)
+    privkey = CKey(b"\x01" * 32)
+    pubkey = bytes(privkey.pub)
 
     bond = FidelityBondInfo(
         txid="d" * 64,

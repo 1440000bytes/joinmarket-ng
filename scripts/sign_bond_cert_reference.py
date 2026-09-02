@@ -20,7 +20,7 @@ certificate message in the Electrum recoverable format that ``import-certificate
 expects.
 
 This script does not import from jmcore or jmwallet. Its external dependencies
-are ``coincurve`` and ``mnemonic``.
+are ``python-bitcointx`` with native ``libsecp256k1`` and ``mnemonic``.
 
 USAGE:
   python scripts/sign_bond_cert_reference.py \\
@@ -36,7 +36,8 @@ USAGE:
       --passphrase
 
 REQUIREMENTS:
-  pip install coincurve mnemonic
+  pip install "python-bitcointx @ https://github.com/m0wer/python-bitcointx/releases/download/python-bitcointx-v2.1.0/python_bitcointx-2.1.0-py3-none-any.whl#sha256=6162a46e1eeb20230a23415e303cfdcbc266f9f0261687cdf37db68957e1b4f8" mnemonic
+  # Install native libsecp256k1 through your operating system package manager.
 
 WORKFLOW:
   1. Run ``jm-wallet generate-hot-keypair`` to get the cert pubkey and privkey
@@ -56,6 +57,7 @@ import hmac
 import struct
 import sys
 
+from bitcointx.core.key import CKey
 from mnemonic import Mnemonic
 
 # secp256k1 curve order -- used for BIP32 child key derivation
@@ -137,8 +139,6 @@ def _derive_key_from_mnemonic(
         The private key is returned as a ``bytearray`` so the caller can
         zero it in-place after use.
     """
-    from coincurve import PrivateKey
-
     normalized_mnemonic = " ".join(mnemonic.strip().split())
     bip39 = Mnemonic("english")
     if not bip39.check(normalized_mnemonic):
@@ -159,7 +159,7 @@ def _derive_key_from_mnemonic(
         if hardened:
             data = b"\x00" + key_bytes + struct.pack(">I", index)
         else:
-            pubkey = PrivateKey(key_bytes).public_key.format(compressed=True)
+            pubkey = bytes(CKey(key_bytes).pub)
             data = pubkey + struct.pack(">I", index)
 
         child_hmac = hmac.new(chain_code, data, hashlib.sha512).digest()
@@ -176,9 +176,8 @@ def _derive_key_from_mnemonic(
         key_bytes = child_key_int.to_bytes(32, "big")
         chain_code = child_hmac[32:]
 
-    privkey = PrivateKey(key_bytes)
-    pubkey = privkey.public_key.format(compressed=True)
-    return bytearray(key_bytes), pubkey
+    key = CKey(key_bytes)
+    return bytearray(key.secret_bytes), bytes(key.pub)
 
 
 def _make_bond_path(timenumber: int) -> list[int]:
@@ -232,23 +231,16 @@ def sign_certificate(
     Returns:
         Base64-encoded 65-byte recoverable signature.
     """
-    from coincurve import PrivateKey
-
     cert_msg = f"fidelity-bond-cert|{cert_pubkey_hex}|{cert_expiry}"
     msg_hash = _bitcoin_message_hash(cert_msg)
 
-    privkey = PrivateKey(private_key_bytes)
-    # sign_recoverable returns R(32) + S(32) + recovery_id(1)
-    sig = privkey.sign_recoverable(msg_hash, hasher=None)
-
-    r = sig[0:32]
-    s = sig[32:64]
-    recovery_id = sig[64]
+    # sign_compact returns (R(32) + S(32), recovery_id).
+    compact_signature, recovery_id = CKey(private_key_bytes).sign_compact(msg_hash)
 
     # Electrum format: header(1) + R(32) + S(32)
     # Compressed P2PKH: header offset 31 + recovery_id
     header = 31 + recovery_id
-    electrum_sig = bytes([header]) + r + s
+    electrum_sig = bytes([header]) + compact_signature
 
     return base64.b64encode(electrum_sig).decode("ascii")
 
@@ -399,8 +391,8 @@ workflow:
     finally:
         # Zero the bytearray in-place before releasing the reference. This
         # actually overwrites the buffer (unlike rebinding a bytes name), but
-        # copies held by coincurve's C layer and intermediate derivation values
-        # are still beyond our control -- better than nothing, not bulletproof.
+        # copies held by native libsecp256k1 and intermediate derivation values
+        # are still beyond our control, better than nothing, not bulletproof.
         for i in range(len(privkey_bytes)):
             privkey_bytes[i] = 0
         del privkey_bytes

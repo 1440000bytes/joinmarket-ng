@@ -4,20 +4,22 @@ Test that validates our fidelity bond proofs are compatible with the reference i
 This test will run in the e2e environment where both implementations are available.
 """
 
-import struct
 import base64
-from coincurve import PrivateKey
-from jmcore.crypto import bitcoin_message_hash_bytes
+import struct
+
+from bitcointx.core.key import CKey
 import pytest
+
+from jmcore.crypto import bitcoin_message_hash_bytes
 
 
 pytestmark = pytest.mark.reference
 
 
-def _sign_message_bitcoin(private_key: PrivateKey, message: bytes) -> bytes:
+def _sign_message_bitcoin(private_key: CKey, message: bytes) -> bytes:
     """Sign a message using Bitcoin message signing format."""
     msg_hash = bitcoin_message_hash_bytes(message)
-    return private_key.sign(msg_hash, hasher=None)
+    return private_key.sign(msg_hash, _ecdsa_sig_grind_low_r=False)
 
 
 def _pad_signature(sig_der: bytes, target_len: int = 72) -> bytes:
@@ -28,7 +30,7 @@ def _pad_signature(sig_der: bytes, target_len: int = 72) -> bytes:
 
 
 def create_bond_proof_our_implementation(
-    privkey: PrivateKey,
+    privkey: CKey,
     pubkey: bytes,
     maker_nick: str,
     taker_nick: str,
@@ -97,8 +99,8 @@ def test_bond_proof_validates_with_reference_implementation():
         pytest.skip(f"Reference implementation not available: {e}")
 
     # Create test bond
-    privkey = PrivateKey()
-    pubkey = privkey.public_key.format(compressed=True)
+    privkey = CKey(b"\x01" * 32)
+    pubkey = bytes(privkey.pub)
 
     maker_nick = "J52TestMaker"
     taker_nick = "J5TestTaker"
@@ -132,9 +134,9 @@ def test_bond_proof_validates_with_reference_implementation():
 
 
 def create_bond_proof_with_certificate(
-    utxo_privkey: PrivateKey,
+    utxo_privkey: CKey,
     utxo_pubkey: bytes,
-    cert_privkey: PrivateKey,
+    cert_privkey: CKey,
     cert_pubkey: bytes,
     cert_signature: bytes,
     cert_expiry_encoded: int,
@@ -219,12 +221,12 @@ def test_bond_proof_with_ascii_certificate_validates_with_reference():
         pytest.skip(f"Reference implementation not available: {e}")
 
     # Create UTXO keypair (cold wallet - would be on hardware wallet)
-    utxo_privkey = PrivateKey()
-    utxo_pubkey = utxo_privkey.public_key.format(compressed=True)
+    utxo_privkey = CKey(b"\x01" * 32)
+    utxo_pubkey = bytes(utxo_privkey.pub)
 
     # Create certificate keypair (hot wallet)
-    cert_privkey = PrivateKey()
-    cert_pubkey = cert_privkey.public_key.format(compressed=True)
+    cert_privkey = CKey(b"\x02" * 32)
+    cert_pubkey = bytes(cert_privkey.pub)
 
     cert_expiry_encoded = 52  # ~2 years
 
@@ -301,8 +303,8 @@ def test_bond_proof_with_binary_certificate_validates_with_reference():
         pytest.skip(f"Reference implementation not available: {e}")
 
     # Create UTXO keypair (in hot wallet mode, this is the same as cert keypair)
-    utxo_privkey = PrivateKey()
-    utxo_pubkey = utxo_privkey.public_key.format(compressed=True)
+    utxo_privkey = CKey(b"\x01" * 32)
+    utxo_pubkey = bytes(utxo_privkey.pub)
 
     # In traditional self-signed mode, cert == utxo
     cert_privkey = utxo_privkey

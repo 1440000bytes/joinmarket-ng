@@ -4,17 +4,13 @@ version = "0.38.0"
 description = "JoinMarket wallet library with pluggable blockchain backends"
 requires-python = ">=3.11"
 dependencies = [
-    # coincurve <21.0.0 does not support Python 3.14
-    # coincurve 21.0.0 has a bug that prevents installation on 3.14
-    # See: https://github.com/ofek/coincurve/issues/219
-    # Pinned to commit hash until a fixed version is released
-    "coincurve @ https://github.com/ofek/coincurve/archive/7829b29c08ebb1cc80386a1cdaf8c2243c4ef5c5.zip#sha256=623b363c1e39977255d9222351e211a96dc5884aebb28e8a23d85bfef0dec37e",
+    # Maintained fork with Python 3.14 and libsecp256k1 v0.7 compatibility.
+    "python-bitcointx @ https://github.com/m0wer/python-bitcointx/releases/download/python-bitcointx-v2.1.0/python_bitcointx-2.1.0-py3-none-any.whl#sha256=6162a46e1eeb20230a23415e303cfdcbc266f9f0261687cdf37db68957e1b4f8",
     "cryptography>=46.0.0",
     "httpx>=0.25.0",
     "loguru>=0.7.0",
     "mnemonic>=0.21",
     "pydantic>=2.0.0",
-    "python-bitcointx>=1.1.5",
     "typer>=0.9.0",
 ]
 

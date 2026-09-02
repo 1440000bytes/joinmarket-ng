@@ -314,9 +314,6 @@ click==8.5.0 \
     --hash=sha256:255bc9599cf7748b4b1a446ccc735421bd08a2ae529a8b88597d3de5664ee360 \
     --hash=sha256:ba0d2089de75ea0310e2dde03160e6ca10009947fb95a182f9b54021bb272e34
     # via apprise
-coincurve @ https://github.com/ofek/coincurve/archive/7829b29c08ebb1cc80386a1cdaf8c2243c4ef5c5.zip#sha256=623b363c1e39977255d9222351e211a96dc5884aebb28e8a23d85bfef0dec37e \
-    --hash=sha256:623b363c1e39977255d9222351e211a96dc5884aebb28e8a23d85bfef0dec37e
-    # via jmcore (pyproject.toml)
 cryptography==50.0.1 \
     --hash=sha256:01f41478cf33fc605a6a089cd56d28b45c6c0b45a1928b61797f2621a04bac71 \
     --hash=sha256:05ba322c4da95b262a212c345af888ef2c37c88c0509756ea00a0e6d68850f23 \
@@ -576,8 +573,8 @@ pysocks==1.7.1 \
     --hash=sha256:2725bd0a9925919b9b51739eea5f9e2bae91e83288108a9ad338b2e3a4435ee5 \
     --hash=sha256:3f8804571ebe159c380ac6de37643bb4685970655d3bba243530d6558b799aa0
     # via jmcore (pyproject.toml)
-python-bitcointx==1.1.5 \
-    --hash=sha256:7d961afac69dde865140e65af47c4ecc7b73a0697ced27244345539d8e94c555
+python-bitcointx @ https://github.com/m0wer/python-bitcointx/releases/download/python-bitcointx-v2.1.0/python_bitcointx-2.1.0-py3-none-any.whl#sha256=6162a46e1eeb20230a23415e303cfdcbc266f9f0261687cdf37db68957e1b4f8 \
+    --hash=sha256:6162a46e1eeb20230a23415e303cfdcbc266f9f0261687cdf37db68957e1b4f8
     # via jmcore (pyproject.toml)
 python-dotenv==1.2.3 \
     --hash=sha256:904552145e8bfed22162c09dab1c2b9b54fefa7b23ba780f4f26ca0316b0f0d9 \

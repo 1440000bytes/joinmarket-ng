@@ -5,7 +5,7 @@ import struct
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from coincurve import PrivateKey
+from bitcointx.core.key import CKey
 
 from maker.fidelity import FidelityBondInfo, create_fidelity_bond_proof
 
@@ -24,8 +24,8 @@ def test_bond_proof_format_matches_reference():
     - 4 bytes: Locktime (little-endian)
     """
     # Create a test bond
-    privkey = PrivateKey()
-    pubkey = privkey.public_key.format(compressed=True)
+    privkey = CKey(b"\x01" * 32)
+    pubkey = bytes(privkey.pub)
 
     bond = FidelityBondInfo(
         txid="a" * 64,  # 32 bytes in hex
@@ -119,8 +119,8 @@ async def test_bond_sent_only_in_privmsg_response():
     maker = MakerBot(mock_wallet, mock_backend, mock_config)
 
     # Create a fidelity bond
-    privkey = PrivateKey()
-    pubkey = privkey.public_key.format(compressed=True)
+    privkey = CKey(b"\x01" * 32)
+    pubkey = bytes(privkey.pub)
     maker.fidelity_bond = FidelityBondInfo(
         txid="a" * 64,
         vout=0,

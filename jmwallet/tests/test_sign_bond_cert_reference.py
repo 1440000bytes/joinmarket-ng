@@ -9,7 +9,8 @@ reference JoinMarket implementation.  Tests verify:
 - End-to-end: signature can be verified by ``_verify_recoverable_signature``
 - CLI argument parsing and output format
 
-The script under test has no project imports and depends on coincurve and mnemonic.
+The script under test has no project imports and depends on python-bitcointx,
+native libsecp256k1, and mnemonic.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from coincurve import PrivateKey
+from bitcointx.core.key import CKey
 
 # Add scripts directory to path for importing the signing script
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "scripts"))
@@ -45,8 +46,8 @@ TEST_MNEMONIC = (
 )
 
 # Cert pubkey and expiry used in tests (arbitrary but valid)
-TEST_CERT_PRIVKEY = PrivateKey(b"\x01" * 32)
-TEST_CERT_PUBKEY_HEX = TEST_CERT_PRIVKEY.public_key.format(compressed=True).hex()
+TEST_CERT_PRIVKEY = CKey(b"\x01" * 32)
+TEST_CERT_PUBKEY_HEX = bytes(TEST_CERT_PRIVKEY.pub).hex()
 TEST_CERT_EXPIRY = 518
 
 
@@ -196,7 +197,7 @@ class TestKeyDerivation:
         """Private key must generate the returned public key."""
         path = _make_bond_path(73)
         priv, pub = _derive_key_from_mnemonic(TEST_MNEMONIC, path)
-        assert PrivateKey(priv).public_key.format(compressed=True) == pub
+        assert bytes(CKey(priv).pub) == pub
 
     def test_matches_sign_bond_mnemonic(self) -> None:
         """Our derivation must match sign_bond_mnemonic.py's derivation."""
@@ -234,6 +235,14 @@ class TestSignCertificate:
         sig2 = sign_certificate(priv, TEST_CERT_PUBKEY_HEX, TEST_CERT_EXPIRY)
         assert sig1 == sig2
 
+    def test_matches_existing_signature_vector(self) -> None:
+        """The compact signature keeps the existing Electrum encoding."""
+        priv, _ = _derive_key_from_mnemonic(TEST_MNEMONIC, _make_bond_path(73))
+        assert sign_certificate(priv, TEST_CERT_PUBKEY_HEX, TEST_CERT_EXPIRY) == (
+            "H4F6Ucz78xSLWBRFI8NBu1lSewkJC1MO5OzaIvwyTjlWEHhb+nlaSwj0jwwmVlbe"
+            "oUktqs6phRzxRPYoB6V9i10="
+        )
+
     def test_different_expiry_different_sig(self) -> None:
         """Different cert expiry must produce different signatures."""
         priv, _ = _derive_key_from_mnemonic(TEST_MNEMONIC, _make_bond_path(73))
@@ -244,7 +253,7 @@ class TestSignCertificate:
     def test_different_cert_pubkey_different_sig(self) -> None:
         """Different cert pubkey must produce different signatures."""
         priv, _ = _derive_key_from_mnemonic(TEST_MNEMONIC, _make_bond_path(73))
-        other_pubkey = PrivateKey(b"\x02" * 32).public_key.format(compressed=True).hex()
+        other_pubkey = bytes(CKey(b"\x02" * 32).pub).hex()
         sig1 = sign_certificate(priv, TEST_CERT_PUBKEY_HEX, TEST_CERT_EXPIRY)
         sig2 = sign_certificate(priv, other_pubkey, TEST_CERT_EXPIRY)
         assert sig1 != sig2
@@ -281,7 +290,7 @@ class TestVerifyWithImportCertificate:
         sig_bytes = base64.b64decode(sig_b64)
 
         # Use a different pubkey as "expected"
-        wrong_pubkey = PrivateKey(b"\x05" * 32).public_key.format(compressed=True)
+        wrong_pubkey = bytes(CKey(b"\x05" * 32).pub)
         assert not _verify_recoverable_signature(
             sig_bytes, TEST_CERT_PUBKEY_HEX, TEST_CERT_EXPIRY, wrong_pubkey
         )

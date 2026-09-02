@@ -8,6 +8,7 @@ from hashlib import sha256
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from bitcointx.core.key import CKey
 from jmcore.bitcoin import (
     TxOutput,
     get_txid,
@@ -423,11 +424,7 @@ def _make_mock_key(pubkey_hex: str = "02" + "ab" * 32) -> MagicMock:
     """Create a mock HDKey with a deterministic public key."""
     key = MagicMock()
     key.get_public_key_bytes.return_value = bytes.fromhex(pubkey_hex)
-    # Private key needs to be a real coincurve key for signing
-    # Use a deterministic 32-byte secret
-    from coincurve import PrivateKey
-
-    key.private_key = PrivateKey(b"\x01" * 32)
+    key.private_key = CKey.from_secret_bytes(b"\x01" * 32)
     return key
 
 

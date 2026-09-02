@@ -18,8 +18,8 @@ the ``m/84'/0'/0'/2`` internal branch.  Both are the same key -- the account
 xpub at ``m/84'/0'/0'``.
 
 This script is FULLY SELF-CONTAINED -- it does not import from jmcore or
-jmwallet.  The only external dependency is ``coincurve`` (for secp256k1 point
-operations).
+jmwallet. Its external dependency is ``python-bitcointx`` with native
+``libsecp256k1`` for secp256k1 point operations.
 
 USAGE:
   # From the fbonds-mpk line (same as account xpub):
@@ -37,7 +37,8 @@ USAGE:
   python scripts/derive_bond_pubkey.py --locktime 2026-02 --info
 
 REQUIREMENTS:
-  pip install coincurve
+  pip install "python-bitcointx @ https://github.com/m0wer/python-bitcointx/releases/download/python-bitcointx-v2.1.0/python_bitcointx-2.1.0-py3-none-any.whl#sha256=6162a46e1eeb20230a23415e303cfdcbc266f9f0261687cdf37db68957e1b4f8"
+  # Install native libsecp256k1 through your operating system package manager.
 
 OUTPUT:
   Prints the 33-byte compressed public key hex, ready to paste into:
@@ -51,6 +52,8 @@ import hashlib
 import hmac
 import struct
 import sys
+
+from bitcointx.core.key import CKey, CPubKey
 
 # ---------------------------------------------------------------------------
 # Timenumber calculation (matches reference implementation)
@@ -215,7 +218,7 @@ def parse_xpub(xpub_str: str) -> tuple[bytes, bytes, int, int]:
 def _point_add(pubkey1: bytes, pubkey2: bytes) -> bytes:
     """Add two compressed public key points on secp256k1.
 
-    Uses coincurve for the actual EC math.
+    Uses python-bitcointx and native libsecp256k1 for the actual EC math.
 
     Args:
         pubkey1: 33-byte compressed public key
@@ -224,11 +227,15 @@ def _point_add(pubkey1: bytes, pubkey2: bytes) -> bytes:
     Returns:
         33-byte compressed public key (sum)
     """
-    from coincurve import PublicKey
+    pk1 = CPubKey(pubkey1)
+    pk2 = CPubKey(pubkey2)
+    if not pk1.is_fullyvalid() or not pk2.is_fullyvalid():
+        raise ValueError("Cannot add invalid public keys")
 
-    pk1 = PublicKey(pubkey1)
-    result = pk1.combine([PublicKey(pubkey2)])
-    return result.format(compressed=True)
+    result = CPubKey.add(pk1, pk2)
+    if not result.is_fullyvalid():
+        raise ValueError("Public key addition produced an invalid result")
+    return bytes(result)
 
 
 def _scalar_to_pubkey(scalar: bytes) -> bytes:
@@ -240,9 +247,8 @@ def _scalar_to_pubkey(scalar: bytes) -> bytes:
     Returns:
         33-byte compressed public key
     """
-    from coincurve import PrivateKey
-
-    return PrivateKey(scalar).public_key.format(compressed=True)
+    key = CKey(scalar)
+    return bytes(key.pub)
 
 
 def derive_child_pubkey(

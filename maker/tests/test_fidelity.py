@@ -8,6 +8,7 @@ import struct
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from bitcointx.core.key import CKey
 from loguru import logger
 
 from maker.fidelity import (
@@ -176,7 +177,7 @@ class TestSignMessageBitcoin:
     def test_sign_low_s_value(self, test_private_key):
         """Verify BIP 62 low-S requirement.
 
-        coincurve always produces low-S signatures by default.
+        CKey produces low-S signatures.
         """
         message = b"test low-s"
         sig = _sign_message_bitcoin(test_private_key, message)
@@ -383,6 +384,35 @@ class TestCreateFidelityBondProof:
 
         # UTXO details (utxo_pub + txid + vout + locktime) start at offset 179
         assert decoded1[179:] == decoded2[179:]
+
+    def test_retries_invalid_random_certificate_scalar(self, test_private_key, test_pubkey):
+        bond = FidelityBondInfo(
+            txid="ab" * 32,
+            vout=0,
+            value=100_000_000,
+            locktime=800000,
+            confirmation_time=100,
+            bond_value=50_000,
+            pubkey=test_pubkey,
+            private_key=test_private_key,
+        )
+
+        with patch(
+            "maker.fidelity.os.urandom",
+            side_effect=[bytes(32), b"\x02" * 32],
+        ) as random_bytes:
+            proof = create_fidelity_bond_proof(
+                bond=bond,
+                maker_nick="maker123",
+                taker_nick="taker456",
+                current_block_height=930000,
+            )
+
+        assert proof is not None
+        assert random_bytes.call_count == 2
+        decoded = base64.b64decode(proof)
+        _, _, cert_pub, _, _, _, _, _ = struct.unpack("<72s72s33sH33s32sII", decoded)
+        assert cert_pub == bytes(CKey(b"\x02" * 32).pub)
 
     def test_proof_verifiable_by_jmcore(self, test_private_key, test_pubkey):
         """

@@ -2250,7 +2250,7 @@ class TestPhaseAuthMakerAuthentication:
         utxo_value: int = 1_500_000,
         utxo_list_override: str | None = None,
     ):
-        from coincurve import PrivateKey
+        from bitcointx.core.key import CKey
         from jmcore.bitcoin import pubkey_to_p2wpkh_script
         from jmcore.crypto import ecdsa_sign
         from jmwallet.backends.base import UTXO, UTXOVerificationResult
@@ -2271,12 +2271,12 @@ class TestPhaseAuthMakerAuthentication:
         taker_crypto, maker_crypto = make_crypto_pair()
         maker_nacl_pk_hex = maker_crypto.get_pubkey_hex()
 
-        auth_key = PrivateKey()
-        auth_pub = auth_key.public_key.format(compressed=True)
+        auth_key = CKey(b"\x01" * 32)
+        auth_pub = bytes(auth_key.pub)
         txid, vout, value = "b" * 64, 0, 1_500_000
 
         # The UTXO's real scriptPubKey is owned by auth_key, or by an unrelated key.
-        owner_pub = auth_pub if auth_owns_utxo else PrivateKey().public_key.format(compressed=True)
+        owner_pub = auth_pub if auth_owns_utxo else bytes(CKey(b"\x02" * 32).pub)
         stored_spk = pubkey_to_p2wpkh_script(owner_pub).hex()
         if spk_upper:
             # Neutrino peers supply the scriptPubKey hex verbatim; its case is
@@ -2284,8 +2284,8 @@ class TestPhaseAuthMakerAuthentication:
             stored_spk = stored_spk.upper()
 
         # btc_sig over the maker's NaCl pubkey, by auth_key (valid) or a wrong key.
-        signer = auth_key if valid_btc_sig else PrivateKey()
-        btc_sig = ecdsa_sign(maker_nacl_pk_hex, signer.secret)
+        signer = auth_key if valid_btc_sig else CKey(b"\x03" * 32)
+        btc_sig = ecdsa_sign(maker_nacl_pk_hex, signer.secret_bytes)
 
         is_neutrino_unavailable = backend_utxo == "unavailable"
         if utxo_list_override is not None:

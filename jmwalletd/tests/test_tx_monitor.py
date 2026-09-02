@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from coincurve import PrivateKey
+from bitcointx.core.key import CKey, CPubKey
 from loguru import logger as loguru_logger
 
 from jmcore.bitcoin import (
@@ -25,8 +25,10 @@ from jmwalletd.txinfo import build_txinfo_from_hex
 
 def _make_tx(seed: int, value: int = 100_000) -> tuple[str, str]:
     """Return (txid, raw_hex) of a minimal 1-in 1-out tx."""
-    priv = PrivateKey(seed.to_bytes(32, "big"))
-    script = pubkey_to_p2wpkh_script(priv.public_key.format(compressed=True))
+    priv = CKey(seed.to_bytes(32, "big"))
+    pubkey = CPubKey(bytes(priv.pub))
+    assert pubkey.is_fullyvalid()
+    script = pubkey_to_p2wpkh_script(bytes(pubkey))
     tin = TxInput.from_hex("11" * 32, 0)
     tout = TxOutput(value=value, script=script)
     raw = serialize_transaction(2, [tin], [tout], 0).hex()
@@ -353,8 +355,10 @@ class TestBuildTxinfoFromHex:
         assert info.outputs[0].address.startswith("bcrt1")
 
     def test_serializes_witness_stack_with_compact_sizes(self) -> None:
-        priv = PrivateKey((33).to_bytes(32, "big"))
-        script = pubkey_to_p2wpkh_script(priv.public_key.format(compressed=True))
+        priv = CKey((33).to_bytes(32, "big"))
+        pubkey = CPubKey(bytes(priv.pub))
+        assert pubkey.is_fullyvalid()
+        script = pubkey_to_p2wpkh_script(bytes(pubkey))
         raw = serialize_transaction(
             2,
             [TxInput.from_hex("22" * 32, 1)],

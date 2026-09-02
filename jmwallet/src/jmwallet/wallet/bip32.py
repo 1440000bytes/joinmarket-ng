@@ -7,8 +7,9 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+from typing import cast
 
-from coincurve import PrivateKey, PublicKey
+from bitcointx.core.key import CKey, CPubKey
 from jmcore.constants import SECP256K1_N
 from jmcore.crypto import base58check_encode as _base58check_encode
 from jmcore.crypto import mnemonic_to_seed
@@ -37,33 +38,33 @@ class HDKey:
 
     def __init__(
         self,
-        private_key: PrivateKey,
+        private_key: CKey,
         chain_code: bytes,
         depth: int = 0,
         parent_fingerprint: bytes = b"\x00\x00\x00\x00",
         child_number: int = 0,
     ):
         self._private_key = private_key
-        self._public_key = private_key.public_key
+        self._public_key = private_key.pub
         self.chain_code = chain_code
         self.depth = depth
         self.parent_fingerprint = parent_fingerprint
         self.child_number = child_number
 
     @property
-    def private_key(self) -> PrivateKey:
-        """Return the coincurve PrivateKey instance."""
+    def private_key(self) -> CKey:
+        """Return the private key."""
         return self._private_key
 
     @property
-    def public_key(self) -> PublicKey:
-        """Return the coincurve PublicKey instance."""
+    def public_key(self) -> CPubKey:
+        """Return the public key."""
         return self._public_key
 
     @property
     def fingerprint(self) -> bytes:
         """Get the fingerprint of this key (first 4 bytes of hash160 of public key)."""
-        pubkey_bytes = self._public_key.format(compressed=True)
+        pubkey_bytes = bytes(self._public_key)
         sha256_hash = hashlib.sha256(pubkey_bytes).digest()
         ripemd160_hash = hashlib.new("ripemd160", sha256_hash).digest()
         return ripemd160_hash[:4]
@@ -75,7 +76,7 @@ class HDKey:
         key_bytes = hmac_result[:32]
         chain_code = hmac_result[32:]
 
-        private_key = PrivateKey(key_bytes)
+        private_key = CKey.from_secret_bytes(key_bytes)
 
         return cls(private_key, chain_code, depth=0)
 
@@ -110,17 +111,17 @@ class HDKey:
         hardened = index >= 0x80000000
 
         if hardened:
-            priv_bytes = self._private_key.secret
+            priv_bytes = self._private_key.secret_bytes
             data = b"\x00" + priv_bytes + index.to_bytes(4, "big")
         else:
-            pub_bytes = self._public_key.format(compressed=True)
+            pub_bytes = bytes(self._public_key)
             data = pub_bytes + index.to_bytes(4, "big")
 
         hmac_result = hmac.new(self.chain_code, data, hashlib.sha512).digest()
         key_offset = hmac_result[:32]
         child_chain = hmac_result[32:]
 
-        parent_key_int = int.from_bytes(self._private_key.secret, "big")
+        parent_key_int = int.from_bytes(self._private_key.secret_bytes, "big")
         offset_int = int.from_bytes(key_offset, "big")
 
         if offset_int >= SECP256K1_N:
@@ -132,7 +133,7 @@ class HDKey:
             raise ValueError("Invalid child key")
 
         child_key_bytes = child_key_int.to_bytes(32, "big")
-        child_private_key = PrivateKey(child_key_bytes)
+        child_private_key = CKey.from_secret_bytes(child_key_bytes)
 
         return HDKey(
             child_private_key,
@@ -144,11 +145,13 @@ class HDKey:
 
     def get_private_key_bytes(self) -> bytes:
         """Get private key as 32 bytes"""
-        return self._private_key.secret
+        return cast(bytes, self._private_key.secret_bytes)
 
     def get_public_key_bytes(self, compressed: bool = True) -> bytes:
         """Get public key bytes"""
-        return self._public_key.format(compressed=compressed)
+        if compressed:
+            return bytes(self._public_key)
+        return bytes(CKey.from_secret_bytes(self._private_key.secret_bytes, compressed=False).pub)
 
     def get_address(self, network: str = "mainnet") -> str:
         """Get P2WPKH (Native SegWit) address for this key"""
@@ -159,7 +162,10 @@ class HDKey:
 
     def sign(self, message: bytes) -> bytes:
         """Sign a message with this key (uses SHA256 hashing)."""
-        return self._private_key.sign(message)
+        return cast(
+            bytes,
+            self._private_key.sign(hashlib.sha256(message).digest(), _ecdsa_sig_grind_low_r=False),
+        )
 
     def get_xpub(self, network: str = "mainnet") -> str:
         """
@@ -192,7 +198,7 @@ class HDKey:
         # 33 bytes: public key (compressed)
         depth_byte = self.depth.to_bytes(1, "big")
         child_num_bytes = self.child_number.to_bytes(4, "big")
-        pubkey_bytes = self._public_key.format(compressed=True)
+        pubkey_bytes = bytes(self._public_key)
 
         payload = (
             version
@@ -229,7 +235,7 @@ class HDKey:
         # Same serialization format as xpub but with BIP84 version bytes
         depth_byte = self.depth.to_bytes(1, "big")
         child_num_bytes = self.child_number.to_bytes(4, "big")
-        pubkey_bytes = self._public_key.format(compressed=True)
+        pubkey_bytes = bytes(self._public_key)
 
         payload = (
             version
@@ -263,7 +269,7 @@ class HDKey:
         depth_byte = self.depth.to_bytes(1, "big")
         child_num_bytes = self.child_number.to_bytes(4, "big")
         # Private key is prefixed with 0x00 to make it 33 bytes
-        privkey_bytes = b"\x00" + self._private_key.secret
+        privkey_bytes = b"\x00" + self._private_key.secret_bytes
 
         payload = (
             version

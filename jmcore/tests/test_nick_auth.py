@@ -5,9 +5,10 @@ import hashlib
 import json
 
 import pytest
-from coincurve import verify_signature as coincurve_verify
+from bitcointx.core.key import CPubKey
 from pydantic import ValidationError
 
+from jmcore.constants import SECP256K1_N
 from jmcore.crypto import NickIdentity, bitcoin_message_hash_bytes
 from jmcore.nick_auth import (
     NickAuthChallenge,
@@ -29,6 +30,26 @@ CHALLENGE = "22" * 32
 DIRECTORY_HOST = "nakamotourflxwjnjpnrk7yc2nhkf6r62ed4gdfxmmn5f4saw5q5qoyd.onion"
 DIRECTORY_ID = f"{DIRECTORY_HOST}:5222"
 HANDSHAKE_LINE = '{"nick":"J5example","features":{"nick_auth":true}}'
+
+
+def _encode_der_integer(value: int) -> bytes:
+    encoded = value.to_bytes((value.bit_length() + 7) // 8, "big")
+    if encoded[0] & 0x80:
+        encoded = b"\x00" + encoded
+    return b"\x02" + bytes([len(encoded)]) + encoded
+
+
+def _with_high_s(signature: bytes) -> bytes:
+    r_length = signature[3]
+    r_start = 4
+    s_length = signature[r_start + r_length + 1]
+    s_start = r_start + r_length + 2
+    r_value = int.from_bytes(signature[r_start : r_start + r_length], "big")
+    s_value = int.from_bytes(signature[s_start : s_start + s_length], "big")
+    high_s = SECP256K1_N - s_value
+    assert high_s > SECP256K1_N // 2
+    encoded = _encode_der_integer(r_value) + _encode_der_integer(high_s)
+    return b"\x30" + bytes([len(encoded)]) + encoded
 
 
 @pytest.fixture
@@ -233,12 +254,9 @@ def test_proof_does_not_verify_in_message_signature_domain(
     ).encode("ascii")
     message_hash = bitcoin_message_hash_bytes(transcript + b"onion-network")
 
-    assert not coincurve_verify(
-        base64.b64decode(proof.signature),
-        message_hash,
-        bytes.fromhex(proof.pubkey),
-        hasher=None,
-    )
+    pubkey = CPubKey(bytes.fromhex(proof.pubkey))
+    assert pubkey.is_fullyvalid()
+    assert not pubkey.verify(message_hash, base64.b64decode(proof.signature))
 
 
 def test_signature_is_deterministic(identity: NickIdentity):
@@ -282,6 +300,26 @@ def test_verification_rejects_tampered_signature(proof: NickAuthProof, identity:
     )
     assert not verify_nick_auth_proof(
         tampered,
+        CHALLENGE,
+        DIRECTORY_ID,
+        HANDSHAKE_LINE,
+        identity.nick,
+        JM_VERSION,
+    )
+
+
+def test_verification_rejects_high_s_signature(proof: NickAuthProof, identity: NickIdentity):
+    high_s_proof = NickAuthProof.from_payload(
+        {
+            **proof.to_payload(),
+            "signature": base64.b64encode(_with_high_s(base64.b64decode(proof.signature))).decode(
+                "ascii"
+            ),
+        }
+    )
+
+    assert not verify_nick_auth_proof(
+        high_s_proof,
         CHALLENGE,
         DIRECTORY_ID,
         HANDSHAKE_LINE,

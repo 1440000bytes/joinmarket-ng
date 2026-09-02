@@ -29,7 +29,7 @@ import hmac
 from collections.abc import Iterator
 from typing import Any
 
-from coincurve import PrivateKey, PublicKey
+from bitcointx.core.key import CKey, CPubKey
 from loguru import logger
 from pydantic import ValidationError
 from pydantic.dataclasses import dataclass
@@ -105,7 +105,7 @@ def _has_valid_revelation_field_lengths(revelation: dict[str, Any]) -> bool:
 
 
 # Cache for generated NUMS points to avoid recomputation
-_nums_cache: dict[int, PublicKey] = {}
+_nums_cache: dict[int, CPubKey] = {}
 
 
 @dataclass
@@ -142,11 +142,11 @@ class PoDLECommitment:
 
 
 # ==============================================================================
-# EC Point Operations using coincurve
+# EC point operations using libsecp256k1
 # ==============================================================================
 
 
-def generate_nums_point(index: int) -> PublicKey:
+def generate_nums_point(index: int) -> CPubKey:
     """
     Generate a Nothing-Up-My-Sleeve (NUMS) point deterministically.
 
@@ -164,7 +164,7 @@ def generate_nums_point(index: int) -> PublicKey:
         index: Index of the NUMS point to generate (0-255)
 
     Returns:
-        The NUMS point as a PublicKey
+        The NUMS point as a CPubKey
 
     Raises:
         PoDLEError: If index is out of range or no valid point found (should never happen)
@@ -181,9 +181,9 @@ def generate_nums_point(index: int) -> PublicKey:
             # Try to create a valid point with 02 prefix (even y-coordinate)
             claimed_point = b"\x02" + hashed_seed
             try:
-                nums_point = PublicKey(claimed_point)
-                # coincurve validates the point on construction
-                return nums_point
+                nums_point = CPubKey(claimed_point)
+                if nums_point.is_fullyvalid():
+                    return nums_point
             except Exception:
                 continue
 
@@ -191,7 +191,7 @@ def generate_nums_point(index: int) -> PublicKey:
     raise PoDLEError(f"Failed to generate NUMS point for index {index}")  # pragma: no cover
 
 
-def get_nums_point(index: int) -> PublicKey:
+def get_nums_point(index: int) -> CPubKey:
     """
     Get Nothing-Up-My-Sleeve (NUMS) generator point J for given index.
 
@@ -202,7 +202,7 @@ def get_nums_point(index: int) -> PublicKey:
         index: Index of the NUMS point (0-255)
 
     Returns:
-        The NUMS point as a PublicKey
+        The NUMS point as a CPubKey
     """
     if index in _nums_cache:
         return _nums_cache[index]
@@ -212,17 +212,17 @@ def get_nums_point(index: int) -> PublicKey:
     return nums_point
 
 
-def scalar_mult_g(scalar: int) -> PublicKey:
+def scalar_mult_g(scalar: int) -> CPubKey:
     """Multiply generator G by scalar (creates public key from private key)."""
     scalar = scalar % SECP256K1_N
     if scalar == 0:
         raise PoDLEError("Scalar cannot be zero")
     scalar_bytes = scalar.to_bytes(32, "big")
-    return PublicKey.from_secret(scalar_bytes)
+    return CKey(scalar_bytes).pub
 
 
-def point_mult(scalar: int, point: PublicKey) -> PublicKey:
-    """Multiply EC point by scalar using coincurve."""
+def point_mult(scalar: int, point: CPubKey) -> CPubKey:
+    """Multiply an EC point by a scalar using libsecp256k1."""
     scalar = scalar % SECP256K1_N
     if scalar == 0:
         raise PoDLEError("Scalar cannot be zero")
@@ -230,14 +230,14 @@ def point_mult(scalar: int, point: PublicKey) -> PublicKey:
     return point.multiply(scalar_bytes)
 
 
-def point_add(p1: PublicKey, p2: PublicKey) -> PublicKey:
-    """Add two EC points using coincurve."""
-    return p1.combine([p2])
+def point_add(p1: CPubKey, p2: CPubKey) -> CPubKey:
+    """Add two EC points using libsecp256k1."""
+    return CPubKey.combine(p1, p2, compressed=p1.is_compressed())
 
 
-def point_to_bytes(point: PublicKey) -> bytes:
+def point_to_bytes(point: CPubKey) -> bytes:
     """Convert EC point to compressed bytes."""
-    return point.format(compressed=True)
+    return bytes(point)
 
 
 # ==============================================================================
@@ -293,7 +293,7 @@ def _podle_nonce_candidates(
 
 
 def _compute_podle_response(
-    private_key: PrivateKey,
+    private_key: CKey,
     nonce: int,
     challenge: bytes,
 ) -> bytes | None:
@@ -309,10 +309,9 @@ def _compute_podle_response(
     if challenge_scalar == 0:
         return None
     try:
-        response = PrivateKey(private_key.secret)
-        response.multiply(challenge_scalar.to_bytes(32, "big"), update=True)
-        response.add(nonce.to_bytes(32, "big"), update=True)
-        return response.secret
+        multiplied_key = private_key.multiply(challenge_scalar.to_bytes(32, "big"))
+        nonce_key = CKey(nonce.to_bytes(32, "big"))
+        return CKey.add(multiplied_key, nonce_key).secret_bytes
     except ValueError:
         # secp256k1 rejects the zero response, matching the protocol retry rule.
         return None
@@ -345,12 +344,12 @@ def generate_podle(
         raise PoDLEError(f"Invalid NUMS index: {index} (must be 0-255)")
 
     try:
-        private_key = PrivateKey(private_key_bytes)
+        private_key = CKey(private_key_bytes)
     except ValueError as exc:
         raise PoDLEError("Invalid private key value") from exc
 
     # Calculate P = k*G (standard public key)
-    p_point = private_key.public_key
+    p_point = private_key.pub
     p_bytes = point_to_bytes(p_point)
 
     # Get NUMS point J
@@ -534,8 +533,10 @@ def verify_podle(
         if commitment != expected_commitment:
             return False, "Commitment does not match H(P2)"
 
-        p_point = PublicKey(p)
-        p2_point = PublicKey(p2)
+        p_point = CPubKey(p)
+        p2_point = CPubKey(p2)
+        if not p_point.is_fullyvalid() or not p2_point.is_fullyvalid():
+            return False, "Invalid public key"
 
         s_int = int.from_bytes(sig, "big")
         e_int = int.from_bytes(e, "big")

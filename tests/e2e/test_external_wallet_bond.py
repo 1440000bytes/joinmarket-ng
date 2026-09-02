@@ -18,8 +18,8 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+from bitcointx.core.key import CKey
 import pytest
-from coincurve import PrivateKey
 from jmcore.btc_script import mk_freeze_script
 from jmcore.crypto import bitcoin_message_hash_bytes
 from jmcore.timenumber import get_nearest_valid_locktime
@@ -36,7 +36,7 @@ from jmwallet.wallet.bond_registry import (
 def create_external_wallet_bond(
     tmp_data_dir: Path,
     network: str = "regtest",
-) -> tuple[str, PrivateKey, bytes, PrivateKey, bytes, int, bytes]:
+) -> tuple[str, CKey, bytes, CKey, bytes, int, bytes]:
     """
     Simulate creating a fidelity bond from an external wallet (hardware wallet).
 
@@ -58,8 +58,8 @@ def create_external_wallet_bond(
         - cert_signature: The certificate signature
     """
     # 1. Generate "cold wallet" keypair (simulating hardware wallet)
-    cold_privkey = PrivateKey()
-    cold_pubkey = cold_privkey.public_key.format(compressed=True)
+    cold_privkey = CKey(b"\x01" * 32)
+    cold_pubkey = bytes(cold_privkey.pub)
     logger.info(f"Cold wallet pubkey: {cold_pubkey.hex()}")
 
     # 2. Create bond address with a locktime 1 year in the future
@@ -72,8 +72,8 @@ def create_external_wallet_bond(
     logger.info(f"Locktime: {locktime}")
 
     # 3. Generate "hot wallet" certificate keypair
-    hot_privkey = PrivateKey()
-    hot_pubkey = hot_privkey.public_key.format(compressed=True)
+    hot_privkey = CKey(b"\x02" * 32)
+    hot_pubkey = bytes(hot_privkey.pub)
     logger.info(f"Hot wallet pubkey: {hot_pubkey.hex()}")
 
     # 4. Sign the certificate with the cold wallet key
@@ -82,7 +82,7 @@ def create_external_wallet_bond(
         b"fidelity-bond-cert|" + hot_pubkey + b"|" + str(cert_expiry).encode("ascii")
     )
     msg_hash = bitcoin_message_hash_bytes(cert_msg)
-    cert_signature = cold_privkey.sign(msg_hash, hasher=None)
+    cert_signature = cold_privkey.sign(msg_hash, _ecdsa_sig_grind_low_r=False)
     logger.info(f"Certificate signature: {cert_signature.hex()[:40]}...")
 
     # 5. Save to bond registry
@@ -100,7 +100,7 @@ def create_external_wallet_bond(
         created_at=datetime.now().isoformat(),
         # Certificate fields
         cert_pubkey=hot_pubkey.hex(),
-        cert_privkey=hot_privkey.secret.hex(),
+        cert_privkey=hot_privkey.secret_bytes.hex(),
         cert_signature=cert_signature.hex(),
         cert_expiry=cert_expiry,
     )
@@ -306,8 +306,8 @@ async def test_external_wallet_vs_hot_wallet_proof(tmp_path: Path):
     locktime = int(time.time()) + 365 * 24 * 60 * 60
 
     # Create a hot wallet bond (uses ephemeral random cert keypair)
-    self_signed_privkey = PrivateKey()
-    self_signed_pubkey = self_signed_privkey.public_key.format(compressed=True)
+    self_signed_privkey = CKey(b"\x03" * 32)
+    self_signed_pubkey = bytes(self_signed_privkey.pub)
 
     self_signed_bond = MakerBondInfo(
         txid="c" * 64,

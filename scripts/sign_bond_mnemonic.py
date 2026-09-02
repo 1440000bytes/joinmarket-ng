@@ -3,7 +3,8 @@
 
 This script does not import from jmcore or jmwallet, so it works even when
 pydantic or other project dependencies have version conflicts. Its external
-dependencies are ``coincurve`` and ``mnemonic``.
+dependencies are ``python-bitcointx`` with native ``libsecp256k1`` and
+``mnemonic``.
 
 This script is for users who have their bond wallet seed phrase (e.g., from
 Sparrow) but do NOT have a hardware wallet. It derives the private key from
@@ -25,7 +26,8 @@ derivation path. An explicit --derivation-path also works without BIP32 PSBT
 metadata.
 
 REQUIREMENTS:
-  pip install coincurve mnemonic
+  pip install "python-bitcointx @ https://github.com/m0wer/python-bitcointx/releases/download/python-bitcointx-v2.1.0/python_bitcointx-2.1.0-py3-none-any.whl#sha256=6162a46e1eeb20230a23415e303cfdcbc266f9f0261687cdf37db68957e1b4f8" mnemonic
+  # Install native libsecp256k1 through your operating system package manager.
 
 """
 
@@ -41,6 +43,7 @@ import struct
 import sys
 from pathlib import Path
 
+from bitcointx.core.key import CKey
 from mnemonic import Mnemonic
 
 # secp256k1 curve order -- used for BIP32 child key derivation
@@ -650,7 +653,8 @@ def derive_key_from_mnemonic(
     """Derive a private key and public key from a BIP39 mnemonic and path.
 
     Uses standalone BIP39 validation and BIP32 key derivation without project
-    imports. Depends on ``coincurve`` and ``mnemonic``.
+    imports. Depends on ``python-bitcointx`` with native ``libsecp256k1`` and
+    ``mnemonic``.
 
     Args:
         mnemonic: BIP39 mnemonic phrase (12 or 24 words).
@@ -660,8 +664,6 @@ def derive_key_from_mnemonic(
     Returns:
         Tuple of (private_key_bytes, compressed_public_key_bytes).
     """
-    from coincurve import PrivateKey
-
     normalized_mnemonic = " ".join(mnemonic.strip().split())
     bip39 = Mnemonic("english")
     if not bip39.check(normalized_mnemonic):
@@ -693,7 +695,7 @@ def derive_key_from_mnemonic(
             data = b"\x00" + key_bytes + struct.pack(">I", index)
         else:
             # Normal: HMAC-SHA512(chain_code, compressed_pubkey + index)
-            pubkey = PrivateKey(key_bytes).public_key.format(compressed=True)
+            pubkey = bytes(CKey(key_bytes).pub)
             data = pubkey + struct.pack(">I", index)
 
         child_hmac = hmac.new(chain_code, data, hashlib.sha512).digest()
@@ -710,9 +712,8 @@ def derive_key_from_mnemonic(
         key_bytes = child_key_int.to_bytes(32, "big")
         chain_code = child_hmac[32:]
 
-    privkey = PrivateKey(key_bytes)
-    pubkey = privkey.public_key.format(compressed=True)
-    return key_bytes, pubkey
+    key = CKey(key_bytes)
+    return key.secret_bytes, bytes(key.pub)
 
 
 # ---------------------------------------------------------------------------
@@ -737,8 +738,6 @@ def sign_bond_transaction(
     Returns:
         Hex string of the fully signed transaction, ready to broadcast.
     """
-    from coincurve import PrivateKey
-
     # Parse the unsigned transaction
     tx = _parse_tx(unsigned_tx_bytes)
     if len(tx.inputs) != 1:
@@ -755,8 +754,8 @@ def sign_bond_transaction(
     )
 
     # Sign with the private key (DER-encoded + sighash byte)
-    privkey = PrivateKey(private_key_bytes)
-    signature = privkey.sign(sighash, hasher=None) + bytes([sighash_type])
+    key = CKey(private_key_bytes)
+    signature = key.sign(sighash, _ecdsa_sig_grind_low_r=False) + bytes([sighash_type])
 
     # Witness stack for P2WSH: [signature, witness_script]
     witness_stack = [signature, witness_script]

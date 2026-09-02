@@ -3,6 +3,7 @@ Tests for transaction signing utilities.
 """
 
 import pytest
+from jmcore.constants import SECP256K1_N
 
 from jmwallet.wallet.bip32 import HDKey, mnemonic_to_seed
 from jmwallet.wallet.signing import (
@@ -21,7 +22,28 @@ from jmwallet.wallet.signing import (
     sign_p2wpkh_input,
     sign_p2wsh_input,
     verify_p2wpkh_signature,
+    verify_p2wsh_signature,
 )
+
+
+def _encode_der_integer(value: int) -> bytes:
+    encoded = value.to_bytes((value.bit_length() + 7) // 8, "big")
+    if encoded[0] & 0x80:
+        encoded = b"\x00" + encoded
+    return b"\x02" + bytes([len(encoded)]) + encoded
+
+
+def _with_high_s(signature: bytes) -> bytes:
+    r_length = signature[3]
+    r_start = 4
+    s_length = signature[r_start + r_length + 1]
+    s_start = r_start + r_length + 2
+    r_value = int.from_bytes(signature[r_start : r_start + r_length], "big")
+    s_value = int.from_bytes(signature[s_start : s_start + s_length], "big")
+    high_s = SECP256K1_N - s_value
+    assert high_s > SECP256K1_N // 2
+    encoded = _encode_der_integer(r_value) + _encode_der_integer(high_s)
+    return b"\x30" + bytes([len(encoded)]) + encoded
 
 
 class TestHash256:
@@ -220,7 +242,7 @@ class TestSigning:
         pubkey = test_key.get_public_key_bytes(compressed=True)
         script_code = create_p2wpkh_script_code(pubkey)
 
-        # Pass the coincurve PrivateKey directly
+        # Pass the signing key directly.
         signature = sign_p2wpkh_input(
             tx=tx,
             input_index=0,
@@ -350,8 +372,7 @@ class TestSignatureVerification:
     """Integration tests to verify signatures are valid."""
 
     def test_signature_deterministic(self, test_mnemonic):
-        """Signing same transaction twice should produce same signature
-        (coincurve uses RFC 6979 deterministic k)."""
+        """Signing the same transaction twice should produce the same signature."""
         seed = mnemonic_to_seed(test_mnemonic)
         master = HDKey.from_seed(seed)
         key = master.derive("m/84'/0'/0'/0/0")
@@ -378,7 +399,6 @@ class TestSignatureVerification:
         sig1 = sign_p2wpkh_input(tx, 0, script_code, 100000, key.private_key)
         sig2 = sign_p2wpkh_input(tx, 0, script_code, 100000, key.private_key)
 
-        # coincurve uses RFC 6979 deterministic k, so signatures should be identical
         assert sig1 == sig2
         assert len(sig1) > 64
 
@@ -413,6 +433,10 @@ class TestSignatureVerification:
 
         # Verify
         assert verify_p2wpkh_signature(tx, 0, script_code, value, signature, pubkey)
+
+        high_s_signature = _with_high_s(signature[:-1]) + signature[-1:]
+        assert not verify_p2wpkh_signature(tx, 0, script_code, value, high_s_signature, pubkey)
+        assert not verify_p2wpkh_signature(tx, 0, script_code, value, b"\xff" + signature, pubkey)
 
         # Verify fails with wrong value
         assert not verify_p2wpkh_signature(tx, 0, script_code, value - 1, signature, pubkey)
@@ -479,6 +503,11 @@ class TestP2WSHSigning:
         assert len(signature) > 64  # DER is variable length
         assert signature[-1] == 1  # SIGHASH_ALL
 
+        pubkey = test_key.get_public_key_bytes(compressed=True)
+        assert verify_p2wsh_signature(tx, 0, freeze_script, 100000, signature, pubkey)
+        high_s_signature = _with_high_s(signature[:-1]) + signature[-1:]
+        assert not verify_p2wsh_signature(tx, 0, freeze_script, 100000, high_s_signature, pubkey)
+
     def test_create_p2wsh_witness_stack(self, freeze_script):
         """Test creating P2WSH witness stack."""
         sig = bytes.fromhex("3044" + "00" * 68)  # Mock DER signature
@@ -510,7 +539,6 @@ class TestP2WSHSigning:
         sig1 = sign_p2wsh_input(tx, 0, freeze_script, 100000, test_key.private_key)
         sig2 = sign_p2wsh_input(tx, 0, freeze_script, 100000, test_key.private_key)
 
-        # coincurve uses RFC 6979 deterministic k, so signatures should be identical
         assert sig1 == sig2
         assert len(sig1) > 64
 
