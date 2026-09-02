@@ -212,7 +212,14 @@ async def _select_input_utxos(
 @app.command(no_args_is_help=True)
 def send(
     destination: Annotated[str, typer.Argument(help="Destination address")],
-    amount: Annotated[int, typer.Option("--amount", "-a", help="Amount in sats (0 for sweep)")] = 0,
+    amount: Annotated[
+        int,
+        typer.Option(
+            "--amount",
+            "-a",
+            help="Amount in sats (0 for sweep; with --select-utxos, defaults to sweep)",
+        ),
+    ] = 0,
     mnemonic_file: Annotated[
         Path | None, typer.Option("--mnemonic-file", "-f", envvar="MNEMONIC_FILE")
     ] = None,
@@ -225,8 +232,8 @@ def send(
             "--mixdepth",
             "-m",
             help="Source mixdepth. Fixed-amount automatic sends use the highest funded "
-            "mixdepth unless set explicitly; sweeps require this option. With "
-            "--select-utxos, it is derived from the selection unless set explicitly.",
+            "mixdepth unless set explicitly; automatic sweeps require this option. "
+            "With --select-utxos, it is derived from the selection unless set explicitly.",
         ),
     ] = None,
     fee_rate: Annotated[
@@ -332,7 +339,7 @@ def send(
         logger.error("--allow-conflicts requires at least one --input-utxo")
         raise typer.Exit(1)
 
-    if amount == 0 and mixdepth is None:
+    if amount == 0 and mixdepth is None and not select_utxos:
         logger.error("--mixdepth is required when sweeping (--amount 0)")
         raise typer.Exit(1)
 

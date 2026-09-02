@@ -1166,7 +1166,9 @@ For full documentation, see [jmwallet Documentation](https://joinmarket-ng.githu
 │                                                       spent by a mempool     │
 │                                                       transaction            │
 │ --amount               -a                    INTEGER  Amount in sats (0 for  │
-│                                                       sweep)                 │
+│                                                       sweep; with            │
+│                                                       --select-utxos,        │
+│                                                       defaults to sweep)     │
 │                                                       [default: 0]           │
 │ --backend              -b                    TEXT     Backend:               │
 │                                                       descriptor_wallet |    │
@@ -1216,7 +1218,8 @@ For full documentation, see [jmwallet Documentation](https://joinmarket-ng.githu
 │                                                       Fixed-amount automatic │
 │                                                       sends use the highest  │
 │                                                       funded mixdepth unless │
-│                                                       set explicitly; sweeps │
+│                                                       set explicitly;        │
+│                                                       automatic sweeps       │
 │                                                       require this option.   │
 │                                                       With --select-utxos,   │
 │                                                       it is derived from the │

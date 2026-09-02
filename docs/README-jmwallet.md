@@ -36,6 +36,9 @@ jm-wallet send <destination_address> --amount 100000
 
 # Sweeps require an explicit source mixdepth
 jm-wallet send <destination_address> --amount 0 --mixdepth 2
+
+# Interactively select and sweep inputs without specifying a mixdepth
+jm-wallet send <destination_address> --select-utxos
 ```
 
 Direct sends signal replace-by-fee by default and use a current-height
@@ -56,7 +59,8 @@ shows every UTXO in the wallet grouped by mixdepth (same layout as
 transaction spends from a single mixdepth, so the first UTXO you toggle pins
 the source mixdepth (deselect everything to unpin); pass `--mixdepth` to pin
 it up front. Frozen, still-locked, and other-mixdepth UTXOs are shown for
-context but rendered unselectable.
+context but rendered unselectable. When `--amount` is omitted, all selected
+inputs are swept to the destination.
 
 ## Signing PSBTs
 
@@ -1316,7 +1320,9 @@ The full CLI reference below is auto-generated from command `--help` output.
 │                                                       spent by a mempool     │
 │                                                       transaction            │
 │ --amount               -a                    INTEGER  Amount in sats (0 for  │
-│                                                       sweep)                 │
+│                                                       sweep; with            │
+│                                                       --select-utxos,        │
+│                                                       defaults to sweep)     │
 │                                                       [default: 0]           │
 │ --backend              -b                    TEXT     Backend:               │
 │                                                       descriptor_wallet |    │
@@ -1366,7 +1372,8 @@ The full CLI reference below is auto-generated from command `--help` output.
 │                                                       Fixed-amount automatic │
 │                                                       sends use the highest  │
 │                                                       funded mixdepth unless │
-│                                                       set explicitly; sweeps │
+│                                                       set explicitly;        │
+│                                                       automatic sweeps       │
 │                                                       require this option.   │
 │                                                       With --select-utxos,   │
 │                                                       it is derived from the │

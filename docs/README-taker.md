@@ -54,7 +54,7 @@ jm-taker coinjoin --mnemonic-file ~/.joinmarket-ng/wallets/default.mnemonic \
 
 # Pick the inputs by hand (interactive TUI)
 jm-taker coinjoin --mnemonic-file ~/.joinmarket-ng/wallets/default.mnemonic \
-  --amount 500000 --select-utxos
+  --select-utxos
 
 # Spend an exact input set (repeat --input-utxo as needed)
 jm-taker coinjoin --mnemonic-file ~/.joinmarket-ng/wallets/default.mnemonic \
@@ -68,7 +68,8 @@ With `--select-utxos` the selector shows every UTXO in the wallet grouped by
 mixdepth. A CoinJoin spends from a single mixdepth, so the first UTXO you
 toggle pins the source mixdepth (deselect everything to unpin); pass
 `--mixdepth` to pin it up front. The `INTERNAL` destination then targets the
-mixdepth after the derived one.
+mixdepth after the derived one. When `--amount` is omitted, all selected inputs
+are swept into the CoinJoin.
 
 With `--input-utxo`, every listed outpoint must be an eligible input in the
 requested mixdepth (mixdepth 0 by default). Fixed-amount CoinJoins and sweeps
@@ -207,76 +208,79 @@ Takers only require Tor SOCKS; no Tor control port is needed.
  priority.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ *  --amount         -a                     INTEGER          Amount in sats   │
-│                                                             (0 for sweep)    │
-│                                                             [required]       │
-│    --backend        -b                     TEXT             Backend type:    │
+│ --amount           -a                     INTEGER           Amount in sats   │
+│                                                             (0 for sweep;    │
+│                                                             with             │
+│                                                             --select-utxos,  │
+│                                                             defaults to      │
+│                                                             sweep)           │
+│ --backend          -b                     TEXT              Backend type:    │
 │                                                             descriptor_wall… │
 │                                                             | neutrino       │
-│    --bitcoin-netw…                         [mainnet|testne  Bitcoin network  │
-│                                            t|signet|regtes  for addresses    │
-│                                            t]               (defaults to     │
+│ --bitcoin-network                         [mainnet|testnet  Bitcoin network  │
+│                                           |signet|regtest]  for addresses    │
+│                                                             (defaults to     │
 │                                                             --network)       │
-│    --block-target                          INTEGER          Target blocks    │
+│ --block-target                            INTEGER           Target blocks    │
 │                                                             for fee          │
 │                                                             estimation       │
 │                                                             (1-1008). Cannot │
 │                                                             be used with     │
 │                                                             neutrino.        │
-│    --bond-exponent                         FLOAT            Exponent for     │
+│ --bond-exponent                           FLOAT             Exponent for     │
 │                                                             fidelity bond    │
 │                                                             value            │
 │                                                             calculation      │
 │                                                             [env var:        │
 │                                                             BOND_VALUE_EXPO… │
-│    --bondless-all…                         FLOAT            Fraction of      │
+│ --bondless-allow…                         FLOAT             Fraction of      │
 │                                                             allowance slots  │
 │                                                             chosen uniformly │
 │                                                             from zero-fee    │
 │                                                             offers (0.0-1.0) │
 │                                                             [env var:        │
 │                                                             BONDLESS_MAKERS… │
-│    --bondless-zer…      --no-bondless-…                     Restrict         │
+│ --bondless-zero-…      --no-bondless-…                      Restrict         │
 │                                                             allowance spots  │
 │                                                             to zero-fee      │
 │                                                             offers           │
 │                                                             [env var:        │
 │                                                             BONDLESS_REQUIR… │
-│    --config-file                           PATH             Config file path │
+│ --config-file                             PATH              Config file path │
 │                                                             (decoupled from  │
 │                                                             data dir).       │
 │                                                             Defaults to      │
 │                                                             <data-dir>/conf… │
 │                                                             [env var:        │
 │                                                             JOINMARKET_CONF… │
-│    --counterparti…  -n                     INTEGER          Number of makers │
-│    --data-dir                              PATH             Data directory   │
+│ --counterparties   -n                     INTEGER           Number of makers │
+│ --data-dir                                PATH              Data directory   │
 │                                                             (default:        │
 │                                                             ~/.joinmarket-ng │
 │                                                             or               │
 │                                                             $JOINMARKET_DAT… │
 │                                                             [env var:        │
 │                                                             JOINMARKET_DATA… │
-│    --destination    -d                     TEXT             Destination      │
+│ --destination      -d                     TEXT              Destination      │
 │                                                             address (or      │
 │                                                             'INTERNAL' for   │
 │                                                             next mixdepth)   │
 │                                                             [default:        │
 │                                                             INTERNAL]        │
-│    --directory      -D                     TEXT             Directory        │
+│ --directory        -D                     TEXT              Directory        │
 │                                                             servers          │
 │                                                             (comma-separate… │
 │                                                             [env var:        │
 │                                                             DIRECTORY_SERVE… │
-│    --fee-rate                              FLOAT            Manual fee rate  │
+│ --fee-rate                                FLOAT             Manual fee rate  │
 │                                                             in sat/vB.       │
 │                                                             Mutually         │
 │                                                             exclusive with   │
 │                                                             --block-target.  │
-│    --help                                                   Show this        │
+│ --help                                                      Show this        │
 │                                                             message and      │
 │                                                             exit.            │
-│    --input-utxo                            TEXT             Explicit input   │
+│ --input-utxo                              TEXT              Explicit input   │
 │                                                             UTXO as          │
 │                                                             txid:vout        │
 │                                                             (repeatable).    │
@@ -294,12 +298,12 @@ Takers only require Tor SOCKS; no Tor control port is needed.
 │                                                             Mutually         │
 │                                                             exclusive with   │
 │                                                             --select-utxos.  │
-│    --log-level      -l                     TEXT             Log level        │
-│    --max-abs-fee                           INTEGER          Max absolute fee │
+│ --log-level        -l                     TEXT              Log level        │
+│ --max-abs-fee                             INTEGER           Max absolute fee │
 │                                                             in sats          │
-│    --max-rel-fee                           TEXT             Max relative fee │
+│ --max-rel-fee                             TEXT              Max relative fee │
 │                                                             (0.001=0.1%)     │
-│    --mixdepth       -m                     INTEGER          Source mixdepth  │
+│ --mixdepth         -m                     INTEGER           Source mixdepth  │
 │                                                             (default 0; with │
 │                                                             --select-utxos,  │
 │                                                             derived from the │
@@ -309,42 +313,41 @@ Takers only require Tor SOCKS; no Tor control port is needed.
 │                                                             entries must     │
 │                                                             belong to this   │
 │                                                             mixdepth)        │
-│    --mnemonic-file  -f                     PATH             Path to mnemonic │
+│ --mnemonic-file    -f                     PATH              Path to mnemonic │
 │                                                             file             │
-│    --network                               [mainnet|testne  Protocol network │
-│                                            t|signet|regtes  for handshakes   │
-│                                            t]                                │
-│    --neutrino-url                          TEXT             Neutrino REST    │
+│ --network                                 [mainnet|testnet  Protocol network │
+│                                           |signet|regtest]  for handshakes   │
+│ --neutrino-url                            TEXT              Neutrino REST    │
 │                                                             API URL          │
 │                                                             [env var:        │
 │                                                             NEUTRINO_URL]    │
-│    --prompt-bip39…                                          Prompt for BIP39 │
+│ --prompt-bip39-p…                                           Prompt for BIP39 │
 │                                                             passphrase       │
 │                                                             interactively    │
-│    --quantized-of…      --allow-non-qu…                     Only select      │
+│ --quantized-offe…      --allow-non-qu…                      Only select      │
 │                                                             offers whose     │
 │                                                             advertised       │
 │                                                             CoinJoin fee is  │
 │                                                             on the public    │
 │                                                             grid             │
-│    --round-up-cj-…      --no-round-up-…                     Round selected   │
+│ --round-up-cj-fe…      --no-round-up-…                      Round selected   │
 │                                                             maker fees up to │
 │                                                             public fee       │
 │                                                             quanta           │
-│    --rpc-url                               TEXT             Bitcoin full     │
+│ --rpc-url                                 TEXT              Bitcoin full     │
 │                                                             node RPC URL     │
 │                                                             [env var:        │
 │                                                             BITCOIN_RPC_URL] │
-│    --select-utxos   -s                                      Interactively    │
+│ --select-utxos     -s                                       Interactively    │
 │                                                             select UTXOs     │
 │                                                             (fzf-like TUI)   │
-│    --tor-socks-ho…                         TEXT             Tor SOCKS proxy  │
+│ --tor-socks-host                          TEXT              Tor SOCKS proxy  │
 │                                                             host (overrides  │
 │                                                             TOR__SOCKS_HOST) │
-│    --tor-socks-po…                         INTEGER          Tor SOCKS proxy  │
+│ --tor-socks-port                          INTEGER           Tor SOCKS proxy  │
 │                                                             port (overrides  │
 │                                                             TOR__SOCKS_PORT) │
-│    --yes            -y                                      Skip             │
+│ --yes              -y                                       Skip             │
 │                                                             confirmation     │
 │                                                             prompt           │
 ╰──────────────────────────────────────────────────────────────────────────────╯

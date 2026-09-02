@@ -82,7 +82,14 @@ def create_backend(config: TakerConfig) -> Any:
 
 @app.command()
 def coinjoin(
-    amount: Annotated[int, typer.Option("--amount", "-a", help="Amount in sats (0 for sweep)")],
+    amount: Annotated[
+        int | None,
+        typer.Option(
+            "--amount",
+            "-a",
+            help="Amount in sats (0 for sweep; with --select-utxos, defaults to sweep)",
+        ),
+    ] = None,
     destination: Annotated[
         str,
         typer.Option(
@@ -268,6 +275,12 @@ def coinjoin(
     if select_utxos and input_utxo:
         logger.error("Cannot specify both --select-utxos and --input-utxo")
         raise typer.Exit(1)
+
+    if amount is None:
+        if not select_utxos:
+            logger.error("--amount is required unless --select-utxos is used")
+            raise typer.Exit(1)
+        amount = 0
 
     # Load settings (log_level=None means use settings.logging.level)
     settings = setup_cli(log_level, data_dir=data_dir, config_file=config_file)

@@ -70,6 +70,48 @@ def test_coinjoin_rejects_interactive_and_explicit_selection_together() -> None:
     mock_setup.assert_not_called()
 
 
+def test_coinjoin_select_utxos_does_not_require_amount_or_mixdepth() -> None:
+    settings = MagicMock()
+    config = MagicMock()
+    config.network.value = "regtest"
+    config.backend_type = "descriptor_wallet"
+    config.socks_host = "127.0.0.1"
+    config.socks_port = 9050
+    config.counterparty_count = 3
+    resolved = MagicMock(mnemonic="test mnemonic", bip39_passphrase="", creation_height=None)
+
+    with (
+        patch("taker.cli.setup_cli", return_value=settings),
+        patch("taker.cli.ensure_config_file"),
+        patch("taker.cli.resolve_mnemonic", return_value=resolved),
+        patch("taker.cli.build_taker_config", return_value=config) as mock_build_config,
+        patch("taker.cli._run_coinjoin", new_callable=AsyncMock) as mock_run,
+    ):
+        result = runner.invoke(app, ["coinjoin", "--select-utxos"])
+
+    assert result.exit_code == 0, result.output
+    assert mock_build_config.call_args.kwargs["amount"] == 0
+    assert mock_run.await_args is not None
+    assert mock_run.await_args.kwargs["amount"] == 0
+    assert mock_run.await_args.kwargs["mixdepth"] is None
+
+
+def test_coinjoin_requires_amount_without_interactive_selection() -> None:
+    from loguru import logger
+
+    messages: list[str] = []
+    handler_id = logger.add(lambda message: messages.append(message.record["message"]))
+    try:
+        with patch("taker.cli.setup_cli") as mock_setup:
+            result = runner.invoke(app, ["coinjoin"])
+    finally:
+        logger.remove(handler_id)
+
+    assert result.exit_code == 1
+    assert "--amount is required unless --select-utxos is used" in messages
+    mock_setup.assert_not_called()
+
+
 def test_coinjoin_forwards_repeated_explicit_inputs() -> None:
     first = f"{'aa' * 32}:0"
     second = f"{'bb' * 32}:1"

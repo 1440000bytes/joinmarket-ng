@@ -1101,6 +1101,42 @@ def test_send_cli_preserves_async_cancellation_exit_code(tmp_path: Path) -> None
     assert result.exit_code == 1
 
 
+def test_send_select_utxos_does_not_require_amount_or_mixdepth() -> None:
+    settings = MagicMock()
+    settings.wallet.max_fee_rate_sat_vb = 1_000.0
+    settings.wallet.default_fee_block_target = 3
+    settings.wallet.mixdepth_count = 5
+    settings.wallet.max_sats_freeze_reuse = -1
+    settings.wallet.reconstruct_history = True
+    resolved_mnemonic = MagicMock(
+        mnemonic="abandon " * 11 + "about",
+        bip39_passphrase="",
+        creation_height=None,
+    )
+    backend_settings = MagicMock()
+
+    with (
+        patch("jmwallet.cli.send.setup_cli", return_value=settings),
+        patch("jmwallet.cli.send.resolve_mnemonic", return_value=resolved_mnemonic),
+        patch("jmwallet.cli.send.resolve_backend_settings", return_value=backend_settings),
+        patch("jmwallet.cli.send._send_transaction", new_callable=AsyncMock) as mock_send,
+    ):
+        result = runner.invoke(
+            app,
+            [
+                "send",
+                "bcrt1qtestdestination000000000000000000000000000",
+                "--select-utxos",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert mock_send.await_args is not None
+    assert mock_send.await_args.args[2] == 0
+    assert mock_send.await_args.args[3] is None
+    assert mock_send.await_args.args[9] is True
+
+
 @pytest.mark.asyncio
 async def test_send_finalizes_with_resolved_txid(tmp_path: Path) -> None:
     with _mock_send_execution(tmp_path) as (backend_settings, mocks):
