@@ -320,7 +320,7 @@ services:
     image: ${JAM_NG_BASE_IMAGE:-joinmarket-ng-jam-playwright-base:local}
     pull_policy: build
     build:
-      context: ${JAM_DOCKER_CONTEXT:-https://github.com/joinmarket-webui/jam-docker.git#33d15ea4a5a750e1e2c6d8acf73413cb32dafd27:standalone-ng}
+      context: ${JAM_DOCKER_CONTEXT:-https://github.com/joinmarket-webui/jam-docker.git#8c5b79492b84b8616fc88be349d90119108054a8:standalone-ng}
       args:
         JAM_REPO_REF: ${JAM_REPO_REF:-v2.0.0-beta.3}
         # Development branches are not guaranteed to have signed tip commits.

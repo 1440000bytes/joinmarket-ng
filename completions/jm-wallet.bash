@@ -8,7 +8,7 @@ _jm_wallet_completion() {
     prev="${COMP_WORDS[COMP_CWORD-1]}"
 
     if [ "$COMP_CWORD" -eq 1 ]; then
-        COMPREPLY=( $(compgen -W "address create-bond-address debug-info freeze generate generate-bond-address generate-hot-keypair history import import-bond import-certificate info list-bonds prepare-certificate-message reconstruct-history recover-bonds registry-show rescan send showseed sign-psbt signpsbt spend-bond sync-bonds validate verify-password" -- "$cur") )
+        COMPREPLY=( $(compgen -W "address create-bond-address debug-info delete freeze generate generate-bond-address generate-hot-keypair history import import-bond import-certificate info list-bonds prepare-certificate-message reconstruct-history recover-bonds registry-show rescan send showseed sign-psbt signpsbt spend-bond sync-bonds validate verify-password" -- "$cur") )
         return 0
     fi
 
@@ -22,6 +22,9 @@ _jm_wallet_completion() {
         ;;
       debug-info)
         COMPREPLY=( $(compgen -W "--help --network -n --backend -b --neutrino-url --data-dir --config-file --log-level -l" -- "$cur") )
+        ;;
+      delete)
+        COMPREPLY=( $(compgen -W "--help --mnemonic-file -f --prompt-bip39-passphrase --allow-fingerprint-mismatch --network -n --backend -b --rpc-url --core-wallet-dir --keep-backend-wallet --delete-history --delete-bond-registry --dry-run --yes -y --data-dir --config-file --log-level -l" -- "$cur") )
         ;;
       freeze)
         COMPREPLY=( $(compgen -W "--help --mnemonic-file -f --prompt-bip39-passphrase --network -n --backend -b --rpc-url --neutrino-url --mixdepth -m --data-dir --config-file --log-level -l" -- "$cur") )

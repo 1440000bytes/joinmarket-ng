@@ -9,6 +9,7 @@ _jm_wallet() {
     'address:Manage deposit addresses\: reserve, label, release, and list.'
     'create-bond-address:Create a fidelity bond address from a public key (cold wallet workflow).'
     'debug-info:Print privacy-friendly diagnostic information for troubleshooting.'
+    'delete:Permanently delete one wallet and its private local state.'
     'freeze:Interactively freeze/unfreeze UTXOs to exclude them from coin selection.'
     'generate:Generate a new BIP39 mnemonic phrase with secure entropy.'
     'generate-bond-address:Generate a fidelity bond (timelocked P2WSH) address.'
@@ -73,6 +74,25 @@ _jm_wallet() {
             '--network=[Bitcoin network]: :' \
             '--backend=[Backend\: descriptor_wallet | neutrino]: :' \
             '--neutrino-url=[]: :' \
+            '--data-dir=[Data directory (default\: ~/.joinmarket-ng or $JOINMARKET_DATA_DIR)]:file:_files' \
+            '--config-file=[Config file path (decoupled from data dir). Defaults to <data-dir>/config.toml]:file:_files' \
+            '--log-level=[Log level]: :' \
+            '--help[Show this message and exit]'
+          ;;
+        delete)
+          _arguments \
+            '--mnemonic-file=[Path to mnemonic file]:file:_files' \
+            '--prompt-bip39-passphrase[Prompt for the BIP39 passphrase used by this wallet]' \
+            '--allow-fingerprint-mismatch[Proceed when the mnemonic .meta fingerprint differs from the derived wallet]' \
+            '--network=[Bitcoin network]: :' \
+            '--backend=[Backend\: descriptor_wallet | neutrino]: :' \
+            '--rpc-url=[]: :' \
+            '--core-wallet-dir=[Host-local Bitcoin Core -walletdir containing the descriptor wallet]:file:_files' \
+            '--keep-backend-wallet[Keep the Bitcoin Core descriptor wallet (required for remote Core cleanup)]' \
+            '--delete-history[Delete this wallet'\''s fingerprint-scoped rows from history.csv]' \
+            '--delete-bond-registry[Delete this wallet'\''s fidelity-bond registry entries]' \
+            '--dry-run[Show the deletion plan without changing anything]' \
+            '--yes[Skip the fingerprint confirmation prompt]' \
             '--data-dir=[Data directory (default\: ~/.joinmarket-ng or $JOINMARKET_DATA_DIR)]:file:_files' \
             '--config-file=[Config file path (decoupled from data dir). Defaults to <data-dir>/config.toml]:file:_files' \
             '--log-level=[Log level]: :' \
