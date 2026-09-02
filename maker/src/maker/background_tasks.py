@@ -691,9 +691,8 @@ class BackgroundTasksMixin:
                     node_id, connected_count, total_count, reconnecting=True
                 )
             )
-            if connected_count == 0 and not self._all_directories_disconnected:
-                self._all_directories_disconnected = True
-                spawn_task(get_notifier().notify_all_directories_disconnected())
+            if connected_count == 0:
+                self._open_directory_outage()
 
         while self.running:
             try:

@@ -294,6 +294,13 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
         except Exception as exc:
             logger.warning(f"Could not publish maker nick change: {exc}")
 
+    def _open_directory_outage(self) -> None:
+        """Emit one critical notification for a process-wide directory outage."""
+        if self._all_directories_disconnected:
+            return
+        self._all_directories_disconnected = True
+        spawn_task(get_notifier().notify_all_directories_disconnected())
+
     def _resolve_directory_outage(self, connected_count: int) -> None:
         """Emit one recovery notification for an outstanding process-wide outage."""
         if connected_count <= 0 or not self._all_directories_disconnected:
@@ -711,6 +718,7 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
 
         if old.directory_clients:
             return
+        self._open_directory_outage()
         try:
             connected = await old.directory_pool.connect_all_with_retry(
                 timeout=self.config.directory_startup_timeout,
@@ -767,7 +775,9 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
         except asyncio.CancelledError:
             await asyncio.shield(self._rollback_generation_rotation(old, replacement))
             raise
-        except Exception:
+        except Exception as exc:
+            logger.warning("Maker identity rotation failed, restoring previous identity")
+            logger.bind(sensitive=True).debug(f"Maker identity rotation failure: {exc}")
             await self._rollback_generation_rotation(old, replacement)
             return False
 
