@@ -354,8 +354,22 @@ function hasAdvertisedBond(offer) {
         hasActiveCertificate(bondData);
 }
 
+function hasQuantizedFee(offer) {
+    const quantization = orderbookData?.fee_quantization;
+    if (!quantization) return true;
+
+    const grid = ABS_OFFER_TYPES.has(offer.ordertype)
+        ? quantization.abs_grid
+        : quantization.rel_grid;
+    if (!Array.isArray(grid)) return true;
+
+    const fee = Number(offer.cjfee);
+    return Number.isFinite(fee) && grid.some(quantum => Number(quantum) === fee);
+}
+
 function offerSelectionCategory(offer) {
     if (!SELECTABLE_OFFER_TYPES.has(offer.ordertype)) return null;
+    if (!hasQuantizedFee(offer)) return null;
     if (hasAdvertisedBond(offer) && (offer.fidelity_bond_value || 0) > 0) return 'bonded';
 
     const fee = Number(offer.cjfee);
@@ -662,6 +676,11 @@ function getSelectionExclusionReason(offer) {
         return `${offerType} offers are excluded; the estimate includes only SW0 offers.`;
     }
 
+    if (!hasQuantizedFee(offer)) {
+        return 'This offer fee is not on the public fee grid. Current default takers require ' +
+            'quantized fees, so the offer is skipped.';
+    }
+
     const bondData = offer.fidelity_bond_data;
     if (bondData) {
         const currentBlockHeight = orderbookData.current_block_height;
@@ -730,7 +749,8 @@ function formatSelectionProbability(offer) {
         text: `1/${denominator}${suffix}`,
         title: `${percentage}% chance per 9-maker CoinJoin, assuming every counted offer ` +
             'passes the taker\'s fee and amount limits. Uses the 5% zero-fee allowance ' +
-            'and bond-value-weighted selection for bonded slots.' +
+            'and bond-value-weighted selection for bonded slots. Non-quantized fee offers ' +
+            'are skipped under current taker defaults.' +
             sharedBondNote,
     };
 }

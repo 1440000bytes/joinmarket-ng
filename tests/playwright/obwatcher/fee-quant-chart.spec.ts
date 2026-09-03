@@ -467,7 +467,7 @@ test.describe("offer selection probability", () => {
         counterparty: "fee-charging-bondless",
         oid: 0,
         ordertype: "sw0absoffer",
-        cjfee: 1,
+        cjfee: 100,
         minsize: 100_000,
         maxsize: 10_000_000,
         fidelity_bond_value: 0,
@@ -627,6 +627,70 @@ test.describe("offer selection probability", () => {
       expect(denominator(zeroChanceText)).toBeLessThan(denominator(feeChanceText));
       await expect(bondlessChance).toHaveText(/^1\/\d+(?:\.\d)?$/);
       await expect(bondlessChance).toHaveAttribute("title", /5% zero-fee allowance/);
+    } finally {
+      server.close();
+    }
+  });
+
+  test("skips non-quantized offers under current taker defaults", async ({ page }) => {
+    const eligibleOffers: FixtureOffer[] = Array.from({ length: 9 }, (_, i) => ({
+      counterparty: `quantized-${i}`,
+      oid: 0,
+      ordertype: "sw0absoffer",
+      cjfee: 100,
+      minsize: 100_000,
+      maxsize: 10_000_000,
+      fidelity_bond_value: 10_000,
+      directory_nodes: [],
+      features: {},
+    }));
+    const offGridOffers: FixtureOffer[] = [
+      {
+        counterparty: "off-grid-absolute",
+        oid: 0,
+        ordertype: "sw0absoffer",
+        cjfee: 150,
+        minsize: 100_000,
+        maxsize: 10_000_000,
+        fidelity_bond_value: 10_000_000,
+        directory_nodes: [],
+        features: {},
+      },
+      {
+        counterparty: "off-grid-relative",
+        oid: 0,
+        ordertype: "sw0reloffer",
+        cjfee: "0.00015",
+        minsize: 100_000,
+        maxsize: 10_000_000,
+        fidelity_bond_value: 10_000_000,
+        directory_nodes: [],
+        features: {},
+      },
+    ];
+    const server = await openChart(page, payload([...eligibleOffers, ...offGridOffers]));
+
+    try {
+      const eligibleChance = page.locator("#orderbook-tbody tr", {
+        hasText: "quantized-0",
+      }).locator(".selection-probability");
+      const absoluteChance = page.locator("#orderbook-tbody tr", {
+        hasText: "off-grid-absolute",
+      }).locator(".selection-probability");
+      const relativeChance = page.locator("#orderbook-tbody tr", {
+        hasText: "off-grid-relative",
+      }).locator(".selection-probability");
+
+      await expect(eligibleChance).toHaveText("1/1");
+      await expect(eligibleChance).toHaveAttribute("title", /Non-quantized fee offers are skipped/);
+      await expect(absoluteChance).toHaveText("0");
+      await expect(relativeChance).toHaveText("0");
+      await expect(absoluteChance).toHaveAttribute("title", /not on the public fee grid/);
+      await expect(relativeChance).toHaveAttribute("title", /require quantized fees/);
+      await expect(page.locator('th[data-sort="selection_probability"]')).toHaveAttribute(
+        "title",
+        /quantized-only taker defaults/,
+      );
     } finally {
       server.close();
     }
