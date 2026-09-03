@@ -65,6 +65,7 @@ class _AddressContext:
     bip39_passphrase: str
     backend_settings: ResolvedBackendSettings
     creation_height: int | None
+    mnemonic_file: Path | None
     mixdepth_count: int
     max_sats_freeze_reuse: int
     reconstruct_history: bool
@@ -156,6 +157,7 @@ def _resolve_address_context(options: _AddressOptions) -> _AddressContext:
         bip39_passphrase=resolved.bip39_passphrase,
         backend_settings=backend_settings,
         creation_height=resolved.creation_height,
+        mnemonic_file=resolved.mnemonic_file,
         mixdepth_count=settings.wallet.mixdepth_count,
         max_sats_freeze_reuse=settings.wallet.max_sats_freeze_reuse,
         reconstruct_history=settings.wallet.reconstruct_history,
@@ -207,6 +209,7 @@ async def _build_wallet(c: _AddressContext) -> tuple[WalletService, str]:
         data_dir=bs.data_dir,
         max_sats_freeze_reuse=c.max_sats_freeze_reuse,
         reconstruct_history=c.reconstruct_history,
+        mnemonic_file=c.mnemonic_file,
     )
     return wallet, bs.backend_type
 

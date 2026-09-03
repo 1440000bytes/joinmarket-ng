@@ -396,6 +396,7 @@ def plan_command(
                 settings=settings,
                 mnemonic=resolved.mnemonic,
                 passphrase=resolved.bip39_passphrase or "",
+                mnemonic_file=resolved.mnemonic_file,
                 network=network,
                 backend_type=backend_type,
                 rpc_url=rpc_url,
@@ -768,6 +769,7 @@ def run_command(
                 mnemonic=resolved.mnemonic,
                 passphrase=resolved.bip39_passphrase or "",
                 creation_height=resolved.creation_height,
+                mnemonic_file=resolved.mnemonic_file,
                 data_dir=data_dir,
                 network=network,
                 backend_type=backend_type,
@@ -847,6 +849,7 @@ async def _balances_for_mnemonic(
     backend_type: str | None,
     rpc_url: str | None,
     neutrino_url: str | None,
+    mnemonic_file: Path | None = None,
 ) -> tuple[dict[int, int], float | None, str]:
     """Open a read-only wallet, sync, and return balances + a fee-rate estimate.
 
@@ -876,6 +879,7 @@ async def _balances_for_mnemonic(
         data_dir=config.data_dir,
         max_sats_freeze_reuse=config.max_sats_freeze_reuse,
         reconstruct_history=config.reconstruct_history,
+        mnemonic_file=mnemonic_file,
     )
     try:
         await wallet.sync_with_registered_bonds()
@@ -958,6 +962,7 @@ async def _run_plan(
     block_target: int | None,
     min_confirmations_between_phases: int | None,
     counterparties_override: int | None = None,
+    mnemonic_file: Path | None = None,
 ) -> None:
     """Instantiate backend, wallet, and runner; execute the plan."""
     from maker.bot import MakerBot
@@ -996,6 +1001,7 @@ async def _run_plan(
         data_dir=taker_config.data_dir,
         max_sats_freeze_reuse=taker_config.max_sats_freeze_reuse,
         reconstruct_history=taker_config.reconstruct_history,
+        mnemonic_file=mnemonic_file,
     )
     try:
         await wallet.sync_with_registered_bonds()

@@ -228,6 +228,7 @@ class TestRunFeeOptions:
             mnemonic = "abandon " * 11 + "about"
             bip39_passphrase = ""
             creation_height = None
+            mnemonic_file = None
 
         with (
             patch("tumbler.cli.setup_cli", return_value=settings),
@@ -253,6 +254,7 @@ class TestRunCounterpartiesOption:
             mnemonic = "abandon " * 11 + "about"
             bip39_passphrase = ""
             creation_height = None
+            mnemonic_file = None
 
         with (
             patch("tumbler.cli.setup_cli", return_value=settings),
@@ -342,6 +344,7 @@ async def test_run_maker_factory_updates_rotated_nick_state(tmp_path: Path) -> N
             mnemonic="abandon " * 11 + "about",
             passphrase="",
             creation_height=None,
+            mnemonic_file=None,
             data_dir=tmp_path,
             network=None,
             backend_type=None,
@@ -376,6 +379,7 @@ class TestPlanDefaultsCounterpartyFromSettings:
             mnemonic = "abandon " * 11 + "about"
             bip39_passphrase = ""
             creation_height = None
+            mnemonic_file = None
 
         captured: dict[str, TumbleParameters] = {}
 
@@ -443,6 +447,7 @@ class TestPlanSingleFundedMixdepth:
             mnemonic = "abandon " * 11 + "about"
             bip39_passphrase = ""
             creation_height = None
+            mnemonic_file = None
 
         with (
             patch("tumbler.cli.setup_cli", return_value=settings),
@@ -494,6 +499,7 @@ class TestPlanFewDestinationsGate:
             mnemonic = "abandon " * 11 + "about"
             bip39_passphrase = ""
             creation_height = None
+            mnemonic_file = None
 
         with (
             patch("tumbler.cli.setup_cli", return_value=settings),

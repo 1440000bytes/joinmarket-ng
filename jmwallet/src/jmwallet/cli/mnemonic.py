@@ -249,9 +249,18 @@ def load_mnemonic_file(
 # Mnemonic Metadata (wallet birthday / creation height / fingerprint)
 # ============================================================================
 
-# JSON value types stored in a ``.meta`` file. ``creation_height`` is an int,
-# ``fingerprint`` is the 8-char hex BIP32 ``m/0`` wallet identity (a string).
+# JSON value types stored in a ``.meta`` file. ``creation_height`` is an int;
+# ``fingerprint`` and ``fidelity_bond_recovery`` are strings.
 MnemonicMetaValue = int | str
+
+FIDELITY_BOND_RECOVERY_PENDING = "pending"
+FIDELITY_BOND_RECOVERY_COMPLETE = "complete"
+FIDELITY_BOND_RECOVERY_NOT_REQUIRED = "not_required"
+_FIDELITY_BOND_RECOVERY_STATES = {
+    FIDELITY_BOND_RECOVERY_PENDING,
+    FIDELITY_BOND_RECOVERY_COMPLETE,
+    FIDELITY_BOND_RECOVERY_NOT_REQUIRED,
+}
 
 
 def _meta_path(mnemonic_file: Path) -> Path:
@@ -261,6 +270,11 @@ def _meta_path(mnemonic_file: Path) -> Path:
     suffix appended, e.g. ``default.mnemonic`` -> ``default.mnemonic.meta``.
     """
     return mnemonic_file.with_name(mnemonic_file.name + ".meta")
+
+
+def reset_mnemonic_meta(mnemonic_file: Path) -> None:
+    """Remove metadata that belongs to mnemonic contents being replaced."""
+    _meta_path(mnemonic_file).unlink(missing_ok=True)
 
 
 def _write_mnemonic_meta(mnemonic_file: Path, meta: dict[str, MnemonicMetaValue]) -> None:
@@ -279,6 +293,7 @@ def save_mnemonic_meta(
     *,
     creation_height: int | None = None,
     fingerprint: str | None = None,
+    fidelity_bond_recovery: str | None = None,
 ) -> None:
     """Persist wallet metadata alongside a mnemonic file.
 
@@ -294,12 +309,18 @@ def save_mnemonic_meta(
             per-wallet read commands (history, list-bonds, registry-show)
             can resolve the active wallet's identity without decrypting the
             mnemonic.
+        fidelity_bond_recovery: Durable state for the one-time canonical bond
+            scan performed after mnemonic import.
     """
     updates: dict[str, MnemonicMetaValue] = {}
     if creation_height is not None:
         updates["creation_height"] = creation_height
     if fingerprint is not None:
         updates["fingerprint"] = fingerprint.strip().lower()
+    if fidelity_bond_recovery is not None:
+        if fidelity_bond_recovery not in _FIDELITY_BOND_RECOVERY_STATES:
+            raise ValueError(f"Invalid fidelity bond recovery state: {fidelity_bond_recovery}")
+        updates["fidelity_bond_recovery"] = fidelity_bond_recovery
 
     if not updates:
         return  # Nothing to persist
@@ -339,6 +360,64 @@ def load_mnemonic_meta(mnemonic_file: Path) -> dict[str, MnemonicMetaValue]:
         logger.warning("Failed to read mnemonic metadata")
         logger.bind(sensitive=True).warning(f"Failed to read mnemonic metadata from {path}: {exc}")
         return {}
+
+
+def _fidelity_bond_recovery_key(wallet_fingerprint: str) -> str:
+    fingerprint = wallet_fingerprint.strip().lower()
+    if len(fingerprint) != 8:
+        raise ValueError("Wallet fingerprint must be exactly 8 hex characters")
+    try:
+        bytes.fromhex(fingerprint)
+    except ValueError as exc:
+        raise ValueError("Wallet fingerprint must be valid hex") from exc
+    return f"fidelity_bond_recovery.{fingerprint}"
+
+
+def mnemonic_requires_fidelity_bond_recovery(
+    mnemonic_file: Path,
+    wallet_fingerprint: str,
+) -> bool:
+    """Return whether a file-backed wallet still needs canonical bond recovery.
+
+    New imports are explicitly marked pending, while generated wallets are
+    marked not-required. For wallets created by older releases, a valid
+    creation height identifies a generated wallet; metadata without one is
+    treated as a restored wallet and receives one recovery scan.
+    """
+    meta = load_mnemonic_meta(mnemonic_file)
+    wallet_state = meta.get(_fidelity_bond_recovery_key(wallet_fingerprint))
+    if wallet_state == FIDELITY_BOND_RECOVERY_COMPLETE:
+        return False
+    if wallet_state is not None:
+        logger.warning(f"Ignoring invalid wallet-specific bond recovery state: {wallet_state!r}")
+
+    state = meta.get("fidelity_bond_recovery")
+    if state == FIDELITY_BOND_RECOVERY_PENDING:
+        return True
+    if state in {
+        FIDELITY_BOND_RECOVERY_COMPLETE,
+        FIDELITY_BOND_RECOVERY_NOT_REQUIRED,
+    }:
+        return False
+    if state is not None:
+        logger.warning(f"Ignoring invalid fidelity bond recovery state: {state!r}")
+
+    creation_height = meta.get("creation_height")
+    return not (
+        isinstance(creation_height, int)
+        and not isinstance(creation_height, bool)
+        and creation_height >= 0
+    )
+
+
+def mark_fidelity_bond_recovery_complete(
+    mnemonic_file: Path,
+    wallet_fingerprint: str,
+) -> None:
+    """Persist successful completion of the imported-wallet bond scan."""
+    meta = load_mnemonic_meta(mnemonic_file)
+    meta[_fidelity_bond_recovery_key(wallet_fingerprint)] = FIDELITY_BOND_RECOVERY_COMPLETE
+    _write_mnemonic_meta(mnemonic_file, meta)
 
 
 def load_mnemonic_meta_fingerprint(mnemonic_file: Path) -> str | None:

@@ -88,6 +88,7 @@ class WalletSyncMixin:
     gap_limit: int
     scan_range: int
     data_dir: Path | None
+    mnemonic_file: Path | None
     wallet_fingerprint: str
     address_cache: dict[str, tuple[int, int, int]]
     _address_cache_range_end: int
@@ -99,6 +100,8 @@ class WalletSyncMixin:
     # Lazily-built canonical bond address cache; see
     # ``_canonical_bond_address_map`` below for what populates it.
     _canonical_bond_addresses: dict[str, tuple[int, int]] | None
+    _fidelity_bond_recovery_checked: bool
+    _fidelity_bond_recovery_in_progress: bool
     # Guards the once-per-process import-label reconstruction pass.
     _imported_labels_scanned: bool
     # Guards the once-per-process import-history reconstruction pass.
@@ -1019,9 +1022,45 @@ class WalletSyncMixin:
         # registry-aware syncs keep scanning them. Essential for light-client
         # backends: unlike Bitcoin Core, nothing else records the bond, so a
         # discovered UTXO would disappear again on the next sync.
-        self._self_register_bond_utxos(discovered_utxos)
+        self._self_register_bond_utxos(discovered_utxos, require_persistence=True)
 
         return discovered_utxos
+
+    async def _recover_imported_fidelity_bonds_if_needed(self) -> None:
+        """Run and durably complete the one-time imported-wallet bond scan."""
+        if (
+            self.mnemonic_file is None
+            or self._fidelity_bond_recovery_checked
+            or self._fidelity_bond_recovery_in_progress
+        ):
+            return
+
+        from jmwallet.cli.mnemonic import (
+            mark_fidelity_bond_recovery_complete,
+            mnemonic_requires_fidelity_bond_recovery,
+        )
+
+        if not mnemonic_requires_fidelity_bond_recovery(
+            self.mnemonic_file,
+            self.wallet_fingerprint,
+        ):
+            self._fidelity_bond_recovery_checked = True
+            return
+
+        logger.info(
+            "Imported wallet has not completed fidelity bond recovery; "
+            "scanning canonical timelock addresses"
+        )
+        self._fidelity_bond_recovery_in_progress = True
+        try:
+            await self.discover_fidelity_bonds()
+            mark_fidelity_bond_recovery_complete(
+                self.mnemonic_file,
+                self.wallet_fingerprint,
+            )
+            self._fidelity_bond_recovery_checked = True
+        finally:
+            self._fidelity_bond_recovery_in_progress = False
 
     async def sync_all(
         self,
@@ -1037,6 +1076,19 @@ class WalletSyncMixin:
         Returns:
             Dictionary mapping mixdepth to list of UTXOs
         """
+        await self._recover_imported_fidelity_bonds_if_needed()
+        if self.mnemonic_file is not None:
+            # Custom maker/taker sync paths may have loaded the registry before
+            # the recovery hook populated it. Merge the durable result back into
+            # this sync so a light-client scan does not overwrite the recovered
+            # bond cache with regular mixdepth UTXOs only.
+            merged_bonds = list(fidelity_bond_addresses or [])
+            known_addresses = {address.lower() for address, _locktime, _index in merged_bonds}
+            for bond in self.load_registered_bond_addresses():
+                if bond[0].lower() not in known_addresses:
+                    merged_bonds.append(bond)
+                    known_addresses.add(bond[0].lower())
+            fidelity_bond_addresses = merged_bonds or None
         logger.debug("Syncing all mixdepths...")
 
         # Snapshot the addresses already funded *before* this sync rebuilds the
@@ -1252,6 +1304,7 @@ class WalletSyncMixin:
         wallets (e.g. neutrino) fall back to :meth:`sync_all`, which already
         scans the supplied bond addresses.
         """
+        await self._recover_imported_fidelity_bonds_if_needed()
         bond_addresses = self.load_registered_bond_addresses()
 
         if not isinstance(self.backend, DescriptorWalletBackend):
@@ -1397,6 +1450,7 @@ class WalletSyncMixin:
         bond_utxos: list[UTXOInfo],
         *,
         scanned_addresses: set[str] | None = None,
+        require_persistence: bool = False,
     ) -> None:
         """Persist and refresh recognized fidelity bond UTXOs in the registry.
 
@@ -1431,7 +1485,13 @@ class WalletSyncMixin:
         failure here only means the same reconciliation is retried on the next
         sync, never that a recognized UTXO disappears from the current result.
         """
-        if self.data_dir is None or (not bond_utxos and not scanned_addresses):
+        if self.data_dir is None:
+            if require_persistence and bond_utxos:
+                raise RuntimeError(
+                    "Cannot persist recovered fidelity bonds without a data directory"
+                )
+            return
+        if not bond_utxos and not scanned_addresses:
             return
         try:
             from jmwallet.wallet.bond_registry import (
@@ -1527,6 +1587,8 @@ class WalletSyncMixin:
                     "current UTXO set"
                 )
         except Exception as exc:
+            if require_persistence:
+                raise RuntimeError("Could not persist recovered fidelity bond(s)") from exc
             logger.warning(f"Could not reconcile recognized fidelity bond(s): {exc}")
 
     # -- Descriptor-based sync (Group D) ------------------------------------
@@ -2116,6 +2178,7 @@ class WalletSyncMixin:
         if not isinstance(self.backend, DescriptorWalletBackend):
             raise RuntimeError("sync_with_descriptor_wallet() requires DescriptorWalletBackend")
 
+        await self._recover_imported_fidelity_bonds_if_needed()
         logger.debug("Syncing via descriptor wallet (listunspent)...")
 
         # Snapshot the addresses already funded before this sync rebuilds the

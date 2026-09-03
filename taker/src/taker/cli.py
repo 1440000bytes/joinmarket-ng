@@ -345,6 +345,8 @@ def coinjoin(
 
     if resolved_creation_height is not None:
         config.creation_height = resolved_creation_height
+    if resolved is not None:
+        config.mnemonic_file = resolved.mnemonic_file
 
     # Log configuration source
     logger.info(f"Using network: {config.network.value}")
@@ -432,6 +434,7 @@ async def _run_coinjoin(
         data_dir=config.data_dir,
         max_sats_freeze_reuse=config.max_sats_freeze_reuse,
         reconstruct_history=config.reconstruct_history,
+        mnemonic_file=config.mnemonic_file,
     )
 
     # Create confirmation callback

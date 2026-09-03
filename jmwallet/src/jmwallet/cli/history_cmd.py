@@ -358,6 +358,7 @@ def reconstruct_history(
             resolved.bip39_passphrase,
             backend_settings,
             creation_height=resolved.creation_height,
+            mnemonic_file=resolved.mnemonic_file,
             max_transactions=max_transactions,
             keep_existing=keep_existing,
             gap_limit=settings.wallet.gap_limit,
@@ -407,6 +408,7 @@ async def _reconstruct_history(
     gap_limit: int,
     scan_range: int,
     mixdepth_count: int,
+    mnemonic_file: Path | None = None,
 ) -> None:
     """Implementation of ``jm-wallet reconstruct-history``."""
     from jmwallet.backends.descriptor_wallet import (
@@ -468,6 +470,7 @@ async def _reconstruct_history(
         data_dir=backend_settings.data_dir,
         # The command controls purge/rebuild ordering explicitly below.
         reconstruct_history=False,
+        mnemonic_file=mnemonic_file,
     )
 
     try:

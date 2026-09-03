@@ -707,6 +707,7 @@ def sync_bonds(
             backend_settings,
             resolved_bip39_passphrase,
             creation_height=resolved_creation_height,
+            mnemonic_file=resolved.mnemonic_file,
             mixdepth_count=settings.wallet.mixdepth_count,
             max_sats_freeze_reuse=settings.wallet.max_sats_freeze_reuse,
             reconstruct_history=settings.wallet.reconstruct_history,
@@ -720,6 +721,7 @@ async def _sync_bonds_async(
     bip39_passphrase: str = "",
     *,
     creation_height: int | None = None,
+    mnemonic_file: Path | None = None,
     mixdepth_count: int = 5,
     max_sats_freeze_reuse: int = -1,
     reconstruct_history: bool = True,
@@ -784,9 +786,15 @@ async def _sync_bonds_async(
         data_dir=data_dir,
         max_sats_freeze_reuse=max_sats_freeze_reuse,
         reconstruct_history=reconstruct_history,
+        mnemonic_file=mnemonic_file,
     )
 
     try:
+        if mnemonic_file is not None:
+            # This also performs the one-time canonical recovery scan for
+            # imported wallets before the registry is inspected below.
+            await wallet.sync_with_registered_bonds()
+
         # Migration ran at wallet open; disable the legacy fallback so foreign
         # bonds are never copied into this wallet's file on save (#492).
         registry = load_registry(data_dir, wallet.wallet_fingerprint, allow_legacy_fallback=False)
@@ -807,7 +815,8 @@ async def _sync_bonds_async(
         # ``sync_all`` only scans descriptors already imported, so a bond funded
         # after the base wallet was set up would never appear (issue: funded
         # fidelity bond shown as locked with 0 sats).
-        await wallet.sync_with_registered_bonds()
+        if mnemonic_file is None:
+            await wallet.sync_with_registered_bonds()
 
         # Group every UTXO by bond address. The largest is the announced bond;
         # any others at the same address are locked but do not add to the bond
@@ -942,6 +951,7 @@ def recover_bonds(
             backend_settings,
             resolved_bip39_passphrase,
             creation_height=resolved_creation_height,
+            mnemonic_file=resolved.mnemonic_file,
             mixdepth_count=settings.wallet.mixdepth_count,
             max_sats_freeze_reuse=settings.wallet.max_sats_freeze_reuse,
             reconstruct_history=settings.wallet.reconstruct_history,
@@ -955,6 +965,7 @@ async def _recover_bonds_async(
     bip39_passphrase: str = "",
     *,
     creation_height: int | None = None,
+    mnemonic_file: Path | None = None,
     mixdepth_count: int = 5,
     max_sats_freeze_reuse: int = -1,
     reconstruct_history: bool = True,
@@ -1019,6 +1030,7 @@ async def _recover_bonds_async(
         data_dir=backend_settings.data_dir,
         max_sats_freeze_reuse=max_sats_freeze_reuse,
         reconstruct_history=reconstruct_history,
+        mnemonic_file=mnemonic_file,
     )
 
     print("\nScanning for fidelity bonds...")
@@ -1040,6 +1052,13 @@ async def _recover_bonds_async(
             progress_callback=progress_callback,
             rescan_progress_callback=rescan_progress_callback,
         )
+        if mnemonic_file is not None:
+            from jmwallet.cli.mnemonic import mark_fidelity_bond_recovery_complete
+
+            mark_fidelity_bond_recovery_complete(
+                mnemonic_file,
+                wallet.wallet_fingerprint,
+            )
 
         print()  # Newline after progress
         print("-" * 60)

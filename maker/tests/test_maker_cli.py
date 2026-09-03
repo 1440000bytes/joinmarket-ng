@@ -110,6 +110,7 @@ def test_start_expired_certificate_exits_and_cleans_up(
     write_nick_state = MagicMock()
     remove_nick_state = MagicMock()
     maker_kwargs: dict[str, object] = {}
+    mnemonic_file = tmp_path / "wallets" / "imported.mnemonic"
 
     def make_bot(*_args: object, **kwargs: object) -> MagicMock:
         maker_kwargs.update(kwargs)
@@ -124,6 +125,7 @@ def test_start_expired_certificate_exits_and_cleans_up(
             mnemonic="test " * 12,
             bip39_passphrase="",
             creation_height=None,
+            mnemonic_file=mnemonic_file,
         ),
     )
     monkeypatch.setattr(cli_module, "build_maker_config", lambda **_kwargs: config)
@@ -136,6 +138,7 @@ def test_start_expired_certificate_exits_and_cleans_up(
     result = runner.invoke(app, ["start"], prog_name="jm-maker")
 
     assert result.exit_code == 1
+    assert config.mnemonic_file == mnemonic_file
     bot.stop.assert_awaited_once()
     remove_nick_state.assert_called_once_with(tmp_path, "maker")
 

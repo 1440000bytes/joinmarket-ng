@@ -74,6 +74,7 @@ class WalletService(
         passphrase: str = "",
         max_sats_freeze_reuse: int = -1,
         reconstruct_history: bool = True,
+        mnemonic_file: Path | None = None,
     ):
         self.backend = backend
         self._address_allocation_lock = Lock()
@@ -87,6 +88,9 @@ class WalletService(
         self.gap_limit = gap_limit
         self.scan_range = scan_range
         self.data_dir = data_dir
+        self.mnemonic_file = mnemonic_file
+        self._fidelity_bond_recovery_checked = False
+        self._fidelity_bond_recovery_in_progress = False
         # Forced address-reuse defense (issue #529): a UTXO that lands on an
         # already-used wallet address is auto-frozen during sync when its value
         # is <= ``max_sats_freeze_reuse`` (or always, when it is -1). 0 disables

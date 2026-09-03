@@ -103,6 +103,7 @@ class ResolvedMnemonic:
     bip39_passphrase: str
     source: str  # Where the mnemonic came from (for logging)
     creation_height: int | None = None  # Block height at wallet creation time
+    mnemonic_file: Path | None = None  # File backing the mnemonic, when present
 
 
 # =============================================================================
@@ -973,6 +974,7 @@ def resolve_mnemonic(
         bip39_passphrase=resolved_passphrase,
         source=source,
         creation_height=creation_height,
+        mnemonic_file=mnemonic_file_path,
     )
 
 

@@ -472,8 +472,20 @@ def import_mnemonic(
     elif prompt_password:
         password = prompt_password_with_confirmation()
 
-    # Save the mnemonic
+    # Save the mnemonic and defer the expensive canonical fidelity-bond scan
+    # until the first blockchain synchronization.
     save_mnemonic_file(resolved_mnemonic, output_file, password)
+    from jmwallet.cli.mnemonic import (
+        FIDELITY_BOND_RECOVERY_PENDING,
+        reset_mnemonic_meta,
+        save_mnemonic_meta,
+    )
+
+    reset_mnemonic_meta(output_file)
+    save_mnemonic_meta(
+        output_file,
+        fidelity_bond_recovery=FIDELITY_BOND_RECOVERY_PENDING,
+    )
 
     typer.echo(f"\nMnemonic saved to: {output_file}")
     if password:
@@ -662,6 +674,21 @@ def generate(
 
             save_mnemonic_file(mnemonic, output_file, password)
 
+            # Generated wallets cannot contain a pre-existing fidelity bond.
+            # Write this even if the best-effort creation-height lookup below
+            # fails, so they are never mistaken for imported legacy wallets.
+            from jmwallet.cli.mnemonic import (
+                FIDELITY_BOND_RECOVERY_NOT_REQUIRED,
+                reset_mnemonic_meta,
+                save_mnemonic_meta,
+            )
+
+            reset_mnemonic_meta(output_file)
+            save_mnemonic_meta(
+                output_file,
+                fidelity_bond_recovery=FIDELITY_BOND_RECOVERY_NOT_REQUIRED,
+            )
+
             # Record the wallet's birthday so the first sync does not rescan
             # a year of history for a brand-new (empty) wallet (issue #472).
             _record_wallet_creation_height(output_file)
@@ -807,6 +834,7 @@ def info(
             reconstruct_history=settings.wallet.reconstruct_history,
             show_empty=show_empty,
             creation_height=resolved.creation_height if resolved else None,
+            mnemonic_file=resolved.mnemonic_file if resolved else None,
             scan_status_only=scan_status,
         )
     )
@@ -825,6 +853,7 @@ async def _show_wallet_info(
     reconstruct_history: bool = True,
     show_empty: bool = False,
     creation_height: int | None = None,
+    mnemonic_file: Path | None = None,
     scan_status_only: bool = False,
 ) -> None:
     """Show wallet info implementation.
@@ -956,6 +985,7 @@ async def _show_wallet_info(
         data_dir=data_dir,
         max_sats_freeze_reuse=max_sats_freeze_reuse,
         reconstruct_history=reconstruct_history,
+        mnemonic_file=mnemonic_file,
     )
 
     try:
@@ -1861,6 +1891,7 @@ def rescan(
             bip39_passphrase=resolved.bip39_passphrase,
             start_height=start_height,
             creation_height=resolved.creation_height,
+            mnemonic_file=resolved.mnemonic_file,
             scan_depth=scan_depth,
             gap_limit=settings.wallet.gap_limit,
             scan_range=settings.wallet.scan_range,
@@ -1883,6 +1914,7 @@ async def _run_rescan(
     mixdepth_count: int = 5,
     max_sats_freeze_reuse: int = -1,
     reconstruct_history: bool = True,
+    mnemonic_file: Path | None = None,
 ) -> None:
     """Implementation of ``jm-wallet rescan``.
 
@@ -1923,6 +1955,7 @@ async def _run_rescan(
             data_dir=backend_settings.data_dir,
             max_sats_freeze_reuse=max_sats_freeze_reuse,
             reconstruct_history=reconstruct_history,
+            mnemonic_file=mnemonic_file,
         )
 
     try:

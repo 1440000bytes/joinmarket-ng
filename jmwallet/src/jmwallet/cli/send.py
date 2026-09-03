@@ -406,6 +406,7 @@ def send(
             select_utxos,
             resolved_bip39_passphrase,
             creation_height=resolved_creation_height,
+            mnemonic_file=resolved.mnemonic_file,
             mixdepth_count=settings.wallet.mixdepth_count,
             max_fee_rate_sat_vb=max_fee_rate,
             max_sats_freeze_reuse=settings.wallet.max_sats_freeze_reuse,
@@ -431,6 +432,7 @@ async def _send_transaction(
     bip39_passphrase: str = "",
     *,
     creation_height: int | None = None,
+    mnemonic_file: Path | None = None,
     mixdepth_count: int = 5,
     max_fee_rate_sat_vb: float = MAX_MANUAL_FEE_RATE_SAT_VB,
     max_sats_freeze_reuse: int = -1,
@@ -547,6 +549,7 @@ async def _send_transaction(
         data_dir=backend_settings.data_dir,
         max_sats_freeze_reuse=max_sats_freeze_reuse,
         reconstruct_history=reconstruct_history,
+        mnemonic_file=mnemonic_file,
     )
 
     try:

@@ -45,6 +45,18 @@ def _make_wallet(data_dir: Path) -> WalletService:
     )
 
 
+def _make_file_backed_wallet(data_dir: Path, mnemonic_file: Path) -> WalletService:
+    backend = DescriptorWalletBackend(wallet_name="test_wallet")
+    backend._wallet_loaded = True
+    return WalletService(
+        mnemonic=MNEMONIC,
+        backend=backend,
+        network="regtest",
+        data_dir=data_dir,
+        mnemonic_file=mnemonic_file,
+    )
+
+
 def _write_bond_registry(ws: WalletService, *, network: str = "regtest") -> None:
     registry = BondRegistry()
     registry.add_bond(
@@ -124,6 +136,72 @@ async def test_sync_with_registered_bonds_imports_missing_bond(tmp_path: Path) -
     ws.import_fidelity_bond_addresses.assert_awaited_once_with(expected_bonds, rescan=True)
     ws.sync_with_descriptor_wallet.assert_awaited_once_with(expected_bonds)
     assert result == {0: []}
+
+
+@pytest.mark.asyncio
+async def test_imported_wallet_discovers_bonds_before_registry_sync(tmp_path: Path) -> None:
+    from jmwallet.cli.mnemonic import (
+        FIDELITY_BOND_RECOVERY_PENDING,
+        mnemonic_requires_fidelity_bond_recovery,
+        save_mnemonic_meta,
+    )
+
+    mnemonic_file = tmp_path / "wallets" / "imported.mnemonic"
+    mnemonic_file.parent.mkdir()
+    mnemonic_file.write_text(MNEMONIC)
+    save_mnemonic_meta(
+        mnemonic_file,
+        fidelity_bond_recovery=FIDELITY_BOND_RECOVERY_PENDING,
+    )
+    ws = _make_file_backed_wallet(tmp_path, mnemonic_file)
+
+    async def discover() -> list[object]:
+        _write_bond_registry(ws)
+        return []
+
+    ws.discover_fidelity_bonds = AsyncMock(side_effect=discover)
+    ws._imported_bond_addresses = AsyncMock(return_value={BOND_ADDRESS.lower()})
+    ws.is_descriptor_wallet_ready = AsyncMock(return_value=True)
+    ws.sync_with_descriptor_wallet = AsyncMock(return_value={0: []})
+
+    result = await ws.sync_with_registered_bonds()
+
+    ws.discover_fidelity_bonds.assert_awaited_once()
+    ws.sync_with_descriptor_wallet.assert_awaited_once_with(
+        [(BOND_ADDRESS, BOND_LOCKTIME, BOND_INDEX)]
+    )
+    assert not mnemonic_requires_fidelity_bond_recovery(
+        mnemonic_file,
+        ws.wallet_fingerprint,
+    )
+    assert result == {0: []}
+
+
+@pytest.mark.asyncio
+async def test_failed_imported_wallet_recovery_remains_retryable(tmp_path: Path) -> None:
+    from jmwallet.cli.mnemonic import (
+        FIDELITY_BOND_RECOVERY_PENDING,
+        load_mnemonic_meta,
+        save_mnemonic_meta,
+    )
+
+    mnemonic_file = tmp_path / "wallets" / "imported.mnemonic"
+    mnemonic_file.parent.mkdir()
+    mnemonic_file.write_text(MNEMONIC)
+    save_mnemonic_meta(
+        mnemonic_file,
+        fidelity_bond_recovery=FIDELITY_BOND_RECOVERY_PENDING,
+    )
+    ws = _make_file_backed_wallet(tmp_path, mnemonic_file)
+    ws.discover_fidelity_bonds = AsyncMock(side_effect=RuntimeError("rescan failed"))
+
+    with pytest.raises(RuntimeError, match="rescan failed"):
+        await ws._recover_imported_fidelity_bonds_if_needed()
+    with pytest.raises(RuntimeError, match="rescan failed"):
+        await ws._recover_imported_fidelity_bonds_if_needed()
+
+    assert ws.discover_fidelity_bonds.await_count == 2
+    assert load_mnemonic_meta(mnemonic_file)["fidelity_bond_recovery"] == "pending"
 
 
 @pytest.mark.asyncio
@@ -653,6 +731,82 @@ async def test_sync_all_scans_bonds_on_light_client_backend(tmp_path: Path) -> N
     assert bond.is_fidelity_bond
     assert bond.path.endswith(f":{locktime}")
     assert any(u.address == bond_address for u in ws.utxo_cache.get(0, []))
+
+
+@pytest.mark.asyncio
+async def test_imported_light_client_sync_retains_recovered_bond(tmp_path: Path) -> None:
+    """Recovery must feed its new registry entry into the outer light-client sync."""
+    from jmcore.timenumber import timenumber_to_timestamp
+
+    from jmwallet.cli.mnemonic import (
+        FIDELITY_BOND_RECOVERY_PENDING,
+        save_mnemonic_meta,
+    )
+
+    mnemonic_file = tmp_path / "wallets" / "imported.mnemonic"
+    mnemonic_file.parent.mkdir()
+    mnemonic_file.write_text(MNEMONIC)
+    save_mnemonic_meta(
+        mnemonic_file,
+        fidelity_bond_recovery=FIDELITY_BOND_RECOVERY_PENDING,
+    )
+    locktime = timenumber_to_timestamp(BOND_INDEX)
+    backend = _FakeLightClientBackend(bond_address="", bond_utxo=None)  # type: ignore[arg-type]
+    ws = WalletService(
+        mnemonic=MNEMONIC,
+        backend=backend,
+        network="regtest",
+        data_dir=tmp_path,
+        mnemonic_file=mnemonic_file,
+    )
+    bond_address = ws.get_fidelity_bond_address(BOND_INDEX, locktime)
+    backend._bond_address = bond_address
+    backend._bond_utxo = UTXO(
+        txid="ce" * 32,
+        vout=0,
+        value=234_567,
+        address=bond_address,
+        confirmations=12,
+        scriptpubkey="0020" + "34" * 32,
+        height=980,
+    )
+
+    result = await ws.sync_all()
+
+    assert ws.load_registered_bond_addresses() == [(bond_address, locktime, BOND_INDEX)]
+    assert any(utxo.address == bond_address for utxo in result[0])
+    assert any(utxo.address == bond_address for utxo in ws.utxo_cache[0])
+
+
+def test_required_recovery_persistence_failure_is_fatal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from jmcore.timenumber import timenumber_to_timestamp
+
+    from jmwallet.wallet.models import UTXOInfo
+
+    ws = _make_wallet(tmp_path)
+    locktime = timenumber_to_timestamp(BOND_INDEX)
+    bond_address = ws.get_fidelity_bond_address(BOND_INDEX, locktime)
+    bond_utxo = UTXOInfo(
+        txid="cd" * 32,
+        vout=0,
+        value=123_456,
+        address=bond_address,
+        confirmations=10,
+        scriptpubkey="0020" + "33" * 32,
+        path=f"{ws.root_path}/0'/2/{BOND_INDEX}:{locktime}",
+        mixdepth=0,
+        locktime=locktime,
+    )
+
+    def fail_save(*_args: object, **_kwargs: object) -> None:
+        raise OSError("read-only registry")
+
+    monkeypatch.setattr("jmwallet.wallet.bond_registry.save_registry", fail_save)
+
+    with pytest.raises(RuntimeError, match="persist recovered fidelity bond"):
+        ws._self_register_bond_utxos([bond_utxo], require_persistence=True)
 
 
 @pytest.mark.asyncio

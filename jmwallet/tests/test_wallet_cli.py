@@ -251,6 +251,7 @@ async def test_address_wallet_construction_uses_context_mixdepth_count(tmp_path:
         bip39_passphrase="",
         backend_settings=backend_settings,
         creation_height=None,
+        mnemonic_file=None,
         mixdepth_count=3,
         max_sats_freeze_reuse=-1,
         reconstruct_history=True,
@@ -1711,6 +1712,13 @@ def test_generate_force_overwrite():
     with tempfile.TemporaryDirectory() as tmpdir:
         output_file = Path(tmpdir) / "existing.mnemonic"
         output_file.write_text("old content")
+        from jmwallet.cli.mnemonic import load_mnemonic_meta, save_mnemonic_meta
+
+        save_mnemonic_meta(
+            output_file,
+            creation_height=900_000,
+            fingerprint="aabbccdd",
+        )
 
         # Generate with --force should overwrite without prompting
         result = runner.invoke(
@@ -1730,6 +1738,7 @@ def test_generate_force_overwrite():
         assert output_file.read_text() != "old content"
         # Should NOT show overwrite prompt
         assert "Overwrite existing wallet file?" not in result.stdout
+        assert load_mnemonic_meta(output_file) == {"fidelity_bond_recovery": "not_required"}
 
 
 def test_generate_records_creation_height(monkeypatch):
@@ -1756,6 +1765,7 @@ def test_generate_records_creation_height(monkeypatch):
 
         meta = load_mnemonic_meta(output_file)
         assert meta.get("creation_height") == 880_123
+        assert meta.get("fidelity_bond_recovery") == "not_required"
 
 
 def test_generate_succeeds_when_backend_unreachable(monkeypatch):
@@ -1776,7 +1786,9 @@ def test_generate_succeeds_when_backend_unreachable(monkeypatch):
 
         assert result.exit_code == 0, f"generate failed: {result.stdout}"
         assert output_file.exists()
-        assert "creation_height" not in load_mnemonic_meta(output_file)
+        meta = load_mnemonic_meta(output_file)
+        assert "creation_height" not in meta
+        assert meta.get("fidelity_bond_recovery") == "not_required"
 
 
 def test_generate_invalid_height_not_recorded(monkeypatch):
@@ -1912,6 +1924,10 @@ def test_import_with_mnemonic_argument():
         assert result.exit_code == 0, f"import failed: {result.stdout}"
         assert "IMPORTED MNEMONIC" in result.stdout
         assert output_file.exists(), "Mnemonic file was not created"
+
+        from jmwallet.cli.mnemonic import load_mnemonic_meta
+
+        assert load_mnemonic_meta(output_file).get("fidelity_bond_recovery") == "pending"
 
         # Verify the saved mnemonic matches
         saved_mnemonic = output_file.read_text().strip()
@@ -2051,6 +2067,13 @@ def test_import_force_overwrite():
     with tempfile.TemporaryDirectory() as tmpdir:
         output_file = Path(tmpdir) / "existing.mnemonic"
         output_file.write_text("old content")
+        from jmwallet.cli.mnemonic import load_mnemonic_meta, save_mnemonic_meta
+
+        save_mnemonic_meta(
+            output_file,
+            creation_height=900_000,
+            fingerprint="aabbccdd",
+        )
 
         # Use MNEMONIC env var instead of --mnemonic CLI arg (removed for security)
         result = runner.invoke(
@@ -2067,6 +2090,7 @@ def test_import_force_overwrite():
 
         assert result.exit_code == 0
         assert output_file.read_text().strip() == mnemonic
+        assert load_mnemonic_meta(output_file) == {"fidelity_bond_recovery": "pending"}
 
 
 def test_import_invalid_word_count():
@@ -2762,8 +2786,16 @@ def _make_default_wallet(tmpdir: str) -> Path:
     default_wallet = Path(tmpdir) / ".joinmarket-ng" / "wallets" / "default.mnemonic"
     default_wallet.parent.mkdir(parents=True, exist_ok=True)
     from jmwallet.cli import generate_mnemonic_secure, save_mnemonic_file
+    from jmwallet.cli.mnemonic import (
+        FIDELITY_BOND_RECOVERY_NOT_REQUIRED,
+        save_mnemonic_meta,
+    )
 
     save_mnemonic_file(generate_mnemonic_secure(), default_wallet, None)
+    save_mnemonic_meta(
+        default_wallet,
+        fidelity_bond_recovery=FIDELITY_BOND_RECOVERY_NOT_REQUIRED,
+    )
     return default_wallet
 
 

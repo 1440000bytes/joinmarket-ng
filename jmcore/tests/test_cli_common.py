@@ -1181,6 +1181,71 @@ class TestMnemonicMeta:
         update_mnemonic_meta_fingerprint(mnemonic_file, "aabbccdd")
         assert meta_path.stat().st_mtime_ns == before  # idempotent: not rewritten
 
+    def test_imported_wallet_recovery_state_round_trips(self, tmp_path: Path) -> None:
+        from jmwallet.cli.mnemonic import (
+            FIDELITY_BOND_RECOVERY_PENDING,
+            mark_fidelity_bond_recovery_complete,
+            mnemonic_requires_fidelity_bond_recovery,
+            save_mnemonic_meta,
+        )
+
+        mnemonic_file = tmp_path / "default.mnemonic"
+        mnemonic_file.write_text("dummy")
+        save_mnemonic_meta(
+            mnemonic_file,
+            fidelity_bond_recovery=FIDELITY_BOND_RECOVERY_PENDING,
+        )
+
+        assert mnemonic_requires_fidelity_bond_recovery(mnemonic_file, "aabbccdd")
+        mark_fidelity_bond_recovery_complete(mnemonic_file, "aabbccdd")
+        assert not mnemonic_requires_fidelity_bond_recovery(mnemonic_file, "aabbccdd")
+        assert mnemonic_requires_fidelity_bond_recovery(mnemonic_file, "11223344")
+
+    def test_legacy_wallet_without_creation_height_requires_recovery(self, tmp_path: Path) -> None:
+        from jmwallet.cli.mnemonic import (
+            mnemonic_requires_fidelity_bond_recovery,
+            save_mnemonic_meta,
+        )
+
+        mnemonic_file = tmp_path / "legacy.mnemonic"
+        mnemonic_file.write_text("dummy")
+        save_mnemonic_meta(mnemonic_file, fingerprint="aabbccdd")
+
+        assert mnemonic_requires_fidelity_bond_recovery(mnemonic_file, "aabbccdd")
+
+    def test_legacy_generated_wallet_with_creation_height_skips_recovery(
+        self, tmp_path: Path
+    ) -> None:
+        from jmwallet.cli.mnemonic import (
+            mnemonic_requires_fidelity_bond_recovery,
+            save_mnemonic_meta,
+        )
+
+        mnemonic_file = tmp_path / "generated.mnemonic"
+        mnemonic_file.write_text("dummy")
+        save_mnemonic_meta(mnemonic_file, creation_height=850_000)
+
+        assert not mnemonic_requires_fidelity_bond_recovery(mnemonic_file, "aabbccdd")
+
+    def test_reset_mnemonic_meta_drops_replaced_wallet_fields(self, tmp_path: Path) -> None:
+        from jmwallet.cli.mnemonic import (
+            load_mnemonic_meta,
+            reset_mnemonic_meta,
+            save_mnemonic_meta,
+        )
+
+        mnemonic_file = tmp_path / "replaced.mnemonic"
+        mnemonic_file.write_text("dummy")
+        save_mnemonic_meta(
+            mnemonic_file,
+            creation_height=850_000,
+            fingerprint="aabbccdd",
+        )
+
+        reset_mnemonic_meta(mnemonic_file)
+
+        assert load_mnemonic_meta(mnemonic_file) == {}
+
 
 class TestResolveMnemonicCreationHeight:
     """Tests for resolve_mnemonic() loading creation_height from .meta files."""
@@ -1213,6 +1278,7 @@ class TestResolveMnemonicCreationHeight:
         assert result is not None
         assert result.mnemonic == mnemonic
         assert result.creation_height == 820000
+        assert result.mnemonic_file == mnemonic_file
 
     def test_resolve_mnemonic_no_meta_file_returns_none_creation_height(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1234,6 +1300,7 @@ class TestResolveMnemonicCreationHeight:
         result = resolve_mnemonic(settings)
         assert result is not None
         assert result.creation_height is None
+        assert result.mnemonic_file == mnemonic_file
 
     def test_resolve_mnemonic_direct_mnemonic_has_no_creation_height(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1248,6 +1315,7 @@ class TestResolveMnemonicCreationHeight:
         result = resolve_mnemonic(settings, mnemonic=mnemonic)
         assert result is not None
         assert result.creation_height is None
+        assert result.mnemonic_file is None
 
     def test_resolve_mnemonic_ignores_invalid_meta_creation_height(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

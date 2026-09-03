@@ -206,6 +206,10 @@ class WalletConfig(BaseModel):
             "Used to skip scanning blocks that predate the wallet."
         ),
     )
+    mnemonic_file: Path | None = Field(
+        default=None,
+        description="File backing the mnemonic, used for one-time wallet recovery state",
+    )
 
     # Directory servers
     directory_servers: list[str] = Field(

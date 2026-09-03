@@ -129,6 +129,7 @@ def freeze(
             resolved_bip39_passphrase,
             mixdepth_filter=mixdepth,
             creation_height=resolved_creation_height,
+            mnemonic_file=resolved.mnemonic_file,
             mixdepth_count=settings.wallet.mixdepth_count,
             max_sats_freeze_reuse=settings.wallet.max_sats_freeze_reuse,
             reconstruct_history=settings.wallet.reconstruct_history,
@@ -143,6 +144,7 @@ async def _freeze_utxos(
     mixdepth_filter: int | None = None,
     *,
     creation_height: int | None = None,
+    mnemonic_file: Path | None = None,
     mixdepth_count: int = 5,
     max_sats_freeze_reuse: int = -1,
     reconstruct_history: bool = True,
@@ -204,6 +206,7 @@ async def _freeze_utxos(
         data_dir=data_dir,
         max_sats_freeze_reuse=max_sats_freeze_reuse,
         reconstruct_history=reconstruct_history,
+        mnemonic_file=mnemonic_file,
     )
 
     try:

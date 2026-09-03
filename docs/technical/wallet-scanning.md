@@ -38,17 +38,25 @@ grows; `scan_lookback_blocks` is about initial time coverage. For normal
 use the defaults are fine and you never touch them.
 
 Fidelity bonds use a separate timelock branch that cannot be represented by
-the regular ranged descriptors. When jmwalletd recovers an `sw-fb` wallet, it
-imports all 960 canonical fidelity-bond address descriptors before scanning
-(Bitcoin Core), or scans and backfills the same 960 addresses through the
-light-client watch list (neutrino) and records found bonds in the per-wallet
-registry. This lets a normal import recover old bonds without a separate CLI
-step. For Bitcoin Core descriptor recovery, the API also accepts an optional
+the regular ranged descriptors. The first synchronization of an imported CLI
+wallet, and jmwalletd recovery of an `sw-fb` wallet, imports all 960 canonical
+fidelity-bond address descriptors before scanning (Bitcoin Core), or scans and
+backfills the same 960 addresses through the light-client watch list (neutrino).
+Found bonds are recorded in the per-wallet registry, so normal maker startup
+can select them without a separate recovery command. Completion is stored by
+derived wallet fingerprint in the mnemonic's `.meta` sidecar, so different
+BIP39 passphrases are recovered independently. An interrupted or failed scan
+remains pending and retries at the next synchronization, while later routine
+syncs skip the 960-address recovery set. Wallets imported by older releases
+and lacking a creation-height marker receive the same one-time scan after
+upgrade.
+
+For Bitcoin Core descriptor recovery, the API also accepts an optional
 `scan_range` field (up to 10,000) for regular address-index coverage; it can
 only widen coverage, never shrink it below the configured
 `[wallet].scan_range`. Neutrino regular-address discovery continues to follow
-the BIP44 `gap_limit`. CLI mnemonic recovery can use `jm-wallet recover-bonds`
-when the bond coverage was not set up by an older version.
+the BIP44 `gap_limit`. `jm-wallet recover-bonds` remains available for an
+explicit rescan.
 
 For Neutrino, newly derived regular addresses are historically backfilled before
 they are considered empty. JoinMarket scans up to 100 indices per branch in each
@@ -142,8 +150,10 @@ height first.
 the `.mnemonic.meta` sidecar file (best-effort: the configured backend must
 be reachable). This reduces the first-sync scan window for a freshly generated
 wallet: the descriptor import scans from the wallet's birthday instead of the
-~1 year smart-scan lookback. Wallets created via the daemon record the creation
-height inside the wallet file. Imported/recovered mnemonics have an unknown
-birthday, so their first sync scans the full smart-scan window; progress is
-reported while Bitcoin Core runs that scan, and it is safe to interrupt (the
-scan continues server-side).
+~1 year smart-scan lookback. Generated wallets are also marked as not requiring
+fidelity-bond recovery, even when the creation-height lookup fails. Wallets
+created via the daemon record the creation height inside the wallet file.
+Imported/recovered mnemonics have an unknown birthday, so their one-time bond
+recovery may scan from genesis and can take a long time. Progress is reported
+while Bitcoin Core runs the scan, and an incomplete recovery retries at the
+next synchronization.
