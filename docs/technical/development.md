@@ -137,6 +137,9 @@ See [Signatures](../README-signatures.md) for repository signature layout.
 Update dependencies, regenerate help text, run the full test suite, then
 commit the resulting changes manually before bumping the version:
 
+`scripts/update-deps.sh` also advances the maintained `python-bitcointx` release
+wheel URL and SHA-256 pin everywhere it is referenced before regenerating locks.
+
 ```bash
 scripts/update-base-images.sh \
   && scripts/update-deps.sh \

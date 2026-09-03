@@ -28,8 +28,9 @@ PRODUCTION_LOCKS = {
     "tumbler/requirements.txt",
 }
 BITCOINTX_PACKAGES = {"jmcore", "jmwallet", "jmwalletd"}
+BITCOINTX_VERSION = "2.1.1"
 BITCOINTX_WHEEL_SHA256 = (
-    "6162a46e1eeb20230a23415e303cfdcbc266f9f0261687cdf37db68957e1b4f8"
+    "2f82999aa557da5f501bf10ca51dd830bcf16aba27ed8d976065c798454c11c6"
 )
 RUNTIME_IMAGE_STAGES = {
     "directory_server/Dockerfile": {"production", "debug"},
@@ -142,8 +143,9 @@ def test_macos_uses_secp256k1_homebrew_formula() -> None:
 
 def test_bitcointx_dependency_is_pinned_to_release_wheel() -> None:
     expected_url = (
-        "https://github.com/m0wer/python-bitcointx/releases/download/python-bitcointx-v2.1.0/"
-        "python_bitcointx-2.1.0-py3-none-any.whl"
+        "https://github.com/m0wer/python-bitcointx/releases/download/"
+        f"python-bitcointx-v{BITCOINTX_VERSION}/"
+        f"python_bitcointx-{BITCOINTX_VERSION}-py3-none-any.whl"
     )
     for package in BITCOINTX_PACKAGES:
         manifest = (REPO_ROOT / package / "pyproject.toml").read_text(encoding="utf-8")

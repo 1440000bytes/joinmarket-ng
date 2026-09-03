@@ -26,7 +26,7 @@ derivation path. An explicit --derivation-path also works without BIP32 PSBT
 metadata.
 
 REQUIREMENTS:
-  pip install "python-bitcointx @ https://github.com/m0wer/python-bitcointx/releases/download/python-bitcointx-v2.1.0/python_bitcointx-2.1.0-py3-none-any.whl#sha256=6162a46e1eeb20230a23415e303cfdcbc266f9f0261687cdf37db68957e1b4f8" mnemonic
+  pip install "python-bitcointx @ https://github.com/m0wer/python-bitcointx/releases/download/python-bitcointx-v2.1.1/python_bitcointx-2.1.1-py3-none-any.whl#sha256=2f82999aa557da5f501bf10ca51dd830bcf16aba27ed8d976065c798454c11c6" mnemonic
   # Install native libsecp256k1 through your operating system package manager.
 
 """

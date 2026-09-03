@@ -11,6 +11,15 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 FLATPAK_UPDATER="$SCRIPT_DIR/update-flatpak-deps.py"
+BITCOINTX_UPDATER="$SCRIPT_DIR/update-bitcointx.py"
+
+run_python() {
+    if command -v python3 >/dev/null 2>&1; then
+        python3 "$@"
+    else
+        python "$@"
+    fi
+}
 
 run_pip_compile() {
     if command -v pip-compile >/dev/null 2>&1; then
@@ -51,6 +60,10 @@ echo "========================================="
 echo ""
 
 if [ "$UPDATE_PROD" = true ]; then
+    echo "Updating maintained python-bitcointx release pin..."
+    run_python "$BITCOINTX_UPDATER"
+    echo ""
+
     echo "Updating production dependencies..."
     echo ""
 
@@ -124,11 +137,7 @@ if [ "$UPDATE_PROD" = true ]; then
     echo ""
 
     if [ -f "$FLATPAK_UPDATER" ]; then
-        if command -v python3 >/dev/null 2>&1; then
-            python3 "$FLATPAK_UPDATER" --manifest "$PROJECT_ROOT/flatpak/org.joinmarketng.JamNG.yml"
-        else
-            python "$FLATPAK_UPDATER" --manifest "$PROJECT_ROOT/flatpak/org.joinmarketng.JamNG.yml"
-        fi
+        run_python "$FLATPAK_UPDATER" --manifest "$PROJECT_ROOT/flatpak/org.joinmarketng.JamNG.yml"
     else
         echo "Warning: Flatpak updater script not found at $FLATPAK_UPDATER"
     fi

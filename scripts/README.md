@@ -22,7 +22,7 @@ Utility scripts for JoinMarket NG development and operations.
 - **sign-release.sh** - Sign a release manifest (supports local-first and CI-first workflows)
 - **update_readme_help.py** - Update module READMEs and `docs/README-*.md` pages with CLI command help sections (run manually when CLI changes)
 - **update-base-images.sh** - Update Docker base image digests
-- **update-deps.sh** - Update project dependencies
+- **update-deps.sh** - Update project dependencies, including the maintained `python-bitcointx` release pin
 - **update-flatpak-deps.py** - Update Flatpak sources and pinned JAM Docker dependencies
 - **verify-release.sh** - Verify release signatures and optionally reproduce builds
 - **build-release.sh** - Build Docker images locally and generate a release manifest for local-first signing
@@ -35,11 +35,11 @@ These scripts support the cold storage fidelity bond workflow. See [`docs/fideli
 
 - **finalize_bond_psbt.py** - Verify and finalize a signed fidelity bond spending PSBT, such as one returned by Specter DIY's QR signing flow or `sign_bond_psbt.py --no-broadcast`. Cryptographically verifies the partial signature (BIP143 SIGHASH_ALL over the CLTV witness script) and builds the final P2WSH witness transaction when Bitcoin Core's `finalizepsbt` cannot finalize the custom witness script. Standard library only, so it also serves as the verification step of the hardware wallet compatibility test in the operations guide.
 
-- **sign_bond_mnemonic.py** - Sign a fidelity bond spending PSBT using a BIP39 mnemonic. Use when hardware wallet signing is not available. Reads and validates the mnemonic interactively (hidden input) and outputs a fully signed raw transaction. Requires the maintained `python-bitcointx` v2.1.0 release, native `libsecp256k1`, and `mnemonic`.
+- **sign_bond_mnemonic.py** - Sign a fidelity bond spending PSBT using a BIP39 mnemonic. Use when hardware wallet signing is not available. Reads and validates the mnemonic interactively (hidden input) and outputs a fully signed raw transaction. Requires the maintained `python-bitcointx` release, native `libsecp256k1`, and `mnemonic`.
 
-- **sign_bond_cert_reference.py** - Sign a fidelity bond certificate using a validated BIP39 mnemonic (for migration from the reference implementation). Derives the private key at `m/84'/0'/0'/2/<timenumber>` and signs the certificate in Electrum recoverable format accepted by `jm-wallet import-certificate`. Use this instead of `wallet-tool.py signmessage`, which has a bug preventing it from signing with fidelity bond paths. Requires the maintained `python-bitcointx` v2.1.0 release, native `libsecp256k1`, and `mnemonic`.
+- **sign_bond_cert_reference.py** - Sign a fidelity bond certificate using a validated BIP39 mnemonic (for migration from the reference implementation). Derives the private key at `m/84'/0'/0'/2/<timenumber>` and signs the certificate in Electrum recoverable format accepted by `jm-wallet import-certificate`. Use this instead of `wallet-tool.py signmessage`, which has a bug preventing it from signing with fidelity bond paths. Requires the maintained `python-bitcointx` release, native `libsecp256k1`, and `mnemonic`.
 
-- **derive_bond_pubkey.py** - Derive the fidelity bond public key from the reference JoinMarket implementation's xpub (shown by `wallet-tool.py display`). Accepts the account xpub (`fbonds-mpk-` line) or the `/2` branch xpub and a locktime (YYYY-MM), then outputs the public key and the exact `create-bond-address` command to run. Requires the maintained `python-bitcointx` v2.1.0 release and native `libsecp256k1`.
+- **derive_bond_pubkey.py** - Derive the fidelity bond public key from the reference JoinMarket implementation's xpub (shown by `wallet-tool.py display`). Accepts the account xpub (`fbonds-mpk-` line) or the `/2` branch xpub and a locktime (YYYY-MM), then outputs the public key and the exact `create-bond-address` command to run. Requires the maintained `python-bitcointx` release and native `libsecp256k1`.
 
 ## Documentation
 

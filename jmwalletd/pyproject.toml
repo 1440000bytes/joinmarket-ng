@@ -21,8 +21,8 @@ dependencies = [
     "aiohttp>=3.9.0",
     "argon2-cffi>=21.3.0",
     "cryptography>=46.0.0",
-    # Maintained fork with Python 3.14 and libsecp256k1 v0.7 compatibility.
-    "python-bitcointx @ https://github.com/m0wer/python-bitcointx/releases/download/python-bitcointx-v2.1.0/python_bitcointx-2.1.0-py3-none-any.whl#sha256=6162a46e1eeb20230a23415e303cfdcbc266f9f0261687cdf37db68957e1b4f8",
+    # Maintained fork with Python 3.14 and modern libsecp256k1 compatibility.
+    "python-bitcointx @ https://github.com/m0wer/python-bitcointx/releases/download/python-bitcointx-v2.1.1/python_bitcointx-2.1.1-py3-none-any.whl#sha256=2f82999aa557da5f501bf10ca51dd830bcf16aba27ed8d976065c798454c11c6",
 ]
 
 [project.optional-dependencies]
