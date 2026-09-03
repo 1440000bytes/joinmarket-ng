@@ -813,7 +813,7 @@ class WalletSyncMixin:
                         locktime=locktime,  # Store locktime for P2WSH signing
                     )
                     utxos.append(utxo_info)
-                    logger.bind(sensitive=True).info(
+                    logger.bind(sensitive=True).debug(
                         f"Found fidelity bond UTXO: {utxo.txid}:{utxo.vout} "
                         f"value={utxo.value} locktime={locktime}"
                     )
@@ -828,7 +828,7 @@ class WalletSyncMixin:
                 if outpoint not in existing_outpoints:
                     self.utxo_cache[0].append(utxo_info)
                     existing_outpoints.add(outpoint)
-            logger.info(f"Found {len(utxos)} fidelity bond UTXOs")
+            logger.debug(f"Found {len(utxos)} fidelity bond UTXOs")
 
         self._self_register_bond_utxos(
             utxos,
@@ -1037,7 +1037,7 @@ class WalletSyncMixin:
         Returns:
             Dictionary mapping mixdepth to list of UTXOs
         """
-        logger.info("Syncing all mixdepths...")
+        logger.debug("Syncing all mixdepths...")
 
         # Snapshot the addresses already funded *before* this sync rebuilds the
         # cache, for the forced-address-reuse auto-freeze (issue #529): it
@@ -1194,7 +1194,7 @@ class WalletSyncMixin:
                     bond_addresses=valid_bonds,
                 )
 
-        logger.info(f"Sync complete: {sum(len(u) for u in result.values())} total UTXOs")
+        logger.debug(f"Sync complete: {sum(len(u) for u in result.values())} total UTXOs")
         self._freeze_reused_after_sync(prior_funded_addresses)
         self._apply_frozen_state()
         return result
@@ -1590,7 +1590,7 @@ class WalletSyncMixin:
                 valid_bonds.append((address, locktime, index))
 
             if valid_bonds:
-                logger.info(f"Including {len(valid_bonds)} fidelity bond address(es) in scan")
+                logger.debug(f"Including {len(valid_bonds)} fidelity bond address(es) in scan")
             for address, locktime, index in valid_bonds:
                 descriptors.append(f"addr({address})")
                 # Keyed lowercase: bech32 is case-insensitive but Python
@@ -1665,7 +1665,7 @@ class WalletSyncMixin:
                         locktime=locktime,
                     )
                     fidelity_bond_utxos.append(utxo_info)
-                    logger.bind(sensitive=True).info(
+                    logger.bind(sensitive=True).debug(
                         f"Found fidelity bond UTXO: {utxo_info.txid}:{utxo_info.vout} "
                         f"value={utxo_info.value} locktime={locktime} index={index}"
                     )
@@ -1769,12 +1769,12 @@ class WalletSyncMixin:
         total_value = sum(sum(u.value for u in utxos) for utxos in result.values())
         bond_count = len(fidelity_bond_utxos)
         if bond_count > 0:
-            logger.bind(sensitive=True).info(
+            logger.bind(sensitive=True).debug(
                 f"Descriptor sync complete: {total_utxos} UTXOs "
                 f"({bond_count} fidelity bond(s)), {format_amount(total_value)} total"
             )
         else:
-            logger.bind(sensitive=True).info(
+            logger.bind(sensitive=True).debug(
                 f"Descriptor sync complete: {total_utxos} UTXOs, {format_amount(total_value)} total"
             )
 
@@ -2116,7 +2116,7 @@ class WalletSyncMixin:
         if not isinstance(self.backend, DescriptorWalletBackend):
             raise RuntimeError("sync_with_descriptor_wallet() requires DescriptorWalletBackend")
 
-        logger.info("Syncing via descriptor wallet (listunspent)...")
+        logger.debug("Syncing via descriptor wallet (listunspent)...")
 
         # Snapshot the addresses already funded before this sync rebuilds the
         # cache, for the forced-address-reuse auto-freeze (issues #529, #542).
@@ -2569,7 +2569,7 @@ class WalletSyncMixin:
 
         total_utxos = sum(len(u) for u in result.values())
         total_value = sum(sum(u.value for u in utxos) for utxos in result.values())
-        logger.info(
+        logger.debug(
             f"Descriptor wallet sync complete: {total_utxos} UTXOs, "
             f"{format_amount(total_value)} total"
         )
