@@ -16,10 +16,13 @@ Modern HD wallet for JoinMarket with support for Bitcoin Core nodes and lightwei
 
 ## Imported Wallet History
 
-After a seed import, `jm-wallet` reconstructs confirmed transaction history once
-the backend's historical scan is complete. Reconstructed rows are persisted in
-`history.csv` with `source=onchain`; rows recorded by live maker, taker, and send
-flows use `source=protocol` and always take precedence for the same transaction.
+After a seed import, `jm-wallet` reconstructs confirmed transaction history on the
+first wallet sync after the backend's historical scan is complete. A completed
+`jm-wallet rescan` performs that sync automatically, and the TUI History view syncs
+before reading the timeline so a background scan completed by Bitcoin Core is also
+picked up. Reconstructed rows are persisted in `history.csv` with `source=onchain`;
+rows recorded by live maker, taker, and send flows use `source=protocol` and always
+take precedence for the same transaction.
 
 Run `jm-wallet reconstruct-history` to rebuild the guessed rows explicitly. The
 command preserves protocol-recorded rows and marks reconstructed entries with `*`

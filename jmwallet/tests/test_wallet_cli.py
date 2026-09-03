@@ -2808,6 +2808,7 @@ def test_rescan_scan_depth_reimports_at_wider_range(monkeypatch) -> None:
     monkeypatch.delenv("JOINMARKET_DATA_DIR", raising=False)
 
     setup_mock = AsyncMock()
+    sync_mock = AsyncMock()
 
     with tempfile.TemporaryDirectory() as tmpdir:
         _make_default_wallet(tmpdir)
@@ -2822,6 +2823,7 @@ def test_rescan_scan_depth_reimports_at_wider_range(monkeypatch) -> None:
                 _stub_backend_class(mock_backend),
             ),
             patch.object(WalletService, "setup_descriptor_wallet", setup_mock),
+            patch.object(WalletService, "sync_with_registered_bonds", sync_mock),
         ):
             result = runner.invoke(app, ["rescan", "--scan-depth", "8000"])
 
@@ -2838,6 +2840,7 @@ def test_rescan_scan_depth_reimports_at_wider_range(monkeypatch) -> None:
         # The block rescan runs from genesis when no --start-height is given.
         mock_backend.start_background_rescan.assert_awaited_once()
         assert mock_backend.start_background_rescan.await_args.kwargs["start_height"] == 0
+        sync_mock.assert_awaited_once()
 
 
 def test_rescan_scan_depth_honors_start_height(monkeypatch) -> None:
@@ -2848,6 +2851,7 @@ def test_rescan_scan_depth_honors_start_height(monkeypatch) -> None:
     monkeypatch.delenv("JOINMARKET_DATA_DIR", raising=False)
 
     setup_mock = AsyncMock()
+    sync_mock = AsyncMock()
 
     with tempfile.TemporaryDirectory() as tmpdir:
         _make_default_wallet(tmpdir)
@@ -2862,6 +2866,7 @@ def test_rescan_scan_depth_honors_start_height(monkeypatch) -> None:
                 _stub_backend_class(mock_backend),
             ),
             patch.object(WalletService, "setup_descriptor_wallet", setup_mock),
+            patch.object(WalletService, "sync_with_registered_bonds", sync_mock),
         ):
             result = runner.invoke(
                 app, ["rescan", "--scan-depth", "8000", "--start-height", "200000"]
@@ -2872,6 +2877,7 @@ def test_rescan_scan_depth_honors_start_height(monkeypatch) -> None:
         # The rescan must start from the requested height, not 0.
         mock_backend.start_background_rescan.assert_awaited_once()
         assert mock_backend.start_background_rescan.await_args.kwargs["start_height"] == 200000
+        sync_mock.assert_awaited_once()
 
 
 def test_rescan_scan_depth_capped_at_core_limit(monkeypatch) -> None:
@@ -2882,6 +2888,7 @@ def test_rescan_scan_depth_capped_at_core_limit(monkeypatch) -> None:
     monkeypatch.delenv("JOINMARKET_DATA_DIR", raising=False)
 
     setup_mock = AsyncMock()
+    sync_mock = AsyncMock()
 
     with tempfile.TemporaryDirectory() as tmpdir:
         _make_default_wallet(tmpdir)
@@ -2896,6 +2903,7 @@ def test_rescan_scan_depth_capped_at_core_limit(monkeypatch) -> None:
                 _stub_backend_class(mock_backend),
             ),
             patch.object(WalletService, "setup_descriptor_wallet", setup_mock),
+            patch.object(WalletService, "sync_with_registered_bonds", sync_mock),
         ):
             result = runner.invoke(app, ["rescan", "--scan-depth", "5000000"])
 
@@ -2905,6 +2913,7 @@ def test_rescan_scan_depth_capped_at_core_limit(monkeypatch) -> None:
         kwargs = setup_mock.await_args.kwargs
         # Capped to Bitcoin Core's 1,000,000 limit, not the requested 5,000,000.
         assert kwargs["scan_range"] == 1_000_000
+        sync_mock.assert_awaited_once()
 
 
 def test_info_first_time_setup_uses_bond_aware_sync(monkeypatch) -> None:
@@ -2956,6 +2965,7 @@ def test_rescan_without_scan_depth_uses_plain_block_rescan(monkeypatch) -> None:
     monkeypatch.delenv("JOINMARKET_DATA_DIR", raising=False)
 
     setup_mock = AsyncMock()
+    sync_mock = AsyncMock()
 
     with tempfile.TemporaryDirectory() as tmpdir:
         _make_default_wallet(tmpdir)
@@ -2984,6 +2994,7 @@ def test_rescan_without_scan_depth_uses_plain_block_rescan(monkeypatch) -> None:
                 _stub_backend_class(mock_backend),
             ),
             patch.object(WalletService, "setup_descriptor_wallet", setup_mock),
+            patch.object(WalletService, "sync_with_registered_bonds", sync_mock),
             patch("jmwallet.cli.wallet.asyncio.sleep", new=AsyncMock()),
         ):
             result = runner.invoke(app, ["rescan", "--start-height", "0"])
@@ -2991,6 +3002,7 @@ def test_rescan_without_scan_depth_uses_plain_block_rescan(monkeypatch) -> None:
         assert result.exit_code == 0, f"rescan failed: {result.stdout}"
         setup_mock.assert_not_awaited()
         mock_backend.start_background_rescan.assert_awaited_once()
+        sync_mock.assert_awaited_once()
 
 
 def test_print_scan_status_formats_idle_run(capsys: pytest.CaptureFixture) -> None:
@@ -3095,6 +3107,7 @@ def test_rescan_blocking_invokes_rescan_blockchain(monkeypatch) -> None:
     This avoids the 30-minute HTTP timeout that used to kill the CLI on
     long mainnet rescans even though Bitcoin Core kept scanning."""
     monkeypatch.delenv("JOINMARKET_DATA_DIR", raising=False)
+    sync_mock = AsyncMock()
 
     with tempfile.TemporaryDirectory() as tmpdir:
         _make_default_wallet(tmpdir)
@@ -3130,12 +3143,15 @@ def test_rescan_blocking_invokes_rescan_blockchain(monkeypatch) -> None:
         ]
         mock_backend.get_wallet_scan_status = AsyncMock(side_effect=status_seq)
 
+        from jmwallet.wallet.service import WalletService
+
         with (
             patch.object(Path, "home", return_value=Path(tmpdir)),
             patch(
                 "jmwallet.backends.descriptor_wallet.DescriptorWalletBackend",
                 _stub_backend_class(mock_backend),
             ),
+            patch.object(WalletService, "sync_with_registered_bonds", sync_mock),
             patch("jmwallet.cli.wallet.asyncio.sleep", new=AsyncMock()),
         ):
             result = runner.invoke(app, ["rescan", "--start-height", "0"])
@@ -3148,6 +3164,7 @@ def test_rescan_blocking_invokes_rescan_blockchain(monkeypatch) -> None:
         kwargs = mock_backend.start_background_rescan.await_args.kwargs
         assert kwargs.get("start_height") == 0
         assert mock_backend.get_rescan_status.await_count >= 2
+        sync_mock.assert_awaited_once()
         assert "Before rescan" in result.stdout
         assert "After rescan" in result.stdout
 

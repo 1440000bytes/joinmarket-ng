@@ -1863,6 +1863,7 @@ def rescan(
             creation_height=resolved.creation_height,
             scan_depth=scan_depth,
             gap_limit=settings.wallet.gap_limit,
+            scan_range=settings.wallet.scan_range,
             mixdepth_count=settings.wallet.mixdepth_count,
             max_sats_freeze_reuse=settings.wallet.max_sats_freeze_reuse,
             reconstruct_history=settings.wallet.reconstruct_history,
@@ -1878,6 +1879,7 @@ async def _run_rescan(
     creation_height: int | None,
     scan_depth: int | None = None,
     gap_limit: int = 20,
+    scan_range: int = 1000,
     mixdepth_count: int = 5,
     max_sats_freeze_reuse: int = -1,
     reconstruct_history: bool = True,
@@ -1896,6 +1898,7 @@ async def _run_rescan(
         generate_wallet_name,
         get_mnemonic_fingerprint,
     )
+    from jmwallet.wallet.service import WalletService
 
     fingerprint = get_mnemonic_fingerprint(mnemonic, bip39_passphrase or "")
     wallet_name = generate_wallet_name(fingerprint, backend_settings.network)
@@ -1907,6 +1910,20 @@ async def _run_rescan(
     )
     if creation_height is not None:
         backend.set_wallet_creation_height(creation_height)
+
+    def make_wallet(effective_scan_range: int) -> WalletService:
+        return WalletService(
+            mnemonic=mnemonic,
+            backend=backend,
+            network=backend_settings.network,
+            mixdepth_count=mixdepth_count,
+            gap_limit=gap_limit,
+            scan_range=effective_scan_range,
+            passphrase=bip39_passphrase,
+            data_dir=backend_settings.data_dir,
+            max_sats_freeze_reuse=max_sats_freeze_reuse,
+            reconstruct_history=reconstruct_history,
+        )
 
     try:
         loaded = await backend.is_wallet_setup(expected_descriptor_count=None)
@@ -1940,7 +1957,6 @@ async def _run_rescan(
             # ignored, forcing a full genesis scan). Without ``--start-height``
             # this still scans from genesis (start_height defaults to 0).
             from jmwallet.wallet.constants import MAX_DESCRIPTOR_RANGE
-            from jmwallet.wallet.service import WalletService
 
             # Bitcoin Core rejects descriptor ranges spanning more than
             # MAX_DESCRIPTOR_RANGE indices with "Range is too large". Cap the
@@ -1968,18 +1984,7 @@ async def _run_rescan(
                 "mainnet. Duration varies substantially with the Bitcoin node and its "
                 "storage performance."
             )
-            wallet = WalletService(
-                mnemonic=mnemonic,
-                backend=backend,
-                network=backend_settings.network,
-                mixdepth_count=mixdepth_count,
-                gap_limit=gap_limit,
-                scan_range=scan_depth,
-                passphrase=bip39_passphrase,
-                data_dir=backend_settings.data_dir,
-                max_sats_freeze_reuse=max_sats_freeze_reuse,
-                reconstruct_history=reconstruct_history,
-            )
+            wallet = make_wallet(scan_depth)
             # Register the wider range without scanning (rescan=False), then
             # run an explicit block rescan from the requested height below.
             await wallet.setup_descriptor_wallet(
@@ -2001,6 +2006,7 @@ async def _run_rescan(
             post_status = await backend.get_wallet_scan_status()
             print("\nAfter rescan:")
             _print_scan_status(post_status)
+            await wallet.sync_with_registered_bonds()
             return
 
         # Time-coverage repair: plain block rescan against the current range.
@@ -2026,6 +2032,7 @@ async def _run_rescan(
         post_status = await backend.get_wallet_scan_status()
         print("\nAfter rescan:")
         _print_scan_status(post_status)
+        await make_wallet(scan_range).sync_with_registered_bonds()
     finally:
         await backend.close()
 

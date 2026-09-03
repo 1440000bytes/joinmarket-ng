@@ -122,7 +122,10 @@ Rescans are read-only and run server-side in Bitcoin Core, so they are
 safe to interrupt: pressing Ctrl-C stops only the progress polling, not the
 scan. Re-attach later with `jm-wallet info --scan-status`. A full rescan can
 take a long time on mainnet. Duration varies substantially with the Bitcoin
-node and its storage performance.
+node and its storage performance. When `jm-wallet rescan` remains attached
+through completion, it performs a final wallet sync and reconstructs imported
+wallet history automatically. If polling was interrupted, opening CoinJoin
+History in the TUI performs the sync and reconstruction after Core finishes.
 
 ### Wallet creation height
 
