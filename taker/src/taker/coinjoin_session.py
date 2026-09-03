@@ -144,13 +144,14 @@ class CoinJoinSession:
 
         # ``(txid, vout)`` inputs we hold a persisted CoinJoin lock on for this
         # round, so a concurrent round (this or another process) won't reuse
-        # them and build a conflicting transaction. Released on failure; left to
-        # auto-expire on success (the inputs are then spent).
+        # them and build a conflicting transaction. Released on pre-sign
+        # failure; left to auto-expire after local signing (the inputs may be
+        # spent or the transaction may still be broadcast).
         self.reserved_inputs: set[tuple[str, int]] = set()
         self.input_lock_owner = secrets.token_hex(32)
-        # Once !tx can reach a maker, partial signatures may exist even if this
-        # process is cancelled or never reaches its own signer. From that point
-        # onward input locks are retained and renewed instead of released.
+        # Once local taker signing starts, a usable transaction may exist even
+        # if this process is cancelled before broadcast. From that point onward
+        # input locks are retained and renewed instead of released.
         self.signing_boundary_crossed = False
 
         # Counterparty identities in the successfully broadcast transaction.
@@ -1740,12 +1741,11 @@ class CoinJoinSession:
             )
 
             encrypted_tx = session.crypto.encrypt(tx_b64)
-            # Verify ownership immediately before every delivery. Once any
-            # !tx can reach a maker, partial signatures may exist and every
-            # later exit must retain the input leases.
+            # Verify ownership immediately before every delivery. Maker-only
+            # signatures cannot spend taker inputs, so they do not cross the
+            # local signing boundary.
             if not self.renew_input_locks(f"send !tx to maker {nick}"):
                 return False
-            self.signing_boundary_crossed = True
             await self.directory_client.send_privmsg(
                 nick, "tx", encrypted_tx, log_routing=True, force_channel=session.comm_channel
             )
@@ -1991,12 +1991,10 @@ class CoinJoinSession:
                 txid_hex = tx_input.txid_le[::-1].hex()
                 input_index_map[(txid_hex, tx_input.vout)] = idx
 
-            # This is the explicit local signing boundary. The earlier !tx
-            # boundary normally already applies, but the defensive assignment
-            # keeps direct callers of this method safe as well.
+            # Verify ownership before starting local signing. A renewal failure
+            # still leaves the round safely releasable.
             if not self.renew_input_locks("sign taker inputs"):
                 return []
-            self.signing_boundary_crossed = True
 
             # Sign each of our UTXOs
             for utxo in self.selected_utxos:
@@ -2020,6 +2018,9 @@ class CoinJoinSession:
 
                 # Delegate key access and signing to the wallet so private keys
                 # never leave the wallet (issue #518).
+                # This is the local signing boundary. Maker signatures alone
+                # cannot spend taker inputs.
+                self.signing_boundary_crossed = True
                 signed = self.wallet.sign_input(tx, input_index, utxo)
 
                 signatures_info.append(

@@ -1052,28 +1052,25 @@ async def test_our_taker_with_reference_makers(
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(600)
-async def test_rounded_fees_are_rejected_by_legacy_reference_makers(
+async def test_rounded_fees_are_accepted_by_current_reference_makers(
     reference_maker_services, running_yieldgenerators
 ):
-    """Old JAM makers exact-match change and therefore do not sign overpayment."""
+    """The maintained reference maker accepts change above its advertised fee."""
     compose_file = reference_maker_services["compose_file"]
     destination = await _prepare_taker_environment(compose_file)
 
     result = _run_taker_cmd(
         _build_taker_docker_cmd(compose_file, destination, round_up_cj_fees=True)
     )
-    output, output_lower, has_success = _analyze_taker_output(result)
+    output, _output_lower, has_success = _analyze_taker_output(result)
 
-    assert not has_success, (
-        f"Unexpected broadcast with legacy makers:\n{output[-3000:]}"
-    )
-    assert result.returncode != 0
-    assert "missing signatures" in output_lower or "invalid signatures" in output_lower
+    assert has_success, f"Rounded-fee CoinJoin failed:\n{output[-3000:]}"
+    assert result.returncode == 0
     maker_logs = "\n".join(
         get_yieldgenerator_logs(maker_id) for maker_id in [1, 2]
     ).lower()
-    assert "wrong change" in maker_logs, (
-        "The legacy maker did not record its expected exact-change rejection:\n"
+    assert "wrong change" not in maker_logs, (
+        "The maintained reference maker rejected rounded-up change:\n"
         f"{maker_logs[-3000:]}"
     )
 

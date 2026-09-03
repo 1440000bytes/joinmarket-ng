@@ -263,6 +263,14 @@ class TestTakerSigning:
             taker._session.unsigned_tx = tx_bytes
             taker._session.tx_metadata = metadata
 
+            real_signer = mock_wallet.sign_input
+
+            def assert_local_signing_boundary(tx: Any, input_index: int, utxo: UTXOInfo) -> Any:
+                assert taker._session.signing_boundary_crossed is True
+                return real_signer(tx, input_index, utxo)
+
+            mock_wallet.sign_input = MagicMock(side_effect=assert_local_signing_boundary)
+
             # Sign the inputs
             signatures = await taker._session._sign_our_inputs()
 
@@ -285,6 +293,8 @@ class TestTakerSigning:
 
                 # Pubkey should be 33 bytes compressed (66 hex chars)
                 assert len(sig_info["pubkey"]) == 66
+
+            assert taker._session.signing_boundary_crossed is True
 
     @pytest.mark.asyncio
     async def test_sign_our_inputs_correct_indices(
@@ -798,23 +808,25 @@ class TestPhaseCollectSignaturesCompleteness:
 
         # Neither maker responds
         taker.directory_client.wait_for_responses = AsyncMock(return_value={})
+        expected_tx_deliveries = len(maker_sessions)
 
         result = await taker._session._phase_collect_signatures()
         assert result is False, (
             "_phase_collect_signatures must fail when a maker whose inputs are "
             "in the transaction doesn't respond"
         )
+        assert taker.directory_client.send_privmsg.await_count == expected_tx_deliveries
         assert taker.failed_signer_nicks == {"maker1", "maker2"}
-        assert taker._session.signing_boundary_crossed is True
+        assert taker._session.signing_boundary_crossed is False
         assert taker.wallet.renew_coinjoin_inputs.call_count >= 1
         taker.wallet.renew_coinjoin_inputs.reset_mock()
+        reserved_inputs = set(taker._session.reserved_inputs)
         taker.release_input_locks()
-        taker.wallet.release_coinjoin_inputs.assert_not_called()
-        taker.wallet.renew_coinjoin_inputs.assert_called_once_with(
-            taker._session.reserved_inputs,
+        taker.wallet.release_coinjoin_inputs.assert_called_once_with(
+            reserved_inputs,
             owner=taker._session.input_lock_owner,
-            ttl=taker._session.input_lock_ttl_sec(),
         )
+        assert taker._session.reserved_inputs == set()
 
     @pytest.mark.asyncio
     async def test_owner_loss_before_tx_prevents_signature_requests(
@@ -900,13 +912,16 @@ class TestPhaseCollectSignaturesCompleteness:
                 "maker2": {"data": [fake_b64]},
             }
         )
+        expected_tx_deliveries = len(maker_sessions)
 
         result = await taker._session._phase_collect_signatures()
         assert result is False, (
             "_phase_collect_signatures must fail when maker signatures "
             "fail cryptographic verification"
         )
+        assert taker.directory_client.send_privmsg.await_count == expected_tx_deliveries
         assert taker.failed_signer_nicks == {"maker1", "maker2"}
+        assert taker._session.signing_boundary_crossed is False
 
     @pytest.mark.asyncio
     async def test_minimum_makers_is_irrelevant_after_tx_built(
@@ -1097,12 +1112,15 @@ class TestPhaseCollectSignaturesCompleteness:
                 }
             }
         )
+        expected_tx_deliveries = len(maker_sessions)
 
         result = await taker._session._phase_collect_signatures()
 
         assert result is False
+        assert taker.directory_client.send_privmsg.await_count == expected_tx_deliveries
         assert taker.failed_signer_nicks == {"maker2"}
         assert taker._session.declined_signer_nicks == {"maker1"}
+        assert taker._session.signing_boundary_crossed is False
 
 
 # Re-export fixtures for use in conftest

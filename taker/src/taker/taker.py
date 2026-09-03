@@ -421,8 +421,9 @@ class Taker(TakerMonitoringMixin):
     def release_input_locks(self) -> None:
         """Clean up persisted CoinJoin locks held on this round's taker inputs.
 
-        Pre-sign failures release immediately. Once signatures may exist, the
-        owner-qualified leases are renewed through the pending window instead.
+        Failures before local taker signing release immediately. Once local
+        signatures may exist, owner-qualified leases are renewed through the
+        pending window instead.
         """
         if self._session and self._session.signing_boundary_crossed:
             self._session.retain_input_locks()
@@ -433,9 +434,10 @@ class Taker(TakerMonitoringMixin):
                     self._session.reserved_inputs,
                     owner=self._session.input_lock_owner,
                 )
-            except Exception as e:  # pragma: no cover - best-effort cleanup
+            except Exception as e:
                 logger.bind(sensitive=True).debug("Failed to release taker input locks: {}", e)
-            self._session.reserved_inputs = set()
+            else:
+                self._session.reserved_inputs = set()
 
     @property
     def last_failure_reason(self) -> str | None:
@@ -1536,10 +1538,11 @@ class Taker(TakerMonitoringMixin):
             self.state = TakerState.FAILED
             return None
         finally:
-            # Before !tx, failure is known not to have produced signatures and
-            # locks can be released. At or after the signing boundary, renew
-            # through the pending window because cancellation, confirmation
-            # decline, or a failed broadcast can leave a usable transaction.
+            # Before local taker signing, failure cannot produce a transaction
+            # that spends our inputs, so locks can be released. At or after the
+            # signing boundary, renew through the pending window because
+            # cancellation, confirmation decline, or a failed broadcast can
+            # leave a usable transaction.
             if self.state != TakerState.COMPLETE:
                 self.release_input_locks()
             self._clear_coinjoin_log_context()

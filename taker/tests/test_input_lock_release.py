@@ -146,6 +146,28 @@ async def test_initial_confirmation_timeout_stops_before_podle_and_releases_lock
     assert taker._session.reserved_inputs == set()
 
 
+def test_release_failure_preserves_inputs_for_retry() -> None:
+    """A transient release failure must leave the session able to retry."""
+    utxo = make_utxo()
+    wallet = _make_wallet([utxo])
+    wallet.release_coinjoin_inputs = Mock(side_effect=[RuntimeError("temporary failure"), None])
+    taker = Taker(wallet, _backend(), make_taker_config())
+    reserved_inputs = {(utxo.txid, utxo.vout)}
+    taker._session.reserved_inputs = set(reserved_inputs)
+    owner = taker._session.input_lock_owner
+
+    taker.release_input_locks()
+
+    assert taker._session.reserved_inputs == reserved_inputs
+    wallet.release_coinjoin_inputs.assert_called_once_with(reserved_inputs, owner=owner)
+
+    taker.release_input_locks()
+
+    assert taker._session.reserved_inputs == set()
+    assert wallet.release_coinjoin_inputs.call_count == 2
+    wallet.release_coinjoin_inputs.assert_called_with(reserved_inputs, owner=owner)
+
+
 @pytest.mark.asyncio
 async def test_late_synchronous_confirmation_is_rejected() -> None:
     def confirm_after_timeout(**kwargs: object) -> bool:

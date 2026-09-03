@@ -95,10 +95,11 @@ of `0.2` picks a session fee rate between the base rate and `base_rate * 1.2`; `
 randomization.
 
 By default, `taker.round_up_cj_fees = true` rounds every selected maker's fee up to the
-closest public quantum of the same type. Older makers that exact-match their expected change
-can reject the resulting transaction; use `--no-round-up-cj-fees` while interacting with
-those makers. `taker.require_quantized_cj_fees` only selects offers already on that grid and
-is independent of rounding. The recommended future policy is
+closest public quantum of the same type. Makers must accept outputs that pay at least their
+advertised fee, as supported by joinmarket-clientserver v0.9.12 and newer implementations.
+Pre-v0.9.12 makers that require exact output values are unsupported. The
+`taker.require_quantized_cj_fees` setting only selects offers already on that grid and is
+independent of rounding. The recommended future policy is
 `require_quantized_cj_fees = true` with `round_up_cj_fees = false`; it is intended to become
 the default.
 
