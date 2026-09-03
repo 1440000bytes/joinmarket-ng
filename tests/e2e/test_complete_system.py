@@ -279,7 +279,7 @@ def maker_config():
         directory_servers=[_DIRECTORY_SERVER],
         allow_clearnet_connections=True,
         min_size=100_000,
-        cj_fee_relative="0.0003",
+        cj_fee_relative="0.001",
         tx_fee_contribution=1_000,
         tor_control=TorControlConfig(enabled=False),
     )
@@ -306,7 +306,7 @@ def maker2_config():
         directory_servers=[_DIRECTORY_SERVER],
         allow_clearnet_connections=True,
         min_size=100_000,
-        cj_fee_relative="0.00025",
+        cj_fee_relative="0.0005",
         tx_fee_contribution=1_500,
     )
 
@@ -1071,7 +1071,7 @@ async def test_coinjoin_replaces_failed_maker_without_redriving_survivor(
 
     for service in ("maker1", "maker2", "maker3"):
         _require_docker_container(service)
-    assert _wait_for_offer_fee_profiles({"0.0003", "0.00025", "0.0002"}), (
+    assert _wait_for_offer_fee_profiles({"0.001", "0.0005", "0.0002"}), (
         "Required maker1, maker2, and maker3 fee profiles did not become ready"
     )
 
@@ -1104,7 +1104,7 @@ async def test_coinjoin_replaces_failed_maker_without_redriving_survivor(
             **kwargs: Any,
         ) -> tuple[dict[str, Any], int]:
             hard_excludes = kwargs.get("hard_exclude_nicks") or set()
-            fees = ["0.0003", "0.00025"] if not hard_excludes else ["0.0002"]
+            fees = ["0.001", "0.0005"] if not hard_excludes else ["0.0002"]
             selected: dict[str, Any] = {}
             for fee in fees:
                 matches = [
@@ -1171,8 +1171,8 @@ async def test_coinjoin_replaces_failed_maker_without_redriving_survivor(
 
         assert txid is not None
         await mine_blocks(1, MINING_ADDRESS)
-        failed_nick = selected_nicks["0.00025"]
-        survivor_nick = selected_nicks["0.0003"]
+        failed_nick = selected_nicks["0.0005"]
+        survivor_nick = selected_nicks["0.001"]
         replacement_nick = selected_nicks["0.0002"]
         message_counts = Counter(sent_messages)
 
@@ -1414,7 +1414,7 @@ async def test_taker_maker_selection(
             minsize=100_000,
             maxsize=10_000_000_000,
             txfee=1_000,
-            cjfee="0.0003",
+            cjfee="0.001",
         ),
         Offer(
             counterparty="J5Maker2Nick",
@@ -1423,7 +1423,7 @@ async def test_taker_maker_selection(
             minsize=100_000,
             maxsize=10_000_000_000,
             txfee=1_500,
-            cjfee="0.00025",
+            cjfee="0.0005",
         ),
     ]
 

@@ -740,6 +740,8 @@ def _build_taker_docker_cmd(
         "0.01",
         # Reference yield generators charge fees and do not create bonds in this fixture.
         "--no-bondless-zero-fee",
+        # yg-privacyenhanced intentionally randomizes its advertised fee off the public grid.
+        "--allow-non-quantized-offers",
         "--log-level",
         "DEBUG",
         "--yes",

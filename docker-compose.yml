@@ -662,7 +662,7 @@ services:
       - LOGGING__LEVEL=DEBUG
       - MAKER__MIN_SIZE=10000
       - MAKER__TX_FEE_CONTRIBUTION=500
-      - MAKER__CJ_FEE_RELATIVE=0.0003
+      - MAKER__CJ_FEE_RELATIVE=0.001
       # Fidelity bond configuration (manual specification without registry)
       - MAKER__FIDELITY_BOND_LOCKTIMES=4099766400
       - FIDELITY_BOND_INDEX=0
@@ -730,7 +730,7 @@ services:
       - LOGGING__LEVEL=DEBUG
       - MAKER__MIN_SIZE=10000
       - MAKER__TX_FEE_CONTRIBUTION=500
-      - MAKER__CJ_FEE_RELATIVE=0.00025
+      - MAKER__CJ_FEE_RELATIVE=0.0005
       # Tor configuration for direct connections
       - TOR__SOCKS_HOST=jm-tor
       - TOR__SOCKS_PORT=9050
@@ -861,7 +861,7 @@ services:
       - LOGGING__LEVEL=DEBUG
       - MAKER__MIN_SIZE=10000
       - MAKER__TX_FEE_CONTRIBUTION=500
-      - MAKER__CJ_FEE_RELATIVE=0.00018
+      - MAKER__CJ_FEE_RELATIVE=0.0001
       - TOR__SOCKS_HOST=jm-tor
       - TOR__SOCKS_PORT=9050
       - TOR__CONTROL_HOST=jm-tor
@@ -924,7 +924,7 @@ services:
       - LOGGING__LEVEL=DEBUG
       - MAKER__MIN_SIZE=10000
       - MAKER__TX_FEE_CONTRIBUTION=500
-      - MAKER__CJ_FEE_RELATIVE=0.00015
+      - MAKER__CJ_FEE_RELATIVE=0.00005
       - TOR__SOCKS_HOST=jm-tor
       - TOR__SOCKS_PORT=9050
       - TOR__CONTROL_HOST=jm-tor
