@@ -50,7 +50,7 @@ from loguru import logger
 
 from taker.config import BroadcastPolicy
 from taker.models import MakerSession, PhaseResult
-from taker.orderbook import calculate_cj_fee
+from taker.orderbook import calculate_cj_fee, calculate_cj_fee_plan
 from taker.podle import ExtendedPoDLECommitment, get_eligible_podle_utxos
 from taker.tx_builder import CoinJoinTxBuilder, build_coinjoin_tx, compute_tx_locktime
 
@@ -198,6 +198,15 @@ class CoinJoinSession:
         constructing the session (via ``Taker.__new__`` bypass) keep working.
         """
         self._taker = taker
+
+    def maker_fee_plan(self) -> dict[str, int]:
+        """Return the paid fee plan for the current participating makers."""
+        return calculate_cj_fee_plan(
+            (session.offer for session in self.maker_sessions.values()),
+            self.cj_amount,
+            round_up_cj_fees=self.config.round_up_cj_fees,
+            equalize_cj_fees=self.config.equalize_cj_fees,
+        )
 
     def reset(self) -> None:
         """Reset transient session state to a fresh state."""
@@ -919,9 +928,7 @@ class CoinJoinSession:
                     # either way the whole round dies after PoDLE commitments were
                     # burned. Drop such makers here so they can be replaced.
                     maker_total_input = sum(u["value"] for u in session.utxos)
-                    maker_cjfee = calculate_cj_fee(
-                        session.offer, self.cj_amount, self.config.round_up_cj_fees
-                    )
+                    maker_cjfee = self.maker_fee_plan()[nick]
                     maker_change = (
                         maker_total_input - self.cj_amount - session.offer.txfee + maker_cjfee
                     )
@@ -1103,10 +1110,48 @@ class CoinJoinSession:
             self.cj_destination = destination
 
             # Calculate total input needed (now with exact maker UTXOs)
-            total_maker_fee = sum(
-                calculate_cj_fee(s.offer, self.cj_amount, self.config.round_up_cj_fees)
-                for s in self.maker_sessions.values()
-            )
+            maker_fee_plan = self.maker_fee_plan()
+            total_maker_fee = sum(maker_fee_plan.values())
+            for nick, session in self.maker_sessions.items():
+                maker_total_input = sum(utxo["value"] for utxo in session.utxos)
+                maker_change = (
+                    maker_total_input - self.cj_amount - session.offer.txfee + maker_fee_plan[nick]
+                )
+                if maker_change < DUST_THRESHOLD:
+                    self.last_failure_reason = (
+                        f"Final fee plan leaves maker {nick} with {maker_change} sats of change, "
+                        f"below the maker change threshold ({DUST_THRESHOLD}); retry with "
+                        "different makers."
+                    )
+                    logger.warning("Final maker fee plan would create dust change")
+                    logger.bind(sensitive=True).warning(
+                        "Final maker fee plan detail: {}", self.last_failure_reason
+                    )
+                    return False
+            if self.config.equalize_cj_fees and maker_fee_plan:
+                target_fee = max(maker_fee_plan.values())
+                base_fees = {
+                    nick: calculate_cj_fee(
+                        session.offer,
+                        self.cj_amount,
+                        self.config.round_up_cj_fees,
+                    )
+                    for nick, session in self.maker_sessions.items()
+                }
+                bumped_count = sum(
+                    maker_fee_plan[nick] > base_fee for nick, base_fee in base_fees.items()
+                )
+                logger.info(
+                    f"Equalizing CoinJoin fees at {target_fee:,} sats per maker; "
+                    f"{bumped_count}/{len(maker_fee_plan)} maker payments increased"
+                )
+                for nick, paid_fee in maker_fee_plan.items():
+                    logger.bind(sensitive=True).debug(
+                        "Maker {} fee: advertised/rounded {} sats, paid {} sats",
+                        nick,
+                        base_fees[nick],
+                        paid_fee,
+                    )
 
             # Estimate tx fee with actual input counts
             num_taker_inputs = len(self.preselected_utxos)
@@ -1167,14 +1212,27 @@ class CoinJoinSession:
                 # Calculate residual (should be minimal - just from integer division)
                 residual = preselected_total - self.cj_amount - total_maker_fee - tx_fee
                 if residual < 0:
-                    # Negative residual means the budget was insufficient
-                    # This should only happen if there's a bug in the calculation
                     logger.error("Sweep calculation failed due to a negative residual")
+                    if self.config.equalize_cj_fees:
+                        self.last_failure_reason = (
+                            "Sweep maker fee equalization exceeds the amount reserved during "
+                            "selection, likely because a replacement maker raised the uniform "
+                            "fee target. Start a new CoinJoin round to select a compatible set."
+                        )
+                    else:
+                        self.last_failure_reason = (
+                            "Sweep maker fees exceed the amount reserved during selection; "
+                            "retry the CoinJoin with different makers."
+                        )
                     logger.bind(sensitive=True).error(
-                        f"Sweep failed: negative residual of {residual} sats. "
-                        f"This indicates a bug in cj_amount calculation. "
-                        f"total_input={preselected_total}, cj_amount={self.cj_amount}, "
-                        f"maker_fees={total_maker_fee}, tx_fee_budget={tx_fee}"
+                        "Sweep funding detail: negative residual of {} sats; total_input={}, "
+                        "cj_amount={}, maker_fees={}, tx_fee_budget={}. {}",
+                        residual,
+                        preselected_total,
+                        self.cj_amount,
+                        total_maker_fee,
+                        tx_fee,
+                        self.last_failure_reason,
                     )
                     return False
 
@@ -1354,9 +1412,7 @@ class CoinJoinSession:
             # Build maker data
             maker_data = {}
             for nick, session in self.maker_sessions.items():
-                cjfee = calculate_cj_fee(
-                    session.offer, self.cj_amount, self.config.round_up_cj_fees
-                )
+                cjfee = maker_fee_plan[nick]
                 # JoinMarket protocol: txfee in offer is the total transaction fee
                 # the maker contributes (in satoshis), not a per-input/output fee
                 maker_txfee = session.offer.txfee
@@ -1692,10 +1748,7 @@ class CoinJoinSession:
         # This ensures addresses are persisted before they're revealed in the transaction.
         # If we crash after sending !tx but before broadcast, the addresses won't be reused.
         try:
-            total_maker_fees = sum(
-                calculate_cj_fee(session.offer, self.cj_amount, self.config.round_up_cj_fees)
-                for session in self.maker_sessions.values()
-            )
+            total_maker_fees = sum(self.maker_fee_plan().values())
             maker_nicks = list(self.maker_sessions.keys())
             destination_vout = self._get_taker_cj_output_index()
 

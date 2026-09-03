@@ -16,6 +16,7 @@ from taker.config import MaxCjFee
 from taker.orderbook import (
     OrderbookManager,
     calculate_cj_fee,
+    calculate_cj_fee_plan,
     cheapest_order_choose,
     choose_orders,
     choose_sweep_orders,
@@ -516,6 +517,83 @@ class TestRoundedOrderAccounting:
         assert total_fee == 500 + calculate_cj_fee(
             self._offers()[0], cj_amount, round_up_cj_fees=True
         )
+
+
+class TestEqualizedOrderAccounting:
+    @staticmethod
+    def _offers() -> list[Offer]:
+        return [
+            Offer(
+                counterparty="relative",
+                oid=0,
+                ordertype=OfferType.SW0_RELATIVE,
+                minsize=10_000,
+                maxsize=20_000_000,
+                txfee=0,
+                cjfee="0.0002",
+            ),
+            Offer(
+                counterparty="absolute",
+                oid=0,
+                ordertype=OfferType.SW0_ABSOLUTE,
+                minsize=10_000,
+                maxsize=20_000_000,
+                txfee=0,
+                cjfee=500,
+            ),
+        ]
+
+    def test_plan_pays_highest_realized_fee_to_every_maker(self) -> None:
+        fee_plan = calculate_cj_fee_plan(
+            self._offers(),
+            1_000_000,
+            equalize_cj_fees=True,
+        )
+
+        assert fee_plan == {"relative": 500, "absolute": 500}
+
+    def test_normal_selection_totals_equalized_fees(self) -> None:
+        selected, total_fee = choose_orders(
+            self._offers(),
+            1_000_000,
+            2,
+            MaxCjFee(abs_fee=500, rel_fee="0.0002"),
+            choose_fn=lambda offers, _n: offers,
+            bondless_require_zero_fee=False,
+            require_quantized_cj_fees=True,
+            equalize_cj_fees=True,
+        )
+
+        assert set(selected) == {"relative", "absolute"}
+        assert total_fee == 1_000
+
+    def test_sweep_solves_amount_with_uniform_realized_fee(self) -> None:
+        selected, cj_amount, total_fee = choose_sweep_orders(
+            self._offers(),
+            total_input_value=10_000_100,
+            my_txfee=100,
+            n=2,
+            max_cj_fee=MaxCjFee(abs_fee=500, rel_fee="0.0002"),
+            choose_fn=lambda offers, _n: offers,
+            bondless_require_zero_fee=False,
+            require_quantized_cj_fees=True,
+            equalize_cj_fees=True,
+        )
+
+        fee_plan = calculate_cj_fee_plan(
+            selected.values(),
+            cj_amount,
+            equalize_cj_fees=True,
+        )
+        assert len(set(fee_plan.values())) == 1
+        assert total_fee == sum(fee_plan.values())
+        assert cj_amount + total_fee <= 10_000_000
+        next_plan = calculate_cj_fee_plan(
+            selected.values(),
+            cj_amount + 1,
+            equalize_cj_fees=True,
+        )
+        assert cj_amount + 1 + sum(next_plan.values()) > 10_000_000
 
 
 class TestDedupeOffersByMaker:
@@ -1316,6 +1394,33 @@ class TestOrderbookManager:
 
         assert len(orders) == 2, "Soft fallback should refill from ignored makers"
         assert "maker1" in orders
+
+    def test_soft_fallback_recalculates_equalized_total(
+        self, max_cj_fee: MaxCjFee, tmp_path: Path
+    ) -> None:
+        cheap = Offer(
+            counterparty="cheap",
+            oid=0,
+            ordertype=OfferType.SW0_ABSOLUTE,
+            minsize=10_000,
+            maxsize=1_000_000,
+            txfee=0,
+            cjfee=100,
+        )
+        expensive = cheap.model_copy(update={"counterparty": "expensive", "cjfee": 500})
+        manager = OrderbookManager(
+            max_cj_fee,
+            bondless_require_zero_fee=False,
+            data_dir=tmp_path,
+            equalize_cj_fees=True,
+        )
+        manager.update_offers([cheap, expensive])
+        manager.add_ignored_maker("expensive")
+
+        orders, total_fee = manager.select_makers(cj_amount=100_000, n=2)
+
+        assert set(orders) == {"cheap", "expensive"}
+        assert total_fee == 1_000
 
     def test_soft_fallback_relaxes_exclude_nicks(
         self, sample_offers: list[Offer], max_cj_fee: MaxCjFee, tmp_path: Path

@@ -10,7 +10,7 @@ Implements:
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from decimal import Decimal
 from typing import Any
 
@@ -142,6 +142,53 @@ def calculate_cj_fee(offer: Offer, cj_amount: int, round_up_cj_fees: bool = Fals
     if offer.ordertype in (OfferType.SW0_ABSOLUTE, OfferType.SWA_ABSOLUTE):
         return int(policy)
     return calculate_relative_fee(cj_amount, str(policy))
+
+
+def calculate_cj_fee_plan(
+    offers: Iterable[Offer],
+    cj_amount: int,
+    round_up_cj_fees: bool = False,
+    equalize_cj_fees: bool = False,
+) -> dict[str, int]:
+    """Return the paid fee for each selected maker.
+
+    Equalization compares realized satoshi fees, which keeps absolute and
+    relative offers comparable at the actual CoinJoin amount.
+    """
+    fees = {
+        offer.counterparty: calculate_cj_fee(offer, cj_amount, round_up_cj_fees) for offer in offers
+    }
+    if equalize_cj_fees and fees:
+        target = max(fees.values())
+        return dict.fromkeys(fees, target)
+    return fees
+
+
+def _calculate_equalized_sweep_amount(
+    offers: list[Offer],
+    available: int,
+    round_up_cj_fees: bool,
+) -> int:
+    """Find the largest sweep amount funded by a uniform maker fee."""
+    low = 0
+    high = max(available, 0)
+    result = 0
+    while low <= high:
+        candidate = (low + high) // 2
+        total_fee = sum(
+            calculate_cj_fee_plan(
+                offers,
+                candidate,
+                round_up_cj_fees=round_up_cj_fees,
+                equalize_cj_fees=True,
+            ).values()
+        )
+        if candidate + total_fee <= available:
+            result = candidate
+            low = candidate + 1
+        else:
+            high = candidate - 1
+    return result
 
 
 def is_fee_within_limits(
@@ -717,6 +764,7 @@ def choose_orders(
     maker_repeat_penalty: float = DEFAULT_MAKER_REPEAT_PENALTY,
     require_quantized_cj_fees: bool = False,
     round_up_cj_fees: bool = False,
+    equalize_cj_fees: bool = False,
 ) -> tuple[dict[str, Offer], int]:
     """
     Choose n orders from the orderbook for a CoinJoin.
@@ -791,11 +839,21 @@ def choose_orders(
     result = {offer.counterparty: offer for offer in selected}
 
     # Calculate total fee
-    total_fee = sum(calculate_cj_fee(offer, cj_amount, round_up_cj_fees) for offer in selected)
+    fee_plan = calculate_cj_fee_plan(
+        selected,
+        cj_amount,
+        round_up_cj_fees=round_up_cj_fees,
+        equalize_cj_fees=equalize_cj_fees,
+    )
+    total_fee = sum(fee_plan.values())
 
     logger.info(
         f"Selected {len(result)} makers from {len(offers)} offers, total fee: {total_fee} sats"
     )
+    if equalize_cj_fees and fee_plan:
+        logger.info(
+            f"Maker fee equalization enabled: paying {max(fee_plan.values())} sats per maker"
+        )
 
     return result, total_fee
 
@@ -816,6 +874,7 @@ def choose_sweep_orders(
     maker_repeat_penalty: float = DEFAULT_MAKER_REPEAT_PENALTY,
     require_quantized_cj_fees: bool = False,
     round_up_cj_fees: bool = False,
+    equalize_cj_fees: bool = False,
 ) -> tuple[dict[str, Offer], int, int]:
     """
     Choose n orders for a sweep transaction (no change).
@@ -920,22 +979,29 @@ def choose_sweep_orders(
         maker_repeat_penalty,
     )
 
-    # Now solve for exact cj_amount
-    sum_abs_fees = 0
-    rel_fees = []
+    # Now solve for exact cj_amount.
+    if equalize_cj_fees:
+        cj_amount = _calculate_equalized_sweep_amount(
+            selected,
+            total_input_value - my_txfee,
+            round_up_cj_fees,
+        )
+    else:
+        sum_abs_fees = 0
+        rel_fees = []
 
-    for offer in selected:
-        if offer.ordertype in (OfferType.SW0_ABSOLUTE, OfferType.SWA_ABSOLUTE):
-            policy = _paid_fee_policy(offer, round_up_cj_fees)
-            assert isinstance(policy, int)
-            sum_abs_fees += policy
-        else:
-            policy = _paid_fee_policy(offer, round_up_cj_fees)
-            assert isinstance(policy, Decimal)
-            rel_fees.append(str(policy))
+        for offer in selected:
+            if offer.ordertype in (OfferType.SW0_ABSOLUTE, OfferType.SWA_ABSOLUTE):
+                policy = _paid_fee_policy(offer, round_up_cj_fees)
+                assert isinstance(policy, int)
+                sum_abs_fees += policy
+            else:
+                policy = _paid_fee_policy(offer, round_up_cj_fees)
+                assert isinstance(policy, Decimal)
+                rel_fees.append(str(policy))
 
-    available = total_input_value - my_txfee - sum_abs_fees
-    cj_amount = calculate_sweep_amount(available, rel_fees)
+        available = total_input_value - my_txfee - sum_abs_fees
+        cj_amount = calculate_sweep_amount(available, rel_fees)
 
     # Verify this works for all selected offers
     for offer in selected:
@@ -947,7 +1013,13 @@ def choose_sweep_orders(
             return {}, 0, 0
 
     result = {offer.counterparty: offer for offer in selected}
-    total_fee = sum(calculate_cj_fee(offer, cj_amount, round_up_cj_fees) for offer in selected)
+    fee_plan = calculate_cj_fee_plan(
+        selected,
+        cj_amount,
+        round_up_cj_fees=round_up_cj_fees,
+        equalize_cj_fees=equalize_cj_fees,
+    )
+    total_fee = sum(fee_plan.values())
 
     logger.bind(sensitive=True).info(
         f"Sweep: selected {len(result)} makers, cj_amount={cj_amount}, fee={total_fee}"
@@ -968,12 +1040,14 @@ class OrderbookManager:
         own_wallet_nicks: set[str] | None = None,
         require_quantized_cj_fees: bool = False,
         round_up_cj_fees: bool = False,
+        equalize_cj_fees: bool = False,
     ):
         self.max_cj_fee = max_cj_fee
         self.bondless_makers_allowance = bondless_makers_allowance
         self.bondless_require_zero_fee = bondless_require_zero_fee
         self.require_quantized_cj_fees = require_quantized_cj_fees
         self.round_up_cj_fees = round_up_cj_fees
+        self.equalize_cj_fees = equalize_cj_fees
         self.offers: list[Offer] = []
         self.bonds: dict[str, Any] = {}  # maker -> bond info
         self.ignored_makers: set[str] = set()
@@ -1162,6 +1236,7 @@ class OrderbookManager:
             penalized_maker_keys=penalized_maker_keys,
             require_quantized_cj_fees=self.require_quantized_cj_fees,
             round_up_cj_fees=self.round_up_cj_fees,
+            equalize_cj_fees=self.equalize_cj_fees,
         )
         if len(result) >= n or not soft:
             return result, fee
@@ -1191,9 +1266,18 @@ class OrderbookManager:
             penalized_maker_keys=penalized_maker_keys,
             require_quantized_cj_fees=self.require_quantized_cj_fees,
             round_up_cj_fees=self.round_up_cj_fees,
+            equalize_cj_fees=self.equalize_cj_fees,
         )
         result.update(topup_result)
-        return result, fee + topup_fee
+        if not self.equalize_cj_fees:
+            return result, fee + topup_fee
+        fee_plan = calculate_cj_fee_plan(
+            result.values(),
+            cj_amount,
+            round_up_cj_fees=self.round_up_cj_fees,
+            equalize_cj_fees=True,
+        )
+        return result, sum(fee_plan.values())
 
     def select_makers_for_sweep(
         self,
@@ -1255,6 +1339,7 @@ class OrderbookManager:
             penalized_maker_keys=penalized_maker_keys,
             require_quantized_cj_fees=self.require_quantized_cj_fees,
             round_up_cj_fees=self.round_up_cj_fees,
+            equalize_cj_fees=self.equalize_cj_fees,
         )
         if len(result[0]) >= n or not soft:
             return result
@@ -1278,4 +1363,5 @@ class OrderbookManager:
             penalized_maker_keys=penalized_maker_keys,
             require_quantized_cj_fees=self.require_quantized_cj_fees,
             round_up_cj_fees=self.round_up_cj_fees,
+            equalize_cj_fees=self.equalize_cj_fees,
         )

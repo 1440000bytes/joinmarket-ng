@@ -55,7 +55,11 @@ from taker.eligibility import (
 from taker.models import MakerSession, PhaseResult, TakerState
 from taker.monitoring import TakerMonitoringMixin
 from taker.multi_directory import MultiDirectoryClient
-from taker.orderbook import OrderbookManager, calculate_cj_fee, maker_selection_keys
+from taker.orderbook import (
+    OrderbookManager,
+    calculate_cj_fee,
+    maker_selection_keys,
+)
 from taker.podle_manager import PoDLEManager
 
 # Backward-compatible re-exports: many tests and modules import these from taker.taker
@@ -230,6 +234,7 @@ class Taker(TakerMonitoringMixin):
             own_wallet_nicks=own_wallet_nicks,
             require_quantized_cj_fees=config.require_quantized_cj_fees,
             round_up_cj_fees=config.round_up_cj_fees,
+            equalize_cj_fees=config.equalize_cj_fees,
         )
 
         # PoDLE manager for commitment tracking
@@ -937,6 +942,30 @@ class Taker(TakerMonitoringMixin):
 
         logger.info(f"Updated {updated_count} offers with verified fidelity bond values")
 
+    def _log_initial_maker_fee_plan(self, fee_plan: dict[str, int]) -> None:
+        """Explain the opt-in fee equalization policy before makers are contacted."""
+        if not self.config.equalize_cj_fees or not fee_plan:
+            return
+
+        target_fee = max(fee_plan.values())
+        bumped_count = sum(
+            fee_plan[nick]
+            > calculate_cj_fee(
+                session.offer,
+                self._session.cj_amount,
+                self.config.round_up_cj_fees,
+            )
+            for nick, session in self._session.maker_sessions.items()
+        )
+        logger.warning(
+            "Maker fee equalization is enabled; legacy makers that require exact fee "
+            "payments may refuse to sign, causing this CoinJoin attempt to fail"
+        )
+        logger.info(
+            f"Initial equalized maker fee: {target_fee:,} sats each; "
+            f"{bumped_count}/{len(fee_plan)} maker payments increased"
+        )
+
     async def do_coinjoin(
         self,
         amount: int,
@@ -1368,11 +1397,14 @@ class Taker(TakerMonitoringMixin):
                 nick: MakerSession(nick=nick, offer=offer, supports_neutrino_compat=False)
                 for nick, offer in selected_offers.items()
             }
+            initial_fee_plan = self._session.maker_fee_plan()
+            total_fee = sum(initial_fee_plan.values())
 
             logger.bind(sensitive=True).info(
                 f"Selected {len(self._session.maker_sessions)} makers, "
                 f"total fee: {total_fee:,} sats"
             )
+            self._log_initial_maker_fee_plan(initial_fee_plan)
 
             # Log the same estimate used by the transaction calculations. Sweep
             # amounts commit to the deterministic budget before !fill, while
@@ -1400,11 +1432,7 @@ class Taker(TakerMonitoringMixin):
                     # Build maker details for confirmation
                     maker_details = []
                     for nick, session in self._session.maker_sessions.items():
-                        fee = calculate_cj_fee(
-                            session.offer,
-                            self._session.cj_amount,
-                            self.config.round_up_cj_fees,
-                        )
+                        fee = initial_fee_plan[nick]
                         advertised_fee = calculate_cj_fee(
                             session.offer,
                             self._session.cj_amount,
@@ -1516,6 +1544,21 @@ class Taker(TakerMonitoringMixin):
 
             sig_success = await self._session._phase_collect_signatures()
             if not sig_success:
+                if self.config.equalize_cj_fees and (
+                    self._session.failed_signer_nicks or self._session.declined_signer_nicks
+                ):
+                    logger.warning(
+                        "An equalized-fee CoinJoin was rejected or left unsigned; a legacy "
+                        "maker that requires its exact advertised fee may be incompatible. "
+                        "Start a new CoinJoin round to select replacements."
+                    )
+                    incompatible_nicks = (
+                        self._session.failed_signer_nicks | self._session.declined_signer_nicks
+                    )
+                    logger.bind(sensitive=True).warning(
+                        "Possible equalized-fee incompatible makers: {}",
+                        ", ".join(sorted(incompatible_nicks)),
+                    )
                 for nick in self._session.failed_signer_nicks:
                     self.orderbook_manager.add_ignored_maker(nick)
                 logger.error("Signature collection failed")
@@ -2110,14 +2153,8 @@ class Taker(TakerMonitoringMixin):
         total_input_value = taker_input_value + maker_input_value
         actual_mining_fee = total_input_value - total_output_value
 
-        total_maker_fees = sum(
-            calculate_cj_fee(
-                session.offer,
-                self._session.cj_amount,
-                self.config.round_up_cj_fees,
-            )
-            for session in self._session.maker_sessions.values()
-        )
+        final_fee_plan = self._session.maker_fee_plan()
+        total_maker_fees = sum(final_fee_plan.values())
         total_cost = total_maker_fees + actual_mining_fee
         actual_vsize = calculate_tx_vsize(self._session.final_tx)
         actual_fee_rate = actual_mining_fee / actual_vsize if actual_vsize > 0 else 0.0
@@ -2170,11 +2207,7 @@ class Taker(TakerMonitoringMixin):
             try:
                 maker_details = []
                 for nick, session in self._session.maker_sessions.items():
-                    fee = calculate_cj_fee(
-                        session.offer,
-                        self._session.cj_amount,
-                        self.config.round_up_cj_fees,
-                    )
+                    fee = final_fee_plan[nick]
                     advertised_fee = calculate_cj_fee(
                         session.offer,
                         self._session.cj_amount,

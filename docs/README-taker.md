@@ -94,14 +94,18 @@ Backend setup and defaults: [Installation](install.md#configure-backend).
 of `0.2` picks a session fee rate between the base rate and `base_rate * 1.2`; `0` disables
 randomization.
 
-By default, `taker.round_up_cj_fees = true` rounds every selected maker's fee up to the
-closest public quantum of the same type. Makers must accept outputs that pay at least their
-advertised fee, as supported by joinmarket-clientserver v0.9.12 and newer implementations.
-Pre-v0.9.12 makers that require exact output values are unsupported. The
-`taker.require_quantized_cj_fees` setting only selects offers already on that grid and is
-independent of rounding. The recommended future policy is
-`require_quantized_cj_fees = true` with `round_up_cj_fees = false`; it is intended to become
-the default.
+By default, `taker.require_quantized_cj_fees = true` selects only offers already on the public
+fee grid, while `taker.round_up_cj_fees = false` pays each maker's advertised fee. This avoids
+fee-bump incompatibility with pre-v0.9.12 makers that require exact output values. Enabling
+rounding requires makers that accept outputs paying at least their advertised fee, as supported
+by joinmarket-clientserver v0.9.12 and newer implementations.
+
+The opt-in `taker.equalize_cj_fees = true` policy pays every selected maker the highest realized
+satoshi fee among the selected offers. For example, makers advertising 0.01%, 0.02%, 0.05%, and
+0.1% are all paid the realized 0.1% fee. Each selected offer must first pass its normal configured
+fee limit. Equalization makes maker payments indistinguishable by amount, but a legacy maker may
+refuse the increased payment and cause that CoinJoin attempt to fail. The taker logs the uniform
+target and how many maker payments were increased.
 
 `taker.counterparty_count` is the per-round target. During fill and authentication, the taker
 uses up to `taker.max_maker_replacement_attempts` (default `3`) to restore that target after a
@@ -273,6 +277,11 @@ Takers only require Tor SOCKS; no Tor control port is needed.
 │                                                             (comma-separate… │
 │                                                             [env var:        │
 │                                                             DIRECTORY_SERVE… │
+│ --equalize-cj-fe…      --no-equalize-…                      Pay all selected │
+│                                                             makers the       │
+│                                                             highest realized │
+│                                                             fee in the       │
+│                                                             selected set     │
 │ --fee-rate                                FLOAT             Manual fee rate  │
 │                                                             in sat/vB.       │
 │                                                             Mutually         │

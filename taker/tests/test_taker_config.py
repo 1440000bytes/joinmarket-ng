@@ -118,8 +118,9 @@ class TestTakerConfig:
         assert config.minimum_makers == 4
         assert config.min_fee_rate_sat_vb == 1.0
         assert config.min_fee_block_target == 10
-        assert config.round_up_cj_fees is True
-        assert config.require_quantized_cj_fees is False
+        assert config.round_up_cj_fees is False
+        assert config.require_quantized_cj_fees is True
+        assert config.equalize_cj_fees is False
         assert config.bondless_makers_allowance == 0.05
         assert config.bondless_makers_allowance_require_zero_fee is True
         assert config.initial_confirmation_timeout_sec == 300

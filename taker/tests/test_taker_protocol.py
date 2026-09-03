@@ -1237,6 +1237,36 @@ class TestSweepCjAmountPreservation:
         assert session.last_failure_reason is None
 
     @pytest.mark.asyncio
+    async def test_sweep_explains_equalized_target_increase_after_replacement(
+        self, mock_wallet_for_sweep, mock_backend_for_sweep, taker_config_for_sweep
+    ) -> None:
+        taker_config_for_sweep.equalize_cj_fees = True
+        taker = Taker(mock_wallet_for_sweep, mock_backend_for_sweep, taker_config_for_sweep)
+        session = taker._session
+        session.is_sweep = True
+        session.preselected_utxos = mock_wallet_for_sweep.get_all_utxos()
+        session._fee_rate = 1.0
+        session._sweep_tx_fee_budget = 700
+
+        total_input = sum(utxo.value for utxo in session.preselected_utxos)
+        originally_reserved_maker_fee = 100
+        session.cj_amount = (
+            total_input - session._sweep_tx_fee_budget - originally_reserved_maker_fee
+        )
+        nick, maker_session = self._make_single_utxo_maker_session()
+        maker_session.offer = maker_session.offer.model_copy(update={"cjfee": 500})
+        session.maker_sessions = {nick: maker_session}
+
+        result = await session._phase_build_tx(
+            destination="bcrt1qqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcruj60yu",
+            mixdepth=3,
+        )
+
+        assert result is False
+        assert session.last_failure_reason is not None
+        assert "replacement maker raised the uniform fee target" in session.last_failure_reason
+
+    @pytest.mark.asyncio
     async def test_sweep_aborts_when_effective_fee_rate_below_relay_floor(
         self, mock_wallet_for_sweep, mock_backend_for_sweep, taker_config_for_sweep
     ):
@@ -1334,6 +1364,80 @@ class TestSweepCjAmountPreservation:
         )
 
         assert result is True
+
+
+@pytest.mark.asyncio
+async def test_build_tx_uses_equalized_fee_plan_and_logs_target(
+    mock_wallet, mock_backend, mock_config
+) -> None:
+    mock_config.equalize_cj_fees = True
+    mock_config.round_up_cj_fees = False
+    taker = Taker(mock_wallet, mock_backend, mock_config)
+    session = taker._session
+    session.cj_amount = 100_000
+    session.preselected_utxos = [make_utxo(value=1_000_000)]
+    session.reserved_inputs = {
+        (session.preselected_utxos[0].txid, session.preselected_utxos[0].vout)
+    }
+    session._fee_rate = 1.0
+
+    offers = [
+        Offer(
+            counterparty="J5relative",
+            oid=0,
+            ordertype=OfferType.SW0_RELATIVE,
+            minsize=10_000,
+            maxsize=1_000_000,
+            txfee=0,
+            cjfee="0.001",
+        ),
+        Offer(
+            counterparty="J5absolute",
+            oid=0,
+            ordertype=OfferType.SW0_ABSOLUTE,
+            minsize=10_000,
+            maxsize=1_000_000,
+            txfee=0,
+            cjfee=500,
+        ),
+    ]
+    session.maker_sessions = {}
+    for index, offer in enumerate(offers, start=1):
+        maker = MakerSession(nick=offer.counterparty, offer=offer)
+        maker.utxos = [
+            {
+                "txid": f"{index:064x}",
+                "vout": 0,
+                "value": 300_000,
+                "address": "bcrt1qmaker",
+            }
+        ]
+        maker.cj_address = "bcrt1qqyqszqgpqyqszqgpqyqszqgpqyqszqgpvxat9t"
+        maker.change_address = "bcrt1qqgpqyqszqgpqyqszqgpqyqszqgpqyqszazmwwa"
+        session.maker_sessions[offer.counterparty] = maker
+
+    records: list[str] = []
+    handler_id = logger.add(lambda message: records.append(message.record["message"]), level="INFO")
+    try:
+        with patch(
+            "taker.coinjoin_session.build_coinjoin_tx",
+            return_value=(b"unsigned", {"output_owners": []}),
+        ) as build_tx:
+            result = await session._phase_build_tx(
+                destination="bcrt1qqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcruj60yu",
+                mixdepth=0,
+            )
+    finally:
+        logger.remove(handler_id)
+
+    assert result is True
+    maker_data = build_tx.call_args.kwargs["maker_data"]
+    assert maker_data["J5relative"]["cjfee"] == 500
+    assert maker_data["J5absolute"]["cjfee"] == 500
+    assert any(
+        "Equalizing CoinJoin fees at 500 sats per maker; 1/2 maker payments increased" in record
+        for record in records
+    )
 
 
 @pytest.mark.asyncio

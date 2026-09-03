@@ -293,6 +293,7 @@ class TestBuildTakerConfig:
         settings.taker.max_sweep_fee_change = 0.8
         settings.taker.round_up_cj_fees = True
         settings.taker.require_quantized_cj_fees = False
+        settings.taker.equalize_cj_fees = False
         settings.taker.fee_rate = None  # Not set in config
         settings.taker.fee_block_target = None  # Not set in config
         settings.taker.bondless_makers_allowance = 0.1
@@ -982,6 +983,7 @@ class TestBuildTakerConfig:
     ) -> None:
         mock_settings.taker.round_up_cj_fees = False
         mock_settings.taker.require_quantized_cj_fees = True
+        mock_settings.taker.equalize_cj_fees = True
 
         config = build_taker_config(
             settings=mock_settings,
@@ -994,6 +996,18 @@ class TestBuildTakerConfig:
 
         assert config.round_up_cj_fees is False
         assert config.require_quantized_cj_fees is True
+        assert config.equalize_cj_fees is True
+
+        overridden = build_taker_config(
+            settings=mock_settings,
+            mnemonic=sample_mnemonic,
+            passphrase="",
+            destination="bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
+            amount=100000,
+            mixdepth=0,
+            equalize_cj_fees=False,
+        )
+        assert overridden.equalize_cj_fees is False
 
     def test_bondless_policy_flows_into_config(
         self, sample_mnemonic: str, mock_settings: MagicMock

@@ -102,12 +102,16 @@ class TakerConfig(WalletConfig):
         default_factory=MaxCjFee, description="Maximum CoinJoin fee limits"
     )
     require_quantized_cj_fees: bool = Field(
-        default=False,
+        default=True,
         description="Only consider offers whose advertised CoinJoin fee is on the public grid",
     )
     round_up_cj_fees: bool = Field(
-        default=True,
+        default=False,
         description="Round each selected maker fee up to the next public fee quantum",
+    )
+    equalize_cj_fees: bool = Field(
+        default=False,
+        description="Pay every selected maker the highest realized fee in the selected set",
     )
     max_sweep_fee_change: float = Field(
         default=0.8,

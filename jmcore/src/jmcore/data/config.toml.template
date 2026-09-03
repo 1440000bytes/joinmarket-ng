@@ -510,11 +510,14 @@
 # Requires makers that accept outputs paying at least their advertised fee, as
 # supported by joinmarket-clientserver v0.9.12 and newer implementations.
 # Pre-v0.9.12 makers that require exact output values are unsupported.
-# round_up_cj_fees = true
+# round_up_cj_fees = false
 # Only consider offers already on the public fee grid. This remains effective
-# when rounding is disabled. Recommended future policy (planned default):
-# require_quantized_cj_fees = true with round_up_cj_fees = false.
-# require_quantized_cj_fees = false
+# when rounding is disabled and avoids overpaying legacy exact-fee makers.
+# require_quantized_cj_fees = true
+# Opt in to paying every selected maker the highest realized fee in the set.
+# This makes maker payments indistinguishable by fee amount, but legacy makers
+# may refuse the increased output and cause the CoinJoin attempt to fail.
+# equalize_cj_fees = false
 
 # Maximum inputs a single maker may contribute to the CoinJoin.
 # The taker pays the mining fee for EVERY input, so a maker with many inputs

@@ -226,6 +226,13 @@ def coinjoin(
             help="Round selected maker fees up to public fee quanta",
         ),
     ] = None,
+    equalize_cj_fees: Annotated[
+        bool | None,
+        typer.Option(
+            "--equalize-cj-fees/--no-equalize-cj-fees",
+            help="Pay all selected makers the highest realized fee in the selected set",
+        ),
+    ] = None,
     select_utxos: Annotated[
         bool,
         typer.Option(
@@ -330,6 +337,7 @@ def coinjoin(
             bondless_require_zero_fee=bondless_require_zero_fee,
             require_quantized_cj_fees=quantized_offers_only,
             round_up_cj_fees=round_up_cj_fees,
+            equalize_cj_fees=equalize_cj_fees,
         )
     except ValueError as e:
         logger.error(str(e))

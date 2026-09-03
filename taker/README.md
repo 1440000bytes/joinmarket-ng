@@ -141,6 +141,11 @@ For full documentation, see [taker Documentation](https://joinmarket-ng.github.i
 │                                                             (comma-separate… │
 │                                                             [env var:        │
 │                                                             DIRECTORY_SERVE… │
+│ --equalize-cj-fe…      --no-equalize-…                      Pay all selected │
+│                                                             makers the       │
+│                                                             highest realized │
+│                                                             fee in the       │
+│                                                             selected set     │
 │ --fee-rate                                FLOAT             Manual fee rate  │
 │                                                             in sat/vB.       │
 │                                                             Mutually         │
