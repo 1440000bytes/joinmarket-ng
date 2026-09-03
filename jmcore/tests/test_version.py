@@ -2,18 +2,39 @@
 
 from __future__ import annotations
 
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from jmcore.version import (
     UpdateCheckResult,
+    _parse_latest_release_location,
     _parse_version_tag,
     check_for_updates_from_github,
     get_build_ref,
     get_commit_hash,
     get_version,
 )
+
+TOR_PROXY = "socks5h://127.0.0.1:9050"
+
+
+def _mock_release_response(tag: str = "v99.0.0") -> httpx.Response:
+    request = httpx.Request(
+        "HEAD", "https://github.com/joinmarket-ng/joinmarket-ng/releases/latest"
+    )
+    return httpx.Response(
+        302,
+        request=request,
+        headers={"location": f"https://github.com/joinmarket-ng/joinmarket-ng/releases/tag/{tag}"},
+    )
+
+
+async def _check_for_updates_via_tor(timeout: float = 30.0) -> UpdateCheckResult | None:
+    with patch("httpx_socks.AsyncProxyTransport.from_url", return_value=MagicMock()):
+        return await check_for_updates_from_github(socks_proxy=TOR_PROXY, timeout=timeout)
 
 
 def _hide_build_info() -> dict[str, object]:
@@ -113,43 +134,64 @@ class TestParseVersionTag:
         assert _parse_version_tag("v100.200.300") == (100, 200, 300)
 
 
+class TestParseLatestReleaseLocation:
+    def test_parse_expected_redirect(self) -> None:
+        location = "https://github.com/joinmarket-ng/joinmarket-ng/releases/tag/v1.2.3"
+        assert _parse_latest_release_location(location) == (1, 2, 3)
+
+    @pytest.mark.parametrize(
+        "location",
+        [
+            "https://example.com/joinmarket-ng/joinmarket-ng/releases/tag/v1.2.3",
+            "http://github.com/joinmarket-ng/joinmarket-ng/releases/tag/v1.2.3",
+            "https://github.com/other/repository/releases/tag/v1.2.3",
+            "https://github.com/joinmarket-ng/joinmarket-ng/releases/tag/v1.2.3/extra",
+            "https://github.com/joinmarket-ng/joinmarket-ng/releases/tag/v1.2.3%2Fextra",
+        ],
+    )
+    def test_rejects_unexpected_redirect(self, location: str) -> None:
+        with pytest.raises(ValueError):
+            _parse_latest_release_location(location)
+
+
 class TestCheckForUpdatesFromGitHub:
     """Tests for check_for_updates_from_github."""
 
     @pytest.mark.asyncio
     async def test_newer_version_available(self) -> None:
         """Test detection of a newer version."""
-        mock_response = MagicMock()
-        mock_response.json.return_value = {"tag_name": "v99.0.0"}
-        mock_response.raise_for_status = MagicMock()
+        mock_response = _mock_release_response()
 
         mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_client.head = AsyncMock(return_value=mock_response)
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("httpx.AsyncClient", return_value=mock_client):
-            result = await check_for_updates_from_github()
+        with patch("httpx.AsyncClient", return_value=mock_client) as mock_cls:
+            result = await _check_for_updates_via_tor()
 
         assert result is not None
         assert result.latest_version == "99.0.0"
         assert result.is_newer is True
+        mock_client.head.assert_awaited_once_with(
+            "https://github.com/joinmarket-ng/joinmarket-ng/releases/latest"
+        )
+        mock_client.get.assert_not_awaited()
+        assert mock_cls.call_args.kwargs["follow_redirects"] is False
 
     @pytest.mark.asyncio
     async def test_current_version_is_latest(self) -> None:
         """Test when the current version matches the latest."""
         current = get_version()
-        mock_response = MagicMock()
-        mock_response.json.return_value = {"tag_name": f"v{current}"}
-        mock_response.raise_for_status = MagicMock()
+        mock_response = _mock_release_response(f"v{current}")
 
         mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_client.head = AsyncMock(return_value=mock_response)
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
         with patch("httpx.AsyncClient", return_value=mock_client):
-            result = await check_for_updates_from_github()
+            result = await _check_for_updates_via_tor()
 
         assert result is not None
         assert result.latest_version == current
@@ -158,17 +200,15 @@ class TestCheckForUpdatesFromGitHub:
     @pytest.mark.asyncio
     async def test_older_version_on_github(self) -> None:
         """Test when GitHub has an older version (e.g., running pre-release)."""
-        mock_response = MagicMock()
-        mock_response.json.return_value = {"tag_name": "v0.0.1"}
-        mock_response.raise_for_status = MagicMock()
+        mock_response = _mock_release_response("v0.0.1")
 
         mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_client.head = AsyncMock(return_value=mock_response)
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
         with patch("httpx.AsyncClient", return_value=mock_client):
-            result = await check_for_updates_from_github()
+            result = await _check_for_updates_via_tor()
 
         assert result is not None
         assert result.is_newer is False
@@ -176,49 +216,44 @@ class TestCheckForUpdatesFromGitHub:
     @pytest.mark.asyncio
     async def test_network_error_returns_none(self) -> None:
         """Test that network errors return None instead of raising."""
-        import httpx
-
         mock_client = AsyncMock()
-        mock_client.get = AsyncMock(side_effect=httpx.ConnectError("Connection failed"))
+        mock_client.head = AsyncMock(side_effect=httpx.ConnectError("Connection failed"))
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
         with patch("httpx.AsyncClient", return_value=mock_client):
-            result = await check_for_updates_from_github()
+            result = await _check_for_updates_via_tor()
 
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_invalid_json_returns_none(self) -> None:
-        """Test that malformed JSON returns None."""
-        mock_response = MagicMock()
-        mock_response.json.return_value = {"no_tag_name": "bad"}
+    async def test_missing_redirect_returns_none(self) -> None:
+        """Test that a response without a Location header returns None."""
+        mock_response = MagicMock(status_code=200, headers={})
         mock_response.raise_for_status = MagicMock()
 
         mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_client.head = AsyncMock(return_value=mock_response)
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
         with patch("httpx.AsyncClient", return_value=mock_client):
-            result = await check_for_updates_from_github()
+            result = await _check_for_updates_via_tor()
 
         assert result is None
 
     @pytest.mark.asyncio
     async def test_invalid_version_tag_returns_none(self) -> None:
-        """Test that an unparseable tag_name returns None."""
-        mock_response = MagicMock()
-        mock_response.json.return_value = {"tag_name": "release-candidate-1"}
-        mock_response.raise_for_status = MagicMock()
+        """Test that an unparseable release tag returns None."""
+        mock_response = _mock_release_response("release-candidate-1")
 
         mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_client.head = AsyncMock(return_value=mock_response)
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
         with patch("httpx.AsyncClient", return_value=mock_client):
-            result = await check_for_updates_from_github()
+            result = await _check_for_updates_via_tor()
 
         assert result is None
 
@@ -229,12 +264,10 @@ class TestCheckForUpdatesFromGitHub:
         ``socks5h://`` URLs are normalized to ``socks5://`` + ``rdns=True``
         because python-socks does not recognise the ``h`` suffix.
         """
-        mock_response = MagicMock()
-        mock_response.json.return_value = {"tag_name": "v99.0.0"}
-        mock_response.raise_for_status = MagicMock()
+        mock_response = _mock_release_response()
 
         mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_client.head = AsyncMock(return_value=mock_response)
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
@@ -248,7 +281,7 @@ class TestCheckForUpdatesFromGitHub:
             ) as mock_from_url,
         ):
             result = await check_for_updates_from_github(
-                socks_proxy="socks5h://127.0.0.1:9050",
+                socks_proxy=TOR_PROXY,
             )
 
         assert result is not None
@@ -259,67 +292,108 @@ class TestCheckForUpdatesFromGitHub:
         assert call_kwargs["transport"] is mock_transport
 
     @pytest.mark.asyncio
-    async def test_socks_import_error_falls_back(self) -> None:
-        """Test that missing httpx-socks falls back to no proxy."""
-        mock_response = MagicMock()
-        mock_response.json.return_value = {"tag_name": "v99.0.0"}
-        mock_response.raise_for_status = MagicMock()
+    async def test_missing_socks_proxy_skips_check(self) -> None:
+        """Test that omitting the Tor proxy cannot make a clearnet request."""
+        with patch("httpx.AsyncClient") as mock_cls:
+            result = await check_for_updates_from_github()
+
+        assert result is None
+        mock_cls.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_socks_import_error_skips_check(self) -> None:
+        """Test that a missing SOCKS transport does not leak a direct request."""
+        with (
+            patch("httpx.AsyncClient") as mock_cls,
+            patch.dict("sys.modules", {"httpx_socks": None}),
+        ):
+            result = await check_for_updates_from_github(
+                socks_proxy=TOR_PROXY,
+            )
+
+        assert result is None
+        mock_cls.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_socks_transport_error_skips_check(self) -> None:
+        """Test that a broken SOCKS configuration does not leak a direct request."""
+        with (
+            patch("httpx.AsyncClient") as mock_cls,
+            patch(
+                "httpx_socks.AsyncProxyTransport.from_url",
+                side_effect=ValueError("invalid proxy"),
+            ),
+        ):
+            result = await check_for_updates_from_github(
+                socks_proxy=TOR_PROXY,
+            )
+
+        assert result is None
+        mock_cls.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_http_status_error_is_logged_without_traceback(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Test that an expected HTTP failure produces only a concise warning."""
+        request = httpx.Request(
+            "HEAD", "https://github.com/joinmarket-ng/joinmarket-ng/releases/latest"
+        )
+        mock_response = httpx.Response(
+            403,
+            request=request,
+            json={"message": "API rate limit exceeded"},
+        )
 
         mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_client.head = AsyncMock(return_value=mock_response)
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
         with (
-            patch("httpx.AsyncClient", return_value=mock_client) as mock_cls,
-            patch.dict("sys.modules", {"httpx_socks": None}),
+            caplog.at_level(logging.WARNING, logger="jmcore.version"),
+            patch("httpx.AsyncClient", return_value=mock_client),
         ):
-            result = await check_for_updates_from_github(
-                socks_proxy="socks5h://127.0.0.1:9050",
-            )
-
-        # Should still work, just without proxy
-        assert result is not None
-        assert result.is_newer is True
-        call_kwargs = mock_cls.call_args[1]
-        assert "transport" not in call_kwargs
-
-    @pytest.mark.asyncio
-    async def test_http_status_error_returns_none(self) -> None:
-        """Test that HTTP errors (404, 500, etc.) return None."""
-        import httpx
-
-        mock_response = MagicMock()
-        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
-            "Not Found",
-            request=MagicMock(),
-            response=MagicMock(),
-        )
-
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        with patch("httpx.AsyncClient", return_value=mock_client):
-            result = await check_for_updates_from_github()
+            result = await _check_for_updates_via_tor()
 
         assert result is None
+        assert caplog.messages == [
+            "GitHub update check unavailable (HTTP 403); continuing without version information"
+        ]
+        assert caplog.records[0].exc_info is None
 
     @pytest.mark.asyncio
     async def test_timeout_returns_none(self) -> None:
         """Test that timeout returns None."""
-        import httpx
-
         mock_client = AsyncMock()
-        mock_client.get = AsyncMock(side_effect=httpx.ReadTimeout("Timeout"))
+        mock_client.head = AsyncMock(side_effect=httpx.ReadTimeout("Timeout"))
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
         with patch("httpx.AsyncClient", return_value=mock_client):
-            result = await check_for_updates_from_github(timeout=5.0)
+            result = await _check_for_updates_via_tor(timeout=5.0)
 
         assert result is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status_code", [405, 501])
+    async def test_get_fallback_when_head_is_unsupported(self, status_code: int) -> None:
+        head_response = MagicMock(status_code=status_code)
+        response = _mock_release_response()
+        mock_client = AsyncMock()
+        mock_client.head = AsyncMock(return_value=head_response)
+        mock_client.get = AsyncMock(return_value=response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            result = await _check_for_updates_via_tor()
+
+        assert result is not None
+        assert result.latest_version == "99.0.0"
+        mock_client.get.assert_awaited_once_with(
+            "https://github.com/joinmarket-ng/joinmarket-ng/releases/latest"
+        )
 
 
 class TestUpdateCheckResult:

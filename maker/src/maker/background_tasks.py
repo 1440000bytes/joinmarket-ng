@@ -744,8 +744,8 @@ class BackgroundTasksMixin:
         (e.g., daily or weekly). Only runs when notify_summary is enabled.
 
         When ``check_for_updates`` is enabled, the latest release version is
-        fetched from GitHub (routed through Tor if configured) and included in
-        the summary notification.
+        fetched from GitHub through Tor and included in the summary notification.
+        The update check is skipped when Tor is disabled or unavailable.
         """
         from jmcore.version import check_for_updates_from_github, get_version
         from jmwallet.history import get_history_stats_for_period

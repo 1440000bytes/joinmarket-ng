@@ -620,9 +620,10 @@ class NotificationSettings(BaseModel):
         default=False,
         description=(
             "Check GitHub for new releases and include version info in summary notifications. "
-            "PRIVACY WARNING: This polls the GitHub API (api.github.com) each summary interval. "
-            "The request is routed through Tor when use_tor is enabled, but GitHub will still "
-            "see the Tor exit node IP. Opt-in only."
+            "PRIVACY WARNING: This contacts github.com each summary interval. "
+            "The request is always routed through Tor and is skipped when use_tor is disabled "
+            "or the Tor proxy is unavailable. GitHub will still see the Tor exit node IP. "
+            "Opt-in only."
         ),
     )
     # Retry settings

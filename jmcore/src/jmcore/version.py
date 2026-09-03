@@ -11,7 +11,7 @@ import importlib
 import logging
 import sys
 from dataclasses import dataclass
-from typing import Any
+from urllib.parse import unquote, urlsplit
 
 # The project version - update this when releasing
 # Format: MAJOR.MINOR.PATCH (Semantic Versioning)
@@ -22,7 +22,8 @@ VERSION = __version__
 
 logger = logging.getLogger(__name__)
 
-GITHUB_RELEASES_URL = "https://api.github.com/repos/joinmarket-ng/joinmarket-ng/releases/latest"
+GITHUB_RELEASES_URL = "https://github.com/joinmarket-ng/joinmarket-ng/releases/latest"
+GITHUB_RELEASE_TAG_PATH = "/joinmarket-ng/joinmarket-ng/releases/tag/"
 
 
 def get_version() -> str:
@@ -137,6 +138,31 @@ def _parse_version_tag(tag: str) -> tuple[int, int, int]:
     return (int(parts[0]), int(parts[1]), int(parts[2]))
 
 
+def _parse_latest_release_location(location: str) -> tuple[int, int, int]:
+    """Extract a version tuple from GitHub's latest-release redirect."""
+    parsed = urlsplit(location)
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc != "github.com"
+        or parsed.query
+        or parsed.fragment
+        or not parsed.path.startswith(GITHUB_RELEASE_TAG_PATH)
+    ):
+        msg = f"Unexpected latest-release redirect: {location!r}"
+        raise ValueError(msg)
+
+    encoded_tag = parsed.path.removeprefix(GITHUB_RELEASE_TAG_PATH)
+    if not encoded_tag or "/" in encoded_tag:
+        msg = f"Invalid release tag path: {parsed.path!r}"
+        raise ValueError(msg)
+
+    tag = unquote(encoded_tag)
+    if "/" in tag:
+        msg = f"Invalid release tag path: {parsed.path!r}"
+        raise ValueError(msg)
+    return _parse_version_tag(tag)
+
+
 @dataclass(frozen=True)
 class UpdateCheckResult:
     """Result of a GitHub update check."""
@@ -151,14 +177,16 @@ async def check_for_updates_from_github(
 ) -> UpdateCheckResult | None:
     """Check GitHub for the latest release and compare with the local version.
 
-    This function makes an HTTP request to the GitHub API. When socks_proxy is
-    provided, the request is routed through the given SOCKS5 proxy (e.g. Tor).
+    This function requests GitHub's latest-release permalink through the provided
+    Tor SOCKS5 proxy. It skips the check when no proxy is provided or the proxy
+    transport cannot be configured. A clearnet request is never attempted.
 
-    **Privacy note**: This contacts GitHub and reveals your IP (or Tor exit node).
-    Only call this when the user has explicitly opted in via ``check_for_updates``.
+    **Privacy note**: This contacts GitHub, which sees the Tor exit node IP. Only
+    call this when the user has explicitly opted in via ``check_for_updates``.
 
     Args:
-        socks_proxy: Optional SOCKS5 proxy URL (e.g. "socks5h://127.0.0.1:9050").
+        socks_proxy: Tor SOCKS5 proxy URL (e.g. "socks5h://127.0.0.1:9050").
+            When omitted, the update check is skipped.
         timeout: HTTP request timeout in seconds.
 
     Returns:
@@ -167,51 +195,55 @@ async def check_for_updates_from_github(
     """
     import httpx
 
-    client_kwargs: dict[str, Any] = {}
-    if socks_proxy:
-        try:
-            from httpx_socks import AsyncProxyTransport
+    if not socks_proxy:
+        logger.warning("Skipping GitHub update check: a Tor SOCKS proxy is required")
+        return None
 
-            from jmcore.tor_isolation import normalize_proxy_url
+    try:
+        from httpx_socks import AsyncProxyTransport
 
-            # python-socks does not support the socks5h:// scheme directly.
-            # normalize_proxy_url converts socks5h:// -> socks5:// + rdns=True
-            # so that .onion addresses are resolved by Tor.
-            normalized = normalize_proxy_url(socks_proxy)
+        from jmcore.tor_isolation import normalize_proxy_url
 
-            transport = AsyncProxyTransport.from_url(normalized.url, rdns=normalized.rdns)
-            client_kwargs["transport"] = transport
-            logger.debug(
-                "Update check configured with SOCKS proxy: %s (rdns=%s)",
-                socks_proxy,
-                normalized.rdns,
-            )
-        except ImportError:
-            logger.warning("httpx-socks not available, update check without proxy")
-        except Exception:
-            logger.warning("Failed to configure SOCKS proxy for update check", exc_info=True)
+        # python-socks does not support the socks5h:// scheme directly.
+        # normalize_proxy_url converts socks5h:// -> socks5:// + rdns=True
+        # so that DNS resolution is performed by Tor.
+        normalized = normalize_proxy_url(socks_proxy)
+
+        transport = AsyncProxyTransport.from_url(normalized.url, rdns=normalized.rdns)
+        logger.debug("Update check configured with SOCKS proxy (rdns=%s)", normalized.rdns)
+    except Exception:
+        logger.warning("Skipping update check: unable to configure the Tor SOCKS proxy")
+        return None
 
     try:
         async with httpx.AsyncClient(
             timeout=timeout,
-            follow_redirects=True,
-            **client_kwargs,
+            follow_redirects=False,
+            transport=transport,
         ) as client:
-            response = await client.get(
-                GITHUB_RELEASES_URL,
-                headers={"Accept": "application/vnd.github+json"},
-            )
-            response.raise_for_status()
+            response = await client.head(GITHUB_RELEASES_URL)
+            if response.status_code in {405, 501}:
+                response = await client.get(GITHUB_RELEASES_URL)
+            if not 300 <= response.status_code < 400:
+                response.raise_for_status()
 
-        data = response.json()
-        tag_name: str = data["tag_name"]
-        latest = _parse_version_tag(tag_name)
+        location = response.headers.get("location")
+        if location is None:
+            msg = "GitHub latest-release response did not include a redirect"
+            raise ValueError(msg)
+        latest = _parse_latest_release_location(location)
         current = get_version_tuple()
         latest_str = f"{latest[0]}.{latest[1]}.{latest[2]}"
 
         logger.debug("Update check: current=%s, latest=%s", __version__, latest_str)
         return UpdateCheckResult(latest_version=latest_str, is_newer=latest > current)
 
-    except Exception:
-        logger.warning("Failed to check for updates from GitHub", exc_info=True)
+    except httpx.HTTPStatusError as exc:
+        logger.warning(
+            "GitHub update check unavailable (HTTP %d); continuing without version information",
+            exc.response.status_code,
+        )
+        return None
+    except Exception as exc:
+        logger.warning("Failed to check for updates from GitHub: %s", exc)
         return None

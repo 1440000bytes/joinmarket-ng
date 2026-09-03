@@ -562,7 +562,8 @@ class NotificationConfig(BaseModel):
         default=False,
         description=(
             "Check GitHub for new releases and include version info in summary notifications. "
-            "PRIVACY WARNING: polls api.github.com each summary interval."
+            "PRIVACY WARNING: contacts github.com through Tor each summary interval. "
+            "The check is skipped when Tor is unavailable."
         ),
     )
 
