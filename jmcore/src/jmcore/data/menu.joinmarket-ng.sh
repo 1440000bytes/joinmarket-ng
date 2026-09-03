@@ -221,14 +221,13 @@ DEFAULT_COUNTERPARTIES="${DEFAULT_COUNTERPARTIES:-10}"
 mkdir -p "$LOG_DIR"
 
 # ---- Activate virtual environment -------------------------------------------
-# Skip if CLI tools are already available (e.g. pip-installed entry points).
-if ! command -v jm-wallet &>/dev/null; then
-    if [ -f "$VENV_BIN/activate" ]; then
-        source "$VENV_BIN/activate"
-    else
-        echo "ERROR: jm-wallet not found in PATH and no venv at $VENV_BIN"
-        exit 1
-    fi
+# Prefer the environment paired with this TUI over global entry points or
+# appliance wrappers that happen to be earlier in PATH.
+if [ -f "$VENV_BIN/activate" ]; then
+    source "$VENV_BIN/activate"
+elif ! command -v jm-wallet &>/dev/null; then
+    echo "ERROR: jm-wallet not found in PATH and no venv at $VENV_BIN"
+    exit 1
 fi
 # Ensure ~/.local/bin is in PATH (fallback for pip console scripts)
 export PATH="${HOME_JM}/.local/bin:$PATH"
@@ -1499,6 +1498,10 @@ No:  automatic coin selection from one mixdepth." 12 64
               echo ""
               (
                   ensure_wallet_password "$CURRENT_WALLET" || exit 1
+                  # A background Core rescan may have completed since the last
+                  # wallet operation. Sync first so automatic imported-wallet
+                  # history reconstruction gets its deferred retry.
+                  jm-wallet info >/dev/null || exit 1
                   jm-wallet history "${HIST_ARGS[@]}"
                   pause
               )

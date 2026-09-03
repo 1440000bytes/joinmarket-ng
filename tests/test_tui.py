@@ -41,6 +41,28 @@ def test_tui_script_has_environment_detection() -> None:
     assert "bonus.joinmarket-ng.sh" in content
 
 
+def test_tui_prefers_its_virtual_environment() -> None:
+    """A global appliance wrapper must not shadow the TUI's own CLI tools."""
+    content = SCRIPT_PATH.read_text()
+    activation = content.split("# ---- Activate virtual environment", 1)[1].split(
+        "# Ensure ~/.local/bin", 1
+    )[0]
+    assert activation.index('if [ -f "$VENV_BIN/activate" ]') < activation.index(
+        "command -v jm-wallet"
+    )
+
+
+def test_tui_history_syncs_before_reading() -> None:
+    """A completed background rescan must trigger deferred reconstruction."""
+    content = SCRIPT_PATH.read_text()
+    history_block = content.split("# HIST - CoinJoin History", 1)[1].split(
+        "# FREEZE - Freeze/Unfreeze UTXOs", 1
+    )[0]
+    assert history_block.index("jm-wallet info >/dev/null") < history_block.index(
+        'jm-wallet history "${HIST_ARGS[@]}"'
+    )
+
+
 def test_tui_script_has_stop_maker_helper() -> None:
     """The script must include the stop_maker helper for standalone mode."""
     content = SCRIPT_PATH.read_text()
