@@ -18,7 +18,7 @@ _jm_taker_completion() {
         COMPREPLY=( $(compgen -W "--help --data-dir -d --config-file" -- "$cur") )
         ;;
       coinjoin)
-        COMPREPLY=( $(compgen -W "--help --amount -a --destination -d --mixdepth -m --counterparties -n --mnemonic-file -f --prompt-bip39-passphrase --network --bitcoin-network --backend -b --rpc-url --neutrino-url --directory -D --tor-socks-host --tor-socks-port --max-abs-fee --max-rel-fee --fee-rate --block-target --bondless-allowance --bond-exponent --bondless-zero-fee --quantized-offers-only --round-up-cj-fees --select-utxos -s --input-utxo --yes -y --data-dir --config-file --log-level -l" -- "$cur") )
+        COMPREPLY=( $(compgen -W "--help --amount -a --destination -d --mixdepth -m --counterparties -n --mnemonic-file -f --prompt-bip39-passphrase --network --bitcoin-network --backend -b --rpc-url --neutrino-url --directory -D --tor-socks-host --tor-socks-port --max-abs-fee --max-rel-fee --fee-rate --block-target --bondless-allowance --bond-exponent --bondless-zero-fee --quantized-offers-only --round-up-cj-fees --equalize-cj-fees --select-utxos -s --input-utxo --yes -y --data-dir --config-file --log-level -l" -- "$cur") )
         ;;
       config-init)
         COMPREPLY=( $(compgen -W "--help --data-dir -d --config-file" -- "$cur") )

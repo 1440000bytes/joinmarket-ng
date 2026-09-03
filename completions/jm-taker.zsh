@@ -29,7 +29,7 @@ _jm_taker() {
           ;;
         coinjoin)
           _arguments \
-            '--amount=[Amount in sats (0 for sweep)]: :' \
+            '--amount=[Amount in sats (0 for sweep; with --select-utxos, defaults to sweep)]: :' \
             '--destination=[Destination address (or '\''INTERNAL'\'' for next mixdepth)]: :' \
             '--mixdepth=[Source mixdepth (default 0; with --select-utxos, derived from the selection unless set explicitly; --input-utxo entries must belong to this mixdepth)]: :' \
             '--counterparties=[Number of makers]: :' \
@@ -52,6 +52,7 @@ _jm_taker() {
             '--bondless-zero-fee[Restrict allowance spots to zero-fee offers]' \
             '--quantized-offers-only[Only select offers whose advertised CoinJoin fee is on the public grid]' \
             '--round-up-cj-fees[Round selected maker fees up to public fee quanta]' \
+            '--equalize-cj-fees[Pay all selected makers the highest realized fee in the selected set]' \
             '--select-utxos[Interactively select UTXOs (fzf-like TUI)]' \
             '--input-utxo=[Explicit input UTXO as txid\:vout (repeatable). CoinJoin spends exactly the given UTXOs, including for sweeps, and never adds other inputs. Every UTXO must be eligible and belong to --mixdepth. Mutually exclusive with --select-utxos.]: :' \
             '--yes[Skip confirmation prompt]' \
