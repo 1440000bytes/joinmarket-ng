@@ -36,6 +36,7 @@ Requires: docker compose up -d (the default ``jm-bitcoin`` regtest node).
 
 from __future__ import annotations
 
+import asyncio
 import secrets
 from typing import Any
 
@@ -44,10 +45,13 @@ import pytest
 
 from jmwallet.backends.descriptor_wallet import DescriptorWalletBackend
 
+from tests.e2e.docker_utils import run_compose_cmd
+
 pytestmark = pytest.mark.e2e
 
 
 _RPC_TIMEOUT = 60.0
+_WALLET_NOTIFICATION_TIMEOUT = 10.0
 
 
 async def _rpc(
@@ -84,6 +88,20 @@ async def _ensure_wallet(cfg: dict[str, str], name: str) -> None:
         await _rpc(cfg, "loadwallet", [name])
         return
     await _rpc(cfg, "createwallet", [name])
+
+
+async def _wait_for_wallet_receipt(
+    cfg: dict[str, str], wallet: str, address: str
+) -> Any:
+    """Wait for Core's receiving wallet to process a newly broadcast transaction."""
+    deadline = asyncio.get_running_loop().time() + _WALLET_NOTIFICATION_TIMEOUT
+    received: Any = 0
+    while asyncio.get_running_loop().time() < deadline:
+        received = await _rpc(cfg, "getreceivedbyaddress", [address, 0], wallet=wallet)
+        if float(received) > 0:
+            return received
+        await asyncio.sleep(0.05)
+    return received
 
 
 @pytest.mark.asyncio
@@ -175,22 +193,46 @@ async def test_address_has_history_against_real_bitcoind(
             # verifier MUST still report True. minconf=0 is the
             # critical flag; a mempool-only funding still leaks the
             # link to a blockchain observer once the tx confirms.
-            await _rpc(cfg, "sendtoaddress", [addr_mempool, 0.001], wallet=miner_wallet)
-            # Do NOT mine; leave the tx in the mempool.
-            # Diagnostic: confirm Core itself sees the unconfirmed amount.
-            unconf = await _rpc(
-                cfg, "getreceivedbyaddress", [addr_mempool, 0], wallet=test_wallet
-            )
-            lru = await _rpc(
-                cfg, "listunspent", [0, 9999999, [addr_mempool]], wallet=test_wallet
-            )
-            assert await backend.address_has_history(addr_mempool) is True, (
-                "PRIVACY REGRESSION: verifier missed a mempool-only funding; "
-                "getreceivedbyaddress must be called with minconf=0 or the "
-                "picker will reuse addresses that are about to confirm. "
-                f"Core direct getreceivedbyaddress({addr_mempool},0)={unconf}; "
-                f"listunspent 0={lru}"
-            )
+            # The compose miner consumes the mempool every ten seconds. Stop it
+            # so this case actually verifies an unconfirmed transaction.
+            stop_miner = run_compose_cmd(["stop", "miner"], check=False)
+            assert stop_miner.returncode == 0, stop_miner.stderr
+            try:
+                funding_txid = str(
+                    await _rpc(
+                        cfg,
+                        "sendtoaddress",
+                        [addr_mempool, 0.001],
+                        wallet=miner_wallet,
+                    )
+                )
+                mempool_entry = await _rpc(cfg, "getmempoolentry", [funding_txid])
+
+                # Multiwallet notifications are asynchronous. Wait until the
+                # receiving wallet sees the transaction before testing the backend.
+                unconf = await _wait_for_wallet_receipt(cfg, test_wallet, addr_mempool)
+                lru = await _rpc(
+                    cfg,
+                    "listunspent",
+                    [0, 9999999, [addr_mempool]],
+                    wallet=test_wallet,
+                )
+                assert float(unconf) > 0, (
+                    "Core did not expose the mempool funding to the receiving wallet; "
+                    f"txid={funding_txid}, mempool_entry={mempool_entry}, "
+                    f"getreceivedbyaddress={unconf}, listunspent={lru}"
+                )
+                assert await backend.address_has_history(addr_mempool) is True, (
+                    "PRIVACY REGRESSION: verifier missed a wallet-visible mempool funding; "
+                    "getreceivedbyaddress must be called with minconf=0 or the "
+                    "picker will reuse addresses that are about to confirm. "
+                    f"txid={funding_txid}; "
+                    f"Core direct getreceivedbyaddress({addr_mempool},0)={unconf}; "
+                    f"listunspent 0={lru}"
+                )
+            finally:
+                start_miner = run_compose_cmd(["start", "miner"], check=False)
+                assert start_miner.returncode == 0, start_miner.stderr
         finally:
             await backend.close()
 
