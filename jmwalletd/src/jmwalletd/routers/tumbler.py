@@ -52,6 +52,7 @@ from tumbler.plan import (
 )
 from tumbler.runner import RunnerContext, TumbleRunner
 
+from jmcore.paths import write_nick_state
 from jmcore.settings import get_settings
 from jmcore.tasks import spawn_task
 from jmwalletd.deps import get_daemon_state, require_auth, require_wallet_match
@@ -465,7 +466,16 @@ async def start_plan(
         from tumbler.maker_policy import apply_tumbler_maker_policy
 
         apply_tumbler_maker_policy(config)
-        return MakerBot(wallet=ws, backend=backend, config=config)
+
+        def _publish_maker_nick(_old_nick: str, new_nick: str) -> None:
+            write_nick_state(state.data_dir, "maker", new_nick)
+
+        return MakerBot(
+            wallet=ws,
+            backend=backend,
+            config=config,
+            nick_change_callback=_publish_maker_nick,
+        )
 
     def _on_state_changed(p: Plan) -> None:
         state.broadcast_ws(

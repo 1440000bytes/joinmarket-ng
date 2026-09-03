@@ -9,12 +9,15 @@ dedicated unit coverage and is intentionally not re-exercised here.
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import typer
+from jmcore.paths import read_nick_state
 from loguru import logger
+from pydantic import SecretStr
 from typer.testing import CliRunner
 
 from tumbler.builder import PlanBuilder, TumbleParameters
@@ -22,11 +25,12 @@ from tumbler.cli import (
     _collect_balances,
     _load_or_error,
     _resolve_fee_rate,
+    _run_plan,
     app,
     resolve_runner_pacing,
 )
 from tumbler.persistence import save_plan
-from tumbler.plan import Plan
+from tumbler.plan import Plan, PlanStatus
 
 runner = CliRunner()
 
@@ -292,6 +296,66 @@ class TestRunCounterpartiesOption:
                 ],
             )
         assert result.exit_code != 0
+
+
+@pytest.mark.asyncio
+async def test_run_maker_factory_updates_rotated_nick_state(tmp_path: Path) -> None:
+    config = SimpleNamespace(
+        mnemonic=SecretStr("abandon " * 11 + "about"),
+        passphrase=SecretStr(""),
+        bitcoin_network=None,
+        network=SimpleNamespace(value="regtest"),
+        mixdepth_count=5,
+        data_dir=tmp_path,
+        max_sats_freeze_reuse=0,
+        reconstruct_history=False,
+    )
+    wallet = MagicMock()
+    wallet.sync_with_registered_bonds = AsyncMock()
+    maker_bot = MagicMock()
+
+    class CapturingRunner:
+        def __init__(self, _plan: Plan, context: Any) -> None:
+            self.context = context
+
+        async def run(self) -> Any:
+            await self.context.maker_factory(MagicMock())
+            callback = maker_bot.call_args.kwargs["nick_change_callback"]
+            callback("J5OldTumblerMaker", "J5RotatedTumblerMaker")
+            return SimpleNamespace(status=PlanStatus.COMPLETED, error=None)
+
+        def request_stop(self) -> None:
+            return None
+
+    with (
+        patch("taker.cli.build_taker_config", return_value=config),
+        patch("taker.cli.create_backend", return_value=MagicMock()),
+        patch("maker.cli.build_maker_config", return_value=config),
+        patch("maker.bot.MakerBot", maker_bot),
+        patch("tumbler.cli.WalletService", return_value=wallet),
+        patch("tumbler.cli.TumbleRunner", CapturingRunner),
+        patch("tumbler.cli.apply_tumbler_maker_policy"),
+    ):
+        await _run_plan(
+            settings=MagicMock(),
+            plan=_build_plan("w"),
+            mnemonic="abandon " * 11 + "about",
+            passphrase="",
+            creation_height=None,
+            data_dir=tmp_path,
+            network=None,
+            backend_type=None,
+            rpc_url=None,
+            neutrino_url=None,
+            directory_servers=None,
+            tor_socks_host=None,
+            tor_socks_port=None,
+            fee_rate=None,
+            block_target=None,
+            min_confirmations_between_phases=None,
+        )
+
+    assert read_nick_state(tmp_path, "maker") == "J5RotatedTumblerMaker"
 
 
 class TestPlanDefaultsCounterpartyFromSettings:

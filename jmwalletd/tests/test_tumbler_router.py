@@ -35,6 +35,7 @@ from tumbler.builder import PlanBuilder, TumbleParameters
 from tumbler.persistence import load_plan, plan_path, save_plan
 from tumbler.plan import PhaseStatus, Plan, PlanStatus, TakerCoinjoinPhase
 
+from jmcore.paths import read_nick_state
 from jmwalletd.deps import get_daemon_state
 from jmwalletd.state import CoinjoinState, DaemonState
 
@@ -739,6 +740,10 @@ class TestStartPlan:
         assert maker_config.cj_fee_absolute == 0
         assert maker_config.no_fidelity_bond is True
         assert maker_config.offer_configs == []
+
+        nick_change_callback = maker_bot_cls.call_args.kwargs["nick_change_callback"]
+        nick_change_callback("J5OldTumblerMaker", "J5RotatedTumblerMaker")
+        assert read_nick_state(get_daemon_state().data_dir, "maker") == "J5RotatedTumblerMaker"
 
 
 # ----------------------------------------------------------------------------

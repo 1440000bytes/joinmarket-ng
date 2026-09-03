@@ -1058,7 +1058,16 @@ async def _run_plan(
         apply_tumbler_maker_policy(config)
         _ = SecretStr  # re-export guard for linter (SecretStr is used via config)
         _ = create_maker_wallet  # silence unused-import; reserved for future fork
-        return MakerBot(wallet=wallet, backend=backend, config=config)
+
+        def _publish_maker_nick(_old_nick: str, new_nick: str) -> None:
+            write_nick_state(config.data_dir, "maker", new_nick)
+
+        return MakerBot(
+            wallet=wallet,
+            backend=backend,
+            config=config,
+            nick_change_callback=_publish_maker_nick,
+        )
 
     async def _get_confirmations(txid: str) -> int | None:
         from tumbler.confirmations import resolve_confirmations
