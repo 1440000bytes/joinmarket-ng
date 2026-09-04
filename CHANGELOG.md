@@ -7,6 +7,106 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.39.0] - 2026-09-04
+
+Bug fixes, security hardening, and privacy improvements. Takers now consider only quantized maker offers by default, with an optional equalized payment policy. New features like `jm-wallet delete` and improved usability and logs noise.
+
+### Added
+
+- Add a safe jm-wallet delete command for wallet files, backend watches, and private local state ([2f270388](../../commit/2f270388e8d612bf4b7c35086efe42de00b2a69a))
+- Add correlated maker CoinJoin lifecycle diagnostics ([a47db6c3](../../commit/a47db6c384998cd608cc68aac424257f3278e92f))
+- Migrate cryptographic operations to the maintained python-bitcointx fork ([f7ff7780](../../commit/f7ff77808bfd2b08216df2fcbbe0cbb207c7d05f))
+- Allow interactive UTXO selection without specifying amount or source mixdepth ([8ed0ff1d](../../commit/8ed0ff1d6077b771d1e7bd3886c165f68e0b878e))
+- Default takers to quantized exact fees and add optional equalized maker payments ([678bb264](../../commit/678bb2642869a6fd2d21bb1c1f44c2c0d09cb849))
+- Import and verify SeedSigner fidelity bond registrations ([5613ad05](../../commit/5613ad05fa7f9019fa933cd96e0f107af47380c4))
+
+### Fixed
+
+- Restore matched directory outage recovery alerts across maker identity rotation ([2b606fe9](../../commit/2b606fe9cfc35661908d4c522a74b87904de4eb4))
+- Retry order-book discovery after reconnects return no offers ([e4c96e1f](../../commit/e4c96e1f8d70c0444d5f95c3b99be7df5a2cd8d2))
+- Stop routine direct peer disconnects from producing maker error logs ([10d49899](../../commit/10d498995ba9c9698531b8bb1129d9c9e778f9df))
+- Prevent notification Tor routing from redirecting wallet backend traffic ([0ac1b368](../../commit/0ac1b368ec7df52b7a419ee7989ad37259176381))
+- Prevent wallet backend RPC clients from inheriting process proxy settings ([c2f16c0d](../../commit/c2f16c0dee9ad570b799f4c1d02a36b920e5fa77))
+- Improve diagnostics for unsupported PoDLE authorization scripts ([48c5598b](../../commit/48c5598b6e10280215d6680a0642b715364b1b3f))
+- Sanitize maker authentication errors and ignore unrelated response traffic ([b6b21233](../../commit/b6b21233776bc3ad27cf7990ff69b003b36e3aec))
+- Keep maker session and nick state synchronized after identity rotation ([f4d893e3](../../commit/f4d893e30d41ea3aeb1dd7b8e0fb642a76cfcb2c))
+- Allow CoinJoin IDs to be hidden from notifications ([38521726](../../commit/385217264888d77f46cae89850880ca660a45bc2))
+- Report directory outages and recovery once across failed identity rotations ([4d113bd3](../../commit/4d113bd365c1a109b610ce08d40088bc847da417))
+- Make daemon message signatures compatible with Electrum verification ([eabcf715](../../commit/eabcf715bc7c071a564743773b45a8f674eeac44))
+- Fix macOS installation of the native secp256k1 dependency ([85bca486](../../commit/85bca486e71a659969091f9670d4a588c82ba564))
+- Prevent sweep CoinJoins from underfunding miner fees when makers contribute multiple inputs ([ff170542](../../commit/ff170542528638e9bc954cf1fd6cbf80af34f5cf))
+- Keep tumbler maker nick state synchronized after identity rotation ([09135415](../../commit/091354151eecd7211e900f781d49e3c6ca92cdff))
+- Release taker inputs when maker signature collection fails before local signing ([9b14b85c](../../commit/9b14b85c54e246d5b10c928b3290c05fa6a88698))
+- Make release update checks Tor-only and resilient to GitHub API rate limits ([2e4a28b5](../../commit/2e4a28b54591056ab4545dcf3791e6b4ea861b27))
+- Make orderbook pick chances reflect quantized-only taker defaults ([1f430703](../../commit/1f430703d21a4cdeaf6c93ec93c34a024b9977f2))
+- Prevent nested sudo prompts and refresh imported history from the TUI ([2de7a560](../../commit/2de7a56057f079d51f15661d70ec41fe78a9cbf0))
+- Reconstruct imported wallet history when a Bitcoin Core rescan completes ([e365bce5](../../commit/e365bce5eed80a16b4ba9264df8b6f6e37be08f4))
+- Stop unchanged periodic wallet syncs from filling default INFO logs ([a7237cf7](../../commit/a7237cf75b3566d4c64f76aba425830d6bee457c))
+- Automatically discover existing fidelity bonds during imported wallet synchronization ([6fd6f2bd](../../commit/6fd6f2bd5d645d83c76406f87d2aae929ac3c7e6))
+- Allow fidelity bond discovery in wallets without persistent storage ([0224358b](../../commit/0224358b7c01fcc9d58dec630d206099231fd76b))
+- Clarify and improve development updates in the terminal UI ([ce1781e0](../../commit/ce1781e0415c63561326d042549bdaf650644860))
+- Require two trusted GPG signatures when installing or verifying releases ([1efaef0b](../../commit/1efaef0b396dbb520e13746a41ee9afc4cafcaac))
+
+### Configuration Changes
+
+Existing `config.toml` files are not updated automatically. Review the bundled template changes below and apply the relevant options manually.
+
+````diff
+--- config.toml.template (0.38.0)
++++ config.toml.template (0.39.0)
+@@ -305,6 +305,9 @@
+ # into clickable links (e.g. "https://mempool.space/signet" -> ".../tx/<txid>").
+ # Leave empty to show the bare txid instead.
+ # mempool_url = ""
++# Include the commitment-derived correlation ID in CoinJoin notifications.
++# Set to false to keep the ID in local logs only.
++# include_coinjoin_id = true
+ # include_nick = true
+ # use_tor = true
+
+@@ -337,9 +340,10 @@
+ # summary_interval_hours = 24  # Interval: 24 (daily), 168 (weekly), or custom (1-168)
+
+ # Update checks (opt-in, disabled by default)
+-# PRIVACY WARNING: When enabled, this polls api.github.com each summary interval
+-# to check for new releases. The request is routed through Tor when use_tor = true,
+-# but GitHub will still see the Tor exit node IP.
++# PRIVACY WARNING: When enabled, this contacts github.com each summary interval
++# to check for new releases. The request is always routed through Tor and is skipped
++# when use_tor = false or the Tor proxy is unavailable. GitHub will still see the
++# Tor exit node IP.
+ # check_for_updates = false
+
+ # Retry failed notifications in the background (recommended for Tor)
+@@ -502,15 +506,19 @@
+ # Maximum acceptable coinjoin fees (paid to makers, not network/miner fees)
+ # max_cj_fee_abs = 500        # Absolute fee in satoshis per maker
+ # max_cj_fee_rel = "0.001"    # Relative fee (0.001 = 0.1%)
+-# max_sweep_fee_change = 0.8  # Relative fee tolerance for sweep transactions
++# max_sweep_fee_change = 0.8  # Max relative amount actual sweep fee needs may exceed its budget
+ # Round each selected maker fee up to the closest same-type public quantum.
+-# Disable temporarily for exact-fee compatibility with older makers that reject
+-# any overpayment.
+-# round_up_cj_fees = true
++# Requires makers that accept outputs paying at least their advertised fee, as
++# supported by joinmarket-clientserver v0.9.12 and newer implementations.
++# Pre-v0.9.12 makers that require exact output values are unsupported.
++# round_up_cj_fees = false
+ # Only consider offers already on the public fee grid. This remains effective
+-# when rounding is disabled. Recommended future policy (planned default):
+-# require_quantized_cj_fees = true with round_up_cj_fees = false.
+-# require_quantized_cj_fees = false
++# when rounding is disabled and avoids overpaying legacy exact-fee makers.
++# require_quantized_cj_fees = true
++# Opt in to paying every selected maker the highest realized fee in the set.
++# This makes maker payments indistinguishable by fee amount, but legacy makers
++# may refuse the increased output and cause the CoinJoin attempt to fail.
++# equalize_cj_fees = false
+
+ # Maximum inputs a single maker may contribute to the CoinJoin.
+ # The taker pays the mining fee for EVERY input, so a maker with many inputs
+````
+
 ## [0.38.0] - 2026-08-29
 
 Lots of security hardening, privacy improvements, new default for 5% zero fee maker allowance (including bondless), quantized feeround up for takers, `concentrated` mixdepth selection policy for improving maker liquidity, CJ ID logging, ...
@@ -3970,7 +4070,8 @@ This release did not change the bundled `config.toml.template`.
 - Pre-built image support for directory server compose.
 - Tor configuration instructions.
 
-[Unreleased]: ../../compare/0.38.0...HEAD
+[Unreleased]: ../../compare/0.39.0...HEAD
+[0.39.0]: ../../compare/0.38.0...0.39.0
 [0.38.0]: ../../compare/0.37.1...0.38.0
 [0.37.1]: ../../compare/0.37.0...0.37.1
 [0.37.0]: ../../compare/0.36.0...0.37.0
