@@ -23,6 +23,7 @@ DATA_DIR="${JOINMARKET_DATA_DIR:-$HOME/.joinmarket-ng}"
 PYTHON_MIN_VERSION="3.11"
 GITHUB_REPO="joinmarket-ng/joinmarket-ng"
 DEFAULT_VERSION="0.38.0"  # Updated on each release
+REQUIRED_GPG_SIGNATURES=2
 
 # Colors for output
 RED='\033[0;31m'
@@ -591,8 +592,8 @@ require_resolved_commit_hash() {
     return 1
 }
 
-# Verify that the resolved commit hash for $version is attested by at least
-# one trusted GPG signature stored under signatures/<version>/ in the repo.
+# Verify that the resolved commit hash for $version is attested by the required
+# number of trusted GPG signatures stored under signatures/<version>/ in the repo.
 #
 # Returns 0 on success, 1 on failure. Honours $SKIP_VERIFY: when true, prints
 # a warning and returns 0 without verifying. Intended to be called after
@@ -827,12 +828,12 @@ verify_release_signature() {
         print_success "Valid signature from $fingerprint"
     done <<< "$sig_names"
 
-    if [[ $valid_sigs -ge 1 ]]; then
+    if [[ $valid_sigs -ge $REQUIRED_GPG_SIGNATURES ]]; then
         print_success "Release $version verified ($valid_sigs trusted signature(s))"
         rc=0
     else
         print_error "Release $version could not be verified."
-        print_error "No trusted signature attested the install commit $commit_hash."
+        print_error "Insufficient trusted signatures. Required: $REQUIRED_GPG_SIGNATURES, Found: $valid_sigs."
         print_error "Rerun with --skip-verify to bypass (NOT recommended)."
         rc=1
     fi
@@ -1680,6 +1681,7 @@ Options:
   --version VERSION   Install specific version (default: latest)
   --dev               Install from main branch (for development)
   --skip-tor          Skip Tor installation and configuration
+  --min-sigs N        Require at least N valid GPG signatures (default: 2)
   --skip-verify       Skip GPG signature verification of the release
                       (NOT recommended; auto-enabled with --dev or
                       --version main since main branch is not signed)
@@ -1782,6 +1784,14 @@ parse_args() {
             --skip-verify)
                 SKIP_VERIFY=true
                 shift
+                ;;
+            --min-sigs)
+                if [[ ! "${2:-}" =~ ^[1-9][0-9]*$ ]]; then
+                    print_error "--min-sigs requires a positive integer"
+                    exit 1
+                fi
+                REQUIRED_GPG_SIGNATURES="$2"
+                shift 2
                 ;;
             --no-hash-deps)
                 PINNED_DEPS=false

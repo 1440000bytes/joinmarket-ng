@@ -478,3 +478,10 @@ def test_verify_release_reproduce_passes_commit_and_ref_build_args() -> None:
     # to the supplied VERSION so detached release commits without tags still
     # work in disaster-recovery scenarios.
     assert 'git -C "$PROJECT_ROOT" tag --points-at "$COMMIT"' in script
+
+
+def test_verify_release_requires_two_signatures_by_default() -> None:
+    script = (SCRIPTS_DIR / "verify-release.sh").read_text()
+
+    assert "MIN_SIGS=2" in script
+    assert "Require at least N valid signatures (default: 2)" in script

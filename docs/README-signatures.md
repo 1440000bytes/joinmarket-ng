@@ -47,6 +47,8 @@ See [Sign](technical/development.md#sign-a-release) for instructions on how to s
 ## For Verifiers
 
 See [Verify](technical/development.md#verify-a-release) for instructions on how to verify signatures.
+Installation and release verification require two valid signatures from distinct trusted keys by default.
+Users can deliberately select another threshold with `--min-sigs N`.
 
 ## Trusted Keys
 

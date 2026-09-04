@@ -92,7 +92,7 @@ Arguments:
 
 Options:
   --reproduce       Attempt to reproduce the Docker builds locally
-  --min-sigs N      Require at least N valid signatures (default: 1)
+  --min-sigs N      Require at least N valid signatures (default: 2)
   --skip-signatures Skip GPG signature verification (for testing reproducibility)
   --help            Show this help message
 
@@ -114,7 +114,7 @@ EOF
 # Parse arguments
 VERSION=""
 REPRODUCE=false
-MIN_SIGS=1
+MIN_SIGS=2
 SKIP_SIGNATURES=false
 
 while [[ $# -gt 0 ]]; do

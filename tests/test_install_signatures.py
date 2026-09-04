@@ -23,7 +23,7 @@ pytestmark = pytest.mark.skipif(
 
 def _run_verification(
     *,
-    signatures: tuple[str, ...] = (FIRST_FINGERPRINT,),
+    signatures: tuple[str, ...] = (FIRST_FINGERPRINT, SECOND_FINGERPRINT),
     shared_available: bool = True,
     local_manifests: tuple[str, ...] = (),
     unavailable_signatures: tuple[str, ...] = (),
@@ -31,6 +31,7 @@ def _run_verification(
     signer_mismatch: bool = False,
     shared_commit: str = COMMIT,
     local_commit: str = COMMIT,
+    required_signatures: int = 2,
 ) -> subprocess.CompletedProcess[str]:
     """Run ``verify_release_signature`` with curl and GPG fully stubbed."""
 
@@ -144,6 +145,7 @@ gpg() {{
 }}
 
 SKIP_VERIFY=false
+REQUIRED_GPG_SIGNATURES={required_signatures}
 verify_release_signature "v9.9.9" "{COMMIT}"
 echo "EXIT:$?"
 echo "CURL_LOG_START"
@@ -169,7 +171,8 @@ def test_ci_first_signature_uses_shared_manifest_without_local_fetch() -> None:
 
 def test_local_first_signature_falls_back_when_shared_asset_is_unavailable() -> None:
     result = _run_verification(
-        shared_available=False, local_manifests=(FIRST_FINGERPRINT,)
+        shared_available=False,
+        local_manifests=(FIRST_FINGERPRINT, SECOND_FINGERPRINT),
     )
 
     assert "EXIT:0" in result.stdout, result.stdout + result.stderr
@@ -177,20 +180,29 @@ def test_local_first_signature_falls_back_when_shared_asset_is_unavailable() -> 
     assert f"{FIRST_FINGERPRINT}-manifest.txt" in result.stdout
 
 
-def test_one_valid_signature_succeeds_when_another_signature_is_unavailable() -> None:
+def test_one_valid_signature_fails_when_another_signature_is_unavailable() -> None:
     result = _run_verification(
         signatures=(FIRST_FINGERPRINT, SECOND_FINGERPRINT),
         unavailable_signatures=(SECOND_FINGERPRINT,),
     )
 
-    assert "EXIT:0" in result.stdout, result.stdout + result.stderr
+    assert "EXIT:1" in result.stdout, result.stdout + result.stderr
     assert f"Failed to fetch signature {SECOND_FINGERPRINT}.sig" in result.stdout
     assert f"{SECOND_FINGERPRINT}-manifest.txt" not in result.stdout
+    assert "Insufficient trusted signatures. Required: 2, Found: 1." in result.stdout
+
+
+def test_user_can_override_required_signature_count() -> None:
+    result = _run_verification(signatures=(FIRST_FINGERPRINT,), required_signatures=1)
+
+    assert "EXIT:0" in result.stdout, result.stdout + result.stderr
+    assert "verified (1 trusted signature(s))" in result.stdout
 
 
 def test_shared_manifest_outage_uses_a_valid_local_manifest() -> None:
     result = _run_verification(
-        shared_available=False, local_manifests=(FIRST_FINGERPRINT,)
+        shared_available=False,
+        local_manifests=(FIRST_FINGERPRINT, SECOND_FINGERPRINT),
     )
 
     assert "EXIT:0" in result.stdout, result.stdout + result.stderr
@@ -229,7 +241,9 @@ def test_manifest_commit_must_match_install_commit(shared_available: bool) -> No
 
 
 def test_untrusted_signature_file_is_ignored() -> None:
-    result = _run_verification(signatures=(FIRST_FINGERPRINT, UNTRUSTED_FINGERPRINT))
+    result = _run_verification(
+        signatures=(FIRST_FINGERPRINT, SECOND_FINGERPRINT, UNTRUSTED_FINGERPRINT)
+    )
 
     assert "EXIT:0" in result.stdout, result.stdout + result.stderr
     assert (
@@ -245,4 +259,4 @@ def test_zero_valid_signatures_fail_verification() -> None:
     )
 
     assert "EXIT:1" in result.stdout, result.stdout + result.stderr
-    assert "No trusted signature attested" in result.stdout
+    assert "Insufficient trusted signatures. Required: 2, Found: 0." in result.stdout

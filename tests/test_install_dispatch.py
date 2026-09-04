@@ -105,3 +105,25 @@ def test_sourced_invocation_does_not_run_main() -> None:
         "main appears to have run during 'source install.sh' "
         f"(Usage printed before marker):\n{result.stdout}"
     )
+
+
+def test_minimum_signature_count_is_overridable() -> None:
+    cmd = (
+        f"source {INSTALL_SH} && parse_args --min-sigs 1 && "
+        'printf "REQUIRED:%s\\n" "$REQUIRED_GPG_SIGNATURES"'
+    )
+
+    result = _run(["bash", "-c", cmd])
+
+    assert result.returncode == 0, result.stderr
+    assert "REQUIRED:1" in result.stdout
+
+
+@pytest.mark.parametrize("value", ["", "0", "invalid"])
+def test_minimum_signature_count_must_be_positive(value: str) -> None:
+    cmd = f"source {INSTALL_SH} && parse_args --min-sigs {value!r}"
+
+    result = _run(["bash", "-c", cmd])
+
+    assert result.returncode == 1
+    assert "--min-sigs requires a positive integer" in result.stdout
