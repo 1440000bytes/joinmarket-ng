@@ -382,15 +382,23 @@ def test_tui_script_update_dev_to_stable_not_already_current() -> None:
 
 def test_tui_script_update_fetches_latest_stable_and_main() -> None:
     """The update menu must look up the latest release tag and the
-    short hash of origin/main so STABLE/DEV entries show concrete
+    short hash of main so STABLE/DEV entries show concrete
     versions (issue #451 points 2 and 3)."""
     content = SCRIPT_PATH.read_text()
     # Latest stable release tag via GitHub API
     assert "api.github.com/repos/joinmarket-ng/joinmarket-ng/releases/latest" in content
     assert '"tag_name"' in content
-    # Latest main commit via git ls-remote
-    assert "git ls-remote" in content
-    assert "joinmarket-ng/joinmarket-ng.git" in content
+    # Latest main commit via GitHub API, parsed as structured JSON rather
+    # than requiring Git transport or extracting arbitrary JSON with regex.
+    update_block = content.split("    U)\n", 1)[1].split("\n    C)\n", 1)[0]
+    assert (
+        "api.github.com/repos/joinmarket-ng/joinmarket-ng/commits/main" in update_block
+    )
+    assert "git ls-remote" not in update_block
+    assert "import json" in update_block
+    assert "json.load(sys.stdin)" in update_block
+    assert 'payload.get("sha")' in update_block
+    assert "sha[:7]" in update_block
     # Lookups must have a bounded timeout so network issues don't hang the TUI.
     assert "--max-time" in content
 
@@ -404,6 +412,27 @@ def test_tui_script_update_confirm_shows_current_and_target() -> None:
     assert "Target:" in confirm_block
     assert "${CURRENT_LABEL}" in confirm_block
     assert "${TARGET_LABEL}" in confirm_block
+
+
+def test_tui_script_update_requires_unsigned_dev_acknowledgement() -> None:
+    """DEV must require a default-No acknowledgement before final confirmation."""
+    content = SCRIPT_PATH.read_text()
+    update_block = content.split("    U)\n", 1)[1].split("\n    C)\n", 1)[0]
+    warning_block = update_block.split('if [ "$UCHOICE" = "DEV" ]; then', 1)[1].split(
+        "        # Warn if maker bot is running", 1
+    )[0]
+
+    assert "Unsigned Development Code" in warning_block
+    assert "--defaultno --yesno" in warning_block
+    assert "main is development code" in warning_block
+    assert "not a signed release" in warning_block
+    assert "No release signature will be checked" in warning_block
+    assert "may change at any time" in warning_block
+    assert "may be unstable" in warning_block
+    assert "continue" in warning_block
+    assert update_block.index("Unsigned Development Code") < update_block.index(
+        "Confirm Update"
+    )
 
 
 def test_tui_script_update_warns_when_already_current() -> None:

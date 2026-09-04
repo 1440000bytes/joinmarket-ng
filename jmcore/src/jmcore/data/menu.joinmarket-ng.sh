@@ -2277,10 +2277,20 @@ No:  automatic coin selection from one mixdepth." 12 64
       ) &
       STABLE_PID=$!
       (
-          git ls-remote --quiet \
-              "https://github.com/joinmarket-ng/joinmarket-ng.git" HEAD 2>/dev/null \
-              | cut -c1-7 \
-              > "$LATEST_MAIN_FILE" 2>/dev/null || true
+          curl -fsSL --max-time 3 \
+              "https://api.github.com/repos/joinmarket-ng/joinmarket-ng/commits/main" 2>/dev/null \
+              | python3 -c '
+import json
+import sys
+
+try:
+    payload = json.load(sys.stdin)
+    sha = payload.get("sha")
+    if isinstance(sha, str):
+        print(sha[:7])
+except (json.JSONDecodeError, AttributeError):
+    pass
+' > "$LATEST_MAIN_FILE" 2>/dev/null || true
       ) &
       MAIN_PID=$!
       wait "$STABLE_PID" "$MAIN_PID" 2>/dev/null || true
@@ -2354,6 +2364,14 @@ No:  automatic coin selection from one mixdepth." 12 64
             if ! whiptail --title " Already Up to Date " --defaultno --yesno \
                 "You are already running ${TARGET_LABEL}.\n\nReinstall anyway?" \
                 10 60 3>&1 1>&2 2>&3; then
+                continue
+            fi
+        fi
+
+        if [ "$UCHOICE" = "DEV" ]; then
+            if ! whiptail --title " Unsigned Development Code " --defaultno --yesno \
+                "main is development code. It is not a signed release.\n\nNo release signature will be checked. main may change at any time and may be unstable.\n\nInstall this unsigned development code?" \
+                14 64 3>&1 1>&2 2>&3; then
                 continue
             fi
         fi
