@@ -267,6 +267,12 @@ class DescriptorWalletBackend(BlockchainBackend):
         return "already loading" in error_str or "wallet is already being loaded" in error_str
 
     @staticmethod
+    def _is_wallet_rescanning_error(error: ValueError | Exception) -> bool:
+        """Check if Bitcoin Core rejected an RPC because a wallet rescan is active."""
+        error_str = str(error).lower()
+        return "rpc error -4" in error_str and "rescan" in error_str
+
+    @staticmethod
     def _is_wallet_disabled_error(error: ValueError | Exception) -> bool:
         """Detect ``RPC error -32601: Method not found`` on a wallet RPC.
 
@@ -998,9 +1004,25 @@ class DescriptorWalletBackend(BlockchainBackend):
 
         try:
             try:
-                result = await self._rpc_call(
-                    "importdescriptors", [import_requests], client=self._import_client
-                )
+                while True:
+                    try:
+                        result = await self._rpc_call(
+                            "importdescriptors", [import_requests], client=self._import_client
+                        )
+                        break
+                    except ValueError as rescan_err:
+                        if not self._is_wallet_rescanning_error(rescan_err):
+                            raise
+                        logger.warning(
+                            "Bitcoin Core is already rescanning this wallet; waiting for "
+                            "the active scan to finish before importing descriptors"
+                        )
+                        await self.wait_for_rescan_complete(
+                            poll_interval=5.0,
+                            timeout=None,
+                            assume_started=True,
+                        )
+                        logger.info("Active wallet rescan finished; retrying descriptor import")
             except (httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout) as timeout_err:
                 # The HTTP read timed out, but Bitcoin Core's importdescriptors
                 # call is still running server-side -- the rescan that follows
@@ -1281,7 +1303,7 @@ class DescriptorWalletBackend(BlockchainBackend):
                 # rescan or wait." A scan is already running server-side, so
                 # instead of surfacing a spurious failure, fall through to the
                 # confirmation loop and let the caller track the existing scan.
-                if "-4" not in str(exc) or "rescan" not in str(exc).lower():
+                if not self._is_wallet_rescanning_error(exc):
                     raise
                 logger.info(
                     "Bitcoin Core is already rescanning; tracking the existing "
@@ -1486,6 +1508,7 @@ class DescriptorWalletBackend(BlockchainBackend):
         timeout: float | None = None,
         progress_callback: Callable[[float], None] | None = None,
         startup_grace_period: float = 30.0,
+        assume_started: bool = False,
     ) -> bool:
         """
         Wait for any ongoing wallet rescan to complete.
@@ -1504,6 +1527,8 @@ class DescriptorWalletBackend(BlockchainBackend):
             progress_callback: Optional callback(progress) called with progress 0.0-1.0
             startup_grace_period: How long to wait for the rescan to start before
                 assuming it completed very quickly or was never needed (seconds).
+            assume_started: Treat the rescan as already observed in progress. Use
+                when Bitcoin Core has explicitly rejected an RPC because a scan is active.
 
         Returns:
             True if rescan completed, False if timed out
@@ -1511,7 +1536,7 @@ class DescriptorWalletBackend(BlockchainBackend):
         import time
 
         start_time = time.time()
-        saw_in_progress = False
+        saw_in_progress = assume_started
 
         # Small initial delay to let Bitcoin Core start the rescan
         await asyncio.sleep(min(poll_interval, 2.0))
@@ -1519,11 +1544,11 @@ class DescriptorWalletBackend(BlockchainBackend):
         while True:
             status = await self.get_rescan_status()
 
-            in_progress = status is not None and status.get("in_progress", False)
-
-            if in_progress:
+            if status is None:
+                logger.debug("Rescan status unavailable; continuing to wait")
+            elif status.get("in_progress", False):
                 saw_in_progress = True
-                progress = status.get("progress", 0)  # type: ignore[union-attr]
+                progress = status.get("progress", 0)
                 if progress_callback:
                     progress_callback(progress)
                 logger.debug(f"Rescan in progress: {progress:.1%}")

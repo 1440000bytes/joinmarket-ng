@@ -581,6 +581,65 @@ class TestDescriptorWalletBackendUnit:
         assert backend._descriptors_imported is False
 
     @pytest.mark.asyncio
+    async def test_import_descriptors_waits_for_active_rescan_and_retries(
+        self, mock_backend: DescriptorWalletBackend
+    ) -> None:
+        """An existing Core rescan must not make descriptor import crash."""
+        backend = mock_backend
+        import_calls = 0
+
+        async def mock_rpc(method, params=None, client=None, use_wallet=True):
+            nonlocal import_calls
+            if method == "getdescriptorinfo":
+                return {"descriptor": f"{params[0]}#check"}
+            if method == "importdescriptors":
+                import_calls += 1
+                if import_calls == 1:
+                    raise ValueError(
+                        "RPC error -4: Wallet is currently rescanning. "
+                        "Abort existing rescan or wait."
+                    )
+                return [{"success": True}]
+            if method == "listdescriptors":
+                return {"descriptors": [{"desc": "addr(bcrt1qbond)#check"}]}
+            raise ValueError(f"Unexpected method: {method}")
+
+        backend._rpc_call = mock_rpc
+        backend.wait_for_rescan_complete = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+        result = await backend.import_descriptors(["addr(bcrt1qbond)"], rescan=False)
+
+        assert result["success_count"] == 1
+        assert import_calls == 2
+        backend.wait_for_rescan_complete.assert_awaited_once_with(
+            poll_interval=5.0,
+            timeout=None,
+            assume_started=True,
+        )
+
+    @pytest.mark.asyncio
+    async def test_import_descriptors_reraises_unrelated_rpc_minus_four(
+        self, mock_backend: DescriptorWalletBackend
+    ) -> None:
+        """Only RPC -4 errors that identify an active rescan are retryable."""
+        backend = mock_backend
+
+        async def mock_rpc(method, params=None, client=None, use_wallet=True):
+            if method == "getdescriptorinfo":
+                return {"descriptor": f"{params[0]}#check"}
+            if method == "importdescriptors":
+                raise ValueError("RPC error -4: Wallet already loading.")
+            raise ValueError(f"Unexpected method: {method}")
+
+        backend._rpc_call = mock_rpc
+        backend.wait_for_rescan_complete = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+        with pytest.raises(ValueError, match="Wallet already loading"):
+            await backend.import_descriptors(["addr(bcrt1qbond)"], rescan=False)
+
+        backend.wait_for_rescan_complete.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_import_descriptors_wallet_not_loaded(self):
         """Test import_descriptors raises error if wallet not loaded."""
         backend = DescriptorWalletBackend(wallet_name="test_wallet")
@@ -2207,6 +2266,24 @@ class TestBackgroundRescan:
         assert status["in_progress"] is True
         assert status["progress"] == 0.45
         assert status["duration"] == 120
+
+    @pytest.mark.asyncio
+    async def test_wait_for_known_rescan_requires_explicit_completion(self) -> None:
+        """An unavailable status must not look like completion for a known scan."""
+        backend = DescriptorWalletBackend(wallet_name="test_known_rescan")
+        backend._wallet_loaded = True
+        backend.get_rescan_status = AsyncMock(  # type: ignore[method-assign]
+            side_effect=[None, {"in_progress": False}]
+        )
+
+        completed = await backend.wait_for_rescan_complete(
+            poll_interval=0.01,
+            timeout=1.0,
+            assume_started=True,
+        )
+
+        assert completed is True
+        assert backend.get_rescan_status.await_count == 2
 
     @pytest.mark.asyncio
     async def test_import_with_smart_scan_and_background_rescan(self) -> None:
