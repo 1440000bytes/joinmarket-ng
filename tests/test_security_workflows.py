@@ -185,3 +185,18 @@ def test_main_and_release_promotions_depend_on_image_scans() -> None:
     ]
     assert {entry["image"] for entry in candidate_matrix} == IMAGES
     assert {entry["image"] for entry in promotion_matrix} == IMAGES
+
+
+def test_create_release_uses_explicit_repository_context_and_existing_tag() -> None:
+    release_job = _workflow("release.yaml")["jobs"]["create-release"]
+    create_release = next(
+        step for step in release_job["steps"] if step["name"] == "Create Release"
+    )
+
+    assert create_release["env"]["GH_TOKEN"] == "${{ github.token }}"
+    assert create_release["env"]["GH_REPO"] == "${{ github.repository }}"
+    assert (
+        'gh release create "${{ needs.prepare.outputs.version }}"'
+        in create_release["run"]
+    )
+    assert "--verify-tag" in create_release["run"]
