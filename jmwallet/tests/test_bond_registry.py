@@ -384,6 +384,33 @@ class TestRegistryPersistence:
         loaded = load_registry(tmp_path)
         assert len(loaded.bonds) == 0
 
+    def test_load_legacy_entry_without_signer_metadata(self, tmp_path: Path) -> None:
+        """Registries written before signer metadata remain readable."""
+        registry_path = get_registry_path(tmp_path)
+        registry_path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "bonds": [
+                        {
+                            "address": "bc1qlegacy",
+                            "locktime": 1735689600,
+                            "locktime_human": "2025-01-01 00:00:00",
+                            "index": 0,
+                            "path": "external",
+                            "pubkey": "02" + "00" * 32,
+                            "witness_script_hex": "aa",
+                            "network": "mainnet",
+                            "created_at": "2025-01-01T00:00:00",
+                        }
+                    ],
+                }
+            )
+        )
+
+        loaded = load_registry(tmp_path)
+        assert loaded.bonds[0].signer_master_fingerprint is None
+
     def test_load_invalid_json(self, tmp_path: Path) -> None:
         """Test loading invalid JSON returns empty registry."""
         registry_path = get_registry_path(tmp_path)

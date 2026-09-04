@@ -91,6 +91,13 @@ def create_bond_address(
         bool,
         typer.Option("--no-save", help="Do not save the bond to the registry"),
     ] = False,
+    allow_expired: Annotated[
+        bool,
+        typer.Option(
+            "--allow-expired",
+            help="Allow a past/current locktime for recovery or testing only",
+        ),
+    ] = False,
     wallet_fingerprint: Annotated[
         str | None,
         typer.Option("--wallet-fingerprint", help=_WALLET_FINGERPRINT_HELP),
@@ -162,9 +169,17 @@ def create_bond_address(
         logger.info("Use --locktime-date YYYY-MM for correct format")
         raise typer.Exit(1)
 
-    # Validate locktime is in the future
+    # Normal creation must not produce an immediately spendable bond. Recovery
+    # and deterministic test vectors can opt in explicitly.
     if locktime <= datetime.now().timestamp():
-        logger.warning("Locktime is in the past - the bond will be immediately spendable")
+        if not allow_expired:
+            logger.error("Locktime must be in the future for normal bond creation")
+            logger.info("Use --allow-expired only for recovery or testing")
+            raise typer.Exit(1)
+        logger.warning(
+            "Using a past/current locktime in explicit recovery/testing mode; "
+            "the bond is immediately spendable"
+        )
 
     from jmcore.btc_script import disassemble_script, mk_freeze_script
     from jmcore.paths import get_default_data_dir
@@ -268,6 +283,110 @@ def create_bond_address(
     print("  - Remember which address you used for the bond's public key")
     print("  - Your private keys never leave the hardware wallet")
     print("=" * 80 + "\n")
+
+
+@app.command("import-bond-registration", no_args_is_help=True)
+def import_bond_registration(
+    registration: Annotated[
+        str | None,
+        typer.Argument(help="Canonical SeedSigner BIP46 registration JSON"),
+    ] = None,
+    file: Annotated[
+        Path | None,
+        typer.Option("--file", help="File containing canonical SeedSigner BIP46 registration JSON"),
+    ] = None,
+    data_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--data-dir",
+            envvar="JOINMARKET_DATA_DIR",
+            help="Data directory (default: ~/.joinmarket-ng or $JOINMARKET_DATA_DIR)",
+        ),
+    ] = None,
+    wallet_fingerprint: Annotated[
+        str | None,
+        typer.Option("--wallet-fingerprint", help=_WALLET_FINGERPRINT_HELP),
+    ] = None,
+    log_level: Annotated[str, typer.Option("--log-level", "-l")] = "INFO",
+) -> None:
+    """Import a verified SeedSigner BIP46 fidelity-bond registration payload."""
+    setup_cli(log_level, data_dir=data_dir)
+
+    if (registration is None) == (file is None):
+        logger.error("Provide exactly one inline registration JSON argument or --file")
+        raise typer.Exit(1)
+
+    if file is not None:
+        try:
+            registration = file.read_bytes().decode("ascii").strip()
+        except (OSError, UnicodeDecodeError) as exc:
+            logger.error(f"Cannot read ASCII registration file: {exc}")
+            raise typer.Exit(1) from exc
+
+    assert registration is not None
+    from jmwallet.wallet.bond_registration import (
+        BondRegistrationError,
+        parse_bip46_registration_payload,
+    )
+
+    try:
+        imported = parse_bip46_registration_payload(registration)
+    except BondRegistrationError as exc:
+        logger.error(f"Invalid SeedSigner BIP46 registration: {exc}")
+        raise typer.Exit(1) from exc
+
+    from jmcore.paths import get_default_data_dir
+
+    from jmwallet.wallet.bond_registry import (
+        create_bond_info,
+        get_registry_path,
+        load_registry,
+        save_registry,
+    )
+
+    resolved_data_dir = data_dir if data_dir else get_default_data_dir()
+    resolved_fingerprint = _resolve_wallet_fingerprint(wallet_fingerprint)
+    try:
+        registry = load_registry(
+            resolved_data_dir,
+            resolved_fingerprint,
+            allow_legacy_fallback=False,
+            fail_closed=True,
+        )
+    except ValueError as exc:
+        logger.error(f"Cannot import into bond registry: {exc}")
+        raise typer.Exit(1) from exc
+
+    imported_bond = create_bond_info(
+        address=imported.address,
+        locktime=imported.locktime,
+        index=-1,
+        path=imported.derivation_path,
+        pubkey_hex=imported.pubkey,
+        witness_script=imported.witness_script,
+        network=imported.network,
+        signer_master_fingerprint=imported.master_fingerprint,
+    )
+    existing_bond = registry.get_bond_by_address(imported.address)
+    if existing_bond is None:
+        registry.add_bond(imported_bond)
+        result = "Imported"
+    else:
+        # Preserve observed UTXOs, certificate material, and creation time.
+        existing_bond.address = imported_bond.address
+        existing_bond.locktime = imported_bond.locktime
+        existing_bond.locktime_human = imported_bond.locktime_human
+        existing_bond.index = imported_bond.index
+        existing_bond.path = imported_bond.path
+        existing_bond.pubkey = imported_bond.pubkey
+        existing_bond.witness_script_hex = imported_bond.witness_script_hex
+        existing_bond.network = imported_bond.network
+        existing_bond.signer_master_fingerprint = imported_bond.signer_master_fingerprint
+        result = "Updated existing"
+
+    save_registry(registry, resolved_data_dir, resolved_fingerprint)
+    print(f"{result} SeedSigner BIP46 bond registration: {imported.address}")
+    print(f"Registry: {get_registry_path(resolved_data_dir, resolved_fingerprint)}")
 
 
 @app.command("generate-hot-keypair")
@@ -1234,6 +1353,11 @@ def spend_bond(
         logger.info("Make sure you have created the bond with 'create-bond-address' first")
         logger.info("Use 'jm-wallet list-bonds' to see all bonds")
         raise typer.Exit(1)
+
+    if master_fingerprint is None and derivation_path is None and bond.signer_master_fingerprint:
+        master_fingerprint = bond.signer_master_fingerprint
+        derivation_path = bond.path
+        logger.info("Using BIP32 derivation metadata from imported bond registration")
 
     # Resolve bond UTXO source (real UTXO or synthetic dry-run UTXO)
     is_test_unfunded_mode = False

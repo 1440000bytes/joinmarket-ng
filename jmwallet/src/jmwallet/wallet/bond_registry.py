@@ -49,6 +49,9 @@ class FidelityBondInfo(BaseModel):
     witness_script_hex: str
     network: str
     created_at: str
+    # The external signer's BIP32 master fingerprint, when known. Older
+    # registries have no signer metadata and continue to load unchanged.
+    signer_master_fingerprint: str | None = None
     # UTXO info (populated when bond is funded). ``txid``/``vout``/``value``
     # describe the single announced bond UTXO -- the largest one at the
     # address, matching the reference implementation (only the biggest UTXO
@@ -330,6 +333,7 @@ def load_registry(
     fingerprint: str | None = None,
     *,
     allow_legacy_fallback: bool = True,
+    fail_closed: bool = False,
 ) -> BondRegistry:
     """
     Load the bond registry from disk.
@@ -348,6 +352,10 @@ def load_registry(
             wallet's registry (issue #492 regression). Wallet-aware
             migration via :func:`migrate_legacy_registry` is the only safe
             way to move legacy entries into a per-wallet file.
+        fail_closed: When ``True``, raise :class:`ValueError` instead of
+            returning an empty registry if an existing target file is malformed.
+            Writers use this to avoid replacing a registry whose contents could
+            not be validated.
 
     Behavior:
         If a per-wallet file is requested but does not exist and
@@ -383,6 +391,8 @@ def load_registry(
         return BondRegistry.model_validate(data)
     except Exception as e:
         logger.error(f"Failed to load bond registry: {e}")
+        if fail_closed:
+            raise ValueError(f"Cannot load invalid bond registry {registry_path}: {e}") from e
         # Return empty registry on error, but don't overwrite the file
         return BondRegistry()
 
@@ -483,6 +493,7 @@ def create_bond_info(
     pubkey_hex: str,
     witness_script: bytes,
     network: str,
+    signer_master_fingerprint: str | None = None,
 ) -> FidelityBondInfo:
     """
     Create a FidelityBondInfo instance.
@@ -495,6 +506,8 @@ def create_bond_info(
         pubkey_hex: Public key as hex
         witness_script: The witness script bytes
         network: Network name
+        signer_master_fingerprint: Optional BIP32 master fingerprint for an
+            external signer that can redeem this bond.
 
     Returns:
         FidelityBondInfo instance
@@ -510,6 +523,7 @@ def create_bond_info(
         witness_script_hex=witness_script.hex(),
         network=network,
         created_at=datetime.now().isoformat(),
+        signer_master_fingerprint=signer_master_fingerprint,
     )
 
 

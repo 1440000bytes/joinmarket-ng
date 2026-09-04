@@ -25,7 +25,12 @@ TEST_LOCKTIME = 1672531200  # 2023-01-01 00:00:00 UTC
 TEST_NETWORK = "regtest"
 
 
-def _create_funded_bond(data_dir: Path) -> str:
+def _create_funded_bond(
+    data_dir: Path,
+    *,
+    path: str = "external",
+    signer_master_fingerprint: str | None = None,
+) -> str:
     """Create a funded bond in the registry and return its address."""
     from jmcore.btc_script import mk_freeze_script
 
@@ -39,7 +44,7 @@ def _create_funded_bond(data_dir: Path) -> str:
         locktime=TEST_LOCKTIME,
         locktime_human="2023-01-01 00:00:00",
         index=0,
-        path="external",
+        path=path,
         pubkey=TEST_PUBKEY_HEX,
         witness_script_hex=witness_script.hex(),
         network=TEST_NETWORK,
@@ -48,6 +53,7 @@ def _create_funded_bond(data_dir: Path) -> str:
         vout=0,
         value=100_000,
         confirmations=1000,
+        signer_master_fingerprint=signer_master_fingerprint,
     )
 
     registry = BondRegistry(bonds=[bond])
@@ -499,6 +505,74 @@ class TestSpendBondBIP32Derivation:
             )
             assert fp_bytes + path_bytes in psbt_bytes
 
+    def test_imported_signer_metadata_defaults_bip32_derivation(self) -> None:
+        """Imported registrations provide origin metadata without CLI flags."""
+        import struct
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            address = _create_funded_bond(
+                data_dir,
+                path="m/84'/0'/0'/2/240",
+                signer_master_fingerprint="73c5da0a",
+            )
+
+            result = runner.invoke(
+                app,
+                [
+                    "spend-bond",
+                    address,
+                    DEST_ADDRESS,
+                    "--data-dir",
+                    str(data_dir),
+                    "--wallet-fingerprint",
+                    "deadbeef",
+                ],
+            )
+
+            assert result.exit_code == 0, result.stdout
+            psbt_b64 = _extract_psbt_from_output(result.stdout.split("\n"))
+            assert psbt_b64 is not None
+            psbt_bytes = base64.b64decode(psbt_b64)
+            path_bytes = b"".join(
+                struct.pack("<I", index)
+                for index in [
+                    84 | 0x80000000,
+                    0 | 0x80000000,
+                    0 | 0x80000000,
+                    2,
+                    240,
+                ]
+            )
+            assert bytes.fromhex("73c5da0a") + path_bytes in psbt_bytes
+
+    def test_imported_metadata_does_not_complete_a_partial_explicit_pair(self) -> None:
+        """An explicit origin option still requires its explicit counterpart."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            address = _create_funded_bond(
+                data_dir,
+                path="m/84'/0'/0'/2/240",
+                signer_master_fingerprint="73c5da0a",
+            )
+
+            result = runner.invoke(
+                app,
+                [
+                    "spend-bond",
+                    address,
+                    DEST_ADDRESS,
+                    "--data-dir",
+                    str(data_dir),
+                    "--wallet-fingerprint",
+                    "deadbeef",
+                    "--master-fingerprint",
+                    "aabbccdd",
+                ],
+            )
+
+            assert result.exit_code != 0
+
     def test_fingerprint_only_fails(self) -> None:
         """Providing --master-fingerprint without --derivation-path should fail."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -740,6 +814,7 @@ class TestDeviceCompatibilityDocVector:
                     str(data_dir),
                     "--wallet-fingerprint",
                     self.MASTER_FINGERPRINT,
+                    "--allow-expired",
                 ],
             )
             assert create_result.exit_code == 0, create_result.stdout

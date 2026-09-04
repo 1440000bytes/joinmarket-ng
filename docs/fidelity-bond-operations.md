@@ -101,6 +101,48 @@ Before starting, record:
 - the hot JoinMarket wallet's 8-character fingerprint,
 - the network and intended future locktime.
 
+### SeedSigner BIP46 Registration
+
+SeedSigner can export a BIP46 bond registration payload for its canonical
+fidelity-bond branch. Import that payload before funding. The importer accepts
+one compact JSON argument or exactly one `--file` option:
+
+```bash
+jm-wallet import-bond-registration \
+  --file seedsigner-bip46-registration.json \
+  --wallet-fingerprint <hot-wallet-fingerprint>
+```
+
+`--wallet-fingerprint` still selects the hot JoinMarket wallet registry. It is
+not the `master_fingerprint` inside the payload, which identifies the SeedSigner
+bond key. The import validates the compressed public key and canonical compact
+ASCII JSON contract, then independently reconstructs the timelock script and
+P2WSH address. It rejects old xpub-shaped exports, unrecognized fields, and any
+payload whose address does not match that reconstruction. No xpub is stored.
+The master fingerprint and derivation path are signer-routing metadata, not
+proof that the leaf public key belongs to that master key. The signer verifies
+that relationship when it processes the redemption PSBT.
+
+The imported entry stores the full signer derivation path and signer master
+fingerprint. For that entry, `spend-bond` automatically embeds both values in
+the redemption PSBT when neither `--master-fingerprint` nor `--derivation-path`
+is supplied. Supplying one of those options still requires supplying the other.
+Manual `create-bond-address` entries remain supported and continue to require
+the explicit paired options when signer origin data is not stored.
+
+Normal `create-bond-address` use rejects past and current locktimes. The
+`--allow-expired` override exists only for recovery and deterministic testing.
+
+Use this order for a SeedSigner bond:
+
+1. Export and import/register the payload without funding the address.
+2. Generate the certificate key, prepare the certificate message, sign it with
+   the SeedSigner bond key, and import the certificate.
+3. Run `spend-bond --test-unfunded`, sign the PSBT with the exact signer, and
+   run the finalizer successfully.
+4. Only then fund the address independently reconstructed from the SeedSigner
+   payload, once.
+
 ### Signer Compatibility
 
 Most hardware wallets reject custom CLTV P2WSH scripts. Compatibility changes
