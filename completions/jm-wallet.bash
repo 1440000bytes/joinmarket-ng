@@ -8,7 +8,7 @@ _jm_wallet_completion() {
     prev="${COMP_WORDS[COMP_CWORD-1]}"
 
     if [ "$COMP_CWORD" -eq 1 ]; then
-        COMPREPLY=( $(compgen -W "address create-bond-address debug-info delete freeze generate generate-bond-address generate-hot-keypair history import import-bond import-certificate info list-bonds prepare-certificate-message reconstruct-history recover-bonds registry-show rescan send showseed sign-psbt signpsbt spend-bond sync-bonds validate verify-password" -- "$cur") )
+        COMPREPLY=( $(compgen -W "address create-bond-address debug-info delete freeze generate generate-bond-address generate-hot-keypair history import import-bond import-bond-registration import-certificate info list-bonds prepare-certificate-message reconstruct-history recover-bonds registry-show rescan send showseed sign-psbt signpsbt spend-bond sync-bonds validate verify-password" -- "$cur") )
         return 0
     fi
 
@@ -18,7 +18,7 @@ _jm_wallet_completion() {
         COMPREPLY=( $(compgen -W "--help --mnemonic-file -f --prompt-bip39-passphrase --network -n --backend -b --rpc-url --neutrino-url --data-dir --config-file --log-level -l" -- "$cur") )
         ;;
       create-bond-address)
-        COMPREPLY=( $(compgen -W "--help --locktime -L --locktime-date -d --network -n --data-dir --no-save --wallet-fingerprint --log-level -l" -- "$cur") )
+        COMPREPLY=( $(compgen -W "--help --locktime -L --locktime-date -d --network -n --data-dir --no-save --allow-expired --wallet-fingerprint --log-level -l" -- "$cur") )
         ;;
       debug-info)
         COMPREPLY=( $(compgen -W "--help --network -n --backend -b --neutrino-url --data-dir --config-file --log-level -l" -- "$cur") )
@@ -46,6 +46,9 @@ _jm_wallet_completion() {
         ;;
       import-bond)
         COMPREPLY=( $(compgen -W "--help --mnemonic-file -f --prompt-bip39-passphrase --locktime -L --locktime-date -d --timenumber -t --path -p --network -n --data-dir --config-file --log-level -l" -- "$cur") )
+        ;;
+      import-bond-registration)
+        COMPREPLY=( $(compgen -W "--help --file --data-dir --wallet-fingerprint --log-level -l" -- "$cur") )
         ;;
       import-certificate)
         COMPREPLY=( $(compgen -W "--help --cert-pubkey --cert-signature --cert-expiry --data-dir --config-file --skip-verification --network -n --backend -b --rpc-url --neutrino-url --current-block --wallet-fingerprint --log-level" -- "$cur") )

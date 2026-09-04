@@ -17,6 +17,7 @@ _jm_wallet() {
     'history:View CoinJoin transaction history.'
     'import:Import an existing BIP39 mnemonic phrase to create/recover a wallet.'
     'import-bond:Manually import a fidelity bond into the registry.'
+    'import-bond-registration:Import a verified SeedSigner BIP46 fidelity-bond registration payload.'
     'import-certificate:Import a certificate signature for a fidelity bond (cold wallet support).'
     'info:Display wallet information and balances by mixdepth.'
     'list-bonds:List fidelity bonds from the local registry (offline, no blockchain access).'
@@ -65,6 +66,7 @@ _jm_wallet() {
             '--network=[]: :' \
             '--data-dir=[Data directory (default\: ~/.joinmarket-ng or $JOINMARKET_DATA_DIR)]:file:_files' \
             '--no-save[Do not save the bond to the registry]' \
+            '--allow-expired[Allow a past/current locktime for recovery or testing only]' \
             '--wallet-fingerprint=[8-char hex master key fingerprint of the JoinMarket wallet that will operate this bond. Run '\''jm-wallet info --mnemonic-file <wallet>'\'' on the hot wallet to look it up. Required because each wallet has its own bond registry (fidelity_bonds_<fp>.json) under the shared data directory.]: :' \
             '--log-level=[]: :' \
             '--help[Show this message and exit]'
@@ -179,6 +181,14 @@ _jm_wallet() {
             '--data-dir=[Data directory (default\: ~/.joinmarket-ng or $JOINMARKET_DATA_DIR)]:file:_files' \
             '--config-file=[Config file path (decoupled from data dir). Defaults to <data-dir>/config.toml]:file:_files' \
             '--log-level=[Log level]: :' \
+            '--help[Show this message and exit]'
+          ;;
+        import-bond-registration)
+          _arguments \
+            '--file=[File containing canonical SeedSigner BIP46 registration JSON]:file:_files' \
+            '--data-dir=[Data directory (default\: ~/.joinmarket-ng or $JOINMARKET_DATA_DIR)]:file:_files' \
+            '--wallet-fingerprint=[8-char hex master key fingerprint of the JoinMarket wallet that will operate this bond. Run '\''jm-wallet info --mnemonic-file <wallet>'\'' on the hot wallet to look it up. Required because each wallet has its own bond registry (fidelity_bonds_<fp>.json) under the shared data directory.]: :' \
+            '--log-level=[]: :' \
             '--help[Show this message and exit]'
           ;;
         import-certificate)

@@ -262,6 +262,8 @@ The full CLI reference below is auto-generated from command `--help` output.
 │                              create/recover a wallet.                        │
 │ import-bond                  Manually import a fidelity bond into the        │
 │                              registry.                                       │
+│ import-bond-registration     Import a verified SeedSigner BIP46              │
+│                              fidelity-bond registration payload.             │
 │ import-certificate           Import a certificate signature for a fidelity   │
 │                              bond (cold wallet support).                     │
 │ info                         Display wallet information and balances by      │
@@ -360,6 +362,8 @@ The full CLI reference below is auto-generated from command `--help` output.
 │ *    pubkey      TEXT  Public key (hex, 33 bytes compressed) [required]      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --allow-expired                        Allow a past/current locktime for     │
+│                                        recovery or testing only              │
 │ --data-dir                    PATH     Data directory (default:              │
 │                                        ~/.joinmarket-ng or                   │
 │                                        $JOINMARKET_DATA_DIR)                 │
@@ -815,6 +819,41 @@ The full CLI reference below is auto-generated from command `--help` output.
 │ --prompt-bip39-passphrase                   Prompt for BIP39 passphrase      │
 │ --timenumber               -t      INTEGER  Timenumber (0-959). Auto-derived │
 │                                             if omitted.                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+</details>
+
+<details>
+<summary><code>jm-wallet import-bond-registration --help</code></summary>
+
+```
+
+ Usage: jm-wallet import-bond-registration [OPTIONS] [REGISTRATION]
+
+ Import a verified SeedSigner BIP46 fidelity-bond registration payload.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│   registration      [REGISTRATION]  Canonical SeedSigner BIP46 registration  │
+│                                     JSON                                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --data-dir                    PATH  Data directory (default:                 │
+│                                     ~/.joinmarket-ng or                      │
+│                                     $JOINMARKET_DATA_DIR)                    │
+│                                     [env var: JOINMARKET_DATA_DIR]           │
+│ --file                        PATH  File containing canonical SeedSigner     │
+│                                     BIP46 registration JSON                  │
+│ --help                              Show this message and exit.              │
+│ --log-level           -l      TEXT  [default: INFO]                          │
+│ --wallet-fingerprint          TEXT  8-char hex master key fingerprint of the │
+│                                     JoinMarket wallet that will operate this │
+│                                     bond. Run 'jm-wallet info                │
+│                                     --mnemonic-file <wallet>' on the hot     │
+│                                     wallet to look it up. Required because   │
+│                                     each wallet has its own bond registry    │
+│                                     (fidelity_bonds_<fp>.json) under the     │
+│                                     shared data directory.                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
