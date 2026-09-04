@@ -564,8 +564,9 @@ def wait_for_yieldgenerator_ready(
         "all message channels connected",
         "jm daemon setup complete",
     ]
+    # JAM can log its directory deadline immediately before a delayed Tor
+    # connection succeeds. Keep polling while the process remains alive.
     fatal_indicators = [
-        "failed to connect and handshake with any directories",
         "traceback (most recent call last)",
     ]
 
