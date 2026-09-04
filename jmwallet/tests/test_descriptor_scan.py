@@ -2,7 +2,7 @@
 Tests for descriptor-based wallet scanning.
 """
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -167,11 +167,14 @@ async def test_discover_fidelity_bonds_auto_initialises_descriptor_wallet(test_m
     backend.start_background_rescan = AsyncMock(return_value=None)  # type: ignore[method-assign]
     backend.wait_for_rescan_complete = AsyncMock(return_value=True)  # type: ignore[method-assign]
     backend.get_utxos = AsyncMock(return_value=[])  # type: ignore[method-assign]
+    register_mock = Mock()
+    wallet._self_register_bond_utxos = register_mock  # type: ignore[method-assign]
 
     discovered = await wallet.discover_fidelity_bonds()
 
     assert discovered == []
     setup_mock.assert_awaited_once_with(rescan=False)
+    register_mock.assert_called_once_with([], require_persistence=False)
     assert wallet.fidelity_bond_locktime_cache == {}
 
 

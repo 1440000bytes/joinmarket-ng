@@ -1051,6 +1051,7 @@ async def _recover_bonds_async(
         discovered_utxos = await wallet.discover_fidelity_bonds(
             progress_callback=progress_callback,
             rescan_progress_callback=rescan_progress_callback,
+            require_persistence=True,
         )
         if mnemonic_file is not None:
             from jmwallet.cli.mnemonic import mark_fidelity_bond_recovery_complete

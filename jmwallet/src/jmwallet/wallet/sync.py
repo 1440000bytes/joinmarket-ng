@@ -844,6 +844,8 @@ class WalletSyncMixin:
         self,
         progress_callback: Any | None = None,
         rescan_progress_callback: Any | None = None,
+        *,
+        require_persistence: bool = False,
     ) -> list[UTXOInfo]:
         """
         Discover fidelity bonds by scanning all 960 possible locktimes.
@@ -861,6 +863,7 @@ class WalletSyncMixin:
         Args:
             progress_callback: Optional callback(current, total) for progress updates
             rescan_progress_callback: Optional callback(progress) with 0.0-1.0 for rescan
+            require_persistence: Fail if discovered bonds cannot be persisted
 
         Returns:
             List of discovered fidelity bond UTXOs
@@ -1022,7 +1025,10 @@ class WalletSyncMixin:
         # registry-aware syncs keep scanning them. Essential for light-client
         # backends: unlike Bitcoin Core, nothing else records the bond, so a
         # discovered UTXO would disappear again on the next sync.
-        self._self_register_bond_utxos(discovered_utxos, require_persistence=True)
+        self._self_register_bond_utxos(
+            discovered_utxos,
+            require_persistence=require_persistence,
+        )
 
         return discovered_utxos
 
@@ -1053,7 +1059,7 @@ class WalletSyncMixin:
         )
         self._fidelity_bond_recovery_in_progress = True
         try:
-            await self.discover_fidelity_bonds()
+            await self.discover_fidelity_bonds(require_persistence=True)
             mark_fidelity_bond_recovery_complete(
                 self.mnemonic_file,
                 self.wallet_fingerprint,
@@ -1482,8 +1488,10 @@ class WalletSyncMixin:
 
         The registry file is only rewritten when something actually changed,
         so steady-state syncs do not churn it. Best-effort and non-fatal: a
-        failure here only means the same reconciliation is retried on the next
-        sync, never that a recognized UTXO disappears from the current result.
+        failure here normally only means the same reconciliation is retried on
+        the next sync, never that a recognized UTXO disappears from the current
+        result. Recovery workflows set ``require_persistence`` so they cannot
+        mark recovery complete before the registry update is durable.
         """
         if self.data_dir is None:
             if require_persistence and bond_utxos:

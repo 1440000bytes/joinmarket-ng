@@ -155,7 +155,8 @@ async def test_imported_wallet_discovers_bonds_before_registry_sync(tmp_path: Pa
     )
     ws = _make_file_backed_wallet(tmp_path, mnemonic_file)
 
-    async def discover() -> list[object]:
+    async def discover(*, require_persistence: bool = False) -> list[object]:
+        assert require_persistence is True
         _write_bond_registry(ws)
         return []
 
@@ -166,7 +167,7 @@ async def test_imported_wallet_discovers_bonds_before_registry_sync(tmp_path: Pa
 
     result = await ws.sync_with_registered_bonds()
 
-    ws.discover_fidelity_bonds.assert_awaited_once()
+    ws.discover_fidelity_bonds.assert_awaited_once_with(require_persistence=True)
     ws.sync_with_descriptor_wallet.assert_awaited_once_with(
         [(BOND_ADDRESS, BOND_LOCKTIME, BOND_INDEX)]
     )
@@ -201,6 +202,7 @@ async def test_failed_imported_wallet_recovery_remains_retryable(tmp_path: Path)
         await ws._recover_imported_fidelity_bonds_if_needed()
 
     assert ws.discover_fidelity_bonds.await_count == 2
+    ws.discover_fidelity_bonds.assert_awaited_with(require_persistence=True)
     assert load_mnemonic_meta(mnemonic_file)["fidelity_bond_recovery"] == "pending"
 
 
