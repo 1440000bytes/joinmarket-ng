@@ -19,15 +19,12 @@ Usage:
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import re
 import subprocess
 import tempfile
 import threading
 import time
-import urllib.error
-import urllib.request
 from collections import Counter
 from decimal import Decimal
 from pathlib import Path
@@ -45,7 +42,6 @@ from taker.models import PhaseResult
 from taker.orderbook import calculate_cj_fee
 from taker.taker import Taker
 
-from tests.e2e.docker_utils import get_orderbook_watcher_url
 from tests.e2e.test_reference_coinjoin import (
     _wait_for_node_sync,
     get_compose_file,
@@ -898,43 +894,6 @@ def running_yieldgenerators(funded_jam_makers):
         stop_yieldgenerator(process, maker["maker_id"], maker["wallet_name"])
 
 
-def _wait_for_mixed_maker_offers(
-    timeout: float = 180.0,
-) -> tuple[set[str], str] | None:
-    """Wait until only the expected JAM and NG fee profiles are present."""
-    url = f"{get_orderbook_watcher_url()}/orderbook.json"
-    deadline = time.time() + timeout
-
-    while time.time() < deadline:
-        try:
-            with urllib.request.urlopen(url, timeout=3) as response:
-                offers = json.loads(response.read().decode("utf-8")).get("offers", [])
-        except (
-            urllib.error.URLError,
-            OSError,
-            json.JSONDecodeError,
-            TimeoutError,
-        ):
-            time.sleep(2)
-            continue
-
-        jam_nicks = {
-            str(offer["counterparty"])
-            for offer in offers
-            if Decimal(str(offer["cjfee"])) < Decimal("0.0001")
-        }
-        replacement_nicks = {
-            str(offer["counterparty"])
-            for offer in offers
-            if Decimal(str(offer["cjfee"])) == Decimal("0.0002")
-        }
-        if len(jam_nicks) == 2 and len(replacement_nicks) == 1:
-            return jam_nicks, replacement_nicks.pop()
-        time.sleep(2)
-
-    return None
-
-
 @pytest.fixture(scope="function")
 def mixed_replacement_makers(running_yieldgenerators):
     """Run two JAM makers and one NG maker, with guaranteed NG cleanup."""
@@ -970,16 +929,7 @@ def mixed_replacement_makers(running_yieldgenerators):
     start_ng = run_compose_cmd(["up", "-d", "--no-deps", "maker3"], check=False)
     assert start_ng.returncode == 0, start_ng.stderr
     try:
-        expected_nicks = _wait_for_mixed_maker_offers()
-        assert expected_nicks is not None, (
-            "Expected fresh offers from two JAM makers and maker3"
-        )
-        jam_nicks, replacement_nick = expected_nicks
-        yield {
-            "makers": running_yieldgenerators,
-            "jam_nicks": jam_nicks,
-            "replacement_nick": replacement_nick,
-        }
+        yield {"makers": running_yieldgenerators}
     finally:
         run_compose_cmd(["stop", "maker3"], check=False)
 
@@ -1128,8 +1078,6 @@ async def test_our_taker_replaces_failed_reference_maker_without_duplicate_auth(
     taker = Taker(wallet, backend, config)
     sent_messages: list[tuple[str, str]] = []
     initial_nicks: set[str] = set()
-    expected_jam_nicks = mixed_replacement_makers["jam_nicks"]
-    expected_replacement_nick = mixed_replacement_makers["replacement_nick"]
     replacement_nick: str | None = None
     stopped_legacy = False
 
@@ -1153,7 +1101,7 @@ async def test_our_taker_replaces_failed_reference_maker_without_duplicate_auth(
                 selected_offers = [
                     offer
                     for offer in candidates
-                    if offer.counterparty in expected_jam_nicks
+                    if Decimal(str(offer.cjfee)) < Decimal("0.0001")
                 ]
                 assert len(selected_offers) == 2, (
                     "Expected offers from both live JAM makers"
@@ -1163,7 +1111,7 @@ async def test_our_taker_replaces_failed_reference_maker_without_duplicate_auth(
                 selected_offers = [
                     offer
                     for offer in candidates
-                    if offer.counterparty == expected_replacement_nick
+                    if Decimal(str(offer.cjfee)) == Decimal("0.0002")
                 ]
                 assert len(selected_offers) == 1, (
                     "Expected the live NG maker3 replacement offer"
