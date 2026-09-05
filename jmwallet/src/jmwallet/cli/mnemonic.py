@@ -4,7 +4,12 @@ Mnemonic generation, validation, encryption, and interactive input.
 
 from __future__ import annotations
 
+import errno
 import os
+import stat
+import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import typer
@@ -256,11 +261,16 @@ MnemonicMetaValue = int | str
 FIDELITY_BOND_RECOVERY_PENDING = "pending"
 FIDELITY_BOND_RECOVERY_COMPLETE = "complete"
 FIDELITY_BOND_RECOVERY_NOT_REQUIRED = "not_required"
+FIDELITY_BOND_RECOVERY_STARTED = "started"
 _FIDELITY_BOND_RECOVERY_STATES = {
     FIDELITY_BOND_RECOVERY_PENDING,
     FIDELITY_BOND_RECOVERY_COMPLETE,
     FIDELITY_BOND_RECOVERY_NOT_REQUIRED,
 }
+
+
+class FidelityBondRecoveryInProgressError(RuntimeError):
+    """Another process already owns this mnemonic's recovery attempt."""
 
 
 def _meta_path(mnemonic_file: Path) -> Path:
@@ -274,7 +284,48 @@ def _meta_path(mnemonic_file: Path) -> Path:
 
 def reset_mnemonic_meta(mnemonic_file: Path) -> None:
     """Remove metadata that belongs to mnemonic contents being replaced."""
-    _meta_path(mnemonic_file).unlink(missing_ok=True)
+    with _mnemonic_meta_lock(mnemonic_file, recovery=True):
+        with _mnemonic_meta_lock(mnemonic_file):
+            _meta_path(mnemonic_file).unlink(missing_ok=True)
+
+
+@contextmanager
+def _mnemonic_meta_lock(mnemonic_file: Path, *, recovery: bool = False) -> Iterator[None]:
+    """Lock a stable sidecar, using a nonblocking lock for long recovery attempts."""
+    path = _meta_path(mnemonic_file)
+    lock_path = path.with_name(path.name + (".recovery.lock" if recovery else ".lock"))
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(
+        lock_path,
+        os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+        0o600,
+    )
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError("Mnemonic metadata lock must be a regular file")
+        os.fchmod(fd, 0o600)
+        try:
+            if sys.platform == "win32":  # pragma: no cover - Windows
+                import msvcrt
+
+                if os.fstat(fd).st_size == 0:
+                    os.write(fd, b"\0")
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_NBLCK if recovery else msvcrt.LK_LOCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(fd, fcntl.LOCK_EX | (fcntl.LOCK_NB if recovery else 0))
+        except OSError as exc:
+            if recovery and exc.errno in {errno.EACCES, errno.EAGAIN}:
+                raise FidelityBondRecoveryInProgressError(
+                    "Fidelity bond recovery is already running in another process"
+                ) from exc
+            raise
+        # Closing this descriptor releases the lock, including on cancellation.
+        yield
+    finally:
+        os.close(fd)
 
 
 def _write_mnemonic_meta(mnemonic_file: Path, meta: dict[str, MnemonicMetaValue]) -> None:
@@ -282,9 +333,7 @@ def _write_mnemonic_meta(mnemonic_file: Path, meta: dict[str, MnemonicMetaValue]
     import json
 
     path = _meta_path(mnemonic_file)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(meta, indent=2) + "\n")
-    os.chmod(path, 0o600)
+    atomic_write_private(path, (json.dumps(meta, indent=2) + "\n").encode("utf-8"))
     logger.bind(sensitive=True).debug(f"Saved mnemonic metadata to {path}")
 
 
@@ -326,9 +375,10 @@ def save_mnemonic_meta(
         return  # Nothing to persist
 
     # Merge into any existing metadata so concurrent fields are not lost.
-    meta = load_mnemonic_meta(mnemonic_file)
-    meta.update(updates)
-    _write_mnemonic_meta(mnemonic_file, meta)
+    with _mnemonic_meta_lock(mnemonic_file):
+        meta = load_mnemonic_meta(mnemonic_file)
+        meta.update(updates)
+        _write_mnemonic_meta(mnemonic_file, meta)
 
 
 def load_mnemonic_meta(mnemonic_file: Path) -> dict[str, MnemonicMetaValue]:
@@ -377,19 +427,24 @@ def mnemonic_requires_fidelity_bond_recovery(
     mnemonic_file: Path,
     wallet_fingerprint: str,
 ) -> bool:
-    """Return whether a file-backed wallet still needs canonical bond recovery.
+    """Return whether the wallet explicitly requests its first automatic recovery.
 
     New imports are explicitly marked pending, while generated wallets are
-    marked not-required. For wallets created by older releases, a valid
-    creation height identifies a generated wallet; metadata without one is
-    treated as a restored wallet and receives one recovery scan.
+    marked not-required. Missing legacy metadata does not establish that a
+    recovery is needed. Started attempts require explicit retry because Core
+    can finish scanning after the originating process exits.
     """
     meta = load_mnemonic_meta(mnemonic_file)
     wallet_state = meta.get(_fidelity_bond_recovery_key(wallet_fingerprint))
     if wallet_state == FIDELITY_BOND_RECOVERY_COMPLETE:
         return False
     if wallet_state is not None:
-        logger.warning(f"Ignoring invalid wallet-specific bond recovery state: {wallet_state!r}")
+        logger.warning(
+            "Fidelity bond recovery completion is unconfirmed. No automatic retry will run. "
+            "Check `jm-wallet info --scan-status` for Bitcoin Core scan activity; "
+            "run `jm-wallet recover-bonds` to explicitly retry recovery."
+        )
+        return False
 
     state = meta.get("fidelity_bond_recovery")
     if state == FIDELITY_BOND_RECOVERY_PENDING:
@@ -403,11 +458,17 @@ def mnemonic_requires_fidelity_bond_recovery(
         logger.warning(f"Ignoring invalid fidelity bond recovery state: {state!r}")
 
     creation_height = meta.get("creation_height")
-    return not (
+    if not (
         isinstance(creation_height, int)
         and not isinstance(creation_height, bool)
         and creation_height >= 0
-    )
+    ):
+        logger.warning(
+            "Fidelity bond recovery coverage is unknown for this legacy wallet. "
+            "No automatic recovery scan will run. Use `jm-wallet recover-bonds` "
+            "if historical bonds need to be discovered."
+        )
+    return False
 
 
 def mark_fidelity_bond_recovery_complete(
@@ -415,9 +476,39 @@ def mark_fidelity_bond_recovery_complete(
     wallet_fingerprint: str,
 ) -> None:
     """Persist successful completion of the imported-wallet bond scan."""
-    meta = load_mnemonic_meta(mnemonic_file)
-    meta[_fidelity_bond_recovery_key(wallet_fingerprint)] = FIDELITY_BOND_RECOVERY_COMPLETE
-    _write_mnemonic_meta(mnemonic_file, meta)
+    with _mnemonic_meta_lock(mnemonic_file):
+        meta = load_mnemonic_meta(mnemonic_file)
+        meta[_fidelity_bond_recovery_key(wallet_fingerprint)] = FIDELITY_BOND_RECOVERY_COMPLETE
+        _write_mnemonic_meta(mnemonic_file, meta)
+
+
+@contextmanager
+def fidelity_bond_recovery_attempt(
+    mnemonic_file: Path,
+    wallet_fingerprint: str,
+    *,
+    automatic: bool = False,
+) -> Iterator[bool]:
+    """Claim recovery before any RPC and complete it only after durable success.
+
+    The long-lived lock excludes concurrent explicit retries. The separate
+    short metadata lock lets unrelated metadata updates proceed during a scan.
+    Errors and process termination leave ``started`` intact, never ``pending``.
+    """
+    with _mnemonic_meta_lock(mnemonic_file, recovery=True):
+        with _mnemonic_meta_lock(mnemonic_file):
+            claimed = not automatic or mnemonic_requires_fidelity_bond_recovery(
+                mnemonic_file, wallet_fingerprint
+            )
+            if claimed:
+                meta = load_mnemonic_meta(mnemonic_file)
+                meta[_fidelity_bond_recovery_key(wallet_fingerprint)] = (
+                    FIDELITY_BOND_RECOVERY_STARTED
+                )
+                _write_mnemonic_meta(mnemonic_file, meta)
+        yield claimed
+        if claimed:
+            mark_fidelity_bond_recovery_complete(mnemonic_file, wallet_fingerprint)
 
 
 def load_mnemonic_meta_fingerprint(mnemonic_file: Path) -> str | None:

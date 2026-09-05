@@ -3038,9 +3038,7 @@ def test_rescan_without_scan_depth_uses_plain_block_rescan(monkeypatch) -> None:
 
 
 def test_print_scan_status_formats_idle_run(capsys: pytest.CaptureFixture) -> None:
-    """``_print_scan_status`` renders human-readable lines for the
-    diagnostic dict and surfaces the smart-scan-coverage hint when the
-    oldest descriptor timestamp is much newer than genesis."""
+    """Import timestamps must not be presented as completed scan coverage."""
     from jmwallet.cli.wallet import _print_scan_status
 
     one_year_ago = 1_700_000_000
@@ -3059,10 +3057,10 @@ def test_print_scan_status_formats_idle_run(capsys: pytest.CaptureFixture) -> No
     assert "Transactions known to Core" in out
     assert "42" in out
     assert "Rescan currently running:      no" in out
-    # The smart-scan coverage warning should fire because the descriptor
-    # timestamp is well after genesis (1230768000).
-    assert "Bitcoin Core has only scanned the last" in out
-    assert "jm-wallet rescan" in out
+    assert "Oldest descriptor timestamp" in out
+    assert "Historical scan coverage: unknown" in out
+    assert "Bitcoin Core has only scanned" not in out
+    assert "jm-wallet rescan" not in out
 
 
 def test_print_scan_status_formats_running_rescan(capsys: pytest.CaptureFixture) -> None:
@@ -3084,6 +3082,34 @@ def test_print_scan_status_formats_running_rescan(capsys: pytest.CaptureFixture)
     assert "Rescan currently running:      yes (50.0%, 120s elapsed)" in out
     # Coverage hint must NOT fire at the genesis boundary.
     assert "Bitcoin Core has only scanned" not in out
+
+
+def test_print_scan_status_unavailable_is_not_idle(capsys: pytest.CaptureFixture) -> None:
+    from jmwallet.cli.wallet import _print_scan_status
+
+    _print_scan_status({"scanning_in_progress": None})
+    out = capsys.readouterr().out
+    assert "unknown (status unavailable)" in out
+    assert "Rescan currently running:      no" not in out
+
+
+@pytest.mark.asyncio
+async def test_rescan_polling_unavailable_does_not_claim_completion(
+    capsys: pytest.CaptureFixture,
+) -> None:
+    from jmwallet.cli.wallet import _await_rescan_completion
+
+    backend = MagicMock()
+    backend.get_rescan_status = AsyncMock(
+        side_effect=[None, {}, {"in_progress": True, "progress": 0.5}, {"in_progress": False}]
+    )
+    progress = MagicMock()
+    await _await_rescan_completion(backend, poll_interval_seconds=0, progress_callback=progress)
+    assert backend.get_rescan_status.await_count == 4
+    progress.assert_called_once_with(0.5, 0.0)
+    out = capsys.readouterr().out
+    assert "outcome is unverified" in out
+    assert "Rescan complete" not in out
 
 
 def test_info_scan_status_flag_prints_diagnostics_and_exits(monkeypatch) -> None:
@@ -3132,6 +3158,37 @@ def test_info_scan_status_flag_prints_diagnostics_and_exits(monkeypatch) -> None
         mock_backend.get_wallet_scan_status.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_info_forwards_configured_initial_scan_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from jmcore.cli_common import resolve_backend_settings
+    from jmcore.settings import JoinMarketSettings
+
+    from jmwallet.cli.wallet import _show_wallet_info
+
+    monkeypatch.setenv("JOINMARKET_DATA_DIR", str(tmp_path))
+    settings = JoinMarketSettings(
+        data_dir=tmp_path,
+        bitcoin={"network": "regtest", "backend_type": "descriptor_wallet"},
+        wallet={"scan_start_height": 600_000, "scan_lookback_blocks": 321},
+    )
+    resolved = resolve_backend_settings(settings)
+    backend = _make_descriptor_info_mock_backend()
+    backend.get_wallet_scan_status = AsyncMock(return_value={"scanning_in_progress": False})
+    stub = _stub_backend_class(backend)
+    construct = MagicMock(return_value=backend)
+    with (
+        patch.object(stub, "__new__", construct),
+        patch("jmwallet.backends.descriptor_wallet.DescriptorWalletBackend", stub),
+    ):
+        await _show_wallet_info(
+            "abandon " * 11 + "about", resolved, scan_status_only=True, reconstruct_history=False
+        )
+    assert construct.call_args.kwargs["scan_start_height"] == 600_000
+    assert construct.call_args.kwargs["scan_lookback_blocks"] == 321
+
+
 def test_rescan_blocking_invokes_rescan_blockchain(monkeypatch) -> None:
     """``jm-wallet rescan`` (default --wait) drives the rescan via the
     background path and polls ``get_rescan_status`` until completion.
@@ -3168,7 +3225,7 @@ def test_rescan_blocking_invokes_rescan_blockchain(monkeypatch) -> None:
                 "scanning_in_progress": False,
                 "scan_progress": None,
                 "scan_duration_s": None,
-                "oldest_descriptor_timestamp": 1_230_768_000,
+                "oldest_descriptor_timestamp": 1_700_000_000,
                 "birthtime": None,
                 "txcount": 5,
             },
@@ -3199,6 +3256,7 @@ def test_rescan_blocking_invokes_rescan_blockchain(monkeypatch) -> None:
         sync_mock.assert_awaited_once()
         assert "Before rescan" in result.stdout
         assert "After rescan" in result.stdout
+        assert "Bitcoin Core has only scanned" not in result.stdout
 
 
 def test_rescan_polling_interrupt_is_safe(monkeypatch) -> None:

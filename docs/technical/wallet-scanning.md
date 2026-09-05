@@ -45,11 +45,19 @@ backfills the same 960 addresses through the light-client watch list (neutrino).
 Found bonds are recorded in the per-wallet registry, so normal maker startup
 can select them without a separate recovery command. Completion is stored by
 derived wallet fingerprint in the mnemonic's `.meta` sidecar, so different
-BIP39 passphrases are recovered independently. An interrupted or failed scan
-remains pending and retries at the next synchronization, while later routine
-syncs skip the 960-address recovery set. Wallets imported by older releases
-and lacking a creation-height marker receive the same one-time scan after
-upgrade.
+BIP39 passphrases are recovered independently. Only newly imported wallets
+explicitly marked pending start recovery automatically. Missing metadata on a
+legacy wallet does not trigger a recovery scan after an upgrade. Existing
+registered bonds still participate in normal synchronization; use
+`jm-wallet recover-bonds` to discover any missing historical bonds explicitly.
+
+Recovery records a started state before importing descriptors, and concurrent
+recovery attempts for the same mnemonic file are refused. Completion is recorded
+only after the recovery RPC succeeds and discovered bonds are persisted. If the
+command exits, the connection fails, or recovery is aborted, its outcome remains
+unconfirmed and routine synchronization does not automatically retry. Core may
+continue scanning after the CLI exits. Check `jm-wallet info --scan-status`, then
+use `jm-wallet recover-bonds` for an explicit retry when the existing scan ends.
 
 For Bitcoin Core descriptor recovery, the API also accepts an optional
 `scan_range` field (up to 10,000) for regular address-index coverage; it can
@@ -106,9 +114,12 @@ balance is missing, check coverage:
 jm-wallet info --scan-status
 ```
 
-This reports whether a rescan is running, the oldest scanned timestamp
-(the lower bound of time coverage), and the transaction count. If coverage
-is incomplete, repair it with a single tool:
+This reports current rescan activity, the oldest active descriptor import
+timestamp, and the transaction count. Descriptor timestamps are not changed by
+later block rescans and do not prove historical scan coverage. Unavailable scan
+status is reported as unknown, not idle. A background scan that is no longer
+running may have completed, failed, or been aborted. If known history is missing,
+repair it with a single tool:
 
 ```bash
 # Time-coverage repair: re-scan blocks against the current address range.
@@ -154,6 +165,7 @@ wallet: the descriptor import scans from the wallet's birthday instead of the
 fidelity-bond recovery, even when the creation-height lookup fails. Wallets
 created via the daemon record the creation height inside the wallet file.
 Imported/recovered mnemonics have an unknown birthday, so their one-time bond
-recovery may scan from genesis and can take a long time. Progress is reported
-while Bitcoin Core runs the scan, and an incomplete recovery retries at the
-next synchronization.
+recovery may scan from genesis and can take a long time. The configured
+`scan_start_height` and `scan_lookback_blocks` control the initial smart import,
+not an explicit full recovery or repair rescan. Incomplete bond recovery requires
+an explicit retry rather than restarting during the next balance query.

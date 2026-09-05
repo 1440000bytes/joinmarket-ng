@@ -29,6 +29,7 @@ from jmcore.bitcoin import get_txid
 from jmwallet.backends.base import MempoolAcceptResult, MempoolSpenderLookupResult
 from jmwallet.backends.descriptor_wallet import (
     DEFAULT_RPC_TIMEOUT,
+    RECOVERY_RESCAN_TIMEOUT,
     DescriptorWalletBackend,
     generate_wallet_name,
     get_mnemonic_fingerprint,
@@ -2227,6 +2228,212 @@ class TestBackgroundRescan:
             await backend.start_background_rescan(start_height=0)
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [None, {"in_progress": False}])
+    async def test_rescan_for_recovery_does_not_finish_from_idle_status(
+        self, status: dict[str, bool] | None
+    ) -> None:
+        """Only the owned RPC response can complete a recovery rescan."""
+        backend = DescriptorWalletBackend(wallet_name="test_recovery_status")
+        backend._wallet_loaded = True
+        backend._effective_rescan_height = AsyncMock(return_value=42)  # type: ignore[method-assign]
+        rpc_started = asyncio.Event()
+        release_rpc = asyncio.Event()
+        status_checked = asyncio.Event()
+
+        async def mock_rpc(
+            method: str,
+            params: list[Any] | None = None,
+            client: Any = None,
+            use_wallet: bool = True,
+        ) -> Any:
+            assert method == "rescanblockchain"
+            assert params == [42]
+            rpc_started.set()
+            await release_rpc.wait()
+            return {"start_height": 42, "stop_height": 100}
+
+        async def mock_status() -> dict[str, bool] | None:
+            status_checked.set()
+            return status
+
+        backend._rpc_call = mock_rpc  # type: ignore[method-assign]
+        backend.get_rescan_status = mock_status  # type: ignore[method-assign]
+
+        recovery_task = asyncio.create_task(backend.rescan_for_recovery())
+        await rpc_started.wait()
+        await status_checked.wait()
+        assert recovery_task.done() is False
+
+        release_rpc.set()
+        await recovery_task
+
+    @pytest.mark.asyncio
+    async def test_rescan_for_recovery_reports_progress(self) -> None:
+        backend = DescriptorWalletBackend(wallet_name="test_recovery_progress")
+        backend._wallet_loaded = True
+        backend._effective_rescan_height = AsyncMock(return_value=42)  # type: ignore[method-assign]
+        release_rpc = asyncio.Event()
+        observed_progress: list[float] = []
+
+        async def mock_rpc(
+            method: str,
+            params: list[Any] | None = None,
+            client: Any = None,
+            use_wallet: bool = True,
+        ) -> Any:
+            assert method == "rescanblockchain"
+            await release_rpc.wait()
+            return {"start_height": 42, "stop_height": 100}
+
+        async def active_status() -> dict[str, float | bool]:
+            return {"in_progress": True, "progress": 0.25}
+
+        def record_progress(progress: float) -> None:
+            observed_progress.append(progress)
+            release_rpc.set()
+
+        backend._rpc_call = mock_rpc  # type: ignore[method-assign]
+        backend.get_rescan_status = active_status  # type: ignore[method-assign]
+
+        await backend.rescan_for_recovery(progress_callback=record_progress)
+
+        assert observed_progress == [0.25]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("rpc_error", "match"),
+        [
+            ("RPC error -1: Rescan aborted", "Rescan aborted"),
+            (
+                "RPC error -4: Wallet is currently rescanning. Abort existing rescan or wait.",
+                "currently rescanning",
+            ),
+        ],
+    )
+    async def test_rescan_for_recovery_propagates_abort_and_conflict(
+        self, rpc_error: str, match: str
+    ) -> None:
+        """An aborted or unrelated rescan cannot count as recovery success."""
+        backend = DescriptorWalletBackend(wallet_name="test_recovery_rejected")
+        backend._wallet_loaded = True
+        backend._effective_rescan_height = AsyncMock(return_value=42)  # type: ignore[method-assign]
+        backend._rpc_call = AsyncMock(side_effect=ValueError(rpc_error))  # type: ignore[method-assign]
+        backend.get_rescan_status = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+        with pytest.raises(ValueError, match=match):
+            await backend.rescan_for_recovery()
+
+    @pytest.mark.asyncio
+    async def test_rescan_for_recovery_cancels_task_and_closes_client(self) -> None:
+        backend = DescriptorWalletBackend(wallet_name="test_recovery_cancel")
+        backend._wallet_loaded = True
+        backend._effective_rescan_height = AsyncMock(return_value=42)  # type: ignore[method-assign]
+        rpc_started = asyncio.Event()
+        rpc_cancelled = asyncio.Event()
+        never_complete = asyncio.Event()
+        recovery_client = MagicMock()
+        recovery_client.aclose = AsyncMock()
+
+        async def mock_rpc(
+            method: str,
+            params: list[Any] | None = None,
+            client: Any = None,
+            use_wallet: bool = True,
+        ) -> Any:
+            assert method == "rescanblockchain"
+            rpc_started.set()
+            try:
+                await never_complete.wait()
+            except asyncio.CancelledError:
+                rpc_cancelled.set()
+                raise
+
+        backend._rpc_call = mock_rpc  # type: ignore[method-assign]
+        backend.get_rescan_status = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+        with patch(
+            "jmwallet.backends.descriptor_wallet.httpx.AsyncClient",
+            return_value=recovery_client,
+        ) as mock_async_client:
+            recovery_task = asyncio.create_task(backend.rescan_for_recovery())
+            await rpc_started.wait()
+            recovery_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await recovery_task
+
+        assert rpc_cancelled.is_set()
+        recovery_client.aclose.assert_awaited_once()
+        mock_async_client.assert_called_once_with(
+            timeout=RECOVERY_RESCAN_TIMEOUT,
+            auth=(backend.rpc_user, backend.rpc_password),
+            trust_env=False,
+        )
+
+    @pytest.mark.asyncio
+    async def test_rescan_for_recovery_floors_height_and_validates_range(self) -> None:
+        backend = DescriptorWalletBackend(wallet_name="test_recovery_floor")
+        backend._wallet_loaded = True
+        backend.set_wallet_creation_height(800)
+
+        async def mock_rpc(
+            method: str,
+            params: list[Any] | None = None,
+            client: Any = None,
+            use_wallet: bool = True,
+        ) -> Any:
+            if method == "getblockchaininfo":
+                return {"blocks": 900}
+            if method == "rescanblockchain":
+                assert params == [800]
+                return {"start_height": 800, "stop_height": 900}
+            raise AssertionError(f"Unexpected RPC: {method}")
+
+        backend._rpc_call = mock_rpc  # type: ignore[method-assign]
+        backend.get_rescan_status = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+        await backend.rescan_for_recovery(start_height=0)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("rpc_result", "match"),
+        [
+            (None, "no completion range"),
+            ({}, "missing start_height"),
+            ({"start_height": True, "stop_height": 100}, "start_height"),
+            ({"start_height": 42, "stop_height": True}, "stop_height"),
+            ({"start_height": 41, "stop_height": 100}, "unexpected start_height"),
+            ({"start_height": 42, "stop_height": 41}, "invalid completion range"),
+        ],
+    )
+    async def test_rescan_for_recovery_rejects_malformed_result(
+        self, rpc_result: Any, match: str
+    ) -> None:
+        backend = DescriptorWalletBackend(wallet_name="test_recovery_result")
+        backend._wallet_loaded = True
+        backend._effective_rescan_height = AsyncMock(return_value=42)  # type: ignore[method-assign]
+        backend._rpc_call = AsyncMock(return_value=rpc_result)  # type: ignore[method-assign]
+        backend.get_rescan_status = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+        with pytest.raises(ValueError, match=match):
+            await backend.rescan_for_recovery()
+
+    @pytest.mark.asyncio
+    async def test_recovery_requires_loaded_wallet(self) -> None:
+        backend = DescriptorWalletBackend()
+        backend._rpc_call = AsyncMock()
+        with pytest.raises(RuntimeError, match="Wallet not loaded"):
+            await backend.rescan_for_recovery()
+        backend._rpc_call.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("reply", [None, {}, {"scanning": None}, {"scanning": "false"}])
+    async def test_rescan_status_missing_or_malformed_is_unknown(self, reply: Any) -> None:
+        backend = DescriptorWalletBackend()
+        backend._wallet_loaded = True
+        backend._rpc_call = AsyncMock(return_value=reply)
+        assert await backend.get_rescan_status() is None
+
+    @pytest.mark.asyncio
     async def test_rescan_status_not_scanning(self) -> None:
         """Test rescan status when not scanning."""
         backend = DescriptorWalletBackend(wallet_name="test_status")
@@ -3121,7 +3328,7 @@ class TestAddressHistory:
     @pytest.mark.asyncio
     async def test_get_wallet_scan_status_wallet_not_loaded(self) -> None:
         """Before the wallet is loaded, the RPCs would fail with -18; the
-        method short-circuits and returns a baseline dict."""
+        method short-circuits with an unknown scan state."""
         backend = DescriptorWalletBackend(wallet_name="test_scan_status_unloaded")
         backend._wallet_loaded = False
 
@@ -3133,7 +3340,7 @@ class TestAddressHistory:
 
         status = await backend.get_wallet_scan_status()
 
-        assert status["scanning_in_progress"] is False
+        assert status["scanning_in_progress"] is None
         assert status["txcount"] == 0
         assert status["oldest_descriptor_timestamp"] is None
 
@@ -3156,6 +3363,17 @@ class TestAddressHistory:
 
         assert status["txcount"] == 7
         assert status["oldest_descriptor_timestamp"] is None
+
+    @pytest.mark.asyncio
+    async def test_get_wallet_scan_status_reports_unknown_after_wallet_info_failure(self) -> None:
+        backend = DescriptorWalletBackend(wallet_name="test_scan_status_unavailable")
+        backend._wallet_loaded = True
+
+        backend._rpc_call = AsyncMock(side_effect=RuntimeError("Core unavailable"))  # type: ignore[method-assign]
+
+        status = await backend.get_wallet_scan_status()
+
+        assert status["scanning_in_progress"] is None
 
     @pytest.mark.asyncio
     async def test_sync_populates_addresses_with_history(self) -> None:

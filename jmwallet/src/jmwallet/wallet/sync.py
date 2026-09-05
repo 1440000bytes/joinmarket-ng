@@ -931,13 +931,10 @@ class WalletSyncMixin:
                 "This can take a long time on mainnet. Duration varies substantially "
                 "with the Bitcoin node and its storage performance."
             )
-            await descriptor_backend.start_background_rescan(0)
-            completed = await descriptor_backend.wait_for_rescan_complete(
-                poll_interval=5.0,
+            await descriptor_backend.rescan_for_recovery(
+                0,
                 progress_callback=rescan_progress_callback,
             )
-            if not completed:
-                raise RuntimeError("Fidelity bond discovery rescan did not complete")
             self._clear_reconstruction_cursor()
 
             # Query all UTXOs in a single call after rescan completes.
@@ -1032,6 +1029,50 @@ class WalletSyncMixin:
 
         return discovered_utxos
 
+    async def recover_fidelity_bonds(
+        self,
+        progress_callback: Any | None = None,
+        rescan_progress_callback: Any | None = None,
+        *,
+        automatic: bool = False,
+    ) -> list[UTXOInfo]:
+        """Run a durable recovery attempt shared by import sync and explicit retry."""
+        from contextlib import nullcontext
+
+        from jmwallet.cli.mnemonic import (
+            FidelityBondRecoveryInProgressError,
+            fidelity_bond_recovery_attempt,
+        )
+
+        if self._fidelity_bond_recovery_in_progress:
+            raise RuntimeError("Fidelity bond recovery is already running")
+        attempt = (
+            fidelity_bond_recovery_attempt(
+                self.mnemonic_file, self.wallet_fingerprint, automatic=automatic
+            )
+            if self.mnemonic_file is not None
+            else nullcontext(True)
+        )
+        self._fidelity_bond_recovery_in_progress = True
+        try:
+            with attempt as claimed:
+                if not claimed:
+                    return []
+                result = await self.discover_fidelity_bonds(
+                    progress_callback=progress_callback,
+                    rescan_progress_callback=rescan_progress_callback,
+                    require_persistence=True,
+                )
+            self._fidelity_bond_recovery_checked = True
+            return result
+        except FidelityBondRecoveryInProgressError:
+            if not automatic:
+                raise
+            logger.warning("Fidelity bond recovery is already running; not starting another scan")
+            return []
+        finally:
+            self._fidelity_bond_recovery_in_progress = False
+
     async def _recover_imported_fidelity_bonds_if_needed(self) -> None:
         """Run and durably complete the one-time imported-wallet bond scan."""
         if (
@@ -1042,7 +1083,6 @@ class WalletSyncMixin:
             return
 
         from jmwallet.cli.mnemonic import (
-            mark_fidelity_bond_recovery_complete,
             mnemonic_requires_fidelity_bond_recovery,
         )
 
@@ -1057,16 +1097,7 @@ class WalletSyncMixin:
             "Imported wallet has not completed fidelity bond recovery; "
             "scanning canonical timelock addresses"
         )
-        self._fidelity_bond_recovery_in_progress = True
-        try:
-            await self.discover_fidelity_bonds(require_persistence=True)
-            mark_fidelity_bond_recovery_complete(
-                self.mnemonic_file,
-                self.wallet_fingerprint,
-            )
-            self._fidelity_bond_recovery_checked = True
-        finally:
-            self._fidelity_bond_recovery_in_progress = False
+        await self.recover_fidelity_bonds(automatic=True)
 
     async def sync_all(
         self,

@@ -611,6 +611,20 @@ class TestResolveBackendSettings:
         result = resolve_backend_settings(settings)
         assert result.neutrino_add_peers == []
 
+    def test_resolve_backend_settings_includes_descriptor_scan_settings(self) -> None:
+        """Wallet scan settings remain available for descriptor backends."""
+        from jmcore.cli_common import resolve_backend_settings
+        from jmcore.settings import JoinMarketSettings
+
+        settings = JoinMarketSettings(
+            wallet={"scan_start_height": 765_432, "scan_lookback_blocks": 12_345}
+        )
+
+        result = resolve_backend_settings(settings)
+
+        assert result.scan_start_height == 765_432
+        assert result.scan_lookback_blocks == 12_345
+
     def test_fee_estimate_settings_resolved(self) -> None:
         """resolve_backend_settings() carries fee_estimate_url and builds the
         Tor fee proxy from [tor] settings (settings -> config round-trip)."""
@@ -781,6 +795,44 @@ class TestCreateBackend:
             fee_estimate_url=None,
             fee_estimate_proxy=None,
         )
+
+    def test_create_backend_descriptor_passes_scan_settings(self) -> None:
+        """create_backend() forwards descriptor scan settings without resolving them."""
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from jmcore.cli_common import ResolvedBackendSettings, create_backend
+
+        backend_settings = ResolvedBackendSettings(
+            network="mainnet",
+            bitcoin_network="mainnet",
+            backend_type="descriptor_wallet",
+            rpc_url="http://127.0.0.1:8332",
+            rpc_user="user",
+            rpc_password="pass",
+            neutrino_url="",
+            neutrino_add_peers=[],
+            data_dir=Path("/tmp"),
+            scan_start_height=765_432,
+            scan_lookback_blocks=12_345,
+        )
+
+        mock_backend = MagicMock()
+        with patch(
+            "jmwallet.backends.descriptor_wallet.DescriptorWalletBackend",
+            return_value=mock_backend,
+        ) as mock_cls:
+            result = create_backend(backend_settings, wallet_name="test-wallet")
+
+        mock_cls.assert_called_once_with(
+            rpc_url="http://127.0.0.1:8332",
+            rpc_user="user",
+            rpc_password="pass",
+            wallet_name="test-wallet",
+            scan_start_height=765_432,
+            scan_lookback_blocks=12_345,
+        )
+        assert result is mock_backend
 
 
 class TestResolveMnemonic:
@@ -1201,7 +1253,9 @@ class TestMnemonicMeta:
         assert not mnemonic_requires_fidelity_bond_recovery(mnemonic_file, "aabbccdd")
         assert mnemonic_requires_fidelity_bond_recovery(mnemonic_file, "11223344")
 
-    def test_legacy_wallet_without_creation_height_requires_recovery(self, tmp_path: Path) -> None:
+    def test_legacy_wallet_without_creation_height_does_not_auto_recover(
+        self, tmp_path: Path
+    ) -> None:
         from jmwallet.cli.mnemonic import (
             mnemonic_requires_fidelity_bond_recovery,
             save_mnemonic_meta,
@@ -1211,7 +1265,7 @@ class TestMnemonicMeta:
         mnemonic_file.write_text("dummy")
         save_mnemonic_meta(mnemonic_file, fingerprint="aabbccdd")
 
-        assert mnemonic_requires_fidelity_bond_recovery(mnemonic_file, "aabbccdd")
+        assert not mnemonic_requires_fidelity_bond_recovery(mnemonic_file, "aabbccdd")
 
     def test_legacy_generated_wallet_with_creation_height_skips_recovery(
         self, tmp_path: Path

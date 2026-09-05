@@ -64,6 +64,20 @@ DEFAULT_RPC_TIMEOUT = httpx.Timeout(
     pool=DEFAULT_RPC_CONNECT_TIMEOUT,
 )
 
+# Recovery rescans must keep their request open until Bitcoin Core confirms
+# completion. The request body is small, so connection, write, and pool waits
+# remain bounded while the read is deliberately unbounded.
+RECOVERY_RESCAN_TIMEOUT = httpx.Timeout(
+    connect=DEFAULT_RPC_CONNECT_TIMEOUT,
+    read=None,
+    write=DEFAULT_RPC_CONNECT_TIMEOUT,
+    pool=DEFAULT_RPC_CONNECT_TIMEOUT,
+)
+
+# Polling is diagnostic only for recovery rescans. Completion is determined by
+# the owned rescanblockchain RPC response, never by getwalletinfo.scanning.
+RECOVERY_RESCAN_PROGRESS_INTERVAL = 1.0
+
 # Timeout for descriptor import - first-time imports trigger a partial rescan
 # that runs synchronously inside the importdescriptors RPC. On slow hosts
 # (e.g. a Raspberry Pi) the smart-scan window (~1 year) can take a long time,
@@ -1349,12 +1363,108 @@ class DescriptorWalletBackend(BlockchainBackend):
             "the RPC may have been rejected."
         )
 
+    async def rescan_for_recovery(
+        self,
+        start_height: int = 0,
+        progress_callback: Callable[[float], None] | None = None,
+    ) -> None:
+        """Run a recovery rescan and wait for Bitcoin Core to confirm completion.
+
+        Unlike :meth:`start_background_rescan`, this method owns the HTTP
+        response for ``rescanblockchain``. A false or unavailable
+        ``getwalletinfo.scanning`` status is only a diagnostic observation and
+        cannot establish completion. This matters for recovery: another
+        wallet's active scan or a delayed status update must not make an
+        incomplete rescan look successful.
+
+        If this coroutine is cancelled or fails locally, its client and task
+        are closed and cancelled, respectively. Bitcoin Core may continue a
+        rescan already accepted server-side.
+
+        Args:
+            start_height: Block height to start from, normalized through
+                :meth:`_effective_rescan_height`.
+            progress_callback: Optional callback invoked with observed Core
+                progress values while the owned RPC is running.
+
+        Raises:
+            ValueError: If Bitcoin Core rejects the rescan or returns an
+                incomplete or malformed completion range.
+            httpx.HTTPError: If the owned RPC cannot complete.
+        """
+        if not self._wallet_loaded:
+            raise RuntimeError("Wallet not loaded. Call create_wallet() first.")
+        effective_height = await self._effective_rescan_height(start_height)
+        logger.info(f"Starting recovery blockchain rescan from height {effective_height}...")
+
+        recovery_client = httpx.AsyncClient(
+            timeout=RECOVERY_RESCAN_TIMEOUT,
+            auth=(self.rpc_user, self.rpc_password),
+            trust_env=False,
+        )
+        rescan_task = asyncio.create_task(
+            self._rpc_call(
+                "rescanblockchain",
+                [effective_height],
+                client=recovery_client,
+            )
+        )
+
+        async def report_progress() -> None:
+            while not rescan_task.done():
+                try:
+                    status = await self.get_rescan_status()
+                    if status is not None and status.get("in_progress") is True:
+                        progress = status.get("progress")
+                        if isinstance(progress, (int, float)) and not isinstance(progress, bool):
+                            if progress_callback is not None:
+                                progress_callback(float(progress))
+                except Exception as exc:
+                    # Status polling is informational. It must never decide
+                    # whether the owned rescan RPC succeeded or failed.
+                    logger.debug(f"Recovery rescan progress status unavailable: {exc}")
+                await asyncio.sleep(RECOVERY_RESCAN_PROGRESS_INTERVAL)
+
+        progress_task = asyncio.create_task(report_progress())
+        try:
+            result = await rescan_task
+            if not isinstance(result, dict):
+                raise ValueError("rescanblockchain returned no completion range")
+
+            result_start = result.get("start_height")
+            result_stop = result.get("stop_height")
+            if type(result_start) is not int:
+                raise ValueError("rescanblockchain returned invalid or missing start_height")
+            if type(result_stop) is not int:
+                raise ValueError("rescanblockchain returned invalid or missing stop_height")
+            if result_start != effective_height:
+                raise ValueError(
+                    "rescanblockchain returned a completion range for unexpected "
+                    f"start_height {result_start}, expected {effective_height}"
+                )
+            if result_stop < result_start:
+                raise ValueError("rescanblockchain returned an invalid completion range")
+
+            logger.info(f"Recovery rescan complete: {result}")
+        except BaseException:
+            if not rescan_task.done():
+                rescan_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await rescan_task
+            raise
+        finally:
+            progress_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await progress_task
+            await recovery_client.aclose()
+
     async def get_rescan_status(self) -> dict[str, Any] | None:
         """
         Check the status of any ongoing wallet rescan.
 
         Returns:
-            Dict with rescan progress info, or None if no rescan in progress.
+            Dict with rescan progress info, or None if status is unavailable.
+            An explicit Core scanning=false returns {"in_progress": False}.
             Example: {"progress": 0.5, "current_height": 500000}
         """
         if not self._wallet_loaded:
@@ -1364,15 +1474,19 @@ class DescriptorWalletBackend(BlockchainBackend):
             # getwalletinfo includes rescan progress if a rescan is in progress
             wallet_info = await self._rpc_call("getwalletinfo")
 
-            if "scanning" in wallet_info and wallet_info["scanning"]:
-                scanning_info = wallet_info["scanning"]
+            if not isinstance(wallet_info, dict):
+                return None
+            scanning_info = wallet_info.get("scanning")
+            if isinstance(scanning_info, dict):
                 return {
                     "in_progress": True,
                     "progress": scanning_info.get("progress", 0),
                     "duration": scanning_info.get("duration", 0),
                 }
 
-            return {"in_progress": False}
+            if scanning_info is False:
+                return {"in_progress": False}
+            return None
 
         except Exception as e:
             logger.debug(f"Could not get rescan status: {e}")
@@ -1389,17 +1503,18 @@ class DescriptorWalletBackend(BlockchainBackend):
 
         Returned keys (any may be ``None`` on RPC failure):
 
-        - ``scanning_in_progress`` (bool): whether Bitcoin Core is
-          currently rescanning the wallet (mirrors
-          ``getwalletinfo.scanning != false``).
+        - ``scanning_in_progress`` (bool | None): whether Bitcoin Core is
+          currently rescanning the wallet. It is ``None`` until a valid
+          ``getwalletinfo`` response explicitly reports ``scanning=false`` or
+          an active scanning object; failed and unavailable observations stay
+          unknown rather than being reported as idle.
         - ``scan_progress`` (float | None): 0..1, when a scan is active.
         - ``scan_duration_s`` (int | None): elapsed time of the active
           scan in seconds, when active.
         - ``oldest_descriptor_timestamp`` (int | None): minimum
-          ``timestamp`` across active descriptors. ``importdescriptors``
-          sets this to the smart-scan boundary (~1 year ago) at first
-          setup; if no rescan from genesis was ever run, this is the
-          effective lower bound of the wallet's history coverage.
+          ``timestamp`` across active descriptors. This is the import-time
+          scan hint recorded by ``importdescriptors``, not authoritative
+          evidence of wallet history coverage or recovery rescan completion.
         - ``birthtime`` (int | None): block time of the oldest
           transaction that involves any wallet address, computed from
           ``listsinceblock``. For empty wallets this falls back to the
@@ -1409,7 +1524,7 @@ class DescriptorWalletBackend(BlockchainBackend):
           about.
         """
         result: dict[str, Any] = {
-            "scanning_in_progress": False,
+            "scanning_in_progress": None,
             "scan_progress": None,
             "scan_duration_s": None,
             "oldest_descriptor_timestamp": None,
@@ -1419,18 +1534,25 @@ class DescriptorWalletBackend(BlockchainBackend):
         if not self._wallet_loaded:
             return result
 
+        wallet_info: dict[str, Any] | None = None
         try:
-            wallet_info = await self._rpc_call("getwalletinfo")
+            candidate_wallet_info = await self._rpc_call("getwalletinfo")
+            if isinstance(candidate_wallet_info, dict):
+                wallet_info = candidate_wallet_info
+            else:
+                logger.debug("getwalletinfo returned a non-object scan status")
         except Exception as e:
             logger.debug(f"getwalletinfo failed: {e}")
-            wallet_info = {}
 
-        scanning = wallet_info.get("scanning")
-        if isinstance(scanning, dict):
-            result["scanning_in_progress"] = True
-            result["scan_progress"] = scanning.get("progress")
-            result["scan_duration_s"] = scanning.get("duration")
-        result["txcount"] = wallet_info.get("txcount", 0)
+        if wallet_info is not None:
+            scanning = wallet_info.get("scanning")
+            if isinstance(scanning, dict):
+                result["scanning_in_progress"] = True
+                result["scan_progress"] = scanning.get("progress")
+                result["scan_duration_s"] = scanning.get("duration")
+            elif scanning is False:
+                result["scanning_in_progress"] = False
+            result["txcount"] = wallet_info.get("txcount", 0)
 
         try:
             desc_list = await self._rpc_call("listdescriptors")
@@ -1439,11 +1561,9 @@ class DescriptorWalletBackend(BlockchainBackend):
             logger.debug(f"listdescriptors for scan status failed: {e}")
             descs = []
 
-        # The smallest timestamp across active descriptors marks the
-        # oldest block our wallet considers "covered". importdescriptors
-        # sets this when the import was issued; a value much newer than
-        # the genesis block timestamp tells us the full rescan never ran
-        # (smart-scan only).
+        # Descriptor timestamps record import-time scan hints. They can help
+        # explain an original smart-scan request, but they cannot prove the
+        # wallet's coverage or that any subsequent recovery rescan completed.
         timestamps = [
             d["timestamp"]
             for d in descs
@@ -1473,9 +1593,8 @@ class DescriptorWalletBackend(BlockchainBackend):
         string) which returns every wallet transaction with its
         ``blocktime`` so we can do a single-pass min in Python.
 
-        For an empty wallet we fall back to the oldest active descriptor
-        timestamp, which is the closest proxy Bitcoin Core has for "when
-        we expect our coins to start appearing on-chain".
+        For an empty wallet we display the oldest active descriptor timestamp
+        as a non-authoritative import-time hint only.
         """
         if self._oldest_tx_blocktime is None:
             try:

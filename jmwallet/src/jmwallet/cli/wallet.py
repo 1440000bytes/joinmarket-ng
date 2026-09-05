@@ -959,6 +959,8 @@ async def _show_wallet_info(
             rpc_user=backend_settings.rpc_user,
             rpc_password=backend_settings.rpc_password,
             wallet_name=wallet_name,
+            scan_start_height=backend_settings.scan_start_height,
+            scan_lookback_blocks=backend_settings.scan_lookback_blocks,
         )
     else:
         raise ValueError(f"Unknown backend type: {backend_type}")
@@ -1187,9 +1189,8 @@ def _print_scan_status(status: dict) -> None:
     """Pretty-print the diagnostic dict from
     ``DescriptorWalletBackend.get_wallet_scan_status``.
 
-    Formats timestamps, flags suspiciously narrow coverage (oldest active
-    descriptor timestamp much newer than genesis), and notes whether a
-    rescan is currently in progress. Intended for ``jm-wallet info
+    Formats import timestamps without inferring historical coverage, and
+    notes whether a rescan is currently in progress. Intended for ``jm-wallet info
     --scan-status`` and ``jm-wallet rescan``.
     """
     from datetime import datetime
@@ -1202,33 +1203,10 @@ def _print_scan_status(status: dict) -> None:
             + f"  (unix {int(ts)})"
         )
 
-    def _fmt_age(seconds: int) -> str:
-        """Render an age in human-friendly units (years/months/days)."""
-        if seconds < 60:
-            return f"{seconds}s"
-        if seconds < 3600:
-            return f"{seconds // 60}m"
-        if seconds < 86400:
-            return f"{seconds // 3600}h"
-        days = seconds // 86400
-        if days < 60:
-            return f"{days} day{'s' if days != 1 else ''}"
-        months = days // 30
-        if months < 24:
-            return f"{months} month{'s' if months != 1 else ''}"
-        years = days // 365
-        remaining_months = (days % 365) // 30
-        if remaining_months:
-            return (
-                f"{years} year{'s' if years != 1 else ''}, "
-                f"{remaining_months} month{'s' if remaining_months != 1 else ''}"
-            )
-        return f"{years} year{'s' if years != 1 else ''}"
-
     print("\nBitcoin Core wallet scan status:")
     print(f"  Transactions known to Core:    {status.get('txcount', 0):,}")
     print(f"  Wallet birthtime:              {_fmt_ts(status.get('birthtime'))}")
-    print(f"  Smart-scan boundary:           {_fmt_ts(status.get('oldest_descriptor_timestamp'))}")
+    print(f"  Oldest descriptor timestamp:   {_fmt_ts(status.get('oldest_descriptor_timestamp'))}")
 
     if status.get("scanning_in_progress"):
         progress = status.get("scan_progress")
@@ -1236,26 +1214,14 @@ def _print_scan_status(status: dict) -> None:
         duration = status.get("scan_duration_s")
         duration_str = f", {duration}s elapsed" if duration else ""
         print(f"  Rescan currently running:      yes ({progress_str}{duration_str})")
-    else:
+    elif status.get("scanning_in_progress") is False:
         print("  Rescan currently running:      no")
-
-    # Heuristic warning: importdescriptors sets the smart-scan boundary to
-    # ~1 year ago at first setup, which is fine for "recent receives" but
-    # misses older history. Bitcoin's genesis is 2009-01-03 (unix
-    # 1230768000). If the user's coins are older than the smart-scan
-    # boundary, Core does not know they were ever used.
-    oldest = status.get("oldest_descriptor_timestamp")
-    if oldest is not None and oldest > 1230768000:
-        from time import time as _now
-
-        age_seconds = max(0, int(_now()) - int(oldest))
-        print(
-            f"\n  Note: Bitcoin Core has only scanned the last {_fmt_age(age_seconds)} "
-            "for this wallet. If your wallet has spends or receives older "
-            "than that, Core has not indexed them and may propose "
-            "already-used addresses as fresh deposits. Run "
-            "`jm-wallet rescan` to scan from genesis."
-        )
+    else:
+        print("  Rescan currently running:      unknown (status unavailable)")
+    print(
+        "\n  Historical scan coverage: unknown. Descriptor timestamps reflect import "
+        "boundaries, not the completion or range of later rescans."
+    )
 
 
 def _print_utxo_rows(utxos: list[Any]) -> None:
@@ -1939,6 +1905,8 @@ async def _run_rescan(
         rpc_user=backend_settings.rpc_user,
         rpc_password=backend_settings.rpc_password,
         wallet_name=wallet_name,
+        scan_start_height=backend_settings.scan_start_height,
+        scan_lookback_blocks=backend_settings.scan_lookback_blocks,
     )
     if creation_height is not None:
         backend.set_wallet_creation_height(creation_height)
@@ -2075,7 +2043,7 @@ async def _await_rescan_completion(
     poll_interval_seconds: float = 5.0,
     progress_callback: Callable[[float, float], None] | None = None,
 ) -> None:
-    """Poll ``getwalletinfo`` until the in-progress rescan finishes.
+    """Poll until Core is idle, without claiming the scan succeeded.
 
     Bitcoin Core's ``rescanblockchain`` runs server-side and is not bound to
     the lifetime of the originating RPC call: even if our HTTP client times
@@ -2100,10 +2068,12 @@ async def _await_rescan_completion(
             await asyncio.sleep(poll_interval_seconds)
             continue
 
-        if not status or not status.get("in_progress"):
-            if progress_callback is not None:
-                progress_callback(1.0, 0.0)
-            print("\nRescan complete.")
+        if status is None or type(status.get("in_progress")) is not bool:
+            logger.warning("Rescan status unavailable; retrying...")
+            await asyncio.sleep(poll_interval_seconds)
+            continue
+        if status["in_progress"] is False:
+            print("\nBitcoin Core is no longer scanning. Background scan outcome is unverified.")
             return
 
         progress = float(status.get("progress", 0.0) or 0.0)

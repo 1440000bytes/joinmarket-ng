@@ -164,8 +164,7 @@ async def test_discover_fidelity_bonds_auto_initialises_descriptor_wallet(test_m
     wallet.setup_descriptor_wallet = setup_mock  # type: ignore[method-assign]
     backend.is_wallet_setup = AsyncMock(return_value=False)  # type: ignore[method-assign]
     wallet.import_fidelity_bond_addresses = AsyncMock(return_value=True)  # type: ignore[method-assign]
-    backend.start_background_rescan = AsyncMock(return_value=None)  # type: ignore[method-assign]
-    backend.wait_for_rescan_complete = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    backend.rescan_for_recovery = AsyncMock()  # type: ignore[method-assign]
     backend.get_utxos = AsyncMock(return_value=[])  # type: ignore[method-assign]
     register_mock = Mock()
     wallet._self_register_bond_utxos = register_mock  # type: ignore[method-assign]

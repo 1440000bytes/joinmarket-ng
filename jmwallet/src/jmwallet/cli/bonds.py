@@ -769,6 +769,8 @@ async def _sync_bonds_async(
             rpc_user=backend_settings.rpc_user,
             rpc_password=backend_settings.rpc_password,
             wallet_name=wallet_name,
+            scan_start_height=backend_settings.scan_start_height,
+            scan_lookback_blocks=backend_settings.scan_lookback_blocks,
         )
         await backend.create_wallet()
     else:
@@ -1012,6 +1014,8 @@ async def _recover_bonds_async(
             rpc_user=backend_settings.rpc_user,
             rpc_password=backend_settings.rpc_password,
             wallet_name=wallet_name,
+            scan_start_height=backend_settings.scan_start_height,
+            scan_lookback_blocks=backend_settings.scan_lookback_blocks,
         )
         # Must create/load wallet before importing descriptors
         await backend.create_wallet()
@@ -1048,18 +1052,10 @@ async def _recover_bonds_async(
 
     try:
         # Discover fidelity bonds
-        discovered_utxos = await wallet.discover_fidelity_bonds(
+        discovered_utxos = await wallet.recover_fidelity_bonds(
             progress_callback=progress_callback,
             rescan_progress_callback=rescan_progress_callback,
-            require_persistence=True,
         )
-        if mnemonic_file is not None:
-            from jmwallet.cli.mnemonic import mark_fidelity_bond_recovery_complete
-
-            mark_fidelity_bond_recovery_complete(
-                mnemonic_file,
-                wallet.wallet_fingerprint,
-            )
 
         print()  # Newline after progress
         print("-" * 60)

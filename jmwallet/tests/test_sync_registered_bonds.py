@@ -155,7 +155,7 @@ async def test_imported_wallet_discovers_bonds_before_registry_sync(tmp_path: Pa
     )
     ws = _make_file_backed_wallet(tmp_path, mnemonic_file)
 
-    async def discover(*, require_persistence: bool = False) -> list[object]:
+    async def discover(*, require_persistence: bool = False, **_kwargs: object) -> list[object]:
         assert require_persistence is True
         _write_bond_registry(ws)
         return []
@@ -167,7 +167,9 @@ async def test_imported_wallet_discovers_bonds_before_registry_sync(tmp_path: Pa
 
     result = await ws.sync_with_registered_bonds()
 
-    ws.discover_fidelity_bonds.assert_awaited_once_with(require_persistence=True)
+    ws.discover_fidelity_bonds.assert_awaited_once_with(
+        progress_callback=None, rescan_progress_callback=None, require_persistence=True
+    )
     ws.sync_with_descriptor_wallet.assert_awaited_once_with(
         [(BOND_ADDRESS, BOND_LOCKTIME, BOND_INDEX)]
     )
@@ -179,7 +181,7 @@ async def test_imported_wallet_discovers_bonds_before_registry_sync(tmp_path: Pa
 
 
 @pytest.mark.asyncio
-async def test_failed_imported_wallet_recovery_remains_retryable(tmp_path: Path) -> None:
+async def test_failed_imported_wallet_recovery_requires_explicit_retry(tmp_path: Path) -> None:
     from jmwallet.cli.mnemonic import (
         FIDELITY_BOND_RECOVERY_PENDING,
         load_mnemonic_meta,
@@ -198,12 +200,65 @@ async def test_failed_imported_wallet_recovery_remains_retryable(tmp_path: Path)
 
     with pytest.raises(RuntimeError, match="rescan failed"):
         await ws._recover_imported_fidelity_bonds_if_needed()
+    await ws._recover_imported_fidelity_bonds_if_needed()
+    assert ws.discover_fidelity_bonds.await_count == 1
+    assert (
+        load_mnemonic_meta(mnemonic_file)[f"fidelity_bond_recovery.{ws.wallet_fingerprint}"]
+        == "started"
+    )
     with pytest.raises(RuntimeError, match="rescan failed"):
-        await ws._recover_imported_fidelity_bonds_if_needed()
-
+        await ws.recover_fidelity_bonds()
     assert ws.discover_fidelity_bonds.await_count == 2
-    ws.discover_fidelity_bonds.assert_awaited_with(require_persistence=True)
+    ws.discover_fidelity_bonds.assert_awaited_with(
+        progress_callback=None, rescan_progress_callback=None, require_persistence=True
+    )
     assert load_mnemonic_meta(mnemonic_file)["fidelity_bond_recovery"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_legacy_wallet_sync_does_not_start_bond_recovery(tmp_path: Path) -> None:
+    mnemonic_file = tmp_path / "legacy.mnemonic"
+    mnemonic_file.write_text(MNEMONIC)
+    ws = _make_file_backed_wallet(tmp_path, mnemonic_file)
+    _write_bond_registry(ws)
+    ws.discover_fidelity_bonds = AsyncMock()
+    ws._imported_bond_addresses = AsyncMock(return_value={BOND_ADDRESS.lower()})
+    ws.is_descriptor_wallet_ready = AsyncMock(return_value=True)
+    ws.sync_with_descriptor_wallet = AsyncMock(return_value={0: []})
+
+    await ws.sync_with_registered_bonds()
+
+    ws.discover_fidelity_bonds.assert_not_awaited()
+    ws.sync_with_descriptor_wallet.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_interrupted_recovery_does_not_restart_in_fresh_process(tmp_path: Path) -> None:
+    import asyncio
+
+    from jmwallet.cli.mnemonic import save_mnemonic_meta
+
+    mnemonic_file = tmp_path / "imported.mnemonic"
+    mnemonic_file.write_text(MNEMONIC)
+    save_mnemonic_meta(mnemonic_file, fidelity_bond_recovery="pending")
+    first = _make_file_backed_wallet(tmp_path, mnemonic_file)
+    first.discover_fidelity_bonds = AsyncMock(side_effect=asyncio.CancelledError)
+    with pytest.raises(asyncio.CancelledError):
+        await first._recover_imported_fidelity_bonds_if_needed()
+
+    second = _make_file_backed_wallet(tmp_path, mnemonic_file)
+    second.discover_fidelity_bonds = AsyncMock(return_value=[])
+    await second._recover_imported_fidelity_bonds_if_needed()
+    second.discover_fidelity_bonds.assert_not_awaited()
+
+    await second.recover_fidelity_bonds()
+    second.discover_fidelity_bonds.assert_awaited_once_with(
+        progress_callback=None, rescan_progress_callback=None, require_persistence=True
+    )
+    third = _make_file_backed_wallet(tmp_path, mnemonic_file)
+    third.discover_fidelity_bonds = AsyncMock()
+    await third._recover_imported_fidelity_bonds_if_needed()
+    third.discover_fidelity_bonds.assert_not_awaited()
 
 
 @pytest.mark.asyncio

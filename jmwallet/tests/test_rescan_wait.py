@@ -50,10 +50,10 @@ async def test_await_rescan_completion_polls_until_done() -> None:
         progress_callback=lambda p, d: seen.append((p, d)),
     )
 
-    # Final callback marks 1.0; preceding ones reflect server progress.
-    assert seen[-1] == (1.0, 0.0)
-    assert any(p == pytest.approx(0.5) for p, _ in seen)
-    assert backend.get_rescan_status.await_count >= 3
+    # Idle status cannot distinguish a completed scan from an aborted one.
+    # Report observed progress only, without manufacturing a 100% callback.
+    assert seen == [(0.0, 0.0), (0.5, 12.0), (0.9, 30.0)]
+    assert backend.get_rescan_status.await_count == 4
 
 
 @pytest.mark.asyncio
