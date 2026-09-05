@@ -19,9 +19,21 @@ For day-to-day usage, continue with:
 
 ## Recommended Install (Linux/macOS)
 
+The initial command is a simple HTTPS bootstrap: it trusts GitHub and TLS for
+that one run and installs GnuPG/curl verification prerequisites when needed.
+
 ```bash
 curl -sSL https://raw.githubusercontent.com/joinmarket-ng/joinmarket-ng/main/install.sh | bash
 source ~/.joinmarket-ng/activate.sh
+```
+
+It then authenticates the latest versioned GitHub Release `install.sh` asset
+before running it. A successful verified install atomically saves that
+installer at `~/.joinmarket-ng/install.sh`; use this saved copy for all later
+updates:
+
+```bash
+bash ~/.joinmarket-ng/install.sh --update
 ```
 
 What this does:
@@ -48,8 +60,8 @@ curl -sSL https://raw.githubusercontent.com/joinmarket-ng/joinmarket-ng/main/ins
 # skip Tor setup
 curl -sSL https://raw.githubusercontent.com/joinmarket-ng/joinmarket-ng/main/install.sh | bash -s -- --skip-tor
 
-# update existing installation
-curl -sSL https://raw.githubusercontent.com/joinmarket-ng/joinmarket-ng/main/install.sh | bash -s -- --update
+# update after a successful verified installation
+bash ~/.joinmarket-ng/install.sh --update
 ```
 
 The default complete profile includes `jm-tumbler` because it needs both maker
@@ -65,7 +77,25 @@ details.
 
 ## Updating
 
-When you run `install.sh --update`, the installer:
+Run the saved updater:
+
+```bash
+bash ~/.joinmarket-ng/install.sh --update
+```
+
+It refreshes the installer from the latest release before updating the
+application. An explicit application version does not downgrade the installer:
+
+```bash
+bash ~/.joinmarket-ng/install.sh --update --version X.Y.Z
+```
+
+`--min-sigs N` is an invocation-only threshold override. It applies to both
+the installer and application checks and does not permanently lower the
+threshold. `--dev` and `--skip-verify` run unsigned code and never replace the
+saved trusted installer.
+
+When the authenticated installer runs `--update`, it:
 
 - Upgrades all installed Python packages to the specified (or latest) version
 - Resolves and installs any new or changed dependencies (so a swapped dependency, such as PyNaCl replacing libnacl, is installed rather than leaving the venv missing a module)
@@ -75,11 +105,140 @@ When you run `install.sh --update`, the installer:
 
 Your existing config is never modified. If new settings are available, the installer prints them so you can add them manually from `config.toml.template`.
 
+### Existing Installations
+
+An installation made before the saved updater existed can migrate with one
+final HTTPS bootstrap:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/joinmarket-ng/joinmarket-ng/main/install.sh | bash -s -- --update
+```
+
+This is another trust in GitHub/TLS, not a retroactive authenticity guarantee
+for the old installation. Once it succeeds, use
+`bash ~/.joinmarket-ng/install.sh --update` thereafter.
+
+For a custom data directory or venv, the refresh forwards both settings. The
+generated `activate.sh` exports `JOINMARKET_DATA_DIR` and `JMNG_VENV_DIR`.
+For standalone commands that do not source it, provide the same settings (and
+the explicit venv option when used):
+
+```bash
+JOINMARKET_DATA_DIR=/srv/joinmarket \
+  bash /srv/joinmarket/install.sh --update --venv /opt/jmng-venv
+```
+
 ## Supply-chain Security
 
-The installer protects the two distinct parts of an install differently.
+The installer protects its own update path and the application release
+separately.
 
-JoinMarket NG's own code is verified against GPG signatures. The installer resolves the requested version to a commit hash, then refuses to proceed unless a trusted key (committed to `signatures/` in the repository) has signed a manifest whose `commit:` matches that exact hash. The install is then pinned to the verified commit, so a tag that gets repointed afterwards cannot smuggle in different code. You can bypass this with `--skip-verify` (not recommended); it is auto-enabled for `--dev` / `--version main`, which have no release signatures by design.
+On a normal install, the bootstrap downloads the current versioned GitHub
+Release `install.sh` asset. It verifies direct detached signatures at
+`main/signatures/<version>/<fingerprint>.install.sh.sig` from the two embedded
+primary fingerprints, then requires matching `DEFAULT_VERSION` and
+`INSTALLER_PROTOCOL=1` values before it runs the candidate. The signature files
+are deliberately raw files on `main`, not release assets. Public keys downloaded
+from `main` are untrusted convenience data: only the local script's embedded
+fingerprints choose trusted identities.
+
+The candidate is saved atomically only after this quorum succeeds. Missing
+installer assets or signatures fail closed and leave the saved copy unchanged;
+wait for the release to become ready and retry rather than bypassing
+verification. Trusted-copy installation becomes available only after a release
+containing this implementation, its `install.sh` asset, and a sufficient
+installer and manifest signature quorum has been published. No version is
+assumed here.
+
+JoinMarket NG's own code is verified against GPG signatures. The installer resolves
+the requested version to a commit hash, then requires two authorized primary keys
+to sign manifests identifying that release and exact commit. The install is pinned
+to the verified commit, so repointing a tag afterwards cannot substitute different
+code. `--skip-verify` explicitly bypasses verification (not recommended); it is
+auto-enabled for `--dev` / `--version main`, which have no release signatures.
+
+The validated Git object supplies the locks, configuration template, and shell
+completions as well as the source packages. Existing pip VCS installs and
+hash-checked requirements behavior are otherwise unchanged. This does not
+authenticate every native or system build dependency.
+
+Verification protects against altered downloaded bytes and untrusted key files.
+It does not protect a compromised local machine, a compromised signing quorum,
+or a release/service freeze. Key migration is planned to require signatures
+from the old quorum; manual recovery remains necessary until that is available.
+
+### Manual Bootstrap Verification (Optional)
+
+For a first install without executing the HTTPS bootstrap, install GnuPG first.
+
+```bash
+# Debian/Ubuntu
+(
+  set -e
+  sudo apt update
+  sudo apt install -y gnupg
+)
+```
+
+```bash
+# macOS
+(
+  set -e
+  brew install gnupg
+)
+```
+
+Independently authenticate these full primary fingerprints before using this
+procedure (for example, through a trusted maintainer channel or a previously
+verified release):
+
+- `1C53A412D11EF3051704419C44912E1E03005B31`
+- `9253062A4F92D63459085CA62D230520212A5901`
+
+Replace `X.Y.Z` below with a published release that has the `install.sh` asset
+and both matching signatures. This uses isolated homes, exports each exact
+primary key into a separate keyring, verifies both signatures, and only then
+executes the downloaded local file.
+
+```bash
+(
+  set -euo pipefail
+  VERSION="X.Y.Z" # Replace with the published release version.
+  REPO="joinmarket-ng/joinmarket-ng"
+  RAW_BASE="https://raw.githubusercontent.com/$REPO/main"
+  FP_ONE="1C53A412D11EF3051704419C44912E1E03005B31"
+  FP_TWO="9253062A4F92D63459085CA62D230520212A5901"
+  WORK_DIR=$(mktemp -d)
+  trap 'rm -rf "$WORK_DIR"' EXIT
+
+  curl -fsSL "https://github.com/$REPO/releases/download/$VERSION/install.sh" \
+    -o "$WORK_DIR/install.sh"
+
+  for FINGERPRINT in "$FP_ONE" "$FP_TWO"; do
+    KEY_HOME="$WORK_DIR/key-$FINGERPRINT"
+    VERIFY_HOME="$WORK_DIR/verify-$FINGERPRINT"
+    mkdir -m 700 "$KEY_HOME" "$VERIFY_HOME"
+    curl -fsSL "$RAW_BASE/signatures/pubkeys/$FINGERPRINT.asc" \
+      -o "$WORK_DIR/$FINGERPRINT.asc"
+    GNUPGHOME="$KEY_HOME" gpg --no-options --batch --import "$WORK_DIR/$FINGERPRINT.asc"
+    IMPORTED_FINGERPRINT=$(GNUPGHOME="$KEY_HOME" gpg --no-options --batch --with-colons \
+      --list-keys "$FINGERPRINT" | awk -F: '$1 == "fpr" { print $10; exit }')
+    test "$IMPORTED_FINGERPRINT" = "$FINGERPRINT"
+    GNUPGHOME="$KEY_HOME" gpg --no-options --batch --export "$FINGERPRINT" \
+      > "$WORK_DIR/$FINGERPRINT.gpg"
+    curl -fsSL "$RAW_BASE/signatures/$VERSION/$FINGERPRINT.install.sh.sig" \
+      -o "$WORK_DIR/$FINGERPRINT.install.sh.sig"
+    GNUPGHOME="$VERIFY_HOME" gpg --no-options --batch --no-default-keyring \
+      --keyring "$WORK_DIR/$FINGERPRINT.gpg" --status-fd 1 --verify \
+      "$WORK_DIR/$FINGERPRINT.install.sh.sig" "$WORK_DIR/install.sh" > "$WORK_DIR/status"
+    if grep -Eq '^\[GNUPG:\] (REVKEYSIG|EXPKEYSIG|EXPSIG|KEYREVOKED|KEYEXPIRED|SIGEXPIRED)( |$)' "$WORK_DIR/status"; then
+      exit 1
+    fi
+  done
+
+  bash "$WORK_DIR/install.sh"
+)
+```
 
 Third-party Python dependencies use a layered model so they stay both flexible and reproducible:
 

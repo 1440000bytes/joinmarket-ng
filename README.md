@@ -63,6 +63,17 @@ curl -sSL https://raw.githubusercontent.com/joinmarket-ng/joinmarket-ng/main/ins
 source ~/.joinmarket-ng/activate.sh
 ```
 
+The first command is an HTTPS bootstrap. After a successful verified run, the
+installer saves a trusted local updater. Use it for every later update:
+
+```bash
+bash ~/.joinmarket-ng/install.sh --update
+```
+
+See the [installation guide](https://joinmarket-ng.github.io/joinmarket-ng/install/)
+for the trust model, manual verification, custom directories, and migration of
+an existing installation.
+
 2. Edit `~/.joinmarket-ng/config.toml` and set your backend (`descriptor_wallet` for Bitcoin Core, or `neutrino`):
 
 ```toml
