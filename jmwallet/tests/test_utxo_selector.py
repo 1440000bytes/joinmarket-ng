@@ -77,7 +77,7 @@ def frozen_utxo() -> UTXOInfo:
         txid="e" * 64,
         vout=0,
         value=75_000,
-        address="bcrt1frozen",
+        address="bcrt1qfrzen",
         confirmations=50,
         scriptpubkey="0014" + "ee" * 20,
         path="m/84'/0'/0'/0/3",
@@ -97,7 +97,7 @@ class TestFormatUtxoLine:
 
         assert "m0" in line  # Mixdepth 0
         assert "100,000" in line or "0.00100000" in line  # Amount
-        assert "10 conf" in line  # Confirmations
+        assert f"{utxo.confirmations:>8,}" in line  # Confirmations column
         assert "aaaaaaaa" in line  # Truncated txid
         assert ":0" in line  # Vout
 
@@ -106,7 +106,8 @@ class TestFormatUtxoLine:
         utxo = sample_utxos[3]  # The timelocked one
         line = format_utxo_line(utxo)
 
-        assert "[FB-LOCKED]" in line
+        assert "FB-active" in line  # Label column for a still-locked bond
+        assert "locked" in line  # State column
 
     def test_format_with_max_width(self, sample_utxos: list[UTXOInfo]) -> None:
         """Test that lines are truncated to max width."""
@@ -139,7 +140,7 @@ class TestFormatUtxoLine:
 
         line = format_utxo_line(utxo, excluded_outpoints={(utxo.txid, utxo.vout)})
 
-        assert "[IN-USE]" in line
+        assert "in-use" in line  # State column
 
     def test_format_without_label(self, sample_utxos: list[UTXOInfo]) -> None:
         """Test formatting UTXO without a label."""
@@ -205,28 +206,28 @@ class TestFrozenUtxoFormatting:
     """Tests for frozen UTXO display formatting."""
 
     def test_frozen_indicator_shown(self, frozen_utxo: UTXOInfo) -> None:
-        """Frozen UTXOs show [FROZEN] in their display line."""
+        """Frozen UTXOs show ``frozen`` in their State column."""
         line = format_utxo_line(frozen_utxo)
-        assert "[FROZEN]" in line
+        assert "frozen" in line
 
     def test_frozen_indicator_after_label(self, frozen_utxo: UTXOInfo) -> None:
-        """[FROZEN] is placed after the label, not before it."""
+        """The frozen State column comes after the Label column."""
         frozen_utxo.label = "deposit"
         line = format_utxo_line(frozen_utxo, max_width=120)
 
-        frozen_pos = line.index("[FROZEN]")
+        frozen_pos = line.index("frozen")
         label_pos = line.index("deposit")
         assert frozen_pos > label_pos, (
-            f"[FROZEN] at {frozen_pos} should come after (deposit) at {label_pos}: {line}"
+            f"frozen state at {frozen_pos} should come after deposit at {label_pos}: {line}"
         )
 
     def test_frozen_indicator_after_fb_indicator(self) -> None:
-        """[FROZEN] is placed after [FB-LOCKED] for frozen fidelity bond UTXOs."""
+        """A frozen, still-locked bond shows FB-active and a frozen State."""
         utxo = UTXOInfo(
             txid="f" * 64,
             vout=0,
             value=200_000,
-            address="bcrt1frozenFB",
+            address="bcrt1qfrzenfb",
             confirmations=500,
             scriptpubkey="0020" + "ff" * 32,
             path="m/84'/0'/0'/2/0",
@@ -235,13 +236,17 @@ class TestFrozenUtxoFormatting:
             frozen=True,
         )
         line = format_utxo_line(utxo)
-        assert "[FB-LOCKED]" in line
-        assert "[FROZEN]" not in line or line.index("[FROZEN]") > line.index("[FB-LOCKED]")
+        # Label column shows FB-active; the State column shows frozen, and as
+        # the last column it always appears after the label.
+        assert "FB-active" in line
+        assert "frozen" in line
+        assert line.index("frozen") > line.index("FB-active")
 
     def test_unfrozen_no_indicator(self, sample_utxos: list[UTXOInfo]) -> None:
-        """Non-frozen UTXOs do not show [FROZEN]."""
+        """Non-frozen UTXOs show ``spendable`` in their State column."""
         line = format_utxo_line(sample_utxos[0])
-        assert "[FROZEN]" not in line
+        assert "spendable" in line
+        assert "frozen" not in line
 
 
 class TestFrozenUtxoUnselectability:
