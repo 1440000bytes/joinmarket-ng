@@ -480,6 +480,22 @@ def test_tui_script_update_fails_fast_on_nonzero_exit() -> None:
     assert "ERROR: Update failed" in update_block
 
 
+def test_tui_script_update_prefers_trusted_installer_copy() -> None:
+    """The standalone update must run the locally saved installer (which
+    GPG-authenticates its replacement) and only fall back to downloading
+    an unverified copy from main when no trusted copy exists yet."""
+    content = SCRIPT_PATH.read_text()
+    update_block = content.split("    U)\n", 1)[1].split("\n    C)\n", 1)[0]
+    assert 'TRUSTED_INSTALLER="$DATA_DIR/install.sh"' in update_block
+    assert 'if [ -f "$TRUSTED_INSTALLER" ]' in update_block
+    assert 'bash "$TRUSTED_INSTALLER" --update' in update_block
+    # The curl bootstrap must be the fallback branch, after the trusted-copy
+    # check, so existing installations never re-fetch unverified code.
+    assert update_block.index('if [ -f "$TRUSTED_INSTALLER" ]') < update_block.index(
+        "raw.githubusercontent.com/joinmarket-ng/joinmarket-ng/main/install.sh"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Python entry point tests
 # ---------------------------------------------------------------------------

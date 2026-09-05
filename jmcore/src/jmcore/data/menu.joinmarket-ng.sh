@@ -2404,13 +2404,24 @@ except (json.JSONDecodeError, AttributeError):
             fi
             UPDATE_RC=$?
         else
-            # Standalone: download and run install.sh --update
-            echo "Downloading latest installer..."
-            INSTALL_SCRIPT=$(mktemp)
-            curl -sSL "https://raw.githubusercontent.com/joinmarket-ng/joinmarket-ng/main/install.sh" -o "$INSTALL_SCRIPT"
-            bash "$INSTALL_SCRIPT" --update $UPDATE_ARGS -y
-            UPDATE_RC=$?
-            rm -f "$INSTALL_SCRIPT"
+            # Standalone: prefer the locally saved installer, which
+            # authenticates its own replacement against embedded GPG
+            # trust anchors before applying any update.
+            TRUSTED_INSTALLER="$DATA_DIR/install.sh"
+            if [ -f "$TRUSTED_INSTALLER" ]; then
+                echo "Running trusted installer copy..."
+                bash "$TRUSTED_INSTALLER" --update $UPDATE_ARGS -y
+                UPDATE_RC=$?
+            else
+                # First run on an installation that predates the trusted
+                # copy: bootstrap once over HTTPS, like the initial install.
+                echo "No trusted installer copy found; downloading installer..."
+                INSTALL_SCRIPT=$(mktemp)
+                curl -sSL "https://raw.githubusercontent.com/joinmarket-ng/joinmarket-ng/main/install.sh" -o "$INSTALL_SCRIPT"
+                bash "$INSTALL_SCRIPT" --update $UPDATE_ARGS -y
+                UPDATE_RC=$?
+                rm -f "$INSTALL_SCRIPT"
+            fi
         fi
 
         echo ""
