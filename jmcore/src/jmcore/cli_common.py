@@ -73,6 +73,7 @@ class ResolvedBackendSettings:
     neutrino_add_peers: list[str]
     data_dir: Path
     scan_start_height: int | None = None
+    scan_lookback_blocks: int = 52_560
     neutrino_tls_cert: str | None = None
     neutrino_auth_token: str | None = None
     fee_estimate_url: str | None = None
@@ -503,6 +504,7 @@ def resolve_backend_settings(
         neutrino_add_peers=resolved_neutrino_add_peers,
         data_dir=resolved_data_dir,
         scan_start_height=settings.wallet.scan_start_height,
+        scan_lookback_blocks=settings.wallet.scan_lookback_blocks,
         neutrino_tls_cert=resolved_neutrino_tls_cert,
         neutrino_auth_token=resolved_neutrino_auth_token,
         fee_estimate_url=settings.bitcoin.fee_estimate_url,
@@ -1064,6 +1066,8 @@ def create_backend(
             rpc_user=backend_settings.rpc_user,
             rpc_password=backend_settings.rpc_password,
             wallet_name=wallet_name,
+            scan_start_height=backend_settings.scan_start_height,
+            scan_lookback_blocks=backend_settings.scan_lookback_blocks,
         )
     else:
         raise ValueError(

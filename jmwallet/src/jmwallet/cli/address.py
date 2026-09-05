@@ -193,6 +193,8 @@ async def _build_wallet(c: _AddressContext) -> tuple[WalletService, str]:
             rpc_user=bs.rpc_user,
             rpc_password=bs.rpc_password,
             wallet_name=generate_wallet_name(wallet_fingerprint, bs.network),
+            scan_start_height=bs.scan_start_height,
+            scan_lookback_blocks=bs.scan_lookback_blocks,
         )
     else:
         raise ValueError(f"Unknown backend type: {bs.backend_type}")

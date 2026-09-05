@@ -70,6 +70,8 @@ def create_backend(config: TakerConfig) -> Any:
             rpc_user=config.backend_config["rpc_user"],
             rpc_password=config.backend_config["rpc_password"],
             wallet_name=wallet_name,
+            scan_start_height=config.backend_config.get("scan_start_height"),
+            scan_lookback_blocks=config.backend_config.get("scan_lookback_blocks", 52_560),
         )
     else:
         raise ValueError(f"Unknown backend type: {config.backend_type}")

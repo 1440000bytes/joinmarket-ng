@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import click
 import pytest
@@ -53,6 +53,32 @@ def test_build_maker_config_auto_detects_tor_cookie() -> None:
     # Make sure the auto-detect is the fallback after the explicit settings
     # branch, not a replacement for it.
     assert source.index("settings.tor.cookie_path") < source.index("detect_tor_cookie_path()")
+
+
+def test_descriptor_scan_settings_reach_maker_backend() -> None:
+    """Descriptor scan settings must survive the maker config round trip."""
+    from jmcore.settings import JoinMarketSettings
+
+    from maker.cli import build_maker_config, create_wallet_service
+
+    settings = JoinMarketSettings(
+        bitcoin={"backend_type": "descriptor_wallet"},
+        wallet={"scan_start_height": 765_432, "scan_lookback_blocks": 12_345},
+    )
+    config = build_maker_config(settings, "abandon " * 11 + "about", "")
+
+    assert config.backend_config["scan_start_height"] == 765_432
+    assert config.backend_config["scan_lookback_blocks"] == 12_345
+
+    mock_backend = MagicMock()
+    with patch(
+        "jmwallet.backends.descriptor_wallet.DescriptorWalletBackend", return_value=mock_backend
+    ) as mock_cls:
+        create_wallet_service(config)
+
+    assert mock_cls.call_args is not None
+    assert mock_cls.call_args.kwargs["scan_start_height"] == 765_432
+    assert mock_cls.call_args.kwargs["scan_lookback_blocks"] == 12_345
 
 
 def test_config_init_exposes_config_file_option() -> None:

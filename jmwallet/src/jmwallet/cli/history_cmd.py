@@ -444,6 +444,8 @@ async def _reconstruct_history(
             rpc_user=backend_settings.rpc_user,
             rpc_password=backend_settings.rpc_password,
             wallet_name=wallet_name,
+            scan_start_height=backend_settings.scan_start_height,
+            scan_lookback_blocks=backend_settings.scan_lookback_blocks,
         )
     else:
         raise ValueError(f"Unknown backend type: {backend_settings.backend_type}")

@@ -121,6 +121,8 @@ def build_taker_config_kwargs(
             "rpc_url": effective_rpc_url,
             "rpc_user": effective_rpc_user,
             "rpc_password": effective_rpc_password,
+            "scan_start_height": resolved_backend.scan_start_height,
+            "scan_lookback_blocks": resolved_backend.scan_lookback_blocks,
         }
     elif effective_backend_type == "neutrino":
         from jmcore.fee_source import build_fee_source_proxy

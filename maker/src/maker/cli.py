@@ -125,6 +125,8 @@ def build_maker_config(
             "rpc_url": effective_rpc_url,
             "rpc_user": effective_rpc_user,
             "rpc_password": effective_rpc_password,
+            "scan_start_height": resolved_backend.scan_start_height,
+            "scan_lookback_blocks": resolved_backend.scan_lookback_blocks,
         }
     elif effective_backend_type == "neutrino":
         backend_config = {
@@ -447,6 +449,8 @@ def create_wallet_service(config: MakerConfig) -> WalletService:
             rpc_user=backend_cfg.get("rpc_user", ""),
             rpc_password=backend_cfg.get("rpc_password", ""),
             wallet_name=wallet_name,
+            scan_start_height=backend_cfg.get("scan_start_height"),
+            scan_lookback_blocks=backend_cfg.get("scan_lookback_blocks", 52_560),
         )
     elif backend_type == "neutrino":
         backend_cfg = config.backend_config

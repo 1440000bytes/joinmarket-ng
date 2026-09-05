@@ -624,6 +624,36 @@ class TestBuildTakerConfig:
 
         assert config.backend_config.get("add_peers") == []
 
+    def test_descriptor_scan_settings_reach_backend(
+        self, sample_mnemonic: str, mock_settings: MagicMock
+    ) -> None:
+        """Descriptor scan settings must survive the taker config round trip."""
+        mock_settings.wallet.scan_start_height = 765_432
+        mock_settings.wallet.scan_lookback_blocks = 12_345
+
+        config = build_taker_config(
+            settings=mock_settings,
+            mnemonic=sample_mnemonic,
+            passphrase="",
+            destination="bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
+            amount=100000,
+            mixdepth=0,
+        )
+
+        assert config.backend_config["scan_start_height"] == 765_432
+        assert config.backend_config["scan_lookback_blocks"] == 12_345
+
+        mock_backend = MagicMock()
+        with patch(
+            "jmwallet.backends.descriptor_wallet.DescriptorWalletBackend",
+            return_value=mock_backend,
+        ) as mock_cls:
+            create_backend(config)
+
+        assert mock_cls.call_args is not None
+        assert mock_cls.call_args.kwargs["scan_start_height"] == 765_432
+        assert mock_cls.call_args.kwargs["scan_lookback_blocks"] == 12_345
+
     def test_neutrino_fee_source_in_backend_config(
         self, sample_mnemonic: str, mock_settings: MagicMock
     ) -> None:
