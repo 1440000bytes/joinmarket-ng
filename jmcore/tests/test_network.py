@@ -54,6 +54,52 @@ async def test_tcp_connection_receive():
         await conn.receive()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("operation", "error"),
+    [
+        ("receive", asyncio.IncompleteReadError(b"", None)),
+        ("receive", ConnectionResetError("peer reset")),
+        ("receive", OSError("read failed")),
+        ("send", BrokenPipeError("peer closed")),
+    ],
+)
+async def test_tcp_connection_close_after_io_failure(operation: str, error: Exception) -> None:
+    reader = AsyncMock()
+    writer = Mock()
+    writer.drain = AsyncMock()
+    writer.wait_closed = AsyncMock()
+    conn = TCPConnection(reader, writer)
+
+    if operation == "receive":
+        reader.readuntil.side_effect = error
+        with pytest.raises(ConnectionError):
+            await conn.receive()
+    else:
+        writer.drain.side_effect = error
+        with pytest.raises(ConnectionError):
+            await conn.send(b"hello")
+
+    assert not conn.is_connected()
+    await conn.close()
+    writer.close.assert_called_once_with()
+    writer.wait_closed.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_tcp_connection_close_is_repeatable() -> None:
+    writer = Mock()
+    writer.wait_closed = AsyncMock()
+    conn = TCPConnection(AsyncMock(), writer)
+
+    await conn.close()
+    await conn.close()
+
+    assert not conn.is_connected()
+    assert writer.close.call_count == 2
+    assert writer.wait_closed.await_count == 2
+
+
 def test_connection_pool():
     pool = ConnectionPool(max_connections=2)
     c1 = Mock()

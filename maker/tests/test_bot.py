@@ -908,6 +908,7 @@ class TestHiddenServiceListener:
         reader.feed_eof()
         writer = MagicMock()
         writer.drain = AsyncMock()
+        writer.wait_closed = AsyncMock()
         connection = TCPConnection(reader, writer)
         errors: list[str] = []
         handler_id = logger.add(
@@ -921,6 +922,8 @@ class TestHiddenServiceListener:
             logger.remove(handler_id)
 
         writer.write.assert_called_once()
+        writer.close.assert_called_once_with()
+        writer.wait_closed.assert_awaited_once_with()
         assert errors == []
         assert connection not in bot._direct_connection_states
 

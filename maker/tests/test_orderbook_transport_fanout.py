@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from directory_server.server import DirectoryServer
+from jmcore.config import TorControlConfig
 from jmcore.crypto import NickIdentity
 from jmcore.directory_client import DirectoryClient
 from jmcore.models import NetworkType, Offer, OfferType
@@ -140,6 +141,7 @@ class TransportFanoutHarness:
             directory_servers=endpoints,
             network=NetworkType.REGTEST,
             nick_auth_mode=NickAuthMode.DISABLED,
+            tor_control=TorControlConfig(enabled=False),
         )
         self.bot = MakerBot(wallet=wallet, backend=backend, config=config)
         self.bot.current_offers = [

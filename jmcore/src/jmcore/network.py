@@ -103,8 +103,7 @@ class TCPConnection(Connection):
                 raise ConnectionError(f"Connection lost: {e}") from e
 
     async def close(self) -> None:
-        if not self._connected:
-            return
+        # I/O failures mark the connection disconnected without closing its transport.
         self._connected = False
         self.writer.close()
         await self.writer.wait_closed()
