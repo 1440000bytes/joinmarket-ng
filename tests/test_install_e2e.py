@@ -140,6 +140,7 @@ def test_install_on_debian_stable() -> None:
 
 @pytest.mark.timeout(900)
 def test_install_on_ubuntu_2404() -> None:
-    """The Ubuntu taker-only install stays a minimal single-role profile."""
+    """A taker-only install can update when a new native dependency is absent."""
     result = _build_and_run("Dockerfile.ubuntu", "ubuntu", "taker")
     _assert_install_succeeded(result)
+    assert "UPDATE_SMOKE_PASS" in result.stdout + result.stderr

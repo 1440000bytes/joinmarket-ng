@@ -32,6 +32,7 @@ def _run_verification(
     shared_commit: str = COMMIT,
     local_commit: str = COMMIT,
     required_signatures: int = 2,
+    manifest_version: str = "v9.9.9",
 ) -> subprocess.CompletedProcess[str]:
     """Run ``verify_release_signature`` with curl and GPG fully stubbed."""
 
@@ -49,6 +50,7 @@ BAD_SIGNATURES="{" ".join(bad_signatures)}"
 SIGNER_MISMATCH="{"true" if signer_mismatch else "false"}"
 SHARED_COMMIT="{shared_commit}"
 LOCAL_COMMIT="{local_commit}"
+MANIFEST_VERSION="{manifest_version}"
 CURL_LOG="$(mktemp)"
 
 print_header() {{ :; }}
@@ -83,26 +85,17 @@ curl() {{
     done
     printf '%s\n' "$url" >> "$CURL_LOG"
     case "$url" in
-        *trusted-keys.txt)
-            printf '%s trusted-one\n%s trusted-two\n' "$FIRST_FINGERPRINT" "$SECOND_FINGERPRINT" > "$destination"
-            ;;
         *signatures/pubkeys/*.asc)
             : > "$destination"
             ;;
-        *contents/signatures/*)
-            : > "$destination"
-            local fingerprint
-            for fingerprint in $SIGNATURES; do
-                printf '"name": "%s.sig"\n' "$fingerprint" >> "$destination"
-            done
-            ;;
         *release-manifest-*.txt)
             [[ "$SHARED_AVAILABLE" == "true" ]] || return 22
-            printf 'commit: %s\n' "$SHARED_COMMIT" > "$destination"
+            printf '# Version: %s\ncommit: %s\n' "$MANIFEST_VERSION" "$SHARED_COMMIT" > "$destination"
             ;;
         *signatures/*/*.sig)
             local signature="${{url##*/}}"
             signature="${{signature%.sig}}"
+            contains_word "$signature" "$SIGNATURES" || return 22
             contains_word "$signature" "$UNAVAILABLE_SIGNATURES" && return 22
             : > "$destination"
             ;;
@@ -110,7 +103,7 @@ curl() {{
             local manifest="${{url##*/}}"
             manifest="${{manifest%-manifest.txt}}"
             contains_word "$manifest" "$LOCAL_MANIFESTS" || return 22
-            printf 'commit: %s\n' "$LOCAL_COMMIT" > "$destination"
+            printf '# Version: %s\ncommit: %s\n' "$MANIFEST_VERSION" "$LOCAL_COMMIT" > "$destination"
             ;;
         *) return 22 ;;
     esac
@@ -167,6 +160,8 @@ def test_ci_first_signature_uses_shared_manifest_without_local_fetch() -> None:
     assert "EXIT:0" in result.stdout, result.stdout + result.stderr
     assert "release-manifest-v9.9.9.txt" in result.stdout
     assert f"{FIRST_FINGERPRINT}-manifest.txt" not in result.stdout
+    assert "trusted-keys.txt" not in result.stdout
+    assert "contents/signatures" not in result.stdout
 
 
 def test_local_first_signature_falls_back_when_shared_asset_is_unavailable() -> None:
@@ -246,10 +241,15 @@ def test_untrusted_signature_file_is_ignored() -> None:
     )
 
     assert "EXIT:0" in result.stdout, result.stdout + result.stderr
-    assert (
-        f"Ignoring signature from untrusted key {UNTRUSTED_FINGERPRINT}"
-        in result.stdout
-    )
+    assert UNTRUSTED_FINGERPRINT not in result.stdout
+
+
+@pytest.mark.parametrize("manifest_version", ["v1.0.0", ""])
+def test_manifest_must_identify_the_requested_release(manifest_version: str) -> None:
+    result = _run_verification(manifest_version=manifest_version)
+
+    assert "EXIT:1" in result.stdout, result.stdout + result.stderr
+    assert "Signed manifest version does not match" in result.stdout
 
 
 def test_zero_valid_signatures_fail_verification() -> None:

@@ -43,14 +43,10 @@ verify_release_signature() {{ return 0; }}
 verify_update_imports() {{ return 0; }}
 python3() {{ return 0; }}
 
-CURL_LOG="$(mktemp)"
-curl() {{
-    local url=""
-    local arg
-    for arg in "$@"; do
-        [[ "$arg" == http* ]] && url="$arg"
-    done
-    printf '%s\n' "$url" >> "$CURL_LOG"
+RELEASE_FILE_LOG="$(mktemp)"
+prepare_verified_source() {{ return 0; }}
+read_release_file() {{
+    printf '%s\n' "$1" >> "$RELEASE_FILE_LOG"
     printf 'idna==3.10\n'
 }}
 
@@ -71,9 +67,9 @@ PINNED_DEPS=true
 
 {mode}_packages
 echo "EXIT:$?"
-echo "CURL_LOG_START"
-cat "$CURL_LOG"
-rm -f "$CURL_LOG"
+echo "RELEASE_FILE_LOG_START"
+cat "$RELEASE_FILE_LOG"
+rm -f "$RELEASE_FILE_LOG"
 '''
     return subprocess.run(
         ["bash", "-c", script],
@@ -90,6 +86,10 @@ def _pip_lines(result: subprocess.CompletedProcess[str]) -> list[str]:
         for line in result.stdout.splitlines()
         if line.startswith("PIP: ")
     ]
+
+
+def _release_file_paths(result: subprocess.CompletedProcess[str]) -> list[str]:
+    return result.stdout.split("RELEASE_FILE_LOG_START\n", maxsplit=1)[1].splitlines()
 
 
 def test_complete_profile_installs_tumbler_after_maker_and_taker() -> None:
@@ -144,5 +144,11 @@ def test_complete_profile_fetches_tumbler_lock_for_hash_verification() -> None:
     result = _run_packages(mode="install", maker=True, taker=True, pinned_deps=True)
 
     assert "EXIT:0" in result.stdout, result.stdout + result.stderr
-    assert "/tumbler/requirements.txt" in result.stdout
+    assert _release_file_paths(result) == [
+        "jmcore/requirements.txt",
+        "jmwallet/requirements.txt",
+        "maker/requirements.txt",
+        "taker/requirements.txt",
+        "tumbler/requirements.txt",
+    ]
     assert any("--require-hashes" in line for line in _pip_lines(result))

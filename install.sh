@@ -7,7 +7,7 @@
 # Usage:
 #   curl -sSL https://raw.githubusercontent.com/joinmarket-ng/joinmarket-ng/main/install.sh | bash
 #   curl -sSL https://raw.githubusercontent.com/joinmarket-ng/joinmarket-ng/main/install.sh | bash -s -- --maker
-#   curl -sSL https://raw.githubusercontent.com/joinmarket-ng/joinmarket-ng/main/install.sh | bash -s -- --update
+#   bash ~/.joinmarket-ng/install.sh --update
 #
 # Or run locally:
 #   ./install.sh
@@ -24,6 +24,17 @@ PYTHON_MIN_VERSION="3.11"
 GITHUB_REPO="joinmarket-ng/joinmarket-ng"
 DEFAULT_VERSION="0.39.0"  # Updated on each release
 REQUIRED_GPG_SIGNATURES=2
+# These are trust anchors, not a list to refresh from the download server.
+# Changing them requires a new installer authenticated by the previous quorum.
+TRUSTED_GPG_FINGERPRINTS=(
+    "1C53A412D11EF3051704419C44912E1E03005B31"
+    "9253062A4F92D63459085CA62D230520212A5901"
+)
+INSTALLER_PROTOCOL=1
+INSTALLER_SOURCE="${BASH_SOURCE[0]:-}"
+VERIFIED_RELEASE_COMMIT=""
+VERIFIED_RELEASE_VERSION=""
+VERIFIED_SOURCE_DIR=""
 
 # Colors for output
 RED='\033[0;31m'
@@ -113,6 +124,10 @@ detect_os() {
     fi
 }
 
+debian_package_installed() {
+    [[ "$(dpkg-query -W -f='${Status}' "$1" 2>/dev/null)" == "install ok installed" ]]
+}
+
 # Check system dependencies
 check_system_dependencies() {
     print_header "Checking System Dependencies"
@@ -123,31 +138,31 @@ check_system_dependencies() {
 
     if [[ "$OS_TYPE" == "linux" ]] && [[ "$PKG_MANAGER" == "apt" ]]; then
         # Debian/Ubuntu/Raspberry Pi OS
-        if ! dpkg -s build-essential &> /dev/null 2>&1; then
+        if ! debian_package_installed build-essential; then
             missing_deps+=("build-essential")
         fi
-        if ! dpkg -s ca-certificates &> /dev/null 2>&1; then
+        if ! debian_package_installed ca-certificates; then
             missing_deps+=("ca-certificates")
         fi
-        if ! dpkg -s libffi-dev &> /dev/null 2>&1; then
+        if ! debian_package_installed libffi-dev; then
             missing_deps+=("libffi-dev")
         fi
-        if ! dpkg -s libsodium-dev &> /dev/null 2>&1; then
+        if ! debian_package_installed libsodium-dev; then
             missing_deps+=("libsodium-dev")
         fi
-        if ! dpkg -s libsecp256k1-dev &> /dev/null 2>&1; then
+        if ! debian_package_installed libsecp256k1-dev; then
             missing_deps+=("libsecp256k1-dev")
         fi
-        if ! dpkg -s pkg-config &> /dev/null 2>&1; then
+        if ! debian_package_installed pkg-config; then
             missing_deps+=("pkg-config")
         fi
-        if ! dpkg -s python3-dev &> /dev/null 2>&1; then
+        if ! debian_package_installed python3-dev; then
             missing_deps+=("python3-dev")
         fi
-        if ! dpkg -s python3-venv &> /dev/null 2>&1; then
+        if ! debian_package_installed python3-venv; then
             missing_deps+=("python3-venv")
         fi
-        if ! dpkg -s git &> /dev/null 2>&1; then
+        if ! debian_package_installed git; then
             missing_deps+=("git")
         fi
         # gnupg + curl are required for release-signature verification
@@ -252,7 +267,12 @@ check_system_dependencies() {
         fi
     fi
 
-    print_success "All system dependencies are installed"
+    if [[ "$PKG_MANAGER" != "apt" && "$PKG_MANAGER" != "brew" ]]; then
+        print_warning "Automatic dependency checks support apt and Homebrew only."
+        print_warning "Install Python development tools, Git, GnuPG, curl, libsodium and libsecp256k1 using your system package manager."
+    else
+        print_success "All system dependencies are installed"
+    fi
 }
 
 # Check Python version
@@ -592,27 +612,149 @@ require_resolved_commit_hash() {
     return 1
 }
 
-# Verify that the resolved commit hash for $version is attested by the required
-# number of trusted GPG signatures stored under signatures/<version>/ in the repo.
-#
-# Returns 0 on success, 1 on failure. Honours $SKIP_VERIFY: when true, prints
-# a warning and returns 0 without verifying. Intended to be called after
-# resolve_to_commit_hash so we have the commit hash the install will pull.
-#
-# We trust the repository's own signatures/trusted-keys.txt and pubkeys
-# directory as ground truth, because the install.sh the user is running was
-# itself fetched from main of the same repository, so an attacker who can
-# rewrite trusted-keys.txt can also rewrite install.sh. The substantive
-# protection here is that an attacker who only controls a release tag (or
-# a CDN edge serving the tarball) cannot bypass GPG verification: they
-# would also have to fake a signature in signatures/<version>/ that
-# verifies against one of the keys committed to main of the source repo.
+# Public-key downloads are untrusted. Only signatures matching an embedded
+# primary fingerprint count, including signatures made by its signing subkeys.
+import_verification_keys() {
+    local work_dir="$1"
+    local fingerprint
+    mkdir -p "$work_dir/gnupg" || return 1
+    chmod 700 "$work_dir/gnupg" || return 1
+    for fingerprint in "${TRUSTED_GPG_FINGERPRINTS[@]}"; do
+        if ! curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPO}/main/signatures/pubkeys/${fingerprint}.asc" \
+            -o "$work_dir/$fingerprint.asc"; then
+            print_warning "Could not download public key $fingerprint"
+            continue
+        fi
+        if ! GNUPGHOME="$work_dir/gnupg" gpg --no-options --quiet --batch --import \
+            "$work_dir/$fingerprint.asc" > "$work_dir/$fingerprint.log" 2>&1; then
+            print_warning "Failed to import key $fingerprint"
+            sed 's/^/    /' "$work_dir/$fingerprint.log" >&2
+        fi
+    done
+}
+
+verify_detached_signature() {
+    local work_dir="$1" fingerprint="$2" signature="$3" content="$4"
+    local signer
+    if ! GNUPGHOME="$work_dir/gnupg" gpg --no-options --quiet --batch --status-fd 1 \
+        --verify "$signature" "$content" > "$work_dir/status" 2>/dev/null; then
+        return 1
+    fi
+    if grep -Eq '^\[GNUPG:\] (REVKEYSIG|EXPKEYSIG|EXPSIG|KEYREVOKED|KEYEXPIRED|SIGEXPIRED)( |$)' "$work_dir/status"; then
+        return 1
+    fi
+    signer=$(awk '$1 == "[GNUPG:]" && $2 == "VALIDSIG" {
+        if (length($12) == 40) print $12; else print $3
+    }' "$work_dir/status")
+    if [[ "$signer" != "$fingerprint" ]]; then
+        print_warning "Signature for $fingerprint was made by $signer; ignoring"
+        return 1
+    fi
+    return 0
+}
+
+is_release_version() {
+    [[ "$1" =~ ^v?(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})$ ]]
+}
+
+release_is_older() {
+    local candidate="${1#v}" current="${2#v}" i
+    local candidate_parts current_parts
+    IFS=. read -r -a candidate_parts <<< "$candidate"
+    IFS=. read -r -a current_parts <<< "$current"
+    for i in 0 1 2; do
+        (( 10#${candidate_parts[$i]} < 10#${current_parts[$i]} )) && return 0
+        (( 10#${candidate_parts[$i]} > 10#${current_parts[$i]} )) && return 1
+    done
+    return 1
+}
+
+# Use a subprocess so temporary downloads survive the child installer but are
+# removed on failure as well as success. No downloaded shell is sourced here.
+refresh_installer() (
+    local version work_dir candidate fingerprint valid_sigs=0 candidate_version
+    version=$(get_latest_version)
+    if ! is_release_version "$version"; then
+        print_error "Invalid installer release version: $version"
+        exit 1
+    fi
+    work_dir=$(mktemp -d -t jmng-installer.XXXXXX) || exit 1
+    trap 'rm -rf "$work_dir"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    candidate="$work_dir/install.sh"
+    print_header "Authenticating the current installer"
+    if ! curl -fsSL "https://github.com/${GITHUB_REPO}/releases/download/${version}/install.sh" -o "$candidate"; then
+        print_error "Installer asset unavailable for $version. No update was performed."
+        print_error "Wait for a release with signed-installer support, then retry this saved script."
+        exit 1
+    fi
+    import_verification_keys "$work_dir" || exit 1
+    for fingerprint in "${TRUSTED_GPG_FINGERPRINTS[@]}"; do
+        if curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPO}/main/signatures/${version}/${fingerprint}.install.sh.sig" \
+            -o "$work_dir/$fingerprint.sig" 2>/dev/null && \
+            verify_detached_signature "$work_dir" "$fingerprint" "$work_dir/$fingerprint.sig" "$candidate"; then
+            valid_sigs=$((valid_sigs + 1))
+            print_success "Installer signature from $fingerprint"
+        fi
+    done
+    if (( valid_sigs < REQUIRED_GPG_SIGNATURES )); then
+        print_error "Installer $version needs $REQUIRED_GPG_SIGNATURES trusted signatures; found $valid_sigs."
+        print_error "The release may still be awaiting signatures. Retry later; the saved installer was not changed."
+        exit 1
+    fi
+    # Check identity only after authenticating the bytes. The handoff protocol
+    # prevents running a historical script that cannot preserve trusted updates.
+    candidate_version=$(sed -n 's/^DEFAULT_VERSION="\([^"]*\)".*/\1/p' "$candidate")
+    if [[ "$candidate_version" != "${version#v}" ]] || \
+        ! grep -qx 'INSTALLER_PROTOCOL=1' "$candidate"; then
+        print_error "Signed installer does not match release $version or lacks trusted-copy support."
+        exit 1
+    fi
+    if release_is_older "$version" "$DEFAULT_VERSION"; then
+        print_error "Refusing to replace installer $DEFAULT_VERSION with older installer $version."
+        exit 1
+    fi
+    local args=("$@")
+    [[ "$MODE" == "update" ]] && args+=(--update)
+    [[ "$AUTO_YES" == "true" ]] && args+=(--yes)
+    # Preserve an explicit application version. Otherwise install the same
+    # release selected here, not a second unauthenticated 'latest' response.
+    [[ -z "$INSTALL_VERSION" ]] && args+=(--version "$version")
+    JOINMARKET_DATA_DIR="$DATA_DIR" JMNG_VENV_DIR="$VENV_DIR" \
+        JMNG_VERIFIED_INSTALLER="$candidate" bash "$candidate" "${args[@]}"
+)
+
+save_trusted_installer() {
+    # Developer/verification opt-outs must not replace the trusted update path.
+    if [[ "$SKIP_VERIFY" == "true" || "${INSTALLER_AUTHENTICATED:-false}" != "true" ]]; then
+        print_warning "Trusted installer was not changed by this unverified run."
+        return 0
+    fi
+    local candidate
+    mkdir -p "$DATA_DIR" || return 1
+    candidate=$(mktemp "$DATA_DIR/.install.sh.XXXXXX") || return 1
+    if ! cp "$INSTALLER_SOURCE" "$candidate" || ! chmod 700 "$candidate" || \
+        ! mv -f "$candidate" "$DATA_DIR/install.sh"; then
+        rm -f "$candidate"
+        print_error "Could not save the trusted installer."
+        return 1
+    fi
+    print_success "Trusted installer saved. Update with: bash \"$DATA_DIR/install.sh\" --update"
+}
+
+# Verify the application commit using the same embedded primary-key allowlist
+# as the installer. main stores signatures, but cannot authorize new signers.
 verify_release_signature() {
     local version="$1"
     local commit_hash="$2"
 
     if [[ "$SKIP_VERIFY" == "true" ]]; then
         print_warning "Skipping GPG signature verification (--skip-verify or --dev)"
+        return 0
+    fi
+
+    if [[ "$VERIFIED_RELEASE_COMMIT" == "$commit_hash" && "$VERIFIED_RELEASE_VERSION" == "$version" ]]; then
         return 0
     fi
 
@@ -633,7 +775,6 @@ verify_release_signature() {
     fi
 
     local raw_base="https://raw.githubusercontent.com/${GITHUB_REPO}/main"
-    local api_base="https://api.github.com/repos/${GITHUB_REPO}/contents/signatures/${version}?ref=main"
 
     # Ephemeral working dir and GPG home so we don't touch the user's keyring.
     local work_dir
@@ -642,87 +783,13 @@ verify_release_signature() {
         print_error "Failed to create temporary directory for verification."
         return 1
     fi
-    local gnupg_home="$work_dir/gnupg"
-    mkdir -p "$gnupg_home"
-    chmod 700 "$gnupg_home"
-
     # Cleanup on every exit path of this function.
     local rc=1
     _verify_cleanup() {
         rm -rf "$work_dir" 2>/dev/null || true
     }
 
-    # Fetch the trusted-keys list and import the corresponding pubkeys from
-    # the repo's signatures/pubkeys/ directory. We deliberately do NOT use a
-    # keyserver here: the source of truth is the repo itself, which is what
-    # the install.sh the user is running also came from.
-    local trusted_keys_file="$work_dir/trusted-keys.txt"
-    if ! curl -fsSL "$raw_base/signatures/trusted-keys.txt" -o "$trusted_keys_file"; then
-        print_error "Failed to fetch trusted-keys.txt from $raw_base"
-        _verify_cleanup
-        return 1
-    fi
-
-    local imported_fps=()
-    while IFS=' ' read -r fingerprint name || [[ -n "$fingerprint" ]]; do
-        # Skip comments and empty lines
-        [[ "$fingerprint" =~ ^#.*$ || -z "$fingerprint" ]] && continue
-        local pubkey_url="$raw_base/signatures/pubkeys/${fingerprint}.asc"
-        local pubkey_file="$work_dir/${fingerprint}.asc"
-        if curl -fsSL "$pubkey_url" -o "$pubkey_file" 2>/dev/null; then
-            # Capture gpg stderr so we can surface the real error on
-            # failure. The previous ``2>/dev/null`` made debugging
-            # impossible (users only saw ``Failed to import key`` with
-            # no context). The captured log is printed below when the
-            # import fails so users can paste it in a bug report.
-            local gpg_log="$work_dir/${fingerprint}.gpg.log"
-            if GNUPGHOME="$gnupg_home" gpg --quiet --batch --import "$pubkey_file" > "$gpg_log" 2>&1; then
-                imported_fps+=("$fingerprint")
-                print_info "Imported trusted key $fingerprint ($name)"
-            else
-                print_warning "Failed to import key $fingerprint ($name)"
-                if [[ -s "$gpg_log" ]]; then
-                    print_warning "gpg said:"
-                    sed -E 's/^/    /' "$gpg_log" >&2
-                fi
-                # Also report the first bytes of the downloaded pubkey
-                # so we can tell a transport error (HTML proxy page,
-                # truncated file) apart from a genuine GnuPG failure.
-                local pubkey_head
-                pubkey_head=$(head -c 80 "$pubkey_file" 2>/dev/null | tr -d '\r' | head -1)
-                print_warning "Downloaded pubkey starts with: ${pubkey_head:-<empty>}"
-            fi
-        else
-            print_warning "Pubkey not found in repo for $fingerprint ($name)"
-        fi
-    done < "$trusted_keys_file"
-
-    if [[ ${#imported_fps[@]} -eq 0 ]]; then
-        print_error "No trusted GPG keys could be imported. Aborting."
-        _verify_cleanup
-        return 1
-    fi
-
-    # List signatures for this version directory via the GitHub contents API.
-    # We can't 'ls' a remote dir, so the API enumerates the .sig files we
-    # then fetch individually. If the directory is missing, the release was
-    # not signed and we refuse to install (use --skip-verify to bypass).
-    local sigs_listing="$work_dir/sigs-listing.json"
-    if ! curl -fsSL "$api_base" -o "$sigs_listing"; then
-        print_error "No signatures directory for $version on main."
-        print_error "Either the release is unsigned or the version tag is wrong."
-        print_error "Rerun with --skip-verify to bypass (NOT recommended)."
-        _verify_cleanup
-        return 1
-    fi
-
-    # Extract <fp>.sig filenames. Use grep/sed instead of jq to avoid an
-    # extra runtime dependency; the GitHub API JSON keys are stable.
-    local sig_names
-    sig_names=$(grep -oE '"name":[[:space:]]*"[A-F0-9]{40}\.sig"' "$sigs_listing" | sed -E 's/.*"([A-F0-9]{40}\.sig)".*/\1/')
-    if [[ -z "$sig_names" ]]; then
-        print_error "No signature files found under signatures/$version/."
-        print_error "Rerun with --skip-verify to bypass (NOT recommended)."
+    if ! import_verification_keys "$work_dir"; then
         _verify_cleanup
         return 1
     fi
@@ -741,27 +808,23 @@ verify_release_signature() {
 
     # Verify a signature, ensure GnuPG identifies the expected trusted signer,
     # and bind the selected manifest to the exact commit being installed.
-    local verified_signer=""
     verify_signed_manifest() {
         local expected_fingerprint="$1"
         local signature_file="$2"
         local manifest_file="$3"
-        local status_file="$work_dir/${expected_fingerprint}.status"
-
-        if ! GNUPGHOME="$gnupg_home" gpg --quiet --batch --status-fd 1 --verify \
-            "$signature_file" "$manifest_file" > "$status_file" 2>/dev/null; then
+        if ! verify_detached_signature "$work_dir" "$expected_fingerprint" "$signature_file" "$manifest_file"; then
             return 1
         fi
 
-        verified_signer=$(awk '$1 == "[GNUPG:]" && $2 == "VALIDSIG" { print $3; exit }' \
-            "$status_file")
-        if [[ "$verified_signer" != "$expected_fingerprint" ]]; then
-            print_warning "Signature for $expected_fingerprint was made by $verified_signer; ignoring"
+        local manifest_version
+        manifest_version=$(awk -F': ' '$1 == "# Version" { print $2 }' "$manifest_file")
+        if [[ "${manifest_version#v}" != "${version#v}" ]]; then
+            print_warning "Signed manifest version does not match $version; ignoring"
             return 1
         fi
 
         local manifest_commit
-        manifest_commit=$(awk -F': ' '$1 == "commit" { print $2; exit }' "$manifest_file" | tr -d '[:space:]')
+        manifest_commit=$(awk -F': ' '$1 == "commit" { print $2 }' "$manifest_file")
         if [[ -z "$manifest_commit" ]]; then
             print_warning "Signed manifest from $expected_fingerprint has no 'commit' line; ignoring"
             return 1
@@ -774,31 +837,13 @@ verify_release_signature() {
     }
 
     local valid_sigs=0
-    local signers=()
-    local sig_name
-    while IFS= read -r sig_name; do
-        [[ -z "$sig_name" ]] && continue
-        local fingerprint="${sig_name%.sig}"
-
-        # Only trust signatures whose fingerprint is in trusted-keys.txt.
-        local trusted=0
-        local imp_fp
-        for imp_fp in "${imported_fps[@]}"; do
-            if [[ "$imp_fp" == "$fingerprint" ]]; then
-                trusted=1
-                break
-            fi
-        done
-        if [[ $trusted -eq 0 ]]; then
-            print_warning "Ignoring signature from untrusted key $fingerprint"
-            continue
-        fi
-
+    local fingerprint
+    for fingerprint in "${TRUSTED_GPG_FINGERPRINTS[@]}"; do
         local sig_url="$raw_base/signatures/${version}/${fingerprint}.sig"
         local sig_file="$work_dir/${fingerprint}.sig"
 
         if ! curl -fsSL "$sig_url" -o "$sig_file"; then
-            print_warning "Failed to fetch signature $sig_name"
+            print_warning "Failed to fetch signature $fingerprint.sig"
             continue
         fi
 
@@ -824,22 +869,72 @@ verify_release_signature() {
         fi
 
         valid_sigs=$((valid_sigs + 1))
-        signers+=("$fingerprint")
         print_success "Valid signature from $fingerprint"
-    done <<< "$sig_names"
+    done
 
     if [[ $valid_sigs -ge $REQUIRED_GPG_SIGNATURES ]]; then
         print_success "Release $version verified ($valid_sigs trusted signature(s))"
+        VERIFIED_RELEASE_COMMIT="$commit_hash"
+        VERIFIED_RELEASE_VERSION="$version"
         rc=0
     else
         print_error "Release $version could not be verified."
         print_error "Insufficient trusted signatures. Required: $REQUIRED_GPG_SIGNATURES, Found: $valid_sigs."
-        print_error "Rerun with --skip-verify to bypass (NOT recommended)."
+        print_error "The release may still be awaiting signatures. Retry later."
         rc=1
     fi
 
     _verify_cleanup
     return $rc
+}
+
+# Fetch Git objects rather than trusting raw HTTP bodies merely because their
+# URLs contain a commit hash. Never check out or source repository code here.
+prepare_verified_source() {
+    local commit="$1" fetched_commit
+    [[ -n "$VERIFIED_SOURCE_DIR" ]] && return 0
+    require_resolved_commit_hash "$VERSION" "$commit" || return 1
+    VERIFIED_SOURCE_DIR=$(mktemp -d -t jmng-source.XXXXXX) || return 1
+    if ! git -c init.templateDir= init --bare --quiet "$VERIFIED_SOURCE_DIR" || \
+        ! git -C "$VERIFIED_SOURCE_DIR" -c fetch.fsckObjects=true fetch --quiet --depth 1 \
+            "https://github.com/${GITHUB_REPO}.git" "$commit"; then
+        print_error "Could not fetch the authenticated release source."
+        return 1
+    fi
+    fetched_commit=$(git -C "$VERIFIED_SOURCE_DIR" rev-parse FETCH_HEAD) || return 1
+    if [[ "$fetched_commit" != "$commit" ]]; then
+        print_error "Fetched source does not match the authenticated commit."
+        return 1
+    fi
+}
+
+read_release_file() {
+    local path="$1"
+    if [[ "$SKIP_VERIFY" == "true" ]]; then
+        curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPO}/${VERSION:-main}/$path"
+    elif [[ -n "$VERIFIED_SOURCE_DIR" && -n "$VERIFIED_RELEASE_COMMIT" ]]; then
+        git --no-replace-objects -C "$VERIFIED_SOURCE_DIR" show "$VERIFIED_RELEASE_COMMIT:$path"
+    else
+        print_error "No authenticated release source available for $path" >&2
+        return 1
+    fi
+}
+
+prepare_release() {
+    VERSION="${INSTALL_VERSION:-$(get_latest_version)}"
+    INSTALL_VERSION="$VERSION"
+    if [[ "$SKIP_VERIFY" != "true" ]]; then
+        local commit
+        commit=$(resolve_to_commit_hash "$VERSION")
+        require_resolved_commit_hash "$VERSION" "$commit" || return 1
+        verify_release_signature "$VERSION" "$commit" || return 1
+        prepare_verified_source "$commit" || return 1
+    fi
+}
+
+cleanup_install() {
+    cleanup_dep_pinning
+    [[ -z "$VERIFIED_SOURCE_DIR" ]] || rm -rf "$VERIFIED_SOURCE_DIR"
 }
 
 # Create or update virtual environment
@@ -914,12 +1009,7 @@ prepare_dep_pinning() {
         return 0
     fi
 
-    if ! command -v curl &> /dev/null; then
-        print_error "curl is required to fetch verified dependency locks."
-        return 1
-    fi
-
-    local raw_base="https://raw.githubusercontent.com/${GITHUB_REPO}/${commit}"
+    prepare_verified_source "$commit" || return 1
 
     local work_file
     work_file=$(mktemp -t jmng-deps.XXXXXX) || {
@@ -940,8 +1030,7 @@ prepare_dep_pinning() {
 
     local pkg
     for pkg in "${pkgs[@]}"; do
-        local url="${raw_base}/${pkg}/requirements.txt"
-        if ! curl -fsSL "$url" >> "$work_file" 2>/dev/null \
+        if ! read_release_file "${pkg}/requirements.txt" >> "$work_file" 2>/dev/null \
             || ! printf '\n' >> "$work_file"; then
             print_warning "Could not fetch ${pkg}/requirements.txt from the release commit."
             print_error "Cannot securely install the selected components without all dependency locks."
@@ -1052,7 +1141,7 @@ install_packages() {
     # commit) to a short hash; on failure we leave the env unset and the
     # build hook will fall back to live git.
     local install_commit
-    install_commit=$(resolve_to_commit_hash "$VERSION" 2>/dev/null || echo "")
+    install_commit="${VERIFIED_RELEASE_COMMIT:-$(resolve_to_commit_hash "$VERSION" 2>/dev/null || echo "")}"
     if [ -n "$install_commit" ] && [ "$install_commit" != "$VERSION" ]; then
         export JOINMARKET_BUILD_COMMIT="${install_commit:0:7}"
     fi
@@ -1137,7 +1226,7 @@ update_packages() {
     print_info "Updating to version $VERSION..."
 
     # Resolve to commit hash to ensure pip detects changes
-    local commit_hash=$(resolve_to_commit_hash "$VERSION")
+    local commit_hash="${VERIFIED_RELEASE_COMMIT:-$(resolve_to_commit_hash "$VERSION")}"
     if [ "$commit_hash" != "$VERSION" ]; then
         print_info "Resolved to commit: ${commit_hash:0:8}..."
     fi
@@ -1404,11 +1493,7 @@ setup_data_directory() {
     if [ ! -f "$config_file" ]; then
         print_info "Creating config file at $config_file..."
 
-        # Download config template from repository
-        # Use VERSION if available, otherwise use main branch
-        local version_tag="${VERSION:-main}"
-        local config_template_url="https://raw.githubusercontent.com/$GITHUB_REPO/${version_tag}/jmcore/src/jmcore/data/config.toml.template"
-        if ! curl -fsSL "$config_template_url" -o "$config_file"; then
+        if ! read_release_file "jmcore/src/jmcore/data/config.toml.template" > "$config_file"; then
             print_warning "Failed to download config template, using fallback..."
             # Fallback: create minimal config if download fails
             cat > "$config_file" << 'EOF'
@@ -1456,13 +1541,10 @@ setup_cli_completion() {
     fi
 
     local installed_count=0
-    local raw_base="https://raw.githubusercontent.com/${GITHUB_REPO}/${VERSION:-main}/completions"
-
     for cmd in "${commands[@]}"; do
         for ext in bash zsh; do
             local dst="$completions_dir/${cmd}.${ext}"
-            local url="$raw_base/${cmd}.${ext}"
-            if curl -fsSL "$url" -o "$dst" 2>/dev/null; then
+            if read_release_file "completions/${cmd}.${ext}" > "$dst" 2>/dev/null; then
                 chmod 644 "$dst"
                 installed_count=$((installed_count + 1))
             else
@@ -1494,6 +1576,7 @@ create_shell_integration() {
 #   source ~/.joinmarket-ng/activate.sh
 
 export JOINMARKET_DATA_DIR="$DATA_DIR"
+export JMNG_VENV_DIR="$VENV_DIR"
 export PATH="$VENV_DIR/bin:\$PATH"
 
 # Load generated completion scripts (bash/zsh)
@@ -1648,8 +1731,12 @@ print_completion() {
     fi
 
     echo ""
-    echo -e "${BLUE}To update later:${NC}"
-    echo "  curl -sSL https://raw.githubusercontent.com/${GITHUB_REPO}/main/install.sh | bash -s -- --update"
+    if [[ -f "$DATA_DIR/install.sh" ]]; then
+        echo -e "${BLUE}To update later:${NC}"
+        echo "  bash \"$DATA_DIR/install.sh\" --update"
+    else
+        print_warning "This unverified install did not establish a trusted update copy."
+    fi
     echo ""
     echo -e "${BLUE}Documentation:${NC}"
     echo "  https://github.com/${GITHUB_REPO}"
@@ -1670,6 +1757,7 @@ Usage:
   curl -sSL https://raw.githubusercontent.com/joinmarket-ng/joinmarket-ng/main/install.sh | bash
   curl -sSL ... | bash -s -- [OPTIONS]
   ./install.sh [OPTIONS]
+  bash ~/.joinmarket-ng/install.sh --update
 
 Options:
   -h, --help          Show this help message
@@ -1678,11 +1766,12 @@ Options:
   --maker             Install maker component (installed by default)
   --taker             Install taker component (installed by default)
   --orderbook-watcher Install the orderbook watcher component
-  --version VERSION   Install specific version (default: latest)
+  --version VERSION   Install specific application version (default: latest)
+                       The installer itself refreshes to the latest release.
   --dev               Install from main branch (for development)
   --skip-tor          Skip Tor installation and configuration
   --min-sigs N        Require at least N valid GPG signatures (default: 2)
-  --skip-verify       Skip GPG signature verification of the release
+  --skip-verify       Skip installer refresh and release signature verification
                       (NOT recommended; auto-enabled with --dev or
                       --version main since main branch is not signed)
   --no-hash-deps      Do not hash-verify third-party dependencies. By
@@ -1698,6 +1787,9 @@ Options:
 Note: When piped from curl, auto-confirm is enabled by default for Tor
       configuration and other prompts. Use --skip-tor to skip Tor setup.
       By default, maker, taker, tumbler, and the orderbook watcher are installed.
+      The first bootstrap trusts GitHub/HTTPS. Verified installs save a trusted
+      copy at <data-dir>/install.sh for future updates. Unverified runs do not
+      replace it. Older installations migrate with one final bootstrap run.
 
 Examples:
   # Install the complete profile (default)
@@ -1713,7 +1805,7 @@ Examples:
   curl -sSL ... | bash -s -- --orderbook-watcher
 
   # Update existing installation
-  curl -sSL ... | bash -s -- --update
+  bash ~/.joinmarket-ng/install.sh --update
 
   # Install specific version
   curl -sSL ... | bash -s -- --version 0.9.0
@@ -1736,8 +1828,7 @@ parse_args() {
     INSTALL_VERSION=""
     EXPLICIT_COMPONENTS=false
     SKIP_VERIFY=false
-    # Hash-check dependencies by default (strongest supply-chain integrity);
-    # auto-falls back to version-pinning if hashes cannot be satisfied here.
+    # Hash-check dependencies by default; failures never weaken verification.
     PINNED_DEPS=true
 
     while [[ $# -gt 0 ]]; do
@@ -1841,6 +1932,15 @@ main() {
 
     parse_args "$@"
 
+    # This marker is passed only by the locally trusted parent after signature
+    # verification. Local environment control is outside the download threat
+    # model, just like the explicit --skip-verify option.
+    INSTALLER_AUTHENTICATED=false
+    if [[ -n "$INSTALLER_SOURCE" && "${JMNG_VERIFIED_INSTALLER:-}" == "$INSTALLER_SOURCE" ]]; then
+        INSTALLER_AUTHENTICATED=true
+    fi
+    unset JMNG_VERIFIED_INSTALLER
+
     # Guard against accidental global CA overrides from Neutrino TLS setup.
     sanitize_tls_environment
 
@@ -1869,9 +1969,28 @@ main() {
         fi
     fi
 
+    if [[ "$SKIP_VERIFY" != "true" && "$INSTALLER_AUTHENTICATED" != "true" ]]; then
+        if ! command -v gpg &> /dev/null || ! command -v curl &> /dev/null; then
+            if [[ -f "$DATA_DIR/install.sh" ]]; then
+                print_error "GnuPG and curl are required to authenticate an update. Install them using your system package manager."
+                exit 1
+            fi
+            # First-use HTTPS bootstrap may provision the verifier itself.
+            # Saved-copy updates never modify the system before verification.
+            check_system_dependencies
+        fi
+        refresh_installer "$@"
+        exit $?
+    fi
+
+    trap cleanup_install EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+
     if [[ "$MODE" == "update" ]]; then
         # Update mode - check deps, update packages, and verify Tor config
         check_system_dependencies
+        prepare_release
         setup_virtualenv
         update_packages
         migrate_config
@@ -1879,6 +1998,7 @@ main() {
         if [[ "$SKIP_TOR" == "false" ]]; then
             setup_tor
         fi
+        save_trusted_installer
         print_success "JoinMarket-NG updated successfully!"
         echo ""
         echo "Restart any running maker/taker processes to use the new version."
@@ -1887,6 +2007,7 @@ main() {
 
     # Fresh install
     check_system_dependencies
+    prepare_release
 
     if [[ "$SKIP_TOR" == "false" ]]; then
         setup_tor
@@ -1898,6 +2019,7 @@ main() {
     install_packages
     setup_data_directory
     create_shell_integration
+    save_trusted_installer
     print_completion
 }
 

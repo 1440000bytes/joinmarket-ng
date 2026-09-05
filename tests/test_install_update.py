@@ -249,17 +249,19 @@ def _run_update_with_pinning(
     """Run ``update_packages`` with dependency pinning enabled.
 
     Unlike ``_run_update`` this leaves ``SKIP_VERIFY=false`` and provides a
-    resolved commit hash so ``prepare_dep_pinning`` is active. ``curl`` is
-    stubbed to emit a fake lock line (or fail) so we can assert the pip
-    invocations carry the right pinning arguments without any network.
+    resolved commit hash so ``prepare_dep_pinning`` is active. The authenticated
+    source and release-file reader are stubbed at their module boundaries so we
+    can assert the pip invocations carry the right pinning arguments without
+    fetching the fake commit.
 
     ``hash_install_ok`` controls whether the stubbed ``pip
     install --require-hashes`` succeeds; when ``False`` it fails so the
     hard-abort path can be exercised.
     """
     pinned = "true" if pinned_deps else "false"
-    # Stubbed curl: succeed (writing one pin) or fail to fetch the lock.
-    curl_body = 'echo "idna==3.10"; return 0' if fetch_ok else "return 22"
+    # Stubbed release-file reader: succeed (writing one pin) or fail to read
+    # the lock after recording the requested relative path.
+    read_file_body = 'printf "idna==3.10\\n"; return 0' if fetch_ok else "return 22"
     # pip stub: optionally fail the hash-checked install so the hard-abort
     # path is exercised; all other pip calls succeed.
     if hash_install_ok:
@@ -286,13 +288,18 @@ print_success() {{ echo "OK: $1"; }}
 print_warning() {{ echo "WARN: $1"; }}
 print_error() {{ echo "ERR: $1"; }}
 
+RELEASE_FILE_LOG="$(mktemp)"
+prepare_verified_source() {{ return 0; }}
+read_release_file() {{
+    printf '%s\n' "$1" >> "$RELEASE_FILE_LOG"
+    {read_file_body}
+}}
+
 pip() {{
     [[ "$1" == "show" ]] && return 1
     {pip_body}
 }}
 python3() {{ return 0; }}
-# Stub curl used by prepare_dep_pinning to fetch lock files.
-curl() {{ {curl_body}; }}
 
 SKIP_VERIFY=false
 PINNED_DEPS={pinned}
@@ -301,6 +308,9 @@ INSTALL_TAKER=false
 
 ( update_packages )
 echo "EXIT:$?"
+echo "RELEASE_FILE_LOG_START"
+cat "$RELEASE_FILE_LOG"
+rm -f "$RELEASE_FILE_LOG"
 """
     return subprocess.run(
         ["bash", "-c", script],
@@ -315,6 +325,10 @@ def _pip_lines(stdout: str) -> list[str]:
     return [
         line[len("PIP: ") :] for line in stdout.splitlines() if line.startswith("PIP: ")
     ]
+
+
+def _release_file_paths(stdout: str) -> list[str]:
+    return stdout.split("RELEASE_FILE_LOG_START\n", maxsplit=1)[1].splitlines()
 
 
 def test_update_default_hash_checks_dependencies() -> None:
@@ -338,6 +352,10 @@ def test_update_default_hash_checks_dependencies() -> None:
         "package installs must use --no-deps in default hash mode:\n"
         + "\n".join(pip_lines)
     )
+    assert _release_file_paths(result.stdout) == [
+        "jmcore/requirements.txt",
+        "jmwallet/requirements.txt",
+    ]
 
 
 def test_update_no_hash_deps_pins_versions_only() -> None:
@@ -359,6 +377,10 @@ def test_update_no_hash_deps_pins_versions_only() -> None:
     assert not any("--require-hashes" in line for line in pip_lines), (
         "--no-hash-deps must not hash-check:\n" + "\n".join(pip_lines)
     )
+    assert _release_file_paths(result.stdout) == [
+        "jmcore/requirements.txt",
+        "jmwallet/requirements.txt",
+    ]
 
 
 def test_update_aborts_when_hash_check_fails() -> None:
@@ -373,6 +395,10 @@ def test_update_aborts_when_hash_check_fails() -> None:
     )
     assert "EXIT:1" in result.stdout, result.stdout + result.stderr
     assert "--no-hash-deps" in result.stdout, result.stdout
+    assert _release_file_paths(result.stdout) == [
+        "jmcore/requirements.txt",
+        "jmwallet/requirements.txt",
+    ]
     # It must not silently version-pin instead.
     pip_lines = _pip_lines(result.stdout)
     assert not any(" -c " in line for line in pip_lines), (
@@ -396,6 +422,7 @@ def test_update_aborts_when_locks_are_unavailable() -> None:
     assert not any("subdirectory=" in line for line in pip_lines), (
         "package updates must not start with incomplete locks:\n" + "\n".join(pip_lines)
     )
+    assert _release_file_paths(result.stdout) == ["jmcore/requirements.txt"]
 
 
 @pytest.mark.parametrize(
@@ -418,7 +445,13 @@ set +e
 print_error() {{ echo "ERR: $1"; }}
 print_warning() {{ echo "WARN: $1"; }}
 pip() {{ [[ "$1" == "show" ]] && return 1; return 0; }}
-curl() {{ printf 'idna==3.10\n'; }}
+RELEASE_FILE_LOG="{tmp_path}/release-file-paths"
+: > "$RELEASE_FILE_LOG"
+prepare_verified_source() {{ return 0; }}
+read_release_file() {{
+    printf '%s\n' "$1" >> "$RELEASE_FILE_LOG"
+    printf 'idna==3.10\n'
+}}
 REAL_MKTEMP="$(command -v mktemp)"
 MKTEMP_COUNTER="{tmp_path}/mktemp-calls"
 printf '0\n' > "$MKTEMP_COUNTER"
@@ -440,6 +473,8 @@ INSTALL_TUMBLER=false
 INSTALL_ORDERBOOK_WATCHER=true
 prepare_dep_pinning "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 echo "EXIT:$?"
+echo "RELEASE_FILE_LOG_START"
+cat "$RELEASE_FILE_LOG"
 cleanup_dep_pinning
 '''
     result = subprocess.run(
@@ -452,3 +487,11 @@ cleanup_dep_pinning
 
     assert "EXIT:1" in result.stdout, result.stdout + result.stderr
     assert expected_error in result.stdout
+    expected_paths = []
+    if failed_call == 2:
+        expected_paths = [
+            "jmcore/requirements.txt",
+            "jmwallet/requirements.txt",
+            "orderbook_watcher/requirements.txt",
+        ]
+    assert _release_file_paths(result.stdout) == expected_paths

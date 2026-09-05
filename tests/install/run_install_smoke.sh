@@ -44,6 +44,19 @@ if [[ ! -f "${VENV}/bin/activate" ]]; then
     exit 1
 fi
 
+# The minimal profile also exercises an existing installation that lacks a
+# native dependency introduced by its next update. Keep the complete-profile
+# smoke focused on fresh installation to bound CI runtime.
+if [[ "$INSTALL_PROFILE" == "taker" ]]; then
+    sudo apt-get remove -y libsecp256k1-dev
+    bash -x ./install.sh "${install_args[@]}" --update
+    if [[ "$(dpkg-query -W -f='${Status}' libsecp256k1-dev)" != "install ok installed" ]]; then
+        echo "FAIL: update did not restore the required native secp256k1 development package"
+        exit 1
+    fi
+    echo "=== UPDATE_SMOKE_PASS ==="
+fi
+
 echo ""
 echo "=== sourcing venv and running CLI help ==="
 # shellcheck disable=SC1091

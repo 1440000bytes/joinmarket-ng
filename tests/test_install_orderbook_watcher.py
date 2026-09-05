@@ -43,16 +43,12 @@ verify_release_signature() {{ return 0; }}
 verify_update_imports() {{ return 0; }}
 python3() {{ return 0; }}
 
-CURL_LOG="$(mktemp)"
-curl() {{
-    local url=""
-    local arg
-    for arg in "$@"; do
-        [[ "$arg" == http* ]] && url="$arg"
-    done
-    printf '%s\n' "$url" >> "$CURL_LOG"
+RELEASE_FILE_LOG="$(mktemp)"
+prepare_verified_source() {{ return 0; }}
+read_release_file() {{
+    printf '%s\n' "$1" >> "$RELEASE_FILE_LOG"
     if [[ -n "{unavailable_lock or ""}" \
-        && "$url" == */"{unavailable_lock or ""}"/requirements.txt ]]; then
+        && "$1" == "{unavailable_lock or ""}"/requirements.txt ]]; then
         return 22
     fi
     printf 'idna==3.10\n'
@@ -76,9 +72,9 @@ PINNED_DEPS=true
 
 ( {mode}_packages )
 echo "EXIT:$?"
-echo "CURL_LOG_START"
-cat "$CURL_LOG"
-rm -f "$CURL_LOG"
+echo "RELEASE_FILE_LOG_START"
+cat "$RELEASE_FILE_LOG"
+rm -f "$RELEASE_FILE_LOG"
 '''
     return subprocess.run(
         ["bash", "-c", script],
@@ -95,6 +91,10 @@ def _pip_lines(result: subprocess.CompletedProcess[str]) -> list[str]:
         for line in result.stdout.splitlines()
         if line.startswith("PIP: ")
     ]
+
+
+def _release_file_paths(result: subprocess.CompletedProcess[str]) -> list[str]:
+    return result.stdout.split("RELEASE_FILE_LOG_START\n", maxsplit=1)[1].splitlines()
 
 
 def test_orderbook_watcher_profile_selects_only_watcher() -> None:
@@ -195,7 +195,11 @@ def test_orderbook_watcher_profile_fetches_lock_for_hash_verification() -> None:
     result = _run_packages(mode="install", selected=True, pinned_deps=True)
 
     assert "EXIT:0" in result.stdout, result.stdout + result.stderr
-    assert "/orderbook_watcher/requirements.txt" in result.stdout
+    assert _release_file_paths(result) == [
+        "jmcore/requirements.txt",
+        "jmwallet/requirements.txt",
+        "orderbook_watcher/requirements.txt",
+    ]
     assert any("--require-hashes" in line for line in _pip_lines(result))
 
 
@@ -205,15 +209,32 @@ def test_update_fetches_lock_for_existing_orderbook_watcher() -> None:
     )
 
     assert "EXIT:0" in result.stdout, result.stdout + result.stderr
-    assert "/orderbook_watcher/requirements.txt" in result.stdout
+    assert _release_file_paths(result) == [
+        "jmcore/requirements.txt",
+        "jmwallet/requirements.txt",
+        "orderbook_watcher/requirements.txt",
+    ]
     assert any("--require-hashes" in line for line in _pip_lines(result))
 
 
 @pytest.mark.parametrize(
-    "unavailable_lock", ["jmcore", "jmwallet", "orderbook_watcher"]
+    ("unavailable_lock", "expected_paths"),
+    [
+        ("jmcore", ["jmcore/requirements.txt"]),
+        ("jmwallet", ["jmcore/requirements.txt", "jmwallet/requirements.txt"]),
+        (
+            "orderbook_watcher",
+            [
+                "jmcore/requirements.txt",
+                "jmwallet/requirements.txt",
+                "orderbook_watcher/requirements.txt",
+            ],
+        ),
+    ],
 )
 def test_orderbook_watcher_install_fails_when_a_lock_is_unavailable(
     unavailable_lock: str,
+    expected_paths: list[str],
 ) -> None:
     result = _run_packages(
         mode="install",
@@ -224,6 +245,5 @@ def test_orderbook_watcher_install_fails_when_a_lock_is_unavailable(
 
     assert "EXIT:1" in result.stdout, result.stdout + result.stderr
     assert "without all dependency locks" in result.stdout
-    assert not any(
-        "subdirectory=orderbook_watcher" in line for line in _pip_lines(result)
-    )
+    assert _release_file_paths(result) == expected_paths
+    assert not _pip_lines(result)
