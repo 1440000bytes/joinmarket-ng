@@ -29,7 +29,7 @@ from jmcore.protocol import (
 )
 from jmcore.randomness import secure_random
 from jmcore.rate_limiter import RateLimiter
-from jmcore.tasks import spawn_task
+from jmcore.tasks import parse_directory_address, spawn_task
 from jmcore.tor_control import (
     EphemeralHiddenService,
     TorAuthenticationError,
@@ -175,6 +175,14 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
         self._fidelity_bond_addresses: list[tuple[str, int, int]] = []
 
         # Rate limiter for orderbook requests to prevent spam attacks
+        directory_sources = set()
+        for server in config.directory_servers:
+            try:
+                host, port = parse_directory_address(server)
+            except ValueError:
+                # The directory pool reports invalid endpoints when connecting.
+                continue
+            directory_sources.add(f"dir:{host}:{port}")
         self._orderbook_rate_limiter = OrderbookRateLimiter(
             rate_limit=config.orderbook_rate_limit,
             interval=config.orderbook_rate_interval,
@@ -182,6 +190,7 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
             violation_warning_threshold=config.orderbook_violation_warning_threshold,
             violation_severe_threshold=config.orderbook_violation_severe_threshold,
             ban_duration=config.orderbook_ban_duration,
+            directory_sources=frozenset(directory_sources),
         )
 
         # Rate limiter specifically for direct hidden service connections
@@ -199,6 +208,13 @@ class MakerBot(BackgroundTasksMixin, ProtocolHandlersMixin, DirectConnectionMixi
             DEFAULT_ORDERBOOK_PROOF_WORK_BURST,
             DEFAULT_ORDERBOOK_PROOF_WORK_REFILL_PER_SECOND,
         )
+        self._orderbook_stats_started_at = time.monotonic()
+        self._orderbook_response_counts = {
+            "directory_admitted": 0,
+            "directory_suppressed": 0,
+            "direct_admitted": 0,
+            "direct_suppressed": 0,
+        }
         self._hp2_admission_limiter = ProcessWideTokenBucket(
             DEFAULT_HP2_ADMISSION_BURST,
             DEFAULT_HP2_ADMISSION_REFILL_PER_SECOND,

@@ -448,7 +448,8 @@ class TestMakerBotRateLimiting:
 
         info_log.assert_not_called()
         warning_log.assert_called_once_with(
-            "Suppressing !orderbook response (global proof-work budget exhausted)"
+            "Suppressing !orderbook response "
+            "(global response budget exhausted; refills automatically)"
         )
 
     def test_config_default_rate_limit_values(self, mock_wallet, mock_backend):

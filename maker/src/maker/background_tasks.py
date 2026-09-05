@@ -8,6 +8,7 @@ directory reconnection, and pending transaction monitoring.
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import TYPE_CHECKING
 
 from jmcore.crypto import NickIdentity
@@ -46,6 +47,8 @@ class BackgroundTasksMixin:
     current_offers: list[Offer]
     listen_tasks: list[asyncio.Task[None]]
     _orderbook_rate_limiter: OrderbookRateLimiter
+    _orderbook_stats_started_at: float
+    _orderbook_response_counts: dict[str, int]
     _direct_connection_rate_limiter: DirectConnectionRateLimiter
     _directory_reconnect_attempts: dict[str, int]
     _all_directories_disconnected: bool
@@ -118,6 +121,7 @@ class BackgroundTasksMixin:
         - Total violations across all peers
         - Currently banned peers
         - Top violators (by violation count)
+        - Aggregate response admissions, global-budget drops, and directory fanout
         """
         # First log after 10 minutes (give time for initial activity)
         await asyncio.sleep(600)
@@ -125,6 +129,18 @@ class BackgroundTasksMixin:
         while self.running:
             try:
                 stats = self._orderbook_rate_limiter.get_statistics()
+
+                counts = self._orderbook_response_counts
+                if any(counts.values()) or stats["fanout_duplicates"]:
+                    elapsed = time.monotonic() - self._orderbook_stats_started_at
+                    logger.info(
+                        f"Orderbook response admission since startup ({elapsed:.0f}s): "
+                        f"directory admitted={counts['directory_admitted']} "
+                        f"suppressed={counts['directory_suppressed']}; "
+                        f"direct admitted={counts['direct_admitted']} "
+                        f"suppressed={counts['direct_suppressed']}; "
+                        f"fanout duplicates={stats['fanout_duplicates']}"
+                    )
 
                 # Only log if there's activity worth reporting
                 if stats["total_violations"] > 0 or stats["banned_peers"]:

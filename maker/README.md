@@ -46,6 +46,38 @@ can manage multiple wallet mnemonic files, and you can switch between them
 with `--mnemonic-file`. Use separate `--data-dir` values for takers only when
 you specifically want isolated config and runtime state.
 
+## Orderbook Rate Limits
+
+Makers limit `!orderbook` responses to keep unsolicited requests from exhausting
+signing and network resources. These limits apply with or without a fidelity bond.
+
+- Directory requests normally allow one response per requester nick every 10 seconds.
+  The first copy from each additional configured directory during that cooldown
+  is ignored without adding a spam violation. Further copies from the same directory
+  still count as violations. The fanout exemption does not apply during escalated
+  backoff or a ban, and it does not extend the cooldown.
+- Direct connections have their own per-connection cooldown, normally 30 seconds.
+- Both paths share one maker-wide response budget: a burst of 20 requests,
+  replenished continuously at one request per second. One admission covers all
+  of that maker's offers and directory sends, not each offer or directory separately.
+  This aggregate budget is fixed; the per-peer `orderbook_*` settings do not change it.
+
+`Suppressing !orderbook response (global response budget exhausted; refills automatically)`
+means a response was dropped, not queued. No restart is needed to replenish capacity.
+A later request can succeed once capacity is available and its separate per-peer or
+per-connection cooldown has elapsed. Existing CoinJoin sessions are not aborted by
+this limit, but sustained suppression can prevent new takers from discovering offers.
+
+Directory suppression warnings and direct-path debug messages are each throttled to
+once every 10 seconds; they do not count every dropped response. An aggregate
+`Orderbook response admission since startup` INFO message is emitted after the first
+10 minutes and hourly afterward when there has been activity. It includes elapsed
+time, admitted and globally suppressed requests for each transport, and ignored
+directory fanout copies, without peer identifiers. The counters are cumulative;
+compare successive summaries to assess sustained pressure. Admissions are work
+attempts, not confirmation of successful delivery. Persistent warnings or growing
+suppression counts warrant investigation before changing rate-limit policy.
+
 <!-- AUTO-GENERATED HELP START: jm-maker -->
 
 <details>

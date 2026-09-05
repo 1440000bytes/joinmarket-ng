@@ -89,6 +89,7 @@ class ProtocolHandlersMixin:
     _orderbook_rate_limiter: OrderbookRateLimiter
     _direct_connection_rate_limiter: DirectConnectionRateLimiter
     _orderbook_proof_work_limiter: ProcessWideTokenBucket
+    _orderbook_response_counts: dict[str, int]
     _hp2_admission_limiter: ProcessWideTokenBucket
     _hp2_relay_work_limiter: ProcessWideTokenBucket
     _own_wallet_nicks: set[str]
@@ -178,8 +179,8 @@ class ProtocolHandlersMixin:
 
                 logger.trace(f"PUBMSG parts={parts}, is_orderbook={is_orderbook_request}")
 
-                # Don't deduplicate !orderbook requests - they have their own rate limiting
-                # and takers may legitimately request the orderbook multiple times
+                # Orderbook's source-aware limiter suppresses fanout without
+                # the generic deduplicator's longer window blocking valid retries.
                 if not is_orderbook_request:
                     # For other public messages, use the whole message as fingerprint
                     fingerprint = MessageDeduplicator.make_fingerprint(
@@ -267,7 +268,7 @@ class ProtocolHandlersMixin:
                 ):
                     return
                 # Apply rate limiting to prevent spam attacks
-                if not self._orderbook_rate_limiter.check(from_nick):
+                if not self._orderbook_rate_limiter.check(from_nick, source=source):
                     violations = self._orderbook_rate_limiter.get_violation_count(from_nick)
                     is_banned = self._orderbook_rate_limiter.is_banned(from_nick)
 
@@ -335,11 +336,14 @@ class ProtocolHandlersMixin:
             if generation is None or generation.state is not GenerationState.ACCEPTING:
                 return
             if not self._orderbook_proof_work_limiter.try_consume():
+                self._orderbook_response_counts["directory_suppressed"] += 1
                 self._log_rate_limited(
                     "orderbook-proof-work-budget",
-                    "Suppressing !orderbook response (global proof-work budget exhausted)",
+                    "Suppressing !orderbook response "
+                    "(global response budget exhausted; refills automatically)",
                 )
                 return
+            self._orderbook_response_counts["directory_admitted"] += 1
             logger.trace(
                 f"Received !orderbook request from {taker_nick}, sending offers via PRIVMSG"
             )
@@ -407,10 +411,15 @@ class ProtocolHandlersMixin:
             if generation is None or generation.state is not GenerationState.ACCEPTING:
                 return
             if not self._orderbook_proof_work_limiter.try_consume():
-                logger.debug(
-                    "Dropping direct orderbook response (global proof-work budget exhausted)"
+                self._orderbook_response_counts["direct_suppressed"] += 1
+                self._log_rate_limited(
+                    "direct-orderbook-proof-work-budget",
+                    "Dropping direct orderbook response "
+                    "(global response budget exhausted; refills automatically)",
+                    level="debug",
                 )
                 return
+            self._orderbook_response_counts["direct_admitted"] += 1
             offers = (
                 self.current_offers
                 if generation_id == self.current_generation_id

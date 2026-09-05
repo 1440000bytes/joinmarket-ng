@@ -104,7 +104,8 @@ class OrderbookRateLimiter:
         violation_severe_threshold: int = DEFAULT_VIOLATION_SEVERE_THRESHOLD,
         ban_duration: float = DEFAULT_BAN_DURATION,
         max_tracked_identities: int = DEFAULT_MAX_TRACKED_IDENTITIES,
-    ):
+        directory_sources: frozenset[str] = frozenset(),
+    ) -> None:
         """
         Initialize the rate limiter.
 
@@ -117,6 +118,7 @@ class OrderbookRateLimiter:
             violation_severe_threshold: Severe backoff threshold
             ban_duration: How long to ban peers (seconds)
             max_tracked_identities: Maximum peer states retained in memory.
+            directory_sources: Known directory identities eligible for fanout suppression.
         """
         if max_tracked_identities <= 0:
             raise ValueError("max_tracked_identities must be positive")
@@ -125,10 +127,13 @@ class OrderbookRateLimiter:
         self.violation_warning_threshold = violation_warning_threshold
         self.violation_severe_threshold = violation_severe_threshold
         self.ban_duration = ban_duration
+        self.directory_sources = directory_sources
 
         self._last_response: dict[str, float] = {}
         self._violation_counts: dict[str, int] = {}
         self._banned_peers: dict[str, float] = {}  # peer_nick -> ban_timestamp
+        self._fanout_sources: dict[str, set[str]] = {}
+        self._fanout_duplicates = 0
         self.max_tracked_identities = max_tracked_identities
         self._tracked_identities: OrderedDict[str, None] = OrderedDict()
 
@@ -141,11 +146,22 @@ class OrderbookRateLimiter:
             self._last_response.pop(oldest_peer, None)
             self._violation_counts.pop(oldest_peer, None)
             self._banned_peers.pop(oldest_peer, None)
+            self._fanout_sources.pop(oldest_peer, None)
         self._tracked_identities[peer_nick] = None
 
-    def check(self, peer_nick: str) -> bool:
+    def _record_admitted_source(self, peer_nick: str, source: str | None) -> None:
+        """Start a fanout window using only a configured directory source."""
+        if source is not None and source in self.directory_sources:
+            self._fanout_sources[peer_nick] = {source}
+        else:
+            self._fanout_sources.pop(peer_nick, None)
+
+    def check(self, peer_nick: str, source: str | None = None) -> bool:
         """
         Check if we should respond to an orderbook request from this peer.
+
+        A first copy from each other configured directory is suppressed without
+        a violation during the base interval following an admitted request.
 
         Returns True if allowed, False if rate limited or banned.
         """
@@ -176,6 +192,7 @@ class OrderbookRateLimiter:
                 self._violation_counts[peer_nick] = 0
                 # Reset last response time so they can immediately get a response
                 self._last_response[peer_nick] = 0.0
+                self._fanout_sources.pop(peer_nick, None)
 
         violations = self._violation_counts.get(peer_nick, 0)
 
@@ -194,16 +211,31 @@ class OrderbookRateLimiter:
         effective_interval = self._get_effective_interval(violations)
 
         last = self._last_response.get(peer_nick, 0.0)
+        elapsed = now - last
 
-        if now - last >= effective_interval:
+        if elapsed >= effective_interval:
             self._last_response[peer_nick] = now
+            self._record_admitted_source(peer_nick, source)
             logger.trace(f"Allowed request from {peer_nick} (violations={violations})")
             return True
+
+        seen_sources = self._fanout_sources.get(peer_nick)
+        if (
+            effective_interval == self.interval
+            and elapsed < self.interval
+            and source is not None
+            and source in self.directory_sources
+            and seen_sources
+            and source not in seen_sources
+        ):
+            seen_sources.add(source)
+            self._fanout_duplicates += 1
+            return False
 
         # Rate limited - record violation
         new_violations = violations + 1
         self._violation_counts[peer_nick] = new_violations
-        time_until_allowed = effective_interval - (now - last)
+        time_until_allowed = effective_interval - elapsed
         backoff_level = self._get_backoff_level_name(new_violations)
         logger.debug(
             f"Rate limited {peer_nick}: violations={new_violations}, "
@@ -265,6 +297,7 @@ class OrderbookRateLimiter:
         del self._banned_peers[peer_nick]
         self._violation_counts[peer_nick] = 0
         self._last_response[peer_nick] = 0.0
+        self._fanout_sources.pop(peer_nick, None)
         return False
 
     def cleanup_old_entries(self, max_age: float = 3600.0) -> None:
@@ -275,6 +308,7 @@ class OrderbookRateLimiter:
         stale_peers = [peer for peer, last in self._last_response.items() if now - last > max_age]
         for peer in stale_peers:
             del self._last_response[peer]
+            self._fanout_sources.pop(peer, None)
             # Don't reset violation counts for stale peers - preserve ban history
             # Only reset if they're not banned
             if peer not in self._banned_peers:
@@ -289,6 +323,7 @@ class OrderbookRateLimiter:
         for peer in expired_bans:
             del self._banned_peers[peer]
             self._violation_counts[peer] = 0  # Reset violations after ban expires
+            self._fanout_sources.pop(peer, None)
 
     def get_statistics(self) -> dict[str, Any]:
         """
@@ -300,6 +335,7 @@ class OrderbookRateLimiter:
                 - tracked_peers: Number of peers being tracked
                 - banned_peers: List of currently banned peer nicks
                 - top_violators: List of (nick, violations) tuples, top 10
+                - fanout_duplicates: Cumulative cross-directory duplicates suppressed
         """
         now = time.monotonic()
 
@@ -322,6 +358,7 @@ class OrderbookRateLimiter:
             "tracked_peers": len(self._last_response),
             "banned_peers": banned,
             "top_violators": top_violators,
+            "fanout_duplicates": self._fanout_duplicates,
         }
 
 

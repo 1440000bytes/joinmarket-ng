@@ -200,7 +200,11 @@ This enables:
 
 - Reference orderbook watcher requests offers once at startup
 - Our implementation requests on startup + periodically
-- Makers should respond to every `!orderbook` request
+- Makers respond to `!orderbook` subject to per-peer and aggregate resource limits.
+  JoinMarket NG shares a 20-request burst budget, refilling at one request per second,
+  across directory and direct responses. Within the normal per-nick cooldown, the
+  first copy from each additional configured directory is suppressed without a spam
+  violation. Requests dropped by the aggregate budget are not queued for retry.
 
 **Stale Offer Filtering:**
 
