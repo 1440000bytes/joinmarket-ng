@@ -115,16 +115,17 @@ extract_manifest_value() {
     awk -F': ' -v key="$key" '$1 == key { print $2; exit }' "$manifest_file"
 }
 
-validate_local_manifest_identity() {
+validate_manifest_identity() {
     local manifest_file="$1"
     local version="$2"
+    local manifest_source="$3"
     local manifest_commit
     local expected_commit
     local expected_ref
 
     manifest_commit=$(extract_manifest_value "commit" "$manifest_file")
     if [[ -z "$manifest_commit" ]]; then
-        log_error "Local manifest is missing commit metadata: $manifest_file"
+        log_error "$manifest_source manifest is missing commit metadata: $manifest_file"
         return 1
     fi
 
@@ -134,18 +135,18 @@ validate_local_manifest_identity() {
     else
         expected_ref="current HEAD"
         expected_commit=$(git -C "$PROJECT_ROOT" rev-parse HEAD)
-        log_warn "Local tag $version not found; validating local manifest against current HEAD"
+        log_warn "$manifest_source tag $version not found; validating $manifest_source manifest against current HEAD"
     fi
 
     if [[ "$manifest_commit" != "$expected_commit" ]]; then
-        log_error "Local manifest commit does not match $expected_ref."
+        log_error "$manifest_source manifest commit does not match $expected_ref."
         log_error "  Manifest commit: $manifest_commit"
         log_error "  Expected commit: $expected_commit"
         log_error "Rebuild the manifest from the release commit before signing."
         return 1
     fi
 
-    log_info "Local manifest commit matches $expected_ref"
+    log_info "$manifest_source manifest commit matches $expected_ref"
 }
 
 # Parse arguments
@@ -293,11 +294,12 @@ if [[ -z "$VERSION" ]]; then
             exit 1
         fi
 
-        # Find the first release without a signature from this key
+        # Find the first release without both required signatures from this key
         for release in $RELEASES; do
-            # Check if signature file exists for this release
+            # Check if manifest and installer signature files exist for this release
             SIG_PATH="$PROJECT_ROOT/signatures/$release/${FULL_FINGERPRINT}.sig"
-            if [[ ! -f "$SIG_PATH" ]]; then
+            INSTALLER_SIG_PATH="$PROJECT_ROOT/signatures/$release/${FULL_FINGERPRINT}.install.sh.sig"
+            if [[ ! -f "$SIG_PATH" || ! -f "$INSTALLER_SIG_PATH" ]]; then
                 VERSION="$release"
                 log_info "Found unsigned release: $VERSION"
                 break
@@ -331,7 +333,7 @@ if [[ -n "$LOCAL_MANIFEST" ]]; then
     log_info "Using local manifest: $LOCAL_MANIFEST"
     cp "$LOCAL_MANIFEST" "$MANIFEST_FILE"
 
-    if ! validate_local_manifest_identity "$MANIFEST_FILE" "$VERSION"; then
+    if ! validate_manifest_identity "$MANIFEST_FILE" "$VERSION" "Local"; then
         exit 1
     fi
 else
@@ -354,12 +356,29 @@ else
         log_error "Neither curl nor wget found. Please install one of them."
         exit 1
     fi
+
+    if ! validate_manifest_identity "$MANIFEST_FILE" "$VERSION" "Downloaded"; then
+        exit 1
+    fi
 fi
 
 log_info "Downloaded release manifest:"
 echo ""
 cat "$MANIFEST_FILE"
 echo ""
+
+# The installer signature must cover the exact bytes from the commit attested
+# by the manifest, never a potentially dirty working tree copy.
+MANIFEST_COMMIT=$(extract_manifest_value "commit" "$MANIFEST_FILE")
+INSTALLER_FILE="$WORK_DIR/install.sh"
+if ! git -C "$PROJECT_ROOT" cat-file -e "${MANIFEST_COMMIT}:install.sh" 2>/dev/null; then
+    log_error "Installer source install.sh is missing from manifest commit: $MANIFEST_COMMIT"
+    exit 1
+fi
+if ! git -C "$PROJECT_ROOT" show "${MANIFEST_COMMIT}:install.sh" > "$INSTALLER_FILE"; then
+    log_error "Failed to extract install.sh from manifest commit: $MANIFEST_COMMIT"
+    exit 1
+fi
 
 # =============================================================================
 # Step 2: Optionally reproduce builds (recommended for all signers)
@@ -550,7 +569,7 @@ if [[ "$REPRODUCE" == true ]]; then
 fi
 
 # =============================================================================
-# Step 3: Sign the manifest
+# Step 3: Sign the manifest and installer
 # =============================================================================
 log_info "Using GPG key: $FULL_FINGERPRINT"
 log_info "Signing release manifest..."
@@ -559,10 +578,13 @@ SIG_DIR="$PROJECT_ROOT/signatures/$VERSION"
 mkdir -p "$SIG_DIR"
 
 SIG_FILE="$SIG_DIR/${FULL_FINGERPRINT}.sig"
+INSTALLER_SIG_FILE="$SIG_DIR/${FULL_FINGERPRINT}.install.sh.sig"
 
 gpg --local-user "$GPG_KEY" --armor --detach-sign --output "$SIG_FILE" "$MANIFEST_FILE"
+gpg --local-user "$GPG_KEY" --armor --detach-sign --output "$INSTALLER_SIG_FILE" "$INSTALLER_FILE"
 
 log_info "Signature created: $SIG_FILE"
+log_info "Installer signature created: $INSTALLER_SIG_FILE"
 
 # =============================================================================
 # Step 4: Verify the signature
@@ -577,6 +599,15 @@ else
     exit 1
 fi
 
+log_info "Verifying installer signature..."
+if gpg --verify "$INSTALLER_SIG_FILE" "$INSTALLER_FILE"; then
+    log_info "Installer signature verified successfully!"
+else
+    log_error "Installer signature verification failed!"
+    rm -f "$SIG_FILE" "$INSTALLER_SIG_FILE"
+    exit 1
+fi
+
 # =============================================================================
 # Summary and next steps
 # =============================================================================
@@ -586,6 +617,7 @@ log_info "Signing Complete!"
 echo "=============================================="
 echo ""
 echo "Signature file: $SIG_FILE"
+echo "Installer signature file: $INSTALLER_SIG_FILE"
 
 # If using a local manifest, copy it alongside the signature for CI verification
 LOCAL_MANIFEST_COPY=""
@@ -614,7 +646,7 @@ if [[ "$AUTO_PUSH" == true ]]; then
     log_info "Committing signature..."
 
     cd "$PROJECT_ROOT"
-    git add "$SIG_FILE"
+    git add "$SIG_FILE" "$INSTALLER_SIG_FILE"
     if [[ -n "$LOCAL_MANIFEST_COPY" ]]; then
         git add "$LOCAL_MANIFEST_COPY"
     fi
@@ -637,9 +669,9 @@ else
     echo "1. Review the signature file"
     echo "2. Commit and push your signature:"
     if [[ -n "$LOCAL_MANIFEST_COPY" ]]; then
-        echo "   git add $SIG_FILE $LOCAL_MANIFEST_COPY"
+        echo "   git add $SIG_FILE $INSTALLER_SIG_FILE $LOCAL_MANIFEST_COPY"
     else
-        echo "   git add $SIG_FILE"
+        echo "   git add $SIG_FILE $INSTALLER_SIG_FILE"
     fi
     echo "   git commit -m 'build: add GPG signature for release $VERSION'"
     echo "   git push"

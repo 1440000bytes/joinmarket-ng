@@ -186,6 +186,9 @@ sha256:deadbeef
         )
     )
     (signatures_dir / f"{TEST_FINGERPRINT}.sig").write_text("signature\n")
+    (signatures_dir / f"{TEST_FINGERPRINT}.install.sh.sig").write_text(
+        "installer signature\n"
+    )
 
     raw_manifest = "raw-manifest\n"
     manifest_contents = textwrap.dedent(
@@ -276,6 +279,9 @@ exit 1
     assert local_commit in result.stdout
     assert ci_commit in result.stdout
     assert "Insufficient valid signatures" in result.stdout
+    assert (
+        f"Verifying signature from {TEST_FINGERPRINT}.install.sh" not in result.stdout
+    )
 
 
 def test_build_release_passes_commit_and_ref_build_args(tmp_path: Path) -> None:

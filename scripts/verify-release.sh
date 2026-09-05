@@ -255,6 +255,8 @@ else
         # Verify each signature
         for sig_file in "$SIG_DIR"/*.sig; do
             [[ -f "$sig_file" ]] || continue
+            # Installer signatures cover a different artifact, not a manifest.
+            [[ "$sig_file" == *.install.sh.sig ]] && continue
 
             fingerprint=$(basename "$sig_file" .sig)
             log_info "Verifying signature from $fingerprint..."

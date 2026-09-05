@@ -365,7 +365,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           VERSION=${{ needs.create-release.outputs.version }}
-          gh release upload ${VERSION} release-manifest-${VERSION}.txt --clobber
+          COMMIT_SHA=${{ github.sha }}
+          git show "${COMMIT_SHA}:install.sh" > install.sh
+          gh release upload ${VERSION} release-manifest-${VERSION}.txt install.sh --clobber
 
       # If a signer used the local-first workflow (build-release.sh + sign-release.sh)
       # before pushing the tag, their local manifest is committed alongside their
