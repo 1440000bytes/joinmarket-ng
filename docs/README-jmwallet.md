@@ -62,6 +62,14 @@ it up front. Frozen, still-locked, and other-mixdepth UTXOs are shown for
 context but rendered unselectable. When `--amount` is omitted, all selected
 inputs are swept to the destination.
 
+The selector uses a compact table on 80-column terminals, hiding the address
+and confirmation columns while keeping amounts, outpoints, labels, states,
+and address-reuse warnings visible. Wider terminals show the full table.
+The `immature` and `other-md` states identify confirmation and source-mixdepth
+restrictions; the cursor status explains the restriction. If the terminal
+cannot fit the table and selection details, resize it or press `q` or Escape
+to cancel. Selection is preserved while resizing.
+
 ## Signing PSBTs
 
 `jm-wallet sign-psbt` inspects and partially signs wallet-owned PSBT v0 inputs

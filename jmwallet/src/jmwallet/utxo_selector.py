@@ -18,7 +18,7 @@ from __future__ import annotations
 import curses
 import sys
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from jmwallet.utxo_tui import (
@@ -33,9 +33,53 @@ if TYPE_CHECKING:
 
 
 _CONTROLS_HINT = (
-    " Space/Tab = toggle | j/k = navigate | s = select all in md | "
-    "d = deselect all in md | Enter = confirm | q = cancel"
+    "Space/Tab: toggle | j/k: navigate | s: select mixdepth | "
+    "d: deselect all | Enter: confirm | q/Esc: cancel"
 )
+
+
+def _clip(text: str, width: int) -> str:
+    """Clip a display field explicitly, rather than silently losing its suffix."""
+    return text if len(text) <= width else text[: max(0, width - 3)] + "." * min(3, width)
+
+
+def _table_columns(width: int, utxos: list[UTXOInfo]) -> list[tuple[str, int]]:
+    """Reserve numeric widths and warning space before expanding the address column."""
+    columns = [
+        ("Sel", 3),
+        ("MD", max(2, max((len(f"m{u.mixdepth}") for u in utxos), default=0))),
+        ("Amount (sats)", max(13, max((len(f"{u.value:,}") for u in utxos), default=0))),
+        ("Outpoint", max(15, max((len(f"{u.txid[:8]}...:{u.vout}") for u in utxos), default=0))),
+        ("Label", 10),
+        ("State", 9),
+    ]
+    full_columns = columns[:2] + [
+        ("Address", 12),
+        ("Amount", max(15, max((len(f"{u.value:,} sats") for u in utxos), default=0))),
+    ]
+    full_columns += [
+        ("Confs", max(8, max((len(f"{u.confirmations:,}") for u in utxos), default=0)))
+    ]
+    full_columns += [columns[3], ("Label", 11), columns[5]]
+    extra = width - _minimum_table_width(full_columns)
+    if extra >= 0:
+        full_columns[2] = ("Address", 12 + extra)
+        return full_columns
+    return columns
+
+
+def _minimum_table_width(columns: list[tuple[str, int]]) -> int:
+    # Indent, outer borders, RU! suffix and an unused rightmost terminal cell.
+    return sum(size for _, size in columns) + 3 * (len(columns) - 1) + 11
+
+
+def _format_cells(values: dict[str, str], columns: list[tuple[str, int]]) -> str:
+    return " | ".join(
+        f"{_clip(values[name], size):>{size}}"
+        if name in {"MD", "Amount", "Amount (sats)", "Confs"}
+        else f"{_clip(values[name], size):<{size}}"
+        for name, size in columns
+    )
 
 
 def format_utxo_line(
@@ -44,12 +88,14 @@ def format_utxo_line(
     prev_address: str = "",
     excluded_outpoints: set[tuple[str, int]] | None = None,
     term_width: int = 120,
+    *,
+    allowed_mixdepth: int | None = None,
+    min_confirmations: int = 0,
+    columns: list[tuple[str, int]] | None = None,
 ) -> str:
     """Format a single UTXO row with separate Label and State columns."""
-    md_str = f"m{utxo.mixdepth}"
-
-    # Calculate address column width
-    addr_col_width = max(12, term_width - 95)
+    columns = columns or _table_columns(term_width, [utxo])
+    addr_col_width = dict(columns).get("Address", 12)
 
     # All addresses use the calculated column width.
     if utxo.address == prev_address:
@@ -63,12 +109,6 @@ def format_utxo_line(
         else:
             addr_str = utxo.address
 
-    amount_str = f"{utxo.value:,} sats"
-    conf_str = f"{utxo.confirmations:>8,}"
-
-    # Outpoint: first 8 txid chars and vout, padded for column alignment
-    outpoint = f"{utxo.txid[:8]}...:{utxo.vout}"
-
     # Label column: FB status for fidelity bonds; remap "non-cj-change" to the
     # shorter "reg-change" so it fits the 11-char column.
     if utxo.is_fidelity_bond:
@@ -76,25 +116,32 @@ def format_utxo_line(
     else:
         label_col = "reg-change" if utxo.label == "non-cj-change" else (utxo.label or "")
 
-    state_col = _utxo_state_col(utxo, excluded_outpoints)
-
-    # Build the line with dynamic address column width
-    line = (
-        f"{md_str:>2} | {addr_str:<{addr_col_width}} | {amount_str:>15} | {conf_str:>8} | "
-        f"{outpoint:<15} | {label_col:<11} | {state_col:<9} |"
+    values = {
+        "MD": f"m{utxo.mixdepth}",
+        "Address": addr_str,
+        "Amount": f"{utxo.value:,} sats",
+        "Amount (sats)": f"{utxo.value:,}",
+        "Confs": f"{utxo.confirmations:,}",
+        "Outpoint": f"{utxo.txid[:8]}...:{utxo.vout}",
+        "Label": label_col,
+        "State": _utxo_state_col(utxo, excluded_outpoints, allowed_mixdepth, min_confirmations),
+    }
+    return _clip(
+        _format_cells(values, [(name, size) for name, size in columns if name != "Sel"]) + " |",
+        max_width,
     )
 
-    if len(line) > max_width:
-        line = line[: max_width - 3] + "..."
 
-    return line
-
-
-def _utxo_state_col(utxo: UTXOInfo, excluded_outpoints: set[tuple[str, int]] | None = None) -> str:
+def _utxo_state_col(
+    utxo: UTXOInfo,
+    excluded_outpoints: set[tuple[str, int]] | None = None,
+    allowed_mixdepth: int | None = None,
+    min_confirmations: int = 0,
+) -> str:
     """Return the State-column value for a UTXO (also used in the footer).
 
     Priority order: in-use (CoinJoin active) overrides everything, then frozen
-    (user locked), then locked (FB timelock active); default is spendable.
+    (user locked), then locked (FB timelock active), then session restrictions.
     """
     if excluded_outpoints and (utxo.txid, utxo.vout) in excluded_outpoints:
         return "in-use"
@@ -102,6 +149,10 @@ def _utxo_state_col(utxo: UTXOInfo, excluded_outpoints: set[tuple[str, int]] | N
         return "frozen"
     if utxo.is_fidelity_bond and utxo.is_locked:
         return "locked"
+    if utxo.confirmations < min_confirmations:
+        return "immature"
+    if allowed_mixdepth is not None and utxo.mixdepth != allowed_mixdepth:
+        return "other-md"
     return "spendable"
 
 
@@ -130,20 +181,13 @@ def _is_base_selectable(
     (when pinned by the caller), or in ``excluded_outpoints``. They are still
     displayed for context.
     """
-    if utxo.frozen:
-        return False
-    if utxo.is_fidelity_bond and utxo.is_locked:
-        return False
-    if utxo.confirmations < min_confirmations:
-        return False
-    if excluded_outpoints and (utxo.txid, utxo.vout) in excluded_outpoints:
-        return False
-    if allowed_mixdepth is not None and utxo.mixdepth != allowed_mixdepth:
-        return False
-    return True
+    return (
+        _utxo_state_col(utxo, excluded_outpoints, allowed_mixdepth, min_confirmations)
+        == "spendable"
+    )
 
 
-def _draw_header(stdscr: curses.window, width: int) -> str:
+def _draw_header(stdscr: curses.window, width: int, columns: list[tuple[str, int]]) -> str:
     """Draw the title bar and the table header, returning the header line.
 
     The returned header line is used to size the row separators and the
@@ -154,14 +198,7 @@ def _draw_header(stdscr: curses.window, width: int) -> str:
     stdscr.addstr(1, 0, header.center(width)[:width])
     stdscr.attroff(curses.color_pair(3) | curses.A_BOLD)
 
-    # Calculate address column width
-    addr_col_width = max(12, width - 95)
-
-    # Build dynamic header with calculated address width
-    header_line = (
-        f"  | Sel | MD | {'Address':^{addr_col_width}} |      Amount     | "
-        f"{'Confs':^8} |    Outpoint     |    Label    |   State   |"
-    )
+    header_line = "  | " + " | ".join(f"{name:^{size}}" for name, size in columns) + " |"
     stdscr.addstr(3, 0, header_line[: width - 1])
     header_sep_width = min(len(header_line) - 2, width - 3)
     stdscr.addstr(4, 2, "|", curses.A_NORMAL)
@@ -185,6 +222,9 @@ def _draw_utxo_rows(
     excluded_outpoints: set[tuple[str, int]],
     address_utxo_counts: dict[str, int],
     is_selectable: Callable[[int], bool],
+    columns: list[tuple[str, int]],
+    pinned: int | None,
+    min_confirmations: int,
 ) -> None:
     """Draw the visible UTXO rows with separators, marks and colors."""
     prev_address = ""
@@ -195,21 +235,11 @@ def _draw_utxo_rows(
         display_row = list_start + (i - scroll_offset)
 
         if item is None:
-            try:
-                # Draw separator with white outer borders
-                stdscr.addstr(display_row, 0, "  ", curses.A_NORMAL)
-                stdscr.addstr(display_row, 2, "|", curses.A_NORMAL)
-                stdscr.addstr(
-                    display_row,
-                    3,
-                    "-" * (sep_width - 2),
-                    curses.color_pair(3) | curses.A_DIM,
-                )
-                right_sep_pos = 3 + sep_width - 2
-                if right_sep_pos < width - 1:
-                    stdscr.addstr(display_row, right_sep_pos, "|", curses.A_NORMAL)
-            except curses.error:
-                pass
+            stdscr.addstr(display_row, 2, "|", curses.A_NORMAL)
+            stdscr.addstr(
+                display_row, 3, "-" * (sep_width - 2), curses.color_pair(3) | curses.A_DIM
+            )
+            stdscr.addstr(display_row, sep_width + 1, "|", curses.A_NORMAL)
             prev_address = ""
             continue
 
@@ -223,7 +253,14 @@ def _draw_utxo_rows(
         else:
             mark = "[ ]"
         line = f"| {mark} | " + format_utxo_line(
-            item, width - 8, prev_address, excluded_outpoints, width
+            item,
+            width,
+            prev_address,
+            excluded_outpoints,
+            width,
+            columns=columns,
+            allowed_mixdepth=pinned,
+            min_confirmations=min_confirmations,
         )
         prev_address = item.address
 
@@ -239,46 +276,23 @@ def _draw_utxo_rows(
         ):
             # Frozen, in-use, or still-locked bonds are red and unselectable.
             attr = curses.color_pair(4) | curses.A_DIM
-        elif item.is_fidelity_bond:
-            # Unlocked FB - magenta (can be spent but should be careful)
-            attr = curses.color_pair(5)
         elif not is_selectable(i):
             # Immature, or outside the (pinned) source mixdepth
             attr = curses.A_DIM
+        elif item.is_fidelity_bond:
+            # Unlocked FB - magenta (can be spent but should be careful)
+            attr = curses.color_pair(5)
         else:
             attr = curses.A_NORMAL
 
-        try:
-            # Left indent, then left border in default color (white)
-            stdscr.addstr(display_row, 0, "  ", curses.A_NORMAL)
-            stdscr.addstr(display_row, 2, "|", curses.A_NORMAL)
-
-            # Row content without outer borders, preserving spacing for alignment
-            content_to_write = ""
-            right_border_pos = 0
-            if len(line) >= 2:
-                inner_content = line[1:-1] if line.endswith("|") else line[1:]
-                content_to_write = inner_content[: width - 4]
-                stdscr.addstr(display_row, 3, content_to_write, attr)
-
-                # Right border aligned with content end
-                right_border_pos = 3 + len(content_to_write)
-                if right_border_pos < width - 1:
-                    stdscr.addstr(display_row, right_border_pos, "|", curses.A_NORMAL)
-
-            # RU! indicator for address reuse
-            is_reused = _is_address_reused(item, address_utxo_counts)
-            if is_reused:
-                ru_pos = right_border_pos + 1 if right_border_pos > 0 else 4
-                if ru_pos < width - 4:
-                    try:
-                        stdscr.addstr(
-                            display_row, ru_pos, " RU!", curses.color_pair(4) | curses.A_BOLD
-                        )
-                    except curses.error:
-                        pass
-        except curses.error:
-            pass  # Ignore if we write past the edge
+        stdscr.addstr(display_row, 2, "|", curses.A_NORMAL)
+        stdscr.addstr(display_row, 3, line[1:-1], attr)
+        right_border_pos = len(line) + 1
+        stdscr.addstr(display_row, right_border_pos, "|", curses.A_NORMAL)
+        if _is_address_reused(item, address_utxo_counts):
+            stdscr.addstr(
+                display_row, right_border_pos + 1, " RU!", curses.color_pair(4) | curses.A_BOLD
+            )
 
 
 def _build_footer_lines(
@@ -292,11 +306,12 @@ def _build_footer_lines(
     cursor_pos: int,
     excluded_outpoints: set[tuple[str, int]],
     address_utxo_counts: dict[str, int],
+    min_confirmations: int = 0,
 ) -> tuple[str, str, str, str]:
     """Build the footer text lines, returning (line1, line2, line4, ru_note).
 
     ``line1`` is the selection summary, ``line2`` the (optional) pinned source
-    mixdepth, ``line4`` the cursor status with the State column appended and
+    mixdepth, ``line4`` the cursor status with the State column first and
     ``ru_note`` an optional address-reuse warning.
     """
     selected_utxos = [display_items[i] for i in selected]
@@ -308,20 +323,22 @@ def _build_footer_lines(
         remaining = target_amount - total_selected
         target_str = f"{target_amount:,} sats"
         if remaining > 0:
-            footer_line1 = f" Target: {target_str} | Need: {remaining:,} sats more |"
+            footer_line1 = f"Target: {target_str} | Need: {remaining:,} sats more |"
+        elif remaining == 0:
+            footer_line1 = f"Target: {target_str} | Target met |"
         else:
-            footer_line1 = f" Target: {target_str} | Excess: {-remaining:,} sats |"
+            footer_line1 = f"Target: {target_str} | Excess: {-remaining:,} sats |"
     else:
-        footer_line1 = " Sweep mode |"
+        footer_line1 = "Sweep mode |"
 
     footer_line1 += f" Selected: {len(selected)}/{selectable_count} UTXOs | Total: {total_str}"
 
     footer_line2 = ""
     if pinned is not None:
         if allowed_mixdepth is not None:
-            footer_line2 = f" Source mixdepth: m{pinned}"
+            footer_line2 = f"Source mixdepth: m{pinned}"
         else:
-            footer_line2 = f" Source mixdepth: m{pinned} (deselect all UTXOs to change)"
+            footer_line2 = f"Source mixdepth: m{pinned} (deselect all UTXOs to change)"
 
     # Context-sensitive status line for the item under cursor
     cursor_item = display_items[cursor_pos] if cursor_pos < len(display_items) else None
@@ -332,10 +349,10 @@ def _build_footer_lines(
             if cursor_item.is_locked:
                 footer_line4 = (
                     f"Active Fidelity Bond: Locked and not spendable until "
-                    f"{datetime.fromtimestamp(cursor_item.locktime).strftime('%Y-%m-%d')}!"
+                    f"{datetime.fromtimestamp(cursor_item.locktime, UTC).strftime('%Y-%m-%d')} UTC!"
                 )
             else:
-                footer_line4 = "Expired Fidelity Bond, free to spend"
+                footer_line4 = "Expired Fidelity Bond"
         elif cursor_item.label == "cj-change":
             footer_line4 = "Change output from a CoinJoin (deanonymising, keep separate)"
         elif cursor_item.label == "cj-out":
@@ -347,83 +364,78 @@ def _build_footer_lines(
         elif cursor_item.label:
             footer_line4 = f"Label: {cursor_item.label}"
 
-        # Append the current State (same logic as the table's State column).
-        state_col = _utxo_state_col(cursor_item, excluded_outpoints)
+        # Keep the state and restriction visible even when a long label is clipped.
+        state_col = _utxo_state_col(cursor_item, excluded_outpoints, pinned, min_confirmations)
+        state_text = f"State: {state_col}"
+        if state_col == "immature":
+            state_text += f" (requires {min_confirmations} confirmations)"
+        elif state_col == "other-md":
+            state_text += f" (source is m{pinned})"
         if footer_line4:
-            footer_line4 = f"{footer_line4}  •  State: {state_col}"
+            footer_line4 = f"{state_text} | {footer_line4}"
         else:
-            footer_line4 = f"State: {state_col}"
+            footer_line4 = state_text
         # RU note for address reuse (same logic as the table's RU! indicator).
         is_reused = _is_address_reused(cursor_item, address_utxo_counts)
         if is_reused:
-            ru_note = "  •  Warning: Address reuse - (reduces privacy!)"
+            ru_note = "RU! Warning: Address reuse reduces privacy"
 
     return footer_line1, footer_line2, footer_line4, ru_note
 
 
-def _draw_footer(
-    stdscr: curses.window,
-    height: int,
+def _wrap_footer_fields(text: str, width: int) -> list[str]:
+    """Wrap between fields so amounts and their units always stay together."""
+    lines: list[str] = []
+    current = ""
+    for field in text.split(" | "):
+        candidate = f"{current} | {field}" if current else field
+        if len(candidate) > width and current:
+            lines.append(current)
+            current = field
+        else:
+            current = candidate
+    lines.append(current)
+    return lines
+
+
+def _footer_rows(
     width: int,
-    header_line: str,
     footer_line1: str,
     footer_line2: str,
     footer_line4: str,
     ru_note: str,
-) -> None:
-    """Draw the footer: selection summary, cursor status and controls."""
-    # Footer structure: Selection Details | UTXO Status | Controls
-    footer_y = height - 12
+) -> list[tuple[str, int]]:
+    """Lay out the footer before reserving space for the scrollable coin rows."""
+    content_width = max(1, width - 3)
+    separator = ("-" * content_width, curses.A_NORMAL)
+    rows = [separator, ("Selection Details", curses.A_BOLD)]
+    rows.extend((line, curses.A_BOLD) for line in _wrap_footer_fields(footer_line1, content_width))
+    rows.append((footer_line2, curses.A_BOLD))
+    rows.extend([separator, ("UTXO Status", curses.A_BOLD)])
+    rows.append((_clip(footer_line4, content_width), curses.A_DIM))
+    # Reserve the warning row even when not reused, so moving the cursor does not resize the list.
+    rows.append((ru_note, curses.color_pair(4) | curses.A_BOLD))
+    rows.extend([separator, ("Controls", curses.A_BOLD)])
+    rows.extend(
+        (line, curses.A_NORMAL) for line in _wrap_footer_fields(_CONTROLS_HINT, content_width)
+    )
+    rows.append(("", curses.A_NORMAL))
+    return rows
 
-    # Footer drawing wrapped in try/except to handle resize gracefully
+
+def _draw_footer(stdscr: curses.window, start: int, rows: list[tuple[str, int]]) -> None:
+    """Draw precomputed footer rows without truncating selection amounts."""
+    for offset, (line, attr) in enumerate(rows):
+        stdscr.addstr(start + offset, 2, line, attr)
+
+
+def _draw_resize_prompt(stdscr: curses.window, width: int) -> None:
     try:
-        # Separators aligned with table content (2 spaces indent)
-        sep_width = min(len(header_line) - 2, width - 3)
-        stdscr.addstr(footer_y, 2, "-" * sep_width)
-
-        stdscr.attron(curses.A_BOLD)
-        # Selection Details section
-        stdscr.addstr(footer_y + 1, 2, "Selection Details")
-        stdscr.addstr(footer_y + 2, 2, footer_line1[: width - 3])
-
-        # Source mixdepth
-        if footer_line2:
-            stdscr.addstr(footer_y + 3, 2, footer_line2[: width - 3])
-            next_y = footer_y + 4
-        else:
-            next_y = footer_y + 3
-
-        # UTXO Status section
-        stdscr.addstr(next_y, 2, "-" * sep_width)
-        stdscr.addstr(next_y + 1, 2, "UTXO Status")
-        if footer_line4:
-            stdscr.attron(curses.A_DIM)
-            stdscr.addstr(next_y + 2, 3, footer_line4[: width - 3])
-            stdscr.attroff(curses.A_DIM)
-            if ru_note:
-                # RU explanation in red, like the table's RU! indicator
-                ru_col = 3 + len(footer_line4)
-                if ru_col < width - 1:
-                    stdscr.attron(curses.color_pair(4) | curses.A_BOLD)
-                    stdscr.addstr(
-                        next_y + 2,
-                        ru_col,
-                        ru_note[: width - 3 - len(footer_line4)],
-                    )
-                    stdscr.attroff(curses.color_pair(4) | curses.A_BOLD)
-            next_y += 3  # separator + header + status line
-        else:
-            next_y += 2  # separator + header only
-
-        # Controls section, pinned so the key line always ends 3 rows from the
-        # bottom (exactly 2 empty rows below it), regardless of active status lines
-        stdscr.addstr(height - 5, 2, "-" * sep_width)
-        stdscr.addstr(height - 4, 2, "Controls")
-        stdscr.addstr(height - 3, 2, _CONTROLS_HINT[: width - 3])
-
-        stdscr.attroff(curses.A_BOLD)
+        stdscr.addstr(0, 0, "Terminal too small. Please resize. q/Esc: cancel"[: max(1, width - 1)])
     except curses.error:
+        # Curses can report ERR after successfully writing the bottom-right cell (1x1).
         pass
+    stdscr.refresh()
 
 
 def _run_selector(
@@ -495,75 +507,65 @@ def _run_selector(
     for item in display_items:
         if item is not None:
             address_utxo_counts[item.address] = address_utxo_counts.get(item.address, 0) + 1
+    utxos = [item for item in display_items if item is not None]
 
     while True:
         stdscr.clear()
         height, width = stdscr.getmaxyx()
 
-        # Prevent crash on very small terminals
-        if height < 15 or width < 40:
-            msg = "Terminal too small. Please resize."
-            try:
-                stdscr.addstr(0, 0, msg)
-                stdscr.refresh()
-            except curses.error:
-                pass
-            stdscr.getch()
+        pinned = pinned_mixdepth()
+        columns = _table_columns(width, utxos)
+        footer = _footer_rows(
+            width,
+            *_build_footer_lines(
+                display_items,
+                selected,
+                base_selectable,
+                is_selectable,
+                target_amount,
+                allowed_mixdepth,
+                pinned,
+                cursor_pos,
+                excluded_outpoints,
+                address_utxo_counts,
+                min_confirmations,
+            ),
+        )
+        list_start = 5
+        list_height = height - list_start - len(footer)
+        if list_height < 1 or width < max(80, _minimum_table_width(columns)):
+            _draw_resize_prompt(stdscr, width)
+            if stdscr.getch() in (ord("q"), 27):
+                return []
             continue
 
-        header_line = _draw_header(stdscr, width)
-
-        # Calculate visible area
-        list_start = 5
-        list_height = (
-            height - 17
-        )  # Reserve space for header, footer and 2 empty lines at the bottom
-
         scroll_offset = adjust_scroll(cursor_pos, scroll_offset, list_height)
-
-        # Display UTXOs (with mixdepth separators)
-        sep_width = min(len(header_line) - 2, width - 3)
-
-        _draw_utxo_rows(
-            stdscr,
-            display_items,
-            selected,
-            cursor_pos,
-            scroll_offset,
-            list_height,
-            list_start,
-            width,
-            sep_width,
-            excluded_outpoints,
-            address_utxo_counts,
-            is_selectable,
-        )
-
-        # Footer with selection summary
-        pinned = pinned_mixdepth()
-        footer_line1, footer_line2, footer_line4, ru_note = _build_footer_lines(
-            display_items,
-            selected,
-            base_selectable,
-            is_selectable,
-            target_amount,
-            allowed_mixdepth,
-            pinned,
-            cursor_pos,
-            excluded_outpoints,
-            address_utxo_counts,
-        )
-        _draw_footer(
-            stdscr,
-            height,
-            width,
-            header_line,
-            footer_line1,
-            footer_line2,
-            footer_line4,
-            ru_note,
-        )
-
+        try:
+            header_line = _draw_header(stdscr, width, columns)
+            _draw_utxo_rows(
+                stdscr,
+                display_items,
+                selected,
+                cursor_pos,
+                scroll_offset,
+                list_height,
+                list_start,
+                width,
+                len(header_line) - 2,
+                excluded_outpoints,
+                address_utxo_counts,
+                is_selectable,
+                columns,
+                pinned,
+                min_confirmations,
+            )
+            _draw_footer(stdscr, height - len(footer), footer)
+        except curses.error:
+            # Do not dispatch spend actions after an interrupted repaint.
+            _draw_resize_prompt(stdscr, width)
+            if stdscr.getch() in (ord("q"), 27):
+                return []
+            continue
         stdscr.refresh()
 
         # Handle input

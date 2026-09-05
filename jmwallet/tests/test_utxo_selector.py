@@ -11,8 +11,11 @@ Tests cover:
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
+import jmwallet.utxo_selector as utxo_selector
 from jmwallet.utxo_selector import (
     _is_base_selectable,
     format_utxo_line,
@@ -183,23 +186,55 @@ class TestSelectUtxosInteractive:
 
 
 class TestUtxoSorting:
-    """Tests for UTXO sorting in the selector."""
+    """Tests for display ordering through the selector's public entrypoint."""
 
-    def test_utxos_sorted_by_mixdepth_then_value(self, sample_utxos: list[UTXOInfo]) -> None:
-        """Verify UTXOs would be sorted by mixdepth, then by value descending."""
-        # The selector sorts internally, but we test the sorting logic
-        sorted_utxos = sorted(sample_utxos, key=lambda u: (u.mixdepth, -u.value))
+    def test_entrypoint_orders_paths_and_inserts_mixdepth_separators(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The public entrypoint passes path-ordered, separated items to curses."""
 
-        # First should be mixdepth 0 with highest value (not the locked one since
-        # we sort by value desc within mixdepth)
-        # sample_utxos[3] is mixdepth 0, 500k (locked)
-        # sample_utxos[0] is mixdepth 0, 100k
-        # sample_utxos[1] is mixdepth 0, 50k
-        # sample_utxos[2] is mixdepth 1, 1M
+        class TtyStream:
+            def isatty(self) -> bool:
+                return True
 
-        assert sorted_utxos[0].mixdepth == 0
-        assert sorted_utxos[0].value == 500_000  # Highest in mixdepth 0
-        assert sorted_utxos[-1].mixdepth == 1  # Mixdepth 1 last
+        first = _make_utxo(0, value=10_000)
+        first.txid = "a" * 64
+        first.path = "m/84'/0'/0'/0/1"
+        second = _make_utxo(1, value=20_000)
+        second.txid = "b" * 64
+        second.path = "m/84'/0'/1'/0/0"
+        third = _make_utxo(1, value=90_000)
+        third.txid = "c" * 64
+        third.path = "m/84'/0'/1'/1/0"
+        fourth = _make_utxo(2, value=50_000)
+        fourth.txid = "d" * 64
+        fourth.path = "m/84'/0'/2'/0/0"
+
+        captured: dict[str, list[UTXOInfo | None]] = {}
+
+        def fake_wrapper(
+            _runner: object,
+            display_items: list[UTXOInfo | None],
+            *_args: object,
+            **_kwargs: object,
+        ) -> list[UTXOInfo]:
+            captured["display_items"] = display_items
+            return []
+
+        monkeypatch.setattr(sys, "stdin", TtyStream())
+        monkeypatch.setattr(sys, "stdout", TtyStream())
+        monkeypatch.setattr(utxo_selector.curses, "wrapper", fake_wrapper)
+
+        assert select_utxos_interactive([fourth, third, first, second]) == []
+
+        display_items = captured["display_items"]
+        assert [item.path for item in display_items if item is not None] == [
+            "m/84'/0'/0'/0/1",
+            "m/84'/0'/1'/0/0",
+            "m/84'/0'/1'/1/0",
+            "m/84'/0'/2'/0/0",
+        ]
+        assert [index for index, item in enumerate(display_items) if item is None] == [1, 4]
 
 
 class TestFrozenUtxoFormatting:
