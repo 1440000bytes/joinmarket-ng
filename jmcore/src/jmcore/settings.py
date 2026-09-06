@@ -1961,6 +1961,12 @@ def migrate_config(
     Use :func:`config_diff` to discover new settings that the user
     may want to add manually.
 
+    A reference copy of the template is also maintained as
+    ``config.toml.template`` next to the config file, so users can
+    compare their config against the current version's template. The
+    copy is refreshed whenever its content is out of date; the user's
+    ``config.toml`` itself is never modified.
+
     Args:
         config_path: Path to the user's ``config.toml``.
         template_text: Template text for fresh creation.  When *None*,
@@ -1987,6 +1993,16 @@ def migrate_config(
         logger.info(f"Config file missing; creating from template at {config_path}")
         config_path.parent.mkdir(parents=True, exist_ok=True)
         config_path.write_text(template_text)
+
+    # Keep a reference copy of the template alongside the config so users
+    # can diff their settings against the current version's template.
+    # Failures here must never break startup or config creation.
+    template_copy = config_path.with_name("config.toml.template")
+    try:
+        if not template_copy.exists() or template_copy.read_text() != template_text:
+            template_copy.write_text(template_text)
+    except OSError as exc:
+        logger.warning(f"Could not update template copy at {template_copy}: {exc}")
 
     return []
 

@@ -1234,6 +1234,40 @@ class TestMigrateConfig:
 
         assert result == []
 
+    def test_writes_template_copy_alongside_config(self, tmp_path: Path) -> None:
+        """A config.toml.template reference copy is created next to the config."""
+        config_path = tmp_path / "config.toml"
+
+        migrate_config(config_path, template_text=MINI_TEMPLATE)
+
+        template_copy = tmp_path / "config.toml.template"
+        assert template_copy.exists()
+        assert template_copy.read_text() == MINI_TEMPLATE
+
+    def test_refreshes_stale_template_copy_without_touching_config(self, tmp_path: Path) -> None:
+        """An outdated template copy is refreshed; the user config is untouched."""
+        config_path = tmp_path / "config.toml"
+        original = "[tor]\nsocks_port = 9050\n"
+        config_path.write_text(original)
+        template_copy = tmp_path / "config.toml.template"
+        template_copy.write_text("# old template\n")
+
+        migrate_config(config_path, template_text=MINI_TEMPLATE)
+
+        assert template_copy.read_text() == MINI_TEMPLATE
+        assert config_path.read_text() == original
+
+    def test_template_copy_not_rewritten_when_current(self, tmp_path: Path) -> None:
+        """An up-to-date template copy is left alone (no mtime churn)."""
+        config_path = tmp_path / "config.toml"
+        migrate_config(config_path, template_text=MINI_TEMPLATE)
+        template_copy = tmp_path / "config.toml.template"
+        before = template_copy.stat().st_mtime_ns
+
+        migrate_config(config_path, template_text=MINI_TEMPLATE)
+
+        assert template_copy.stat().st_mtime_ns == before
+
     def test_expands_tilde_instead_of_creating_literal_dir(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1372,6 +1406,10 @@ class TestEnsureConfigFile:
         content = config_path.read_text()
         assert "[tor]" in content
         assert "[bitcoin]" in content
+        # A reference copy of the bundled template is kept alongside.
+        template_copy = temp_data_dir / "config.toml.template"
+        assert template_copy.exists()
+        assert "[tor]" in template_copy.read_text()
 
     def test_does_not_modify_existing_config(self, temp_data_dir: Path) -> None:
         """Existing config files are never touched at startup."""

@@ -1442,15 +1442,19 @@ migrate_config(Path('$config_file'))
         return 0
     fi
 
-    # Config exists -- check for new settings in the template.
+    # Config exists -- refresh the config.toml.template reference copy and
+    # check for new settings in the template. migrate_config never modifies
+    # an existing config.toml; it only (re)writes the template copy.
     print_info "Checking for new settings in the template..."
     local stderr_file
     stderr_file=$(mktemp)
     local result
     result=$(python3 -c "
 from pathlib import Path
-from jmcore.settings import config_diff
-diffs = config_diff(Path('$config_file'))
+from jmcore.settings import config_diff, migrate_config
+config = Path('$config_file')
+migrate_config(config)
+diffs = config_diff(config)
 for d in diffs:
     print(d)
 " 2>"$stderr_file") || {
@@ -1476,7 +1480,7 @@ for d in diffs:
         done <<< "$result"
         local total=$((section_count + key_count))
         print_info "$total new setting(s) available in the template"
-        print_info "Compare your config with config.toml.template to see details"
+        print_info "Compare your config with $DATA_DIR/config.toml.template to see details"
     fi
 }
 
@@ -1516,6 +1520,13 @@ EOF
         echo "  All options documented with defaults in the config file"
     else
         print_info "Config file already exists at $config_file"
+    fi
+
+    # Keep a reference copy of the full template alongside the config so
+    # users can compare their settings after updates.
+    if ! read_release_file "jmcore/src/jmcore/data/config.toml.template" > "$DATA_DIR/config.toml.template"; then
+        rm -f "$DATA_DIR/config.toml.template"
+        print_warning "Could not install config.toml.template reference copy"
     fi
 }
 

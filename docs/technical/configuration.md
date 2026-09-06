@@ -17,12 +17,15 @@ Template/reference:
 
 - Bundled inside the `jmcore` package at `jmcore/src/jmcore/data/config.toml.template`
   (the canonical source, loaded at runtime via `importlib.resources`).
+- A reference copy is kept alongside your config at
+  `~/.joinmarket-ng/config.toml.template` and refreshed automatically on
+  install, update, and component startup.
 
 The installer creates a starter config automatically from the bundled template.
 
 ## Config Updates
 
-Your `config.toml` is never modified automatically after creation. When updating via `install.sh --update`, the installer compares your config against the bundled template and prints any new sections or keys that are available but not yet in your file. You can then copy them manually from the bundled `config.toml.template`.
+Your `config.toml` is never modified automatically after creation. When updating via `install.sh --update`, the installer compares your config against the bundled template and prints any new sections or keys that are available but not yet in your file. You can then copy them manually from `~/.joinmarket-ng/config.toml.template`, which is kept in sync with the installed version.
 
 If `config.toml` is missing entirely (fresh install), it is created from the template.
 

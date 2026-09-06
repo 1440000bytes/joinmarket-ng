@@ -103,7 +103,7 @@ When the authenticated installer runs `--update`, it:
 - Checks your config for new settings: compares `config.toml` against the latest template and prints any new sections or keys that are available
 - Refreshes shell completions and Tor configuration
 
-Your existing config is never modified. If new settings are available, the installer prints them so you can add them manually from `config.toml.template`.
+Your existing config is never modified. If new settings are available, the installer prints them so you can add them manually from `~/.joinmarket-ng/config.toml.template`, a reference copy of the current template that is kept in sync on every install and update.
 
 ### Existing Installations
 
