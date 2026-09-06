@@ -1,0 +1,97 @@
+name: Promote Release
+
+# Releases are created as pre-releases by release.yaml and stay invisible to
+# releases/latest (the resolution point for the installer, the TUI, and the
+# update check) until the trusted signature quorum lands on main. This
+# workflow runs on every signature push, verifies each pending pre-release
+# with scripts/verify-release.sh (manifest signature quorum, local-manifest
+# layer cross-check, registry digests, installer signature quorum, and the
+# installer asset matching the release commit), and promotes releases that
+# pass to the published latest release.
+#
+# This is publication automation, not a security boundary: install.sh
+# enforces the same signature quorum on every user machine regardless of the
+# release state here.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'signatures/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+concurrency:
+  group: promote-release
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          # Full history so verify-release.sh can compare the installer asset
+          # with install.sh at the release commit.
+          fetch-depth: 0
+
+      - name: Promote signed pre-releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          candidates=$(gh release list --limit 50 \
+            --json tagName,isPrerelease,isDraft \
+            --jq '.[] | select(.isPrerelease and (.isDraft | not)) | .tagName')
+
+          if [ -z "$candidates" ]; then
+            echo "No pre-releases awaiting promotion."
+            exit 0
+          fi
+
+          for version in $candidates; do
+            if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "Skipping non-release tag: $version"
+              continue
+            fi
+
+            if [ ! -d "signatures/$version" ]; then
+              echo "$version: no signatures on main yet; leaving as pre-release."
+              continue
+            fi
+
+            echo "=== Verifying signature quorum for $version ==="
+            if ! ./scripts/verify-release.sh "$version" --require-installer; then
+              echo "$version: verification incomplete; leaving as pre-release."
+              continue
+            fi
+
+            # Only mark as latest if no newer version is already published.
+            latest_flag="--latest"
+            current_latest=$(gh release view --json tagName --jq .tagName 2>/dev/null || echo "")
+            if [ -n "$current_latest" ] && \
+              [ "$(printf '%s\n%s\n' "$current_latest" "$version" | sort -V | tail -n 1)" != "$version" ]; then
+              latest_flag="--latest=false"
+            fi
+
+            echo "=== Promoting $version ==="
+            body=$(gh release view "$version" --json body --jq .body | \
+              sed '/Awaiting signature quorum/d')
+            gh release edit "$version" \
+              --prerelease=false \
+              "$latest_flag" \
+              --notes "$body"
+            echo "$version promoted to published release ($latest_flag)."
+          done

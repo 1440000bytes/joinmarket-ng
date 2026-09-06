@@ -200,3 +200,66 @@ def test_create_release_uses_explicit_repository_context_and_existing_tag() -> N
         in create_release["run"]
     )
     assert "--verify-tag" in create_release["run"]
+
+
+def test_releases_start_as_prereleases_awaiting_signature_quorum() -> None:
+    """Tag pushes must not publish a release users can see via
+    releases/latest before the trusted signature quorum exists; promotion
+    happens in promote-release.yaml once signatures land on main."""
+    release_jobs = _workflow("release.yaml")["jobs"]
+    create_release = next(
+        step
+        for step in release_jobs["create-release"]["steps"]
+        if step["name"] == "Create Release"
+    )
+
+    assert "--prerelease" in create_release["run"]
+    assert "Awaiting signature quorum" in create_release["run"]
+
+    # The old tag-checkout cross-check never saw local-first signatures
+    # (they are committed after the tag commit); the check now lives in
+    # verify-release.sh, run by the promotion gate from main.
+    manifest_steps = release_jobs["generate-manifest"]["steps"]
+    assert all(
+        step.get("name") != "Verify against pre-signed local manifests"
+        for step in manifest_steps
+    )
+
+
+def test_promote_release_gates_publication_on_signature_quorum() -> None:
+    # Annotate with non-str keys: YAML parses the bare `on` key as boolean True.
+    workflow: dict[Any, Any] = yaml.safe_load(
+        (WORKFLOWS / "promote-release.yaml").read_text(encoding="utf-8")
+    )
+
+    triggers = workflow[True]
+    assert triggers["push"]["branches"] == ["main"]
+    assert triggers["push"]["paths"] == ["signatures/**"]
+    assert "workflow_dispatch" in triggers
+
+    assert workflow["concurrency"]["group"] == "promote-release"
+    assert workflow["permissions"] == {"contents": "read"}
+
+    job = workflow["jobs"]["promote"]
+    assert job["permissions"] == {"contents": "write"}
+
+    checkout = next(
+        step
+        for step in job["steps"]
+        if step.get("uses", "").startswith("actions/checkout")
+    )
+    assert checkout["with"]["fetch-depth"] == 0
+
+    promote = next(
+        step for step in job["steps"] if step["name"] == "Promote signed pre-releases"
+    )
+    assert promote["env"]["GH_TOKEN"] == "${{ github.token }}"
+    assert promote["env"]["GH_REPO"] == "${{ github.repository }}"
+    run = promote["run"]
+    # Full verification (signatures, installer quorum, digests) gates the flip.
+    assert './scripts/verify-release.sh "$version" --require-installer' in run
+    assert "--prerelease=false" in run
+    # Insufficient signatures leave the pre-release untouched without failing.
+    assert "leaving as pre-release" in run
+    # Promoting an old patch release must not steal `latest` from a newer one.
+    assert "sort -V" in run
