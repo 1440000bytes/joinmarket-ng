@@ -705,7 +705,7 @@ refresh_installer() (
     fi
     # Check identity only after authenticating the bytes. The handoff protocol
     # prevents running a historical script that cannot preserve trusted updates.
-    candidate_version=$(sed -n 's/^DEFAULT_VERSION="0.39.1"]*\)".*/\1/p' "$candidate")
+    candidate_version=$(sed -n 's/^DEFAULT_VERSION="\([^"]*\)".*/\1/p' "$candidate")
     if [[ "$candidate_version" != "${version#v}" ]] || \
         ! grep -qx 'INSTALLER_PROTOCOL=1' "$candidate"; then
         print_error "Signed installer does not match release $version or lacks trusted-copy support."

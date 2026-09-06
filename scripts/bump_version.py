@@ -166,11 +166,24 @@ def update_pyproject_files(new_version: str, dry_run: bool = False) -> None:
 
 
 def update_install_script(new_version: str, dry_run: bool = False) -> None:
-    """Update the DEFAULT_VERSION in install.sh."""
+    """Update the DEFAULT_VERSION assignment in install.sh.
+
+    Anchored to the start of the line: install.sh also contains the literal
+    text ``DEFAULT_VERSION="`` inside the refresh_installer sed expression,
+    which an unanchored substitution would corrupt (it broke the 0.39.1 tag).
+    """
     content = INSTALL_SCRIPT.read_text()
-    new_content = re.sub(
-        r'DEFAULT_VERSION="[^"]+"', f'DEFAULT_VERSION="{new_version}"', content
+    new_content, substitutions = re.subn(
+        r'^DEFAULT_VERSION="[^"]+"',
+        f'DEFAULT_VERSION="{new_version}"',
+        content,
+        flags=re.MULTILINE,
     )
+    if substitutions != 1:
+        raise RuntimeError(
+            f"Expected exactly one DEFAULT_VERSION assignment in {INSTALL_SCRIPT}, "
+            f"found {substitutions}"
+        )
 
     if dry_run:
         print(f"Would update {INSTALL_SCRIPT}")
