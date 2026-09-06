@@ -41,6 +41,20 @@ repository. The installer tries that shared manifest first, then falls back to
 `<fingerprint>-manifest.txt` for local-first and historical releases. In both
 cases it requires the signed `commit:` value to match the commit it installs.
 
+## Release Lifecycle
+
+Tag pushes create GitHub releases as **pre-releases**, which are excluded
+from `releases/latest` and therefore invisible to the installer, the TUI,
+and the update check. When signature commits land on `main`, the
+`promote-release` workflow runs `scripts/verify-release.sh` against every
+pending pre-release and promotes those that reach the quorum (manifest and
+installer signatures, installer asset matching the release commit, registry
+digests) to the published latest release.
+
+Promotion is publication automation, not a security boundary: `install.sh`
+enforces the same signature quorum on every user machine regardless of the
+release state on GitHub.
+
 ## Installer Signatures
 
 The initial installer bootstrap downloads the versioned GitHub Release

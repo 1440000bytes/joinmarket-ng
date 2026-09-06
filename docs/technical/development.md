@@ -179,9 +179,15 @@ scripts/sign-release.sh "$VERSION" \
 git push && git push --tags
 ```
 
-CI will build the same images independently and verify its layer digests
-match your signed local manifest. The release is confirmed reproducible
-when CI passes.
+CI builds the same images independently and creates the GitHub release as a
+**pre-release**: it stays invisible to `releases/latest` (the resolution
+point for the installer, the TUI, and the update check) until the trusted
+signature quorum exists. Nothing further is required from the release
+manager: once the remaining signatures land on `main`,
+`promote-release.yaml` runs `verify-release.sh` (manifest signature quorum
+with local-manifest layer cross-check, installer signature quorum, installer
+asset vs release commit, registry digests) and automatically promotes the
+release to the published latest release.
 
 The version bump also compares the bundled `config.toml.template` with the
 previous release. It adds the complete commented diff to the changelog, or an
@@ -259,14 +265,31 @@ local/CI digests will diverge.
 
 ### CI-First Workflow (For Additional Signers)
 
-Wait for CI to complete, then reproduce and sign:
+Wait for the Release workflow to complete (the release appears as a
+pre-release), then reproduce and sign:
 
 ```bash
+git pull
 VERSION=<version>
 scripts/sign-release.sh "$VERSION" --key <fingerprint>
 ```
 
-This downloads the CI manifest, rebuilds locally, and signs if digests match.
+This downloads the CI manifest, rebuilds locally, and signs both the manifest
+and the release installer if digests match. When merging via pull request
+instead of pushing directly, pass `--no-push` and commit the signature files
+on a branch:
+
+```bash
+scripts/sign-release.sh "$VERSION" --key <fingerprint> --no-push
+git checkout -b "sign-$VERSION"
+git add "signatures/$VERSION/"
+git commit -m "build: add GPG signature for release $VERSION"
+# push the branch and open a pull request
+```
+
+Once the signatures merge to `main`, `promote-release.yaml` verifies the
+quorum and promotes the pre-release automatically; no manual release edits
+are needed.
 
 ## Verify a Release
 
