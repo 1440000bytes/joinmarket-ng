@@ -59,6 +59,19 @@ extract_manifest_value() {
     awk -F': ' -v key="$key" '$1 == key { print $2; exit }' "$manifest_file"
 }
 
+download_release_asset() {
+    local url="$1"
+    local dest="$2"
+
+    if command -v curl &> /dev/null; then
+        curl -fsSL "$url" -o "$dest"
+    elif command -v wget &> /dev/null; then
+        wget -q "$url" -O "$dest"
+    else
+        return 1
+    fi
+}
+
 section_image_name() {
     local section="$1"
     section="${section%-amd64-layers}"
@@ -91,10 +104,12 @@ Arguments:
   version         Release version to verify (e.g., 1.0.0)
 
 Options:
-  --reproduce       Attempt to reproduce the Docker builds locally
-  --min-sigs N      Require at least N valid signatures (default: 2)
-  --skip-signatures Skip GPG signature verification (for testing reproducibility)
-  --help            Show this help message
+  --reproduce         Attempt to reproduce the Docker builds locally
+  --min-sigs N        Require at least N valid signatures (default: 2)
+  --require-installer Fail when the release has no install.sh asset
+                      (default: warn and skip for historical releases)
+  --skip-signatures   Skip GPG signature verification (for testing reproducibility)
+  --help              Show this help message
 
 The --reproduce flag builds images for your current architecture only and
 compares layer digests against the release manifest. Layer digests are
@@ -116,6 +131,7 @@ VERSION=""
 REPRODUCE=false
 MIN_SIGS=2
 SKIP_SIGNATURES=false
+REQUIRE_INSTALLER=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -126,6 +142,10 @@ while [[ $# -gt 0 ]]; do
         --min-sigs)
             MIN_SIGS="$2"
             shift 2
+            ;;
+        --require-installer)
+            REQUIRE_INSTALLER=true
+            shift
             ;;
         --skip-signatures)
             SKIP_SIGNATURES=true
@@ -237,13 +257,22 @@ else
     SIGNERS=()
 
     if [[ -d "$SIG_DIR" ]]; then
-        # Import trusted keys
+        # Import trusted keys. Prefer the public keys committed in this
+        # repository (deterministic, works offline and in CI); fall back to
+        # keyservers for fingerprints without a committed key file.
         TRUSTED_KEYS="$PROJECT_ROOT/signatures/trusted-keys.txt"
         if [[ -f "$TRUSTED_KEYS" ]]; then
             log_info "Importing trusted keys..."
             while IFS=' ' read -r fingerprint name || [[ -n "$fingerprint" ]]; do
                 # Skip comments and empty lines
                 [[ "$fingerprint" =~ ^#.*$ || -z "$fingerprint" ]] && continue
+
+                committed_key="$PROJECT_ROOT/signatures/pubkeys/${fingerprint}.asc"
+                if [[ -f "$committed_key" ]]; then
+                    gpg --import "$committed_key" 2>/dev/null || \
+                    log_warn "Could not import committed key $fingerprint ($name)"
+                    continue
+                fi
 
                 # Try to import from keyserver
                 gpg --keyserver hkps://keys.openpgp.org --recv-keys "$fingerprint" 2>/dev/null || \
@@ -324,6 +353,70 @@ else
         log_error "Insufficient valid signatures. Required: $MIN_SIGS, Found: $VALID_SIGS"
         log_error "This release has not been verified by enough trusted parties."
         exit 1
+    fi
+fi
+
+# =============================================================================
+# Step 2b: Verify installer signatures (trusted-copy update path)
+# =============================================================================
+# Saved installers only update through a release install.sh asset carrying a
+# quorum of detached signatures. Releases that ship the asset must therefore
+# also meet the installer signature quorum before they count as verified.
+INSTALLER_SIGS=0
+INSTALLER_SIGNERS=()
+INSTALLER_CHECKED=false
+
+if [[ "$SKIP_SIGNATURES" != true ]]; then
+    INSTALLER_URL="https://github.com/${REPO}/releases/download/${VERSION}/install.sh"
+    INSTALLER_FILE="$WORK_DIR/install.sh"
+
+    if download_release_asset "$INSTALLER_URL" "$INSTALLER_FILE"; then
+        INSTALLER_CHECKED=true
+        log_info "Checking installer signatures..."
+
+        # The published asset must be the installer attested by the release
+        # commit; the asset itself is distribution convenience, not a trust
+        # source.
+        MANIFEST_COMMIT=$(extract_manifest_value "commit" "$MANIFEST_FILE")
+        if [[ -n "$MANIFEST_COMMIT" ]] && \
+            git -C "$PROJECT_ROOT" cat-file -e "${MANIFEST_COMMIT}:install.sh" 2>/dev/null; then
+            if ! git -C "$PROJECT_ROOT" show "${MANIFEST_COMMIT}:install.sh" | \
+                diff -q - "$INSTALLER_FILE" > /dev/null; then
+                log_error "install.sh release asset does not match install.sh at commit $MANIFEST_COMMIT"
+                exit 1
+            fi
+            log_info "Installer asset matches install.sh at the release commit"
+        else
+            log_warn "Release commit not available locally; skipping installer/commit comparison"
+        fi
+
+        for sig_file in "$SIG_DIR"/*.install.sh.sig; do
+            [[ -f "$sig_file" ]] || continue
+            fingerprint=$(basename "$sig_file" .install.sh.sig)
+            log_info "Verifying installer signature from $fingerprint..."
+
+            if gpg --verify "$sig_file" "$INSTALLER_FILE" 2>/dev/null; then
+                log_info "Valid installer signature from $fingerprint"
+                INSTALLER_SIGS=$((INSTALLER_SIGS + 1))
+                INSTALLER_SIGNERS+=("$fingerprint")
+            else
+                log_warn "Invalid installer signature from $fingerprint"
+            fi
+        done
+
+        log_info "Valid installer signatures: $INSTALLER_SIGS"
+
+        if [[ $INSTALLER_SIGS -lt $MIN_SIGS ]]; then
+            log_error "Insufficient valid installer signatures. Required: $MIN_SIGS, Found: $INSTALLER_SIGS"
+            log_error "Saved installers refuse to update to this release until the quorum lands."
+            exit 1
+        fi
+    elif [[ "$REQUIRE_INSTALLER" == true ]]; then
+        log_error "Release $VERSION has no install.sh asset (required by --require-installer)"
+        exit 1
+    else
+        log_warn "Release $VERSION has no install.sh asset (predates trusted installer updates)"
+        log_warn "Skipping installer signature verification"
     fi
 fi
 
@@ -561,6 +654,17 @@ else
         for signer in "${SIGNERS[@]}"; do
             echo "  - $signer"
         done
+    fi
+    if [[ "$INSTALLER_CHECKED" == true ]]; then
+        echo "Valid installer signatures: $INSTALLER_SIGS"
+        if [[ ${#INSTALLER_SIGNERS[@]} -gt 0 ]]; then
+            echo "Installer signers:"
+            for signer in "${INSTALLER_SIGNERS[@]}"; do
+                echo "  - $signer"
+            done
+        fi
+    else
+        echo "Installer signature verification: SKIPPED (no install.sh asset)"
     fi
 fi
 echo "Digest verification: PASSED"

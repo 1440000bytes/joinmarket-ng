@@ -491,3 +491,245 @@ def test_verify_release_requires_two_signatures_by_default() -> None:
 
     assert "MIN_SIGS=2" in script
     assert "Require at least N valid signatures (default: 2)" in script
+
+
+def test_verify_release_imports_committed_pubkeys_before_keyservers() -> None:
+    """CI promotion must not depend on keyserver availability: keys committed
+    under signatures/pubkeys/ are imported directly, with keyservers only as
+    fallback for fingerprints without a committed key file."""
+    script = (SCRIPTS_DIR / "verify-release.sh").read_text()
+
+    committed = script.index("signatures/pubkeys/${fingerprint}.asc")
+    keyserver = script.index("--keyserver hkps://keys.openpgp.org")
+    assert committed < keyserver
+
+
+SECOND_FINGERPRINT = "AAAA9999888877776666555544443333222211BB"
+
+
+def _setup_verify_release(
+    tmp_path: Path,
+    *,
+    installer_asset: str | None,
+    installer_sig_contents: dict[str, str],
+    committed_installer: str | None,
+) -> tuple[Path, Path]:
+    """Build a hermetic repo + mock-bin sandbox for verify-release.sh.
+
+    Manifest signature quorum always passes (two GOODSIG manifest signatures)
+    so tests exercise the installer verification step in isolation.
+    """
+    repo_dir = tmp_path / "repo"
+    scripts_dir = repo_dir / "scripts"
+    signatures_dir = repo_dir / "signatures" / "1.2.3"
+    data_dir = tmp_path / "data"
+    bin_dir = tmp_path / "bin"
+
+    scripts_dir.mkdir(parents=True)
+    signatures_dir.mkdir(parents=True)
+    data_dir.mkdir()
+    bin_dir.mkdir()
+
+    (repo_dir / "signatures" / "trusted-keys.txt").write_text(
+        f"{TEST_FINGERPRINT} Test User\n{SECOND_FINGERPRINT} Second User\n"
+    )
+    (scripts_dir / "verify-release.sh").write_text(
+        (SCRIPTS_DIR / "verify-release.sh").read_text()
+    )
+
+    run_git(repo_dir, "init")
+    if committed_installer is not None:
+        (repo_dir / "install.sh").write_text(committed_installer)
+        run_git(repo_dir, "add", "install.sh")
+    else:
+        (repo_dir / "README.md").write_text("no installer committed\n")
+        run_git(repo_dir, "add", "README.md")
+    run_git(repo_dir, "commit", "-m", "test: release commit")
+    commit = run_git(repo_dir, "rev-parse", "HEAD").stdout.strip()
+
+    for fingerprint in (TEST_FINGERPRINT, SECOND_FINGERPRINT):
+        (signatures_dir / f"{fingerprint}.sig").write_text("GOODSIG manifest\n")
+    for fingerprint, contents in installer_sig_contents.items():
+        (signatures_dir / f"{fingerprint}.install.sh.sig").write_text(contents)
+
+    # No trailing newline: the docker mock emits this via printf '%s', which
+    # does not interpret escape sequences.
+    raw_manifest = "raw-manifest"
+    (data_dir / "manifest.txt").write_text(
+        textwrap.dedent(
+            f"""# JoinMarket NG Release Manifest
+# Version: 1.2.3
+## Git Commit
+commit: {commit}
+source_date_epoch: 1234567890
+
+## Docker Images
+example-manifest: sha256:{hashlib.sha256(raw_manifest.encode()).hexdigest()}
+"""
+        )
+    )
+    if installer_asset is not None:
+        (data_dir / "install.sh.asset").write_text(installer_asset)
+
+    write_executable(
+        bin_dir / "curl",
+        textwrap.dedent(
+            f"""#!/usr/bin/env bash
+set -euo pipefail
+url=""
+output=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -o)
+            output="$2"
+            shift 2
+            ;;
+        -*)
+            shift
+            ;;
+        *)
+            url="$1"
+            shift
+            ;;
+    esac
+done
+case "$url" in
+    */release-manifest-1.2.3.txt)
+        cat "{data_dir}/manifest.txt" > "$output"
+        ;;
+    */releases/download/1.2.3/install.sh)
+        [[ -f "{data_dir}/install.sh.asset" ]] || exit 22
+        cat "{data_dir}/install.sh.asset" > "$output"
+        ;;
+    *)
+        exit 22
+        ;;
+esac
+"""
+        ),
+    )
+    write_executable(
+        bin_dir / "gpg",
+        textwrap.dedent(
+            """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "--verify" ]]; then
+    grep -q GOODSIG "$2"
+    exit $?
+fi
+exit 0
+"""
+        ),
+    )
+    write_executable(
+        bin_dir / "docker",
+        textwrap.dedent(
+            f"""#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "buildx" && "$2" == "imagetools" && "$3" == "inspect" ]]; then
+    printf '%s' {raw_manifest!r}
+    exit 0
+fi
+exit 1
+"""
+        ),
+    )
+    write_executable(bin_dir / "jq", "#!/usr/bin/env bash\nexit 0\n")
+
+    return repo_dir, bin_dir
+
+
+def _run_verify_release(
+    repo_dir: Path, bin_dir: Path, *extra_args: str
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["bash", str(repo_dir / "scripts" / "verify-release.sh"), "1.2.3", *extra_args],
+        cwd=repo_dir,
+        text=True,
+        capture_output=True,
+        env=make_env(bin_dir),
+        check=False,
+    )
+
+
+def test_verify_release_passes_with_installer_and_manifest_quorum(
+    tmp_path: Path,
+) -> None:
+    installer = "verified installer bytes\n"
+    repo_dir, bin_dir = _setup_verify_release(
+        tmp_path,
+        installer_asset=installer,
+        installer_sig_contents={
+            TEST_FINGERPRINT: "GOODSIG installer\n",
+            SECOND_FINGERPRINT: "GOODSIG installer\n",
+        },
+        committed_installer=installer,
+    )
+
+    result = _run_verify_release(repo_dir, bin_dir)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Installer asset matches install.sh at the release commit" in result.stdout
+    assert "Valid installer signatures: 2" in result.stdout
+
+
+def test_verify_release_fails_without_installer_signature_quorum(
+    tmp_path: Path,
+) -> None:
+    installer = "verified installer bytes\n"
+    repo_dir, bin_dir = _setup_verify_release(
+        tmp_path,
+        installer_asset=installer,
+        installer_sig_contents={
+            TEST_FINGERPRINT: "GOODSIG installer\n",
+            SECOND_FINGERPRINT: "BADSIG installer\n",
+        },
+        committed_installer=installer,
+    )
+
+    result = _run_verify_release(repo_dir, bin_dir)
+
+    assert result.returncode != 0
+    assert (
+        "Insufficient valid installer signatures. Required: 2, Found: 1"
+        in result.stdout
+    )
+
+
+def test_verify_release_rejects_tampered_installer_asset(tmp_path: Path) -> None:
+    repo_dir, bin_dir = _setup_verify_release(
+        tmp_path,
+        installer_asset="tampered installer bytes\n",
+        installer_sig_contents={
+            TEST_FINGERPRINT: "GOODSIG installer\n",
+            SECOND_FINGERPRINT: "GOODSIG installer\n",
+        },
+        committed_installer="attested installer bytes\n",
+    )
+
+    result = _run_verify_release(repo_dir, bin_dir)
+
+    assert result.returncode != 0
+    assert "does not match install.sh at commit" in result.stdout
+
+
+def test_verify_release_skips_installer_check_for_historical_releases(
+    tmp_path: Path,
+) -> None:
+    """Releases published before installer signing have no install.sh asset;
+    verification must warn and pass by default, but fail under
+    --require-installer (used by the promotion gate)."""
+    repo_dir, bin_dir = _setup_verify_release(
+        tmp_path,
+        installer_asset=None,
+        installer_sig_contents={},
+        committed_installer=None,
+    )
+
+    result = _run_verify_release(repo_dir, bin_dir)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "predates trusted installer updates" in result.stdout
+
+    gated = _run_verify_release(repo_dir, bin_dir, "--require-installer")
+    assert gated.returncode != 0
+    assert "required by --require-installer" in gated.stdout
