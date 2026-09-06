@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.39.1] - 2026-09-06
+
+Pre-release workflow (to pevent releases with all needed signatures), rescan bug loop fix, local installer for updates (supply chain hardening), UTXO selector redesign, and local up to date config.toml.template reference copy.
+
+### Added
+
+- Redesign the UTXO selector with a dedicated State column, an ([2d6c152c](../../commit/2d6c152c5d0210c481ab323397e89b06c8c831cb))
+- Installer updates are now GPG-verified against trust anchors embedded in a locally saved installer copy instead of trusting the main branch on every update ([4270b6c2](../../commit/4270b6c29b1f5ceb2d6c79a57ca1bd2f3959bcff))
+
+### Fixed
+
+- Prevent wallet balance commands from crashing when Bitcoin Core is already rescanning ([ef4767d9](../../commit/ef4767d943660a78c151e850dd478a29f869955b))
+- Restore automated GitHub release creation after image promotion ([79c11960](../../commit/79c1196085f7f0718b2a3df51aa13b52c608d74a))
+- Prevent false orderbook bans from multi-directory requests and clarify response rate-limit diagnostics ([d9e29c1d](../../commit/d9e29c1d39a8ac4652c17ccdc27df96d3703136b))
+- Close TCP transports after disconnects to prevent leaked connections and shutdown delays ([7b30e799](../../commit/7b30e799f0560db826c1102db265175816fab30b))
+- Stop repeated full blockchain rescans on legacy wallets after upgrading to 0.39 ([e40ba472](../../commit/e40ba472a013b8fca31df361d092335235fd88c4))
+- Report Bitcoin Core scan status without falsely claiming coverage from descriptor import timestamps ([e40ba472](../../commit/e40ba472a013b8fca31df361d092335235fd88c4))
+- Honor configured wallet.scan_start_height and scan_lookback_blocks for descriptor wallet backends in jm-wallet, maker, and taker ([5f81fdd1](../../commit/5f81fdd1edc2d0c513b034ab40a22584382eae2f))
+- The TUI update menu now uses the GPG-verified trusted installer copy instead of downloading an unverified installer from the main branch ([4c136092](../../commit/4c136092cd0604ba443e2e6d595d6a3433b1f7ba))
+- Keep an up-to-date config.toml.template reference copy next to config.toml so new settings reported after updates can be compared locally ([2d6d52be](../../commit/2d6d52be6cf6ef59e0deeb61dcc591f1f8c642ef))
+
+### Configuration Changes
+
+This release did not change the bundled `config.toml.template`.
+
 ## [0.39.0] - 2026-09-04
 
 Bug fixes, security hardening, and privacy improvements. Takers now consider only quantized maker offers by default, with an optional equalized payment policy. New features like `jm-wallet delete` and improved usability and logs noise.
@@ -4070,7 +4095,8 @@ This release did not change the bundled `config.toml.template`.
 - Pre-built image support for directory server compose.
 - Tor configuration instructions.
 
-[Unreleased]: ../../compare/0.39.0...HEAD
+[Unreleased]: ../../compare/0.39.1...HEAD
+[0.39.1]: ../../compare/0.39.0...0.39.1
 [0.39.0]: ../../compare/0.38.0...0.39.0
 [0.38.0]: ../../compare/0.37.1...0.38.0
 [0.37.1]: ../../compare/0.37.0...0.37.1
